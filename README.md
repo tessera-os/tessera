@@ -29,6 +29,21 @@ This repository contains every Tessera component, from PID 1 to the apps.
   supported alongside it.
 
 
+## Status
+
+Tessera boots to its desktop and runs applications. The full path through the
+system is in place: system calls, process supervision, IPC, GPU composition,
+text rendering, the UI toolkit, and a desktop that launches applications. Data
+written in Notes persists across reboots on an installed system.
+
+Planned work includes Home and personalisation, an App Store, networking,
+audio, power management, additional applications, accessibility, backups, and
+the security and confinement model for third-party applications.
+
+See [tessera/ROADMAP.md](tessera/ROADMAP.md) and its 38 chapters in
+[tessera/roadmap/](tessera/roadmap/) for details.
+
+
 ## Repository layout
 
 Each directory is one component with its own `package.kira`.
@@ -145,21 +160,6 @@ kira build boot -arch aarch64 -desktop           # boot to the desktop in a wind
 ```
 
 Tessera currently targets Linux 7.2 (mainline).
-
-
-## Status
-
-Tessera boots to its desktop and runs applications. The full path through the
-system is in place: system calls, process supervision, IPC, GPU composition,
-text rendering, the UI toolkit, and a desktop that launches applications. Data
-written in Notes persists across reboots on an installed system.
-
-Planned work includes Home and personalisation, an App Store, networking,
-audio, power management, additional applications, accessibility, backups, and
-the security and confinement model for third-party applications.
-
-See [tessera/ROADMAP.md](tessera/ROADMAP.md) and its 38 chapters in
-[tessera/roadmap/](tessera/roadmap/) for details.
 
 
 ## Contributing
