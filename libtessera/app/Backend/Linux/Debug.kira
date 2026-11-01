@@ -46,9 +46,11 @@ function ptraceRequest(
     address: U64,
     data: U64
 ) -> Result<Void, TesseraError> {
-    return answerStatus(
-        wideAnswer(ptrace(code(request), U64(thread), RawPtr(address), RawPtr(data)))
-    )
+    unsafe {
+        return answerStatus(
+            wideAnswer(ptrace(code(request), U64(thread), RawPtr(address), RawPtr(data)))
+        )
+    }
 }
 
 function ptraceBlock(
@@ -57,7 +59,9 @@ function ptraceBlock(
     address: U64,
     block: RawPtr
 ) -> Result<Void, TesseraError> {
-    return answerStatus(wideAnswer(ptrace(code(request), U64(thread), RawPtr(address), block)))
+    unsafe {
+        return answerStatus(wideAnswer(ptrace(code(request), U64(thread), RawPtr(address), block)))
+    }
 }
 
 function kernelDebugThreads(pid: Number) -> [Number] {

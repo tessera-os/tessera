@@ -163,19 +163,21 @@ namespace WallpaperSlot {
 
 // The picture chosen for `place`.
 public function wallpaperChoice(place: WallpaperPlace) -> WallpaperChoice {
-    if !ambientStateHas(WallpaperSlot.key) {
-        ambientStatePut(WallpaperSlot.key, nativeUserData(nativeState(WallpaperRead {})))
-    }
-    var read = nativeRecover<WallpaperRead>(ambientStateGet(WallpaperSlot.key))
-    let generation = settingsGeneration()
-    if read.generation != .Some(generation) {
-        read.home = wallpaperChoiceFrom(settingValue(WallpaperSetting.home, ""))
-        read.lock = wallpaperChoiceFrom(settingValue(WallpaperSetting.lock, ""))
-        read.generation = .Some(generation)
-    }
-    return match place {
-        Home -> copy read.home
-        Lock -> copy read.lock
+    unsafe {
+        if !ambientStateHas(WallpaperSlot.key) {
+            ambientStatePut(WallpaperSlot.key, nativeUserData(nativeState(WallpaperRead {})))
+        }
+        var read = nativeRecover<WallpaperRead>(ambientStateGet(WallpaperSlot.key))
+        let generation = settingsGeneration()
+        if read.generation != .Some(generation) {
+            read.home = wallpaperChoiceFrom(settingValue(WallpaperSetting.home, ""))
+            read.lock = wallpaperChoiceFrom(settingValue(WallpaperSetting.lock, ""))
+            read.generation = .Some(generation)
+        }
+        return match place {
+            Home -> copy read.home
+            Lock -> copy read.lock
+        }
     }
 }
 

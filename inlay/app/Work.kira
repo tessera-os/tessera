@@ -37,84 +37,100 @@ function work() -> RawPtr {
 // Puts `sources` aside to copy, or to move with `.Move`, into the folder
 // pasted into next.
 function hold(sources: borrow [String], kind: TransferKind) {
-    var state = nativeRecover<Work>(work())
-    state.held = Held { sources: copy sources, kind: kind }
+    unsafe {
+        var state = nativeRecover<Work>(work())
+        state.held = Held { sources: copy sources, kind: kind }
+    }
 }
 
 // What is put aside, and how.
 function held() -> Held {
-    return copy nativeRecover<Work>(work()).held
+    unsafe {
+        return copy nativeRecover<Work>(work()).held
+    }
 }
 
 // Starts copying or moving what is put aside into `folder`. What was cut is
 // put aside no longer: it is on its way.
 function pasteInto(folder: borrow String) {
-    var state = nativeRecover<Work>(work())
-    if state.held.sources.count == 0 || state.transfer.isSome() { return }
-    state.transfer = .Some(transferOf(state.held.kind, state.held.sources, folder))
-    state.failed = []
-    match state.held.kind {
-        Move -> state.held = Held {}
-        Copy -> {}
+    unsafe {
+        var state = nativeRecover<Work>(work())
+        if state.held.sources.count == 0 || state.transfer.isSome() { return }
+        state.transfer = .Some(transferOf(state.held.kind, state.held.sources, folder))
+        state.failed = []
+        match state.held.kind {
+            Move -> state.held = Held {}
+            Copy -> {}
+        }
+        redrawAfter(0)
     }
-    redrawAfter(0)
 }
 
 // The transfer under way: how far it is, and the collision it waits on.
 function transferShown() -> (Transfer?, String?) {
-    let state = nativeRecover<Work>(work())
-    return (copy state.transfer, copy state.collides)
+    unsafe {
+        let state = nativeRecover<Work>(work())
+        return (copy state.transfer, copy state.collides)
+    }
 }
 
 // The entries the last transfer could not move or copy.
 function transferFailures() -> [String] {
-    return copy nativeRecover<Work>(work()).failed
+    unsafe {
+        return copy nativeRecover<Work>(work()).failed
+    }
 }
 
 // Takes the next entry of the transfer under way, unless it waits on a
 // collision, and builds the window again for the one after.
 function advanceTransfer() {
-    var state = nativeRecover<Work>(work())
-    var transfer = try state.transfer otherwise return
-    if state.collides.isSome() && state.choice.isNone() { return }
-    let step = transfer.step(copy state.choice)
-    state.choice = .None
-    state.collides = .None
-    match step {
-        Finished -> {
-            state.transfer = .None
-            log info(
-                "a transfer finished",
-                arrived: transfer.arrived.count,
-                kept: transfer.kept.count
-            )
-            return
+    unsafe {
+        var state = nativeRecover<Work>(work())
+        var transfer = try state.transfer otherwise return
+        if state.collides.isSome() && state.choice.isNone() { return }
+        let step = transfer.step(copy state.choice)
+        state.choice = .None
+        state.collides = .None
+        match step {
+            Finished -> {
+                state.transfer = .None
+                log info(
+                    "a transfer finished",
+                    arrived: transfer.arrived.count,
+                    kept: transfer.kept.count
+                )
+                return
+            }
+            Collides(name) -> state.collides = .Some(name)
+            Failed(failure) -> {
+                log warn("an entry could not be transferred", failure)
+                state.failed.append(traceText(failure))
+            }
+            Arrived, Skipped -> {}
         }
-        Collides(name) -> state.collides = .Some(name)
-        Failed(failure) -> {
-            log warn("an entry could not be transferred", failure)
-            state.failed.append(traceText(failure))
-        }
-        Arrived, Skipped -> {}
+        state.transfer = .Some(transfer)
+        redrawAfter(0)
     }
-    state.transfer = .Some(transfer)
-    redrawAfter(0)
 }
 
 // Answers the collision the transfer waits on.
 function answerCollision(choice: Collision) {
-    var state = nativeRecover<Work>(work())
-    state.choice = .Some(choice)
-    redrawAfter(0)
+    unsafe {
+        var state = nativeRecover<Work>(work())
+        state.choice = .Some(choice)
+        redrawAfter(0)
+    }
 }
 
 // Stops the transfer: what it had not reached stays where it is.
 function cancelTransfer() {
-    var state = nativeRecover<Work>(work())
-    var transfer = try state.transfer otherwise return
-    transfer.cancel()
-    log info("a transfer was cancelled", arrived: transfer.arrived.count, kept: transfer.kept.count)
-    state.transfer = .None
-    state.collides = .None
-    state.choice = .None
+    unsafe {
+        var state = nativeRecover<Work>(work())
+        var transfer = try state.transfer otherwise return
+        transfer.cancel()
+        log info("a transfer was cancelled", arrived: transfer.arrived.count, kept: transfer.kept.count)
+        state.transfer = .None
+        state.collides = .None
+        state.choice = .None
+    }
 }

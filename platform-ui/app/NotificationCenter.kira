@@ -74,30 +74,34 @@ public function countBadge(count: Number, side: Number) -> Any Widget {
 
 /// The notifications kept, read from their file the first time.
 public function notificationHistory() -> NotificationHistory {
-    var read = nativeRecover<HistoryRead>(historySlot())
-    match read.history {
-        Some(history) -> return history
-        None -> {}
-    }
-    let loaded = match readFile(NotificationStore.path) {
-        Ok(contents) -> historyFrom(contents.text)
-        Error(failure) -> {
-            log info("no notification history kept yet", failure)
-            NotificationHistory {}
+    unsafe {
+        var read = nativeRecover<HistoryRead>(historySlot())
+        match read.history {
+            Some(history) -> return history
+            None -> {}
         }
+        let loaded = match readFile(NotificationStore.path) {
+            Ok(contents) -> historyFrom(contents.text)
+            Error(failure) -> {
+                log info("no notification history kept yet", failure)
+                NotificationHistory {}
+            }
+        }
+        read.history = .Some(copy loaded)
+        return loaded
     }
-    read.history = .Some(copy loaded)
-    return loaded
 }
 
 // Keeps `history`, in memory and in its file.
 function keepHistory(history: NotificationHistory) {
-    var read = nativeRecover<HistoryRead>(historySlot())
-    match writeFile(NotificationStore.path, historyText(history)) {
-        Ok -> {}
-        Error(failure) -> log warn("the notification history could not be kept", failure)
+    unsafe {
+        var read = nativeRecover<HistoryRead>(historySlot())
+        match writeFile(NotificationStore.path, historyText(history)) {
+            Ok -> {}
+            Error(failure) -> log warn("the notification history could not be kept", failure)
+        }
+        read.history = .Some(move history)
     }
-    read.history = .Some(move history)
 }
 
 // Keeps every notification in `arrived` that arrived `at`.
@@ -127,19 +131,21 @@ public function clearApplicationNotifications(application: borrow String) {
 /// The applications whose notifications show no banner, read again only
 /// when Settings changed.
 public function quietApplications() -> [String] {
-    var read = nativeRecover<HistoryRead>(historySlot())
-    let generation = settingsGeneration()
-    if read.quietGeneration != .Some(generation) {
-        var names: [String] = []
-        for name in settingValue(NotificationSetting.quiet, "").split(
-            NotificationSetting.separator
-        ) {
-            if name.count > 0 { names.append(copy name) }
+    unsafe {
+        var read = nativeRecover<HistoryRead>(historySlot())
+        let generation = settingsGeneration()
+        if read.quietGeneration != .Some(generation) {
+            var names: [String] = []
+            for name in settingValue(NotificationSetting.quiet, "").split(
+                NotificationSetting.separator
+            ) {
+                if name.count > 0 { names.append(copy name) }
+            }
+            read.quiet = names
+            read.quietGeneration = .Some(generation)
         }
-        read.quiet = names
-        read.quietGeneration = .Some(generation)
+        return copy read.quiet
     }
-    return copy read.quiet
 }
 
 /// What choosing in the notification list does: opening an application,

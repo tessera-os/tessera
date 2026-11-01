@@ -268,26 +268,28 @@ namespace HomeWidgetSlot {
 }
 
 function homeWidgetRead() -> HomeWidgetShown {
-    if !ambientStateHas(HomeWidgetSlot.key) {
-        ambientStatePut(HomeWidgetSlot.key, nativeUserData(nativeState(HomeWidgetData {})))
-    }
-    var data = nativeRecover<HomeWidgetData>(ambientStateGet(HomeWidgetSlot.key))
-    let now = unixMillis()
-    if data.at == 0 || now - data.at >= HomeWidgetBand.refresh * 1000 {
-        data.at = now
-        data.zone = currentTimeZone()
-        data.power = match powerRead() {
-            Ok(info) -> .Some(info)
-            Error(failed) -> {
-                log warn(
-                    "the battery widget cannot read the power service",
-                    error: errorName(failed)
-                )
-                .None
+    unsafe {
+        if !ambientStateHas(HomeWidgetSlot.key) {
+            ambientStatePut(HomeWidgetSlot.key, nativeUserData(nativeState(HomeWidgetData {})))
+        }
+        var data = nativeRecover<HomeWidgetData>(ambientStateGet(HomeWidgetSlot.key))
+        let now = unixMillis()
+        if data.at == 0 || now - data.at >= HomeWidgetBand.refresh * 1000 {
+            data.at = now
+            data.zone = currentTimeZone()
+            data.power = match powerRead() {
+                Ok(info) -> .Some(info)
+                Error(failed) -> {
+                    log warn(
+                        "the battery widget cannot read the power service",
+                        error: errorName(failed)
+                    )
+                    .None
+                }
             }
         }
+        return HomeWidgetShown { local: data.zone.local(now), power: copy data.power }
     }
-    return HomeWidgetShown { local: data.zone.local(now), power: copy data.power }
 }
 
 // The widget gallery, while Home is edited: each widget the system has, at

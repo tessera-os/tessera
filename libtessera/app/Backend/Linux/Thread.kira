@@ -114,7 +114,9 @@ function kernelAddressRequeue(
     target: RawPtr,
     requeueCount: U32
 ) -> Result<U32, TesseraError> {
-    let answer = futex(address, FutexOp.requeue, wakeCount, RawPtr(requeueCount), target, U32(0))
-    if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
-    return .Ok(U32(answer))
+    unsafe {
+        let answer = futex(address, FutexOp.requeue, wakeCount, RawPtr(requeueCount), target, U32(0))
+        if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
+        return .Ok(U32(answer))
+    }
 }

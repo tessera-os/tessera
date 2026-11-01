@@ -44,9 +44,11 @@ function workspaceInbox() -> RawPtr {
 
 /// Queues a workspace request for the system and clears any notice the last one left.
 function queueWorkspaceRequest(request: WorkspaceRequest) {
-    var waiting = nativeRecover<WorkspaceInbox>(workspaceInbox())
-    waiting.pending.append(move request)
-    waiting.notice = .None
+    unsafe {
+        var waiting = nativeRecover<WorkspaceInbox>(workspaceInbox())
+        waiting.pending.append(move request)
+        waiting.notice = .None
+    }
 }
 
 /// Asks PID 1 to open `application`.
@@ -73,35 +75,43 @@ public struct LaunchIcon {
 /// screen does: the display grows the application's first picture out of the
 /// icon, which is left out of the window until it has grown.
 public function openApplicationFromIcon(application: borrow Application, icon: LaunchIcon) {
-    var waiting = nativeRecover<WorkspaceInbox>(workspaceInbox())
-    waiting.launchIcon = .Some(move icon)
-    queueWorkspaceRequest(application.openRequest())
+    unsafe {
+        var waiting = nativeRecover<WorkspaceInbox>(workspaceInbox())
+        waiting.launchIcon = .Some(move icon)
+        queueWorkspaceRequest(application.openRequest())
+    }
 }
 
 /// The icon of this window's a window is flying out of or into now, as an
 /// iPad's home screen leaves out the icon an application grows out of or goes
 /// back into, its wallpaper showing there; none while nothing flies.
 public function flyingLaunchIcon() -> LaunchIcon? {
-    let waiting = nativeRecover<WorkspaceInbox>(workspaceInbox())
-    return copy waiting.flyingIcon
+    unsafe {
+        let waiting = nativeRecover<WorkspaceInbox>(workspaceInbox())
+        return copy waiting.flyingIcon
+    }
 }
 
 /// The display says a window flies out of or into `icon`, or that it landed.
 function noteFlyingIcon(icon: LaunchIcon?) {
-    match icon {
-        Some(at) -> log info("a window flies by one of this surface's icons", x: at.x, y: at.y)
-        None -> log info("the window flying by this surface's icon landed")
+    unsafe {
+        match icon {
+            Some(at) -> log info("a window flies by one of this surface's icons", x: at.x, y: at.y)
+            None -> log info("the window flying by this surface's icon landed")
+        }
+        var waiting = nativeRecover<WorkspaceInbox>(workspaceInbox())
+        waiting.flyingIcon = move icon
     }
-    var waiting = nativeRecover<WorkspaceInbox>(workspaceInbox())
-    waiting.flyingIcon = move icon
 }
 
 /// The icon to tell the display of, once.
 function takeLaunchIcon() -> LaunchIcon? {
-    var waiting = nativeRecover<WorkspaceInbox>(workspaceInbox())
-    let taken = move waiting.launchIcon
-    waiting.launchIcon = .None
-    return taken
+    unsafe {
+        var waiting = nativeRecover<WorkspaceInbox>(workspaceInbox())
+        let taken = move waiting.launchIcon
+        waiting.launchIcon = .None
+        return taken
+    }
 }
 
 /// Asks PID 1 to install `application`, from the disk image it is on, in
@@ -126,44 +136,56 @@ public function uninstallApplication(
 
 /// What PID 1 said about the last request, until the next.
 public function workspaceNotice() -> String? {
-    let waiting = nativeRecover<WorkspaceInbox>(workspaceInbox())
-    return copy waiting.notice
+    unsafe {
+        let waiting = nativeRecover<WorkspaceInbox>(workspaceInbox())
+        return copy waiting.notice
+    }
 }
 
 /// Puts away what PID 1 said, as the button that answers an alert of it does.
 public function dismissWorkspaceNotice() {
-    var waiting = nativeRecover<WorkspaceInbox>(workspaceInbox())
-    waiting.notice = .None
+    unsafe {
+        var waiting = nativeRecover<WorkspaceInbox>(workspaceInbox())
+        waiting.notice = .None
+    }
 }
 
 /// Whether an application was installed or uninstalled since this was last
 /// asked, for an application that watches `.Applications` and keeps a list of
 /// them, as a platform's Dock does.
 public function takeApplicationsChange() -> Bool {
-    var waiting = nativeRecover<WorkspaceInbox>(workspaceInbox())
-    let changed = waiting.applicationsChanged
-    waiting.applicationsChanged = false
-    return changed
+    unsafe {
+        var waiting = nativeRecover<WorkspaceInbox>(workspaceInbox())
+        let changed = waiting.applicationsChanged
+        waiting.applicationsChanged = false
+        return changed
+    }
 }
 
 /// Records that the set of installed applications changed.
 function noteApplicationsChange() {
-    var waiting = nativeRecover<WorkspaceInbox>(workspaceInbox())
-    waiting.applicationsChanged = true
+    unsafe {
+        var waiting = nativeRecover<WorkspaceInbox>(workspaceInbox())
+        waiting.applicationsChanged = true
+    }
 }
 
 /// The requests queued since the last call, which are now the caller's to send.
 function takeWorkspaceRequests() -> [WorkspaceRequest] {
-    var waiting = nativeRecover<WorkspaceInbox>(workspaceInbox())
-    let taken = move waiting.pending
-    waiting.pending = []
-    return taken
+    unsafe {
+        var waiting = nativeRecover<WorkspaceInbox>(workspaceInbox())
+        let taken = move waiting.pending
+        waiting.pending = []
+        return taken
+    }
 }
 
 /// Shows `notice` in the workspace until it is dismissed or a new request is queued.
 function showWorkspaceNotice(notice: String) {
-    var waiting = nativeRecover<WorkspaceInbox>(workspaceInbox())
-    waiting.notice = .Some(move notice)
+    unsafe {
+        var waiting = nativeRecover<WorkspaceInbox>(workspaceInbox())
+        waiting.notice = .Some(move notice)
+    }
 }
 
 /// Sends PID 1 what the interface asked of it since the last turn, and waits

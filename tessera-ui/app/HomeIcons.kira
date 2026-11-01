@@ -35,37 +35,43 @@ function homeIconsState() -> RawPtr {
 
 /// How many icons the home screen shows now.
 public function homeIconCount() -> Number {
-    let state = nativeRecover<HomeIconsState>(homeIconsState())
-    return state.icons.count
+    unsafe {
+        let state = nativeRecover<HomeIconsState>(homeIconsState())
+        return state.icons.count
+    }
 }
 
 /// Says which icons the home screen's page shows now.
 public function setHomeIcons(icons: [HomeScreenIcon]) {
-    var state = nativeRecover<HomeIconsState>(homeIconsState())
-    state.icons = move icons
+    unsafe {
+        var state = nativeRecover<HomeIconsState>(homeIconsState())
+        state.icons = move icons
+    }
 }
 
 /// Tells the platform the icons the home screen shows, when they changed.
 function publishHomeScreenIcons(bridge: borrow BridgeHandle) {
-    var bridged: [BridgeHomeIcon] = []
-    for shown in nativeRecover<HomeIconsState>(homeIconsState()).icons {
-        bridged.append(
-            BridgeHomeIcon {
-                application: copy shown.application,
-                x: shown.icon.x,
-                y: shown.icon.y,
-                width: shown.icon.width,
-                height: shown.icon.height,
-                corner: shown.icon.corner,
-            }
-        )
-    }
-    match publishHomeIcons(copy bridge, bridged) {
-        Ok -> {}
-        Error(failure) -> log warn(
-            "the home screen's icons could not be handed to the platform",
-            failure: failure
-        )
+    unsafe {
+        var bridged: [BridgeHomeIcon] = []
+        for shown in nativeRecover<HomeIconsState>(homeIconsState()).icons {
+            bridged.append(
+                BridgeHomeIcon {
+                    application: copy shown.application,
+                    x: shown.icon.x,
+                    y: shown.icon.y,
+                    width: shown.icon.width,
+                    height: shown.icon.height,
+                    corner: shown.icon.corner,
+                }
+            )
+        }
+        match publishHomeIcons(copy bridge, bridged) {
+            Ok -> {}
+            Error(failure) -> log warn(
+                "the home screen's icons could not be handed to the platform",
+                failure: failure
+            )
+        }
     }
 }
 

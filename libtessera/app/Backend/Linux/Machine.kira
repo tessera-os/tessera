@@ -476,11 +476,13 @@ function kernelSetRealtime(nanoseconds: U64) -> Result<Void, TesseraError> {
 // The process's standard stream `stream`, as a backing of its own
 // (`F_DUPFD_CLOEXEC` above the streams), or None when it is not open.
 function kernelStandardStream(stream: borrow StandardStream) -> Result<Number?, TesseraError> {
-    let copied = fcntl(Number(code(stream)), Fcntl.duplicateCloseOnExec, RawPtr(Fcntl.aboveStreams))
-    if answerFailed(copied) {
-        // A stream the process was started without.
-        if answerErrno(copied) == code(Errno.BadDescriptor) { return .Ok(.None) }
-        return .Error(errnoFailure(answerErrno(copied)))
+    unsafe {
+        let copied = fcntl(Number(code(stream)), Fcntl.duplicateCloseOnExec, RawPtr(Fcntl.aboveStreams))
+        if answerFailed(copied) {
+            // A stream the process was started without.
+            if answerErrno(copied) == code(Errno.BadDescriptor) { return .Ok(.None) }
+            return .Error(errnoFailure(answerErrno(copied)))
+        }
+        return .Ok(.Some(copied))
     }
-    return .Ok(.Some(copied))
 }

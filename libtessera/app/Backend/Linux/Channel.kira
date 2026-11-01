@@ -67,7 +67,9 @@ function kernelPacketPair(bufferBytes: U64) -> Result<KernelPair, TesseraError> 
 
 // Makes a backing's reads and writes answer `ShouldWait` instead of waiting.
 function kernelSetNonBlocking(backing: Number) -> Result<Void, TesseraError> {
-    return answerStatus(fcntl(backing, Fcntl.setFlags, RawPtr(LinuxOpen.nonBlock)))
+    unsafe {
+        return answerStatus(fcntl(backing, Fcntl.setFlags, RawPtr(LinuxOpen.nonBlock)))
+    }
 }
 
 // Sends one packet: `firstLength` bytes at `first` then `secondLength` at

@@ -53,21 +53,23 @@ function kernelRelease(backing: Number) {
 // against growing and shrinking (`F_ADD_SEALS`, 1033: `F_SEAL_SHRINK |
 // F_SEAL_GROW`).
 function kernelMemoryCreate(size: U64, resizable: Bool) -> Result<Number, TesseraError> {
-    let fd = memfdCreate(cStringFrom("tessera-memory"), U32(1 | 2))
-    if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
-    let sized = ftruncate(fd, size)
-    if answerFailed(sized) {
-        closeBacking(fd)
-        return .Error(errnoFailure(answerErrno(sized)))
-    }
-    if !resizable {
-        let sealed = fcntl(fd, Fcntl.addSeals, RawPtr(Seal.shrink | Seal.grow))
-        if answerFailed(sealed) {
+    unsafe {
+        let fd = memfdCreate(cStringFrom("tessera-memory"), U32(1 | 2))
+        if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
+        let sized = ftruncate(fd, size)
+        if answerFailed(sized) {
             closeBacking(fd)
-            return .Error(errnoFailure(answerErrno(sealed)))
+            return .Error(errnoFailure(answerErrno(sized)))
         }
+        if !resizable {
+            let sealed = fcntl(fd, Fcntl.addSeals, RawPtr(Seal.shrink | Seal.grow))
+            if answerFailed(sealed) {
+                closeBacking(fd)
+                return .Error(errnoFailure(answerErrno(sealed)))
+            }
+        }
+        return .Ok(fd)
     }
-    return .Ok(fd)
 }
 
 function kernelMemoryResize(backing: Number, size: U64) -> Result<Void, TesseraError> {
@@ -77,9 +79,11 @@ function kernelMemoryResize(backing: Number, size: U64) -> Result<Void, TesseraE
 // A second backing for the same kernel object (`F_DUPFD_CLOEXEC`, 1030),
 // numbered above the standard streams.
 function kernelDuplicate(backing: Number) -> Result<Number, TesseraError> {
-    let fd = fcntl(backing, Fcntl.duplicateCloseOnExec, RawPtr(Fcntl.aboveStreams))
-    if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
-    return .Ok(fd)
+    unsafe {
+        let fd = fcntl(backing, Fcntl.duplicateCloseOnExec, RawPtr(Fcntl.aboveStreams))
+        if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
+        return .Ok(fd)
+    }
 }
 
 // Copies `length` bytes between two backings through a bounce block.
@@ -214,16 +218,18 @@ function mapAnswer(answer: Number) -> Result<U64, TesseraError> {
 // An inaccessible range that takes no memory: `MAP_PRIVATE |
 // MAP_ANONYMOUS | MAP_NORESERVE`.
 function kernelReserve(at: U64, length: U64, placement: borrow Place) -> Result<U64, TesseraError> {
-    return mapAnswer(
-        mmap(
-            RawPtr(at),
-            length,
-            ProtectionFlag.none,
-            MapFlag.private | MapFlag.anonymous | MapFlag.noReserve | placementFlags(placement),
-            -1,
-            U64(0)
+    unsafe {
+        return mapAnswer(
+            mmap(
+                RawPtr(at),
+                length,
+                ProtectionFlag.none,
+                MapFlag.private | MapFlag.anonymous | MapFlag.noReserve | placementFlags(placement),
+                -1,
+                U64(0)
+            )
         )
-    )
+    }
 }
 
 // The backing's bytes from `offset` mapped at `at`, shared with every other
@@ -237,50 +243,62 @@ function kernelMapBacking(
     backing: Number,
     offset: U64
 ) -> Result<U64, TesseraError> {
-    let sharing = shared ? MapFlag.shared : MapFlag.private
-    return mapAnswer(
-        mmap(
-            RawPtr(at),
-            length,
-            protectionFlags(protection),
-            sharing | placementFlags(placement),
-            backing,
-            offset
+    unsafe {
+        let sharing = shared ? MapFlag.shared : MapFlag.private
+        return mapAnswer(
+            mmap(
+                RawPtr(at),
+                length,
+                protectionFlags(protection),
+                sharing | placementFlags(placement),
+                backing,
+                offset
+            )
         )
-    )
+    }
 }
 
 function kernelUnmap(at: U64, length: U64) -> Result<Void, TesseraError> {
-    return answerStatus(munmap(RawPtr(at), length))
+    unsafe {
+        return answerStatus(munmap(RawPtr(at), length))
+    }
 }
 
 function kernelProtect(at: U64, length: U64, protection: Protection) -> Result<Void, TesseraError> {
-    return answerStatus(mprotect(RawPtr(at), length, protectionFlags(protection)))
+    unsafe {
+        return answerStatus(mprotect(RawPtr(at), length, protectionFlags(protection)))
+    }
 }
 
 // A hint that the range be backed by huge pages (`MADV_HUGEPAGE`, 14). A
 // kernel without them maps the range with small pages, which is all a hint
 // can come to.
 function kernelPreferHugePages(at: U64, length: U64) {
-    match answerStatus(madvise(RawPtr(at), length, Advice.hugePage)) {
-        Ok -> {}
-        Error(failed) -> absorb failed
+    unsafe {
+        match answerStatus(madvise(RawPtr(at), length, Advice.hugePage)) {
+            Ok -> {}
+            Error(failed) -> absorb failed
+        }
     }
 }
 
 // Backs the range with pages now: `MADV_POPULATE_WRITE` (23), or
 // `MADV_POPULATE_READ` (22) on a range that cannot be written.
 function kernelCommit(at: U64, length: U64) -> Result<Void, TesseraError> {
-    var answer = madvise(RawPtr(at), length, Advice.populateWrite)
-    if failedWith(answer, .BadAddress) || failedWith(answer, .Invalid) {
-        answer = madvise(RawPtr(at), length, Advice.populateRead)
+    unsafe {
+        var answer = madvise(RawPtr(at), length, Advice.populateWrite)
+        if failedWith(answer, .BadAddress) || failedWith(answer, .Invalid) {
+            answer = madvise(RawPtr(at), length, Advice.populateRead)
+        }
+        return answerStatus(answer)
     }
-    return answerStatus(answer)
 }
 
 // Releases the range's pages (`MADV_DONTNEED`, 4).
 function kernelDecommit(at: U64, length: U64) -> Result<Void, TesseraError> {
-    return answerStatus(madvise(RawPtr(at), length, Advice.dontNeed))
+    unsafe {
+        return answerStatus(madvise(RawPtr(at), length, Advice.dontNeed))
+    }
 }
 
 // Releases the backing's pages in a range, which then read as zero:
@@ -297,31 +315,35 @@ function kernelDiscardBacking(
 
 // Resident bytes in the range, from `mincore`.
 function kernelResidentBytes(at: U64, length: U64) -> Result<U64, TesseraError> {
-    let page = kernelPageSize()
-    let pages = trunc(length / page)
-    let vectorBytes = zeroedBlock(count: pages + 1, alignment: 16)
-    let vector = vectorBytes.pointer()
-    let answer = mincore(RawPtr(at), length, vector)
-    if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
-    var resident = U64(0)
-    for index in 0..pages {
-        if (heapLoad<U8>(vector, index) & U8(1)) != U8(0) { resident += page }
+    unsafe {
+        let page = kernelPageSize()
+        let pages = trunc(length / page)
+        let vectorBytes = zeroedBlock(count: pages + 1, alignment: 16)
+        let vector = vectorBytes.pointer()
+        let answer = mincore(RawPtr(at), length, vector)
+        if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
+        var resident = U64(0)
+        for index in 0..pages {
+            if (heapLoad<U8>(vector, index) & U8(1)) != U8(0) { resident += page }
+        }
+        return .Ok(resident)
     }
-    return .Ok(resident)
 }
 
 // `length` bytes of the backing mapped read-write and shared, anywhere.
 function kernelMapShared(backing: Number, length: U64) -> Result<RawPtr, TesseraError> {
-    let answer = mmap(
-        nullPointer(),
-        length,
-        ProtectionFlag.read | ProtectionFlag.write,
-        MapFlag.shared,
-        backing,
-        U64(0)
-    )
-    if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
-    return .Ok(RawPtr(answer))
+    unsafe {
+        let answer = mmap(
+            nullPointer(),
+            length,
+            ProtectionFlag.read | ProtectionFlag.write,
+            MapFlag.shared,
+            backing,
+            U64(0)
+        )
+        if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
+        return .Ok(RawPtr(answer))
+    }
 }
 
 // One read or write at `offset`, as much as the kernel takes now; a
@@ -350,7 +372,9 @@ function kernelTransferAt(
 
 // `length` bytes of the backing mapped read-only and shared, anywhere.
 function kernelMapReadOnly(backing: Number, length: U64) -> Result<RawPtr, TesseraError> {
-    let answer = mmap(nullPointer(), length, ProtectionFlag.read, MapFlag.shared, backing, U64(0))
-    if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
-    return .Ok(RawPtr(answer))
+    unsafe {
+        let answer = mmap(nullPointer(), length, ProtectionFlag.read, MapFlag.shared, backing, U64(0))
+        if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
+        return .Ok(RawPtr(answer))
+    }
 }

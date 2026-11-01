@@ -122,52 +122,54 @@ function openPerfRing(
     page: U64,
     kind: PerfRingKind
 ) -> Result<PerfRing, TesseraError> {
-    let attributeBytes = zeroedBlock(count: PerfEvent.attributeBytes, alignment: 16)
-    let attributes = attributeBytes.pointer()
-    heapStore<U32>(attributes, 0, U32(PerfEvent.typeSoftware))
-    heapStore<U32>(attributes, 4, U32(PerfEvent.attributeBytes))
-    var pages = PerfEvent.dataPages
-    match kind {
-        Clock -> {
-            heapStore<U64>(attributes, 16, U64(hz))
-            heapStore<U64>(attributes, 24, U64(PerfEvent.sampleType))
-            heapStore<U64>(attributes, 40, U64(PerfEvent.flags))
+    unsafe {
+        let attributeBytes = zeroedBlock(count: PerfEvent.attributeBytes, alignment: 16)
+        let attributes = attributeBytes.pointer()
+        heapStore<U32>(attributes, 0, U32(PerfEvent.typeSoftware))
+        heapStore<U32>(attributes, 4, U32(PerfEvent.attributeBytes))
+        var pages = PerfEvent.dataPages
+        match kind {
+            Clock -> {
+                heapStore<U64>(attributes, 16, U64(hz))
+                heapStore<U64>(attributes, 24, U64(PerfEvent.sampleType))
+                heapStore<U64>(attributes, 40, U64(PerfEvent.flags))
+            }
+            Switches -> {
+                heapStore<U64>(attributes, 8, U64(PerfEvent.contextSwitches))
+                heapStore<U64>(attributes, 16, U64(1))
+                heapStore<U64>(attributes, 24, U64(PerfEvent.switchSampleType))
+                heapStore<U64>(attributes, 40, U64(PerfEvent.switchFlags))
+                heapStore<U32>(attributes, 92, U32(PerfEvent.monotonicClock))
+                heapStore<U16>(attributes, 96, U16(PerfEvent.switchMaxStack))
+                pages = PerfEvent.switchPages
+            }
         }
-        Switches -> {
-            heapStore<U64>(attributes, 8, U64(PerfEvent.contextSwitches))
-            heapStore<U64>(attributes, 16, U64(1))
-            heapStore<U64>(attributes, 24, U64(PerfEvent.switchSampleType))
-            heapStore<U64>(attributes, 40, U64(PerfEvent.switchFlags))
-            heapStore<U32>(attributes, 92, U32(PerfEvent.monotonicClock))
-            heapStore<U16>(attributes, 96, U16(PerfEvent.switchMaxStack))
-            pages = PerfEvent.switchPages
+        let fd = perfEventOpen(
+            attributes,
+            U32(PerfEvent.anyone),
+            U32(cpu),
+            U32(PerfEvent.anyone),
+            U64(PerfEvent.closeOnExec)
+        )
+        if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
+        let dataBytes = Number(page) * pages
+        let length = page + U64(dataBytes)
+        let mapped = mmap(
+            nullPointer(),
+            length,
+            ProtectionFlag.read | ProtectionFlag.write,
+            MapFlag.shared,
+            fd,
+            U64(0)
+        )
+        if answerFailed(mapped) {
+            closeBacking(fd)
+            return .Error(errnoFailure(answerErrno(mapped)))
         }
+        return .Ok(
+            PerfRing { fd: fd, base: RawPtr(mapped), length: length, dataBytes: dataBytes, kind: kind }
+        )
     }
-    let fd = perfEventOpen(
-        attributes,
-        U32(PerfEvent.anyone),
-        U32(cpu),
-        U32(PerfEvent.anyone),
-        U64(PerfEvent.closeOnExec)
-    )
-    if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
-    let dataBytes = Number(page) * pages
-    let length = page + U64(dataBytes)
-    let mapped = mmap(
-        nullPointer(),
-        length,
-        ProtectionFlag.read | ProtectionFlag.write,
-        MapFlag.shared,
-        fd,
-        U64(0)
-    )
-    if answerFailed(mapped) {
-        closeBacking(fd)
-        return .Error(errnoFailure(answerErrno(mapped)))
-    }
-    return .Ok(
-        PerfRing { fd: fd, base: RawPtr(mapped), length: length, dataBytes: dataBytes, kind: kind }
-    )
 }
 
 function closePerfRings(rings: borrow [PerfRing]) {

@@ -98,19 +98,21 @@ namespace UnlockSlot {
 
 /// Tries `passcode` at `now` against the one kept, counting it when wrong.
 public function tryPasscode(passcode: borrow String, now: Number) -> UnlockAnswer {
-    if !ambientStateHas(UnlockSlot.key) {
-        ambientStatePut(UnlockSlot.key, nativeUserData(nativeState(UnlockState {})))
+    unsafe {
+        if !ambientStateHas(UnlockSlot.key) {
+            ambientStatePut(UnlockSlot.key, nativeUserData(nativeState(UnlockState {})))
+        }
+        var state = nativeRecover<UnlockState>(ambientStateGet(UnlockSlot.key))
+        if !state.attempts.allowed(now) { return .Waiting(state.attempts.waitUntil) }
+        let record = try passcodeKept() otherwise return .Opened
+        if record.matches(passcode) {
+            state.attempts = UnlockAttempts {}
+            log info("the lock screen opened with the passcode")
+            return .Opened
+        }
+        state.attempts = state.attempts.failed(now)
+        log info("a wrong passcode was given", failures: state.attempts.failures)
+        if !state.attempts.allowed(now) { return .Waiting(state.attempts.waitUntil) }
+        return .Wrong
     }
-    var state = nativeRecover<UnlockState>(ambientStateGet(UnlockSlot.key))
-    if !state.attempts.allowed(now) { return .Waiting(state.attempts.waitUntil) }
-    let record = try passcodeKept() otherwise return .Opened
-    if record.matches(passcode) {
-        state.attempts = UnlockAttempts {}
-        log info("the lock screen opened with the passcode")
-        return .Opened
-    }
-    state.attempts = state.attempts.failed(now)
-    log info("a wrong passcode was given", failures: state.attempts.failures)
-    if !state.attempts.allowed(now) { return .Waiting(state.attempts.waitUntil) }
-    return .Wrong
 }

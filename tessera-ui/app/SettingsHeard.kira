@@ -27,12 +27,16 @@ function settingsHeard() -> RawPtr {
 
 /// The changes to Settings heard so far.
 public function settingsGeneration() -> Number {
-    return nativeRecover<SettingsHeard>(settingsHeard()).generation
+    unsafe {
+        return nativeRecover<SettingsHeard>(settingsHeard()).generation
+    }
 }
 
 /// A change to Settings was heard: an application's System channel says so
 /// itself, and a platform, which reads its own, says so here.
 public function noteSettingsChanged() {
-    var heard = nativeRecover<SettingsHeard>(settingsHeard())
-    heard.generation = heard.generation + 1
+    unsafe {
+        var heard = nativeRecover<SettingsHeard>(settingsHeard())
+        heard.generation = heard.generation + 1
+    }
 }

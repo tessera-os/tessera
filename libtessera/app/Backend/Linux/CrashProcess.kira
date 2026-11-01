@@ -25,7 +25,7 @@ namespace CrashTrap {
 // into them. Standard output and error go to the kernel's log.
 function kernelCrashStreams() {
     for stream in [1, 2] {
-        if !answerFailed(fcntl(stream, Fcntl.getFlags, RawPtr(0))) { continue }
+        if !answerFailed(fcntl(stream, Fcntl.getFlags, RawPtr.null)) { continue }
         let fd = openat(AtDirectory.current, cStringFrom("/dev/kmsg"), LinuxOpen.writeOnly, 0)
         if answerFailed(fd) { return }
         if fd != stream {

@@ -26,11 +26,15 @@ function homeEditingState() -> RawPtr {
 
 /// Says whether the home screen is being edited.
 public function setHomeEditing(editing: Bool) {
-    var state = nativeRecover<HomeEditingState>(homeEditingState())
-    state.editing = editing
+    unsafe {
+        var state = nativeRecover<HomeEditingState>(homeEditingState())
+        state.editing = editing
+    }
 }
 
 /// Whether the home screen is in edit mode now.
 function homeEditing() -> Bool {
-    return nativeRecover<HomeEditingState>(homeEditingState()).editing
+    unsafe {
+        return nativeRecover<HomeEditingState>(homeEditingState()).editing
+    }
 }

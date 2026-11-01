@@ -206,7 +206,7 @@ function play(stream: Handle, size: Number, port: Handle) -> Result<Void, Tesser
         mapped,
         Protection.read | Protection.write,
         MapOptions.none,
-        RawPtr(0)
+        RawPtr.null
     ) {
         Ok(value) -> value
         Error(failed) -> {

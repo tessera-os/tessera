@@ -131,14 +131,16 @@ namespace HomeResetSlot {
 
 // The reset last asked for, read again only when Settings changed.
 public function homeResetAsked() -> String {
-    if !ambientStateHas(HomeResetSlot.key) {
-        ambientStatePut(HomeResetSlot.key, nativeUserData(nativeState(HomeResetRead {})))
+    unsafe {
+        if !ambientStateHas(HomeResetSlot.key) {
+            ambientStatePut(HomeResetSlot.key, nativeUserData(nativeState(HomeResetRead {})))
+        }
+        var read = nativeRecover<HomeResetRead>(ambientStateGet(HomeResetSlot.key))
+        let generation = settingsGeneration()
+        if read.generation != .Some(generation) {
+            read.asked = settingValue(HomeResetSetting.key, "")
+            read.generation = .Some(generation)
+        }
+        return copy read.asked
     }
-    var read = nativeRecover<HomeResetRead>(ambientStateGet(HomeResetSlot.key))
-    let generation = settingsGeneration()
-    if read.generation != .Some(generation) {
-        read.asked = settingValue(HomeResetSetting.key, "")
-        read.generation = .Some(generation)
-    }
-    return copy read.asked
 }

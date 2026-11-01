@@ -100,7 +100,7 @@ var library: Library = Library {
     streamSlots: [],
     mappings: [],
     watchDirectories: [],
-    powerPage: RawPtr(0),
+    powerPage: RawPtr.null,
     nextJobName: U64(1),
     emptiedJobs: [],
     processHandle: .None,

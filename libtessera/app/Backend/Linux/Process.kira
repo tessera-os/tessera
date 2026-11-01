@@ -415,11 +415,13 @@ function kernelLaunch(
 // other flag it has. Called between clone and exec, so nothing here
 // allocates.
 function streamWaits(fd: Number) {
-    let flags = fcntl(fd, Fcntl.getFlags, nullPointer())
-    if answerFailed(flags) || (flags & LinuxOpen.nonBlock) == 0 { return }
-    match answerStatus(fcntl(fd, Fcntl.setFlags, RawPtr(flags & ~LinuxOpen.nonBlock))) {
-        Ok -> {}
-        Error(failed) -> absorb failed
+    unsafe {
+        let flags = fcntl(fd, Fcntl.getFlags, nullPointer())
+        if answerFailed(flags) || (flags & LinuxOpen.nonBlock) == 0 { return }
+        match answerStatus(fcntl(fd, Fcntl.setFlags, RawPtr(flags & ~LinuxOpen.nonBlock))) {
+            Ok -> {}
+            Error(failed) -> absorb failed
+        }
     }
 }
 
@@ -428,12 +430,14 @@ function streamWaits(fd: Number) {
 // from 3) once its message is there or five seconds have passed; None when
 // there is none.
 function kernelStartupChannel() -> Result<Number?, TesseraError> {
-    let packetEnd = try kernelIsPacketEnd(0)
-    if !packetEnd { return .Ok(.None) }
-    kernelWaitOn(0, Ready.readable, U64(5000000000))
-    let moved = fcntl(0, Fcntl.duplicateCloseOnExec, RawPtr(Fcntl.aboveStreams))
-    if answerFailed(moved) { return .Error(errnoFailure(answerErrno(moved))) }
-    return .Ok(.Some(moved))
+    unsafe {
+        let packetEnd = try kernelIsPacketEnd(0)
+        if !packetEnd { return .Ok(.None) }
+        kernelWaitOn(0, Ready.readable, U64(5000000000))
+        let moved = fcntl(0, Fcntl.duplicateCloseOnExec, RawPtr(Fcntl.aboveStreams))
+        if answerFailed(moved) { return .Error(errnoFailure(answerErrno(moved))) }
+        return .Ok(.Some(moved))
+    }
 }
 
 // The root of the file system, as a Node backing (`O_PATH`).

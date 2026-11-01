@@ -27,16 +27,18 @@ namespace FocusSlot {
 
 /// What Focus is set to, read again only when Settings changed.
 public function focusChoice() -> FocusChoice {
-    if !ambientStateHas(FocusSlot.key) {
-        ambientStatePut(FocusSlot.key, nativeUserData(nativeState(FocusRead {})))
+    unsafe {
+        if !ambientStateHas(FocusSlot.key) {
+            ambientStatePut(FocusSlot.key, nativeUserData(nativeState(FocusRead {})))
+        }
+        var read = nativeRecover<FocusRead>(ambientStateGet(FocusSlot.key))
+        let generation = settingsGeneration()
+        if read.generation != .Some(generation) {
+            read.choice = storedFocusChoice()
+            read.generation = .Some(generation)
+        }
+        return copy read.choice
     }
-    var read = nativeRecover<FocusRead>(ambientStateGet(FocusSlot.key))
-    let generation = settingsGeneration()
-    if read.generation != .Some(generation) {
-        read.choice = storedFocusChoice()
-        read.generation = .Some(generation)
-    }
-    return copy read.choice
 }
 
 /// What Focus is set to, as Settings holds it now.

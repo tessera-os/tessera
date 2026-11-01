@@ -46,9 +46,11 @@ function useNotificationBridge(bridge: BridgeHandle) {
 /// The bridge this process runs with, for a view that has to reach the platform
 /// and is not handed it. A process that has not started `host` has a bridge with no links.
 public function ambientBridge() -> BridgeHandle {
-    if !ambientStateHas(NotificationBridgeSlot.key) { return makeBridgeHandle() }
-    let held = nativeRecover<NotificationBridge>(ambientStateGet(NotificationBridgeSlot.key))
-    return copy held.handle
+    unsafe {
+        if !ambientStateHas(NotificationBridgeSlot.key) { return makeBridgeHandle() }
+        let held = nativeRecover<NotificationBridge>(ambientStateGet(NotificationBridgeSlot.key))
+        return copy held.handle
+    }
 }
 
 /// Posts `content` to the platform through the bridge this process runs with.

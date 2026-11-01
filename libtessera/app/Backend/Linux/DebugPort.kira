@@ -34,8 +34,8 @@ function kernelDebugPortOpen(name: borrow String) -> Result<Number, TesseraError
 
 // Keeps `fd` open across exec, with reads that wait.
 function kernelDebugPortKeptAcrossExec(fd: Number) -> Result<Void, TesseraError> {
-    try answerStatus(fcntl(fd, Fcntl.setDescriptorFlags, RawPtr(0)))
-    return answerStatus(fcntl(fd, Fcntl.setFlags, RawPtr(0)))
+    try answerStatus(fcntl(fd, Fcntl.setDescriptorFlags, RawPtr.null))
+    return answerStatus(fcntl(fd, Fcntl.setFlags, RawPtr.null))
 }
 
 // Whether the host side of the port is connected: a port with none reports

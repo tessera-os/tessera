@@ -158,126 +158,128 @@ public function memoryMap(
     options: MapOptions,
     hint: RawPtr
 ) -> Result<RawPtr, TesseraError> {
-    try protectionAllowed(protection)
-    if options.raw > U32(31) || length == U64(0) || !pageAligned(length) || !pageAligned(offset) {
-        return .Error(failure(.InvalidArgument))
-    }
-    let slot = try resolve(source, .None, protectionRights(protection, options))
-    let object = objectOfSlot(slot)
-    var memory: MemoryObject? = .None
-    match library.objects[object].state {
-        Memory(held) -> memory = .Some(held)
-        File -> {}
-        None, Port, Event, EventPair, Timer, Channel, Thread, Process, Job, Node, Watch, Endpoint, Stream, WakeLock, Presence -> return .Error(
-            failure(.WrongType)
-        )
-    }
-    var fileOffset = offset
-    match memory {
-        Some(held) -> {
-            if !memoryHolds(held, offset, length) { return .Error(failure(.OutOfRange)) }
-            fileOffset = held.offset + offset
-        }
-        None -> {}
-    }
-    let page = kernelPageSize()
-    var below = U64(0)
-    var above = U64(0)
-    if options.has(MapOptions.guardBelow) { below = page }
-    if options.has(MapOptions.guardAbove) { above = page }
-    let total = below + length + above
-    var start = U64(0)
-    let shared = !options.has(MapOptions.private)
-    if options.has(MapOptions.fixed) {
-        let at = U64(pointerAddress(hint))
-        if at == U64(0) || !pageAligned(at) || at < below {
+    unsafe {
+        try protectionAllowed(protection)
+        if options.raw > U32(31) || length == U64(0) || !pageAligned(length) || !pageAligned(offset) {
             return .Error(failure(.InvalidArgument))
         }
-        start = at - below
-        let placement: Place = mappingsReserved(start, total) ? .Over : .Free
-        let objectBacking = try backingOf(object)
-        try kernelMapBacking(at, length, protection, shared, placement, objectBacking, fileOffset)
+        let slot = try resolve(source, .None, protectionRights(protection, options))
+        let object = objectOfSlot(slot)
+        var memory: MemoryObject? = .None
+        match library.objects[object].state {
+            Memory(held) -> memory = .Some(held)
+            File -> {}
+            None, Port, Event, EventPair, Timer, Channel, Thread, Process, Job, Node, Watch, Endpoint, Stream, WakeLock, Presence -> return .Error(
+                failure(.WrongType)
+            )
+        }
+        var fileOffset = offset
+        match memory {
+            Some(held) -> {
+                if !memoryHolds(held, offset, length) { return .Error(failure(.OutOfRange)) }
+                fileOffset = held.offset + offset
+            }
+            None -> {}
+        }
+        let page = kernelPageSize()
+        var below = U64(0)
+        var above = U64(0)
+        if options.has(MapOptions.guardBelow) { below = page }
+        if options.has(MapOptions.guardAbove) { above = page }
+        let total = below + length + above
+        var start = U64(0)
+        let shared = !options.has(MapOptions.private)
+        if options.has(MapOptions.fixed) {
+            let at = U64(pointerAddress(hint))
+            if at == U64(0) || !pageAligned(at) || at < below {
+                return .Error(failure(.InvalidArgument))
+            }
+            start = at - below
+            let placement: Place = mappingsReserved(start, total) ? .Over : .Free
+            let objectBacking = try backingOf(object)
+            try kernelMapBacking(at, length, protection, shared, placement, objectBacking, fileOffset)
+            if below > U64(0) {
+                try kernelReserve(start, below, placement)
+            }
+            if above > U64(0) {
+                try kernelReserve(at + length, above, placement)
+            }
+        } else {
+            let reserved = try kernelReserve(U64(pointerAddress(hint)), total, .Anywhere)
+            start = reserved
+            let backing = try backingOf(object)
+            match kernelMapBacking(
+                start + below,
+                length,
+                protection,
+                shared,
+                .Over,
+                backing,
+                fileOffset
+            ) {
+                Ok -> {}
+                Error(failed) -> {
+                    // The mapping already failed, and that failure is the one to
+                    // report; releasing the reservation is best effort.
+                    let released = kernelUnmap(start, total)
+                    absorb released
+                    return .Error(failed)
+                }
+            }
+        }
+        let base = start + below
+        if options.has(MapOptions.hugePages) { kernelPreferHugePages(base, length) }
+        mappingsCut(start, total)
         if below > U64(0) {
-            try kernelReserve(start, below, placement)
+            mappingAdd(
+                MappingEntry {
+                    live: true,
+                    base: start,
+                    length: below,
+                    protection: Protection.none,
+                    options: MapOptions.none,
+                    objectId: U64(0),
+                    objectOffset: U64(0),
+                    rights: Rights.none
+                }
+            )
         }
         if above > U64(0) {
-            try kernelReserve(at + length, above, placement)
+            mappingAdd(
+                MappingEntry {
+                    live: true,
+                    base: base + length,
+                    length: above,
+                    protection: Protection.none,
+                    options: MapOptions.none,
+                    objectId: U64(0),
+                    objectOffset: U64(0),
+                    rights: Rights.none
+                }
+            )
         }
-    } else {
-        let reserved = try kernelReserve(U64(pointerAddress(hint)), total, .Anywhere)
-        start = reserved
-        let backing = try backingOf(object)
-        match kernelMapBacking(
-            start + below,
-            length,
-            protection,
-            shared,
-            .Over,
-            backing,
-            fileOffset
-        ) {
-            Ok -> {}
-            Error(failed) -> {
-                // The mapping already failed, and that failure is the one to
-                // report; releasing the reservation is best effort.
-                let released = kernelUnmap(start, total)
-                absorb released
-                return .Error(failed)
-            }
-        }
-    }
-    let base = start + below
-    if options.has(MapOptions.hugePages) { kernelPreferHugePages(base, length) }
-    mappingsCut(start, total)
-    if below > U64(0) {
         mappingAdd(
             MappingEntry {
                 live: true,
-                base: start,
-                length: below,
-                protection: Protection.none,
-                options: MapOptions.none,
-                objectId: U64(0),
-                objectOffset: U64(0),
-                rights: Rights.none
+                base: base,
+                length: length,
+                protection: protection,
+                options: options,
+                objectId: library.objects[object].id,
+                objectOffset: offset,
+                rights: library.handles[slot].rights,
             }
         )
-    }
-    if above > U64(0) {
-        mappingAdd(
-            MappingEntry {
-                live: true,
-                base: base + length,
-                length: above,
-                protection: Protection.none,
-                options: MapOptions.none,
-                objectId: U64(0),
-                objectOffset: U64(0),
-                rights: Rights.none
+        match memory {
+            Some(held) -> {
+                var marked = move held
+                marked.mapped = true
+                setMemory(object, move marked)
             }
-        )
-    }
-    mappingAdd(
-        MappingEntry {
-            live: true,
-            base: base,
-            length: length,
-            protection: protection,
-            options: options,
-            objectId: library.objects[object].id,
-            objectOffset: offset,
-            rights: library.handles[slot].rights,
+            None -> {}
         }
-    )
-    match memory {
-        Some(held) -> {
-            var marked = move held
-            marked.mapped = true
-            setMemory(object, move marked)
-        }
-        None -> {}
+        return .Ok(RawPtr(base))
     }
-    return .Ok(RawPtr(base))
 }
 
 public function memoryUnmap(base: RawPtr, length: UNumber) -> Result<Void, TesseraError> {
@@ -379,37 +381,39 @@ public function memoryReserve(
     alignment: UNumber,
     hint: RawPtr
 ) -> Result<RawPtr, TesseraError> {
-    let page = kernelPageSize()
-    var align = alignment
-    if align == U64(0) { align = page }
-    if length == U64(0) || !pageAligned(length) || !pageAligned(align) || (
-        align & (align - U64(1))
-    ) != U64(0) {
-        return .Error(failure(.InvalidArgument))
-    }
-    var extra = U64(0)
-    if align > page { extra = align }
-    let start = try kernelReserve(U64(pointerAddress(hint)), length + extra, .Anywhere)
-    var base = start
-    if extra > U64(0) {
-        base = (start + align - U64(1)) & ~(align - U64(1))
-        if base > start { trimReservation(start, base - start) }
-        let tail = start + length + extra - (base + length)
-        if tail > U64(0) { trimReservation(base + length, tail) }
-    }
-    mappingAdd(
-        MappingEntry {
-            live: true,
-            base: base,
-            length: length,
-            protection: Protection.none,
-            options: MapOptions.none,
-            objectId: U64(0),
-            objectOffset: U64(0),
-            rights: Rights.none
+    unsafe {
+        let page = kernelPageSize()
+        var align = alignment
+        if align == U64(0) { align = page }
+        if length == U64(0) || !pageAligned(length) || !pageAligned(align) || (
+            align & (align - U64(1))
+        ) != U64(0) {
+            return .Error(failure(.InvalidArgument))
         }
-    )
-    return .Ok(RawPtr(base))
+        var extra = U64(0)
+        if align > page { extra = align }
+        let start = try kernelReserve(U64(pointerAddress(hint)), length + extra, .Anywhere)
+        var base = start
+        if extra > U64(0) {
+            base = (start + align - U64(1)) & ~(align - U64(1))
+            if base > start { trimReservation(start, base - start) }
+            let tail = start + length + extra - (base + length)
+            if tail > U64(0) { trimReservation(base + length, tail) }
+        }
+        mappingAdd(
+            MappingEntry {
+                live: true,
+                base: base,
+                length: length,
+                protection: Protection.none,
+                options: MapOptions.none,
+                objectId: U64(0),
+                objectOffset: U64(0),
+                rights: Rights.none
+            }
+        )
+        return .Ok(RawPtr(base))
+    }
 }
 
 // Gives back the slack around an aligned reservation. A trim that fails
@@ -423,23 +427,25 @@ function trimReservation(at: U64, length: U64) {
 }
 
 public function memoryQuery(address: RawPtr) -> Result<MappingInfo, TesseraError> {
-    let at = U64(pointerAddress(address))
-    for index in 0..library.mappings.count {
-        if mappingOverlaps(index, at, at + U64(1)) {
-            let entry = library.mappings[index]
-            let committed = try kernelResidentBytes(entry.base, entry.length)
-            return .Ok(
-                MappingInfo {
-                    base: RawPtr(entry.base),
-                    length: entry.length,
-                    protection: entry.protection,
-                    options: entry.options,
-                    objectId: entry.objectId,
-                    objectOffset: entry.objectOffset,
-                    committed: committed,
-                }
-            )
+    unsafe {
+        let at = U64(pointerAddress(address))
+        for index in 0..library.mappings.count {
+            if mappingOverlaps(index, at, at + U64(1)) {
+                let entry = library.mappings[index]
+                let committed = try kernelResidentBytes(entry.base, entry.length)
+                return .Ok(
+                    MappingInfo {
+                        base: RawPtr(entry.base),
+                        length: entry.length,
+                        protection: entry.protection,
+                        options: entry.options,
+                        objectId: entry.objectId,
+                        objectOffset: entry.objectOffset,
+                        committed: committed,
+                    }
+                )
+            }
         }
+        return .Error(failure(.NotFound))
     }
-    return .Error(failure(.NotFound))
 }
