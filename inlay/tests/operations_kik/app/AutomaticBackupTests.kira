@@ -1,0 +1,217 @@
+import Foundation
+import FileOperations
+
+@Test
+function optedInScheduledBackupWritesAndVerifiesBeforeAdvancingSchedule() {
+    let folder = freshFolder("scheduled-backup-workflow")
+    let source = childPath(folder, "Documents")
+    let root = childPath(folder, "Backups")
+    let settings = childPath(folder, "schedule")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "document.txt"), "saved document")
+    let schedule = BackupSchedule { frequency: .Daily }
+    expect!(scheduleStored(saveBackupScheduleFile(settings, schedule)))
+    let host = backupHost(1000000000)
+    let first = runDueBackup(source, root, settings, host)
+    let saved = match first {
+        Ok(outcome) -> match outcome {
+            Saved(snapshot) -> snapshot
+            Skipped(reason) -> {
+                absorb reason
+                return
+            }
+        }
+        Error(reason) -> {
+            absorb reason
+            return
+        }
+    }
+    expect!(!verificationFailed(verifySnapshot(saved)))
+    let updated = try readBackupScheduleFile(settings) otherwise return
+    expect!(updated.lastVerifiedAt == host.nowMillis)
+    expect!(snapshotsIn(root).count == 1)
+    let second = try runDueBackup(
+        source,
+        root,
+        settings,
+        backupHost(host.nowMillis + 3600000)
+    ) otherwise return
+    let skipped = match second {
+        Skipped(reason) -> reason == BackupDueState.NotDue
+        Saved(snapshot) -> {
+            absorb snapshot
+            false
+        }
+    }
+    expect!(skipped)
+    expect!(snapshotsIn(root).count == 1)
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function defaultManualBackupCannotStartFromMissingPreferences() {
+    let folder = freshFolder("scheduled-backup-manual")
+    let source = childPath(folder, "Documents")
+    let root = childPath(folder, "Backups")
+    let settings = childPath(folder, "missing-schedule")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "note"), "safe")
+    let result = try runDueBackup(source, root, settings, backupHost(1000000000)) otherwise return
+    let manual = match result {
+        Skipped(reason) -> reason == BackupDueState.ManualOnly
+        Saved(snapshot) -> {
+            absorb snapshot
+            false
+        }
+    }
+    expect!(manual)
+    expect!(!pathExists(root))
+    expect!(!pathExists(settings))
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function failedScheduledBackupCannotAdvanceLastVerifiedTime() {
+    let folder = freshFolder("scheduled-backup-fail")
+    let source = childPath(folder, "Documents")
+    let root = childPath(folder, "Backups")
+    let settings = childPath(folder, "schedule")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "note"), "safe")
+    expect!(made(makeSymbolicLink("note", childPath(source, "unsupported-link"))))
+    expect!(
+        scheduleStored(
+            saveBackupScheduleFile(
+                settings,
+                BackupSchedule { frequency: .Daily, lastVerifiedAt: 1000000000 }
+            )
+        )
+    )
+    let failed = runDueBackup(source, root, settings, backupHost(1000000000 + 86400000))
+    let refused = match failed {
+        Ok -> false
+        Error(reason) -> {
+            absorb reason
+            true
+        }
+    }
+    expect!(refused)
+    let state = try readBackupScheduleFile(settings) otherwise return
+    expect!(state.lastVerifiedAt == 1000000000)
+    expect!(state.lastFailureAt == 1000000000 + 86400000)
+    expect!(backupDue(state, backupHost(state.lastFailureAt + 1000)) == BackupDueState.RetryLater)
+    expect!(snapshotsIn(root).count == 0)
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function resourceBlockedAutomaticBackupDoesNotWriteAnything() {
+    let folder = freshFolder("scheduled-backup-resources")
+    let source = childPath(folder, "Documents")
+    let root = childPath(folder, "Backups")
+    let settings = childPath(folder, "schedule")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "note"), "protected")
+    let schedule = BackupSchedule { frequency: .Daily, requireExternalPower: true }
+    expect!(scheduleStored(saveBackupScheduleFile(settings, schedule)))
+    let noPower = try runDueBackup(
+        source,
+        root,
+        settings,
+        backupHost(1000000000, power: false)
+    ) otherwise return
+    let powerBlocked = match noPower {
+        Skipped(reason) -> reason == BackupDueState.PowerRequired
+        Saved(snapshot) -> {
+            absorb snapshot
+            false
+        }
+    }
+    expect!(powerBlocked)
+    let noSpace = try runDueBackup(
+        source,
+        root,
+        settings,
+        backupHost(1000000000, free: 500)
+    ) otherwise return
+    let spaceBlocked = match noSpace {
+        Skipped(reason) -> reason == BackupDueState.LowSpace
+        Saved(snapshot) -> {
+            absorb snapshot
+            false
+        }
+    }
+    expect!(spaceBlocked)
+    expect!(!pathExists(root))
+    expect!((try readBackupScheduleFile(settings) otherwise return).lastVerifiedAt == 0)
+    expect!(textAt(childPath(source, "note")) == "protected")
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function malformedAutomaticBackupSettingsCannotBeSilentlyReset() {
+    let folder = freshFolder("scheduled-backup-malformed")
+    let source = childPath(folder, "Documents")
+    let root = childPath(folder, "Backups")
+    let settings = childPath(folder, "schedule")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "note"), "still here")
+    writeText(settings, "Tessera backup schedule 1\ncadence daily\nverified ???\n")
+    let refused = match runDueBackup(source, root, settings, backupHost(1000000000)) {
+        Ok -> false
+        Error(reason) -> {
+            absorb reason
+            true
+        }
+    }
+    expect!(refused)
+    expect!(!pathExists(root))
+    expect!(textAt(settings).contains("verified ???"))
+    expect!(textAt(childPath(source, "note")) == "still here")
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function invalidRetentionCannotStartAnAutomaticBackup() {
+    let folder = freshFolder("scheduled-backup-retention")
+    let source = childPath(folder, "Documents")
+    let root = childPath(folder, "Backups")
+    let settings = childPath(folder, "schedule")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "note"), "safe")
+    expect!(scheduleStored(saveBackupScheduleFile(settings, BackupSchedule { frequency: .Daily })))
+    let refused = match runDueBackup(source, root, settings, backupHost(1000000000), -1) {
+        Ok -> false
+        Error(reason) -> {
+            absorb reason
+            true
+        }
+    }
+    expect!(refused)
+    expect!(!pathExists(root))
+    expect!((try readBackupScheduleFile(settings) otherwise return).lastVerifiedAt == 0)
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function readBackFailureRecordingPreservesLastVerifiedAndEnforcesRetry() {
+    let folder = freshFolder("scheduled-backup-verification-backoff")
+    let settings = childPath(folder, "schedule")
+    let earlier = 1000000000
+    let failedAt = earlier + 86400000
+    let schedule = BackupSchedule { frequency: .Daily, lastVerifiedAt: earlier }
+    expect!(scheduleStored(saveBackupScheduleFile(settings, schedule)))
+    let savedFailure = match recordScheduledBackupFailure(schedule, settings, failedAt) {
+        Ok -> true
+        Error(reason) -> {
+            absorb reason
+            false
+        }
+    }
+    expect!(savedFailure)
+    let state = try readBackupScheduleFile(settings) otherwise return
+    expect!(state.lastVerifiedAt == earlier)
+    expect!(state.lastFailureAt == failedAt)
+    expect!(backupDue(state, backupHost(failedAt + 1000)) == BackupDueState.RetryLater)
+    expect!(removed(removeTree(folder)))
+}

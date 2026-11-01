@@ -121,6 +121,22 @@ beside what is there, and the ten newest are kept. The rules are Inlay's
 `FileOperations` (`Backups.kira`), tested on the host. Automatic backups,
 per-document history and migration are not started.
 
+Status (2026-10-31): The host backup path now rejects destinations nested in
+the source, linked roots and unsupported entries instead of claiming a complete
+copy. File-copy/delete operations do not follow symbolic links. Interrupted
+backup cleanup requires a generation-specific in-progress marker, avoiding
+accidental deletion of unrelated folders. New generations store their completion
+marker and a versioned SHA-256 manifest *beside* the saved document tree,
+without overwriting a person's `.complete` file. The manifest records paths,
+including empty folders, and cryptographic file digests. The read-back check
+catches changed or missing objects. Legacy generations remain visible and
+restorable, but without a manifest are not described as verified. Settings
+now offers "Verify Latest Backup" and does not run retention after a failed
+verification. Tests for restore containment, copy fallback on volumes without
+hard links, same-sized edits and backup recovery run on the host. These are
+not a test of hardware-independent recovery, atomic whole-source snapshots,
+encryption or scheduled device backups; the checkpoints below stay open.
+
 ## Checkpoints
 
 - [ ] Schedule backups to a separate volume, disconnect and reconnect it, and
@@ -139,3 +155,61 @@ per-document history and migration are not started.
       documents and verifying that the recovered system and app data are compatible.
 - [ ] Migrate selected work to a different device and compare records, Home
       placement and skipped-item report. The source remains usable and unchanged.
+
+### Automatic backup decision policy (2026-10-31)
+
+`FileOperations.BackupSchedule` now provides a host-testable decision for
+manual, daily and weekly cadence. It keys the interval to the **last
+successfully verified** generation rather than the last attempt, enforces
+retry backoff after failures, and can require adequate free space, idle state
+and external power. This is a pure scheduling decision, not a daemon or a
+verified end-to-end unattended backup: a privileged scheduler still needs to
+provide trustworthy power/disk/activity observations and call the existing
+backup operation, record successful read-back verification, and notify the user.
+
+The scheduler policy's versioned preferences and success/failure transitions
+are host-tested and fail closed on damaged state, implausible timestamps or
+insufficient host resources. A backup is marked successful only after read-back
+verification; a failed attempt retains the previous verified timestamp. The
+final generation also compares its SHA-256 tree manifest to the source tree
+before committing completion. A filesystem-atomic source snapshot and service
+integration are still separate requirements.
+
+### One-shot scheduled execution (2026-10-31)
+
+`FileOperations.runDueBackup` is an opt-in, host-tested one-shot entry point.
+It loads the saved schedule, evaluates power/idle/disk conditions, copies a
+generation only if due, verifies its SHA-256 tree manifest, persists the last
+verified timestamp, and only then applies explicitly configured retention. By default all
+older backup generations are retained (no automatic deletion). Failed copies retain the
+last verified timestamp and record retry backoff. Absent preferences default
+to manual operation; damaged preferences fail closed. This is not a daemon or
+background scheduler. Power, disk, consent and activity signals must be
+provided by a trusted OS service, and complete boot verification is pending.
+
+Backup recovery now checks external generation markers without following
+symbolic links, refuses linked roots and integrity manifests, and distinguishes
+a missing new-format completion marker from a legacy `.complete` file. Backup
+names and restored files reserve dangling symbolic-link entries. These cases
+have host regressions; they do not replace atomic, fd-relative file operations.
+
+Retention now pre-verifies every newer generation it proposes to keep before
+removing any older recovery copy. Corrupted or legacy-only retained candidates
+cannot justify pruning older generations. Automatic backup schedule files
+preserve monotonic verified/failure history and record backoff after copy or
+read-back verification errors. Backup creation also rejects invalid timestamp
+values and case-only path aliases that might place a backup within its source
+on case-insensitive volumes. These safeguards have host regressions and do not
+provide crash-atomic filesystem snapshots or an authenticated backup archive.
+
+A new `FileOperations.versionsOfDocument` read-only API lists verified
+per-path versions across completed generations and permits selecting one for
+the existing staged restore. It omits damaged generations, reports their
+count, and labels legacy generations without SHA-256 manifests as unverified.
+This is filename-based history, not identity-following rename tracking or an
+Inlay history browser. The verifier now reports the first affected saved file
+or folder when an integrity manifest no longer matches; the Settings verifier
+message can name that item. Host tests cover removed current documents,
+corrupt saved files, extra items, missing folders, UTF-8 names, path traversal
+and unverified legacy snapshots. Complete boot/Settings integration remains
+unverified.

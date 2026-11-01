@@ -112,3 +112,216 @@ function aFolderIsNotMovedIntoItself() {
     expect!(pathExists(inner))
     expect!(removed(removeTree(folder)))
 }
+
+@Test
+function replacementNeverDeletesDestinationWhenSourceIsUncopyable() {
+    let folder = freshFolder("safe-replace")
+    let destination = childPath(folder, "into")
+    expect!(made(makeDirectory(destination)))
+    writeText(childPath(destination, "document.txt"), "keep this")
+    // An existing symlink cannot be copied by copyTree. Reject it even if
+    // the destination's replacement was explicitly chosen.
+    expect!(made(makeSymbolicLink("missing", childPath(folder, "document.txt"))))
+    var transfer = transferOf(.Copy, [childPath(folder, "document.txt")], destination)
+    let failed = match transfer.step(.Some(.Replace)) {
+        Failed -> true
+        Arrived, Skipped, Collides, Finished -> false
+    }
+    expect!(failed)
+    expect!(textAt(childPath(destination, "document.txt")) == "keep this")
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function transferNoticesDanglingLinkBeforeChoosingCollisionPolicy() {
+    let folder = freshFolder("transfer-dangling")
+    let destination = childPath(folder, "into")
+    expect!(made(makeDirectory(destination)))
+    let source = childPath(folder, "document.txt")
+    let link = childPath(destination, "document.txt")
+    let target = childPath(destination, "elsewhere.txt")
+    writeText(source, "important")
+    expect!(made(makeSymbolicLink("elsewhere.txt", link)))
+    var operation = transferOf(.Copy, [source], destination)
+    let collided = match operation.step(.None) {
+        Collides -> true
+        Arrived, Skipped, Failed, Finished -> false
+    }
+    expect!(collided)
+    expect!(!pathExists(target))
+    expect!(textAt(source) == "important")
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function movingAFileCannotTraverseALinkedSourceOrDestinationParent() {
+    let folder = freshFolder("transfer-linked-parents")
+    let protected = childPath(folder, "Protected")
+    let destination = childPath(folder, "Destination")
+    expect!(made(makeDirectory(protected)))
+    expect!(made(makeDirectory(destination)))
+    writeText(childPath(protected, "important.txt"), "protected")
+    writeText(childPath(destination, "other.txt"), "current")
+    let alias = childPath(folder, "Alias")
+    expect!(made(makeSymbolicLink("Protected", alias)))
+    var sourceMove = transferOf(.Move, [childPath(alias, "important.txt")], destination)
+    let refusedSource = match sourceMove.step(.None) {
+        Failed -> true
+        Arrived, Skipped, Collides, Finished -> false
+    }
+    expect!(refusedSource)
+    var destinationMove = transferOf(.Move, [childPath(destination, "other.txt")], alias)
+    let refusedDestination = match destinationMove.step(.None) {
+        Failed -> true
+        Arrived, Skipped, Collides, Finished -> false
+    }
+    expect!(refusedDestination)
+    expect!(textAt(childPath(protected, "important.txt")) == "protected")
+    expect!(textAt(childPath(destination, "other.txt")) == "current")
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function failedReplacementRestoresOldDestinationAfterPartialCopy() {
+    let folder = freshFolder("replace-rollback")
+    let sourceRoot = childPath(folder, "from")
+    let destination = childPath(folder, "into")
+    expect!(made(makeDirectory(sourceRoot)))
+    expect!(made(makeDirectory(destination)))
+    let source = childPath(sourceRoot, "Project")
+    let old = childPath(destination, "Project")
+    expect!(made(makeDirectory(source)))
+    expect!(made(makeDirectory(old)))
+    writeText(childPath(source, "a.txt"), "new")
+    expect!(made(makeSymbolicLink("absent", childPath(source, "zlink"))))
+    writeText(childPath(old, "important.txt"), "old and valuable")
+    var transfer = transferOf(.Copy, [source], destination)
+    let result = transfer.step(.Some(.Replace))
+    let failed = match result {
+        Failed -> true
+        Arrived, Skipped, Collides, Finished -> false
+    }
+    expect!(failed)
+    expect!(textAt(childPath(old, "important.txt")) == "old and valuable")
+    expect!(!pathExists(childPath(old, "a.txt")))
+    expect!(textAt(childPath(source, "a.txt")) == "new")
+    let entries = try entriesIn(destination) otherwise return
+    expect!(entries.count == 1)
+    expect!(entries[0].name == "Project")
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function successfulReplacementLeavesNoRecoveryItemBehind() {
+    let folder = freshFolder("replace-success")
+    let sourceRoot = childPath(folder, "from")
+    let destination = childPath(folder, "into")
+    expect!(made(makeDirectory(sourceRoot)))
+    expect!(made(makeDirectory(destination)))
+    let source = childPath(sourceRoot, "note.txt")
+    let old = childPath(destination, "note.txt")
+    writeText(source, "new")
+    writeText(old, "old")
+    var transfer = transferOf(.Copy, [source], destination)
+    let done = match transfer.step(.Some(.Replace)) {
+        Arrived -> true
+        Skipped, Collides, Failed, Finished -> false
+    }
+    expect!(done)
+    expect!(textAt(old) == "new")
+    expect!(textAt(source) == "new")
+    let entries = try entriesIn(destination) otherwise return
+    expect!(entries.count == 1)
+    expect!(entries[0].name == "note.txt")
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function replacingByMoveKeepsOnlyTheNewVersionAndRemovesTheSource() {
+    let folder = freshFolder("replace-moving")
+    let sourceRoot = childPath(folder, "from")
+    let destination = childPath(folder, "into")
+    expect!(made(makeDirectory(sourceRoot)))
+    expect!(made(makeDirectory(destination)))
+    let source = childPath(sourceRoot, "letter.txt")
+    let target = childPath(destination, "letter.txt")
+    writeText(source, "replacement")
+    writeText(target, "existing")
+    var transfer = transferOf(.Move, [source], destination)
+    let arrived = match transfer.step(.Some(.Replace)) {
+        Arrived -> true
+        Skipped, Collides, Failed, Finished -> false
+    }
+    expect!(arrived)
+    expect!(!pathExists(source))
+    expect!(textAt(target) == "replacement")
+    let entries = try entriesIn(destination) otherwise return
+    expect!(entries.count == 1)
+    expect!(entries[0].name == "letter.txt")
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function caseOnlyDestinationAliasNeverOffersToReplaceTheSource() {
+    let folder = freshFolder("transfer-case-alias")
+    let sourceFolder = childPath(folder, "Documents")
+    expect!(made(makeDirectory(sourceFolder)))
+    let source = childPath(sourceFolder, "note.txt")
+    writeText(source, "keep original")
+    let alias = childPath(folder, "documents")
+    // This is an actual-case alias only on case-insensitive volumes. A
+    // case-sensitive test host has no such alias and skips the I/O case.
+    if !isDirectory(alias) {
+        expect!(removed(removeTree(folder)))
+        return
+    }
+    var transfer = transferOf(.Copy, [source], alias)
+    let duplicated = match transfer.step(.None) {
+        Arrived -> true
+        Skipped, Collides, Failed, Finished -> false
+    }
+    expect!(duplicated)
+    expect!(textAt(source) == "keep original")
+    expect!(textAt(childPath(sourceFolder, "note 2.txt")) == "keep original")
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function movingIntoTheExistingFolderDoesNotRenameTheOriginal() {
+    let folder = freshFolder("move-to-same-folder")
+    let source = childPath(folder, "note.txt")
+    writeText(source, "preserve original")
+    var move = transferOf(.Move, [source], folder)
+    let skipped = match move.step(.None) {
+        Skipped(path) -> path == source
+        Arrived, Collides, Failed, Finished -> false
+    }
+    expect!(skipped)
+    expect!(textAt(source) == "preserve original")
+    expect!(!pathExists(childPath(folder, "note 2.txt")))
+    let (done, total) = move.progress()
+    expect!(done == 1)
+    expect!(total == 1)
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function caseAliasedMoveIntoSameFolderIsAlsoANoop() {
+    let folder = freshFolder("move-case-alias")
+    let dir = childPath(folder, "Documents")
+    expect!(made(makeDirectory(dir)))
+    let source = childPath(dir, "note.txt")
+    writeText(source, "preserved")
+    let alias = childPath(folder, "documents")
+    if isDirectory(alias) {
+        var move = transferOf(.Move, [source], alias)
+        let skipped = match move.step(.None) {
+            Skipped -> true
+            Arrived, Collides, Failed, Finished -> false
+        }
+        expect!(skipped)
+        expect!(textAt(source) == "preserved")
+        expect!(!pathExists(childPath(dir, "note 2.txt")))
+    }
+    expect!(removed(removeTree(folder)))
+}

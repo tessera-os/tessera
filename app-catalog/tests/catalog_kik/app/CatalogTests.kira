@@ -1,0 +1,224 @@
+import Foundation
+import AppRegistry
+import AppCatalog
+
+let publisherA: String = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+let publisherB: String = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+let digestA: String = "1111111111111111111111111111111111111111111111111111111111111111"
+let digestB: String = "2222222222222222222222222222222222222222222222222222222222222222"
+
+function sample(publisher: borrow String = publisherA, version: Number = 1) -> CatalogListing {
+    return CatalogListing {
+        identity: AppIdentity { identifier: "example.notes", publisher: copy publisher },
+        name: "Notes",
+        description: "Write and organize documents",
+        category: "Productivity",
+        version: version,
+        artifactDigest: version == 1 ? digestA : digestB,
+        supportedPlatforms: ["desktop", "tablet"],
+        minSystemBuild: 26,
+        downloadBytes: 20000000,
+        requests: ["display", "data"]
+    }
+}
+
+function refreshed(
+    cache: borrow mut CatalogCache,
+    entries: borrow [CatalogListing],
+    at: Number = 100
+) -> Bool {
+    return match cache.refresh(entries, at) {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+}
+
+function prepareInstalled(
+    registry: borrow mut ApplicationRegistry,
+    listing: borrow CatalogListing,
+    management: AppManagement = .Catalog
+) {
+    let candidate = AppCandidate {
+        identity: copy listing.identity,
+        name: copy listing.name,
+        version: listing.version,
+        imageDigest: copy listing.artifactDigest,
+        management: management,
+        requests: copy listing.requests
+    }
+    match registry.prepare(candidate) {
+        Ok -> {}
+        Error(failure) -> absorb failure
+    }
+    match registry.activate(candidate.identity, candidate.imageDigest) {
+        Ok -> {}
+        Error(failure) -> absorb failure
+    }
+}
+
+@Test
+function twoIdenticallyNamedPublishersRemainSeparateCatalogListings() {
+    var cache = CatalogCache {}
+    let first = sample()
+    let second = sample(publisherB)
+    expect!(refreshed(cache, [first, second]))
+    let found = cache.browse("notes")
+    expect!(found.listings.count == 2)
+    expect!(cache.listing(first.identity).isSome())
+    expect!(cache.listing(second.identity).isSome())
+    expect!(cache.listing(AppIdentity { identifier: "example.notes", publisher: digestA }).isNone())
+}
+
+@Test
+function offlineBrowsingIsReadableButCannotClaimNewInstallation() {
+    var cache = CatalogCache {}
+    let notes = sample()
+    expect!(refreshed(cache, [notes]))
+    cache.connection = .Offline
+    let seen = cache.browse("doc", "Productivity")
+    expect!(seen.listings.count == 1)
+    expect!(seen.refreshedAt == 100)
+    var installed = ApplicationRegistry {}
+    expect!(cache.action(notes.identity, installed, "desktop", 26) == CatalogAction.Offline)
+    prepareInstalled(installed, notes)
+    expect!(cache.action(notes.identity, installed, "desktop", 26) == CatalogAction.Open)
+}
+
+@Test
+function anUpdateOnlyAppearsForARealAcceptedApp() {
+    var cache = CatalogCache {}
+    let first = sample()
+    let second = sample(publisherA, 2)
+    var registry = ApplicationRegistry {}
+    prepareInstalled(registry, first)
+    expect!(refreshed(cache, [second]))
+    expect!(cache.action(second.identity, registry, "desktop", 26) == CatalogAction.Update)
+    let candidate = AppCandidate {
+        identity: copy second.identity,
+        name: copy second.name,
+        version: second.version,
+        imageDigest: copy second.artifactDigest,
+        management: .Catalog,
+        requests: copy second.requests
+    }
+    match registry.prepare(candidate) { Ok -> {} Error(failure) -> absorb failure }
+    expect!(cache.action(second.identity, registry, "desktop", 26) == CatalogAction.Pending)
+    expect!(registry.accepted(second.identity).isSome())
+    let active = try registry.accepted(second.identity) otherwise return
+    expect!(active.candidate.version == 1)
+    match registry.activate(second.identity, digestB) { Ok -> {} Error(failure) -> absorb failure }
+    expect!(cache.action(second.identity, registry, "desktop", 26) == CatalogAction.Open)
+}
+
+@Test
+function catalogCannotSilentlyTakeOverADirectlyInstalledApp() {
+    var registry = ApplicationRegistry {}
+    let direct = sample()
+    prepareInstalled(registry, direct, .Direct)
+    var cache = CatalogCache {}
+    let updated = sample(publisherA, 2)
+    expect!(refreshed(cache, [updated]))
+    expect!(
+        cache.action(
+            updated.identity,
+            registry,
+            "desktop",
+            26
+        ) == CatalogAction.NeedsOwnershipConsent
+    )
+}
+
+@Test
+function incompatiblePlatformsAndSystemBuildsHaveDistinctStates() {
+    var cache = CatalogCache {}
+    let listing = sample()
+    expect!(refreshed(cache, [listing]))
+    let registry = ApplicationRegistry {}
+    expect!(
+        cache.action(listing.identity, registry, "mobile", 26) == CatalogAction.UnsupportedPlatform
+    )
+    expect!(
+        cache.action(
+            listing.identity,
+            registry,
+            "desktop",
+            25
+        ) == CatalogAction.RequiresSystemUpdate
+    )
+    expect!(cache.action(listing.identity, registry, "desktop", 26) == CatalogAction.Get)
+    expect!(
+        cache.action(
+            AppIdentity { identifier: "missing.app", publisher: publisherA },
+            registry,
+            "desktop",
+            26
+        ) == CatalogAction.Unavailable
+    )
+}
+
+@Test
+function invalidAndDuplicateRefreshesDoNotDestroyAnExistingCache() {
+    var cache = CatalogCache {}
+    let first = sample()
+    expect!(refreshed(cache, [first]))
+    expect!(!refreshed(cache, [first, first], 101))
+    expect!(!refreshed(cache, [first], 50))
+    expect!(cache.refreshedAt == 100)
+    expect!(cache.listings.count == 1)
+    expect!(cache.listing(first.identity).isSome())
+}
+
+@Test
+function cachedUpdatesCannotClaimDownloadAvailabilityWhenOffline() {
+    var cache = CatalogCache {}
+    let latest = sample(publisherA, 2)
+    let current = sample()
+    var registry = ApplicationRegistry {}
+    prepareInstalled(registry, current)
+    expect!(refreshed(cache, [latest]))
+    cache.connection = .Offline
+    expect!(cache.action(latest.identity, registry, "desktop", 26) == CatalogAction.Offline)
+    cache.connection = .Failed
+    expect!(cache.action(latest.identity, registry, "desktop", 26) == CatalogAction.NetworkFailure)
+    cache.connection = .Online
+    expect!(cache.action(latest.identity, registry, "desktop", 26) == CatalogAction.Update)
+    expect!(!refreshed(cache, [current], 100))
+    expect!(cache.listings[0].version == 2)
+}
+
+@Test
+function catalogRejectsOversizedFractionsAndHugeArtifacts() {
+    var cache = CatalogCache {}
+    let old = sample()
+    expect!(refreshed(cache, [old]))
+    expect!(!refreshed(cache, [old], 101.5))
+    let huge = CatalogListing {
+        identity: copy old.identity,
+        name: copy old.name,
+        description: copy old.description,
+        category: copy old.category,
+        version: 2,
+        artifactDigest: digestB,
+        supportedPlatforms: ["desktop"],
+        minSystemBuild: 26,
+        downloadBytes: CatalogLimits.maxDownloadBytes + 1
+    }
+    expect!(!refreshed(cache, [huge], 102))
+    expect!(cache.refreshedAt == 100)
+    expect!(cache.listings.count == 1)
+}
+
+@Test
+function feedCapIsEnforcedBeforeAnyListingCanDisplaceCache() {
+    var cache = CatalogCache {}
+    let old = sample()
+    expect!(refreshed(cache, [old]))
+    var oversized: [CatalogListing] = []
+    for index in 0..CatalogLimits.maxListings + 1 { oversized.append(copy old) }
+    expect!(!refreshed(cache, oversized, 101))
+    expect!(cache.listings.count == 1)
+    expect!(cache.refreshedAt == 100)
+}

@@ -1,0 +1,161 @@
+//! Persist the exact signed feed and its signature, rather than a detached
+//! untrusted rendering of catalog metadata. The pinned certificate is always
+//! supplied by trusted OS configuration, not read out of the cache file.
+import Foundation
+
+public namespace SignedCatalogText {
+    let version: String = "Tessera signed catalog 1"
+    let maxBytes: Number = 8388864
+}
+
+public enum SignedCatalogStoreFailure {
+    Unavailable
+    Damaged
+    Untrusted
+    Stale
+    UnsafePath
+}
+
+/// Offline read rechecks the trusted pin and Ed25519 signature, then returns
+/// a cache in Offline state. Freshness after a full filesystem rollback still
+/// requires an independent monotonic OS checkpoint; the file alone cannot
+/// detect that a previously signed older feed was restored on disk.
+public function readSignedCatalogFile(
+    path: borrow String,
+    signer: borrow CatalogSigner
+) -> Result<CatalogCache, SignedCatalogStoreFailure> {
+    if !safeCatalogStorePath(path) { return .Error(.UnsafePath) }
+    match linkStatus(path) {
+        Ok(status) -> {
+            if status.kind != .File { return .Error(.UnsafePath) }
+            if status.size > SignedCatalogText.maxBytes { return .Error(.Damaged) }
+        }
+        Error(failure) -> match failure {
+            Missing -> return .Ok(CatalogCache {})
+            else -> return .Error(.Unavailable)
+        }
+    }
+    let content = match readFile(path) {
+        Ok(bytes) -> bytes.text
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Unavailable)
+        }
+    }
+    if content.count > SignedCatalogText.maxBytes { return .Error(.Damaged) }
+    let first = SignedCatalogText.version + "\n"
+    if !content.startsWith(first) { return .Error(.Damaged) }
+    let afterVersion = content.substring(first.count, content.count)
+    let split = afterVersion.split("\n")
+    if split.count < 3 || !split[0].startsWith("sig ") { return .Error(.Damaged) }
+    let signature = try parsedCatalogSignature(split[0].substring(4, split[0].count))
+    otherwise return .Error(.Damaged)
+    let feed = afterVersion.substring(split[0].count + 1, afterVersion.count)
+    var cache = CatalogCache {}
+    match refreshSignedCatalog(cache, feed, signature, signer) {
+        Ok -> {
+            cache.connection = .Offline
+            return .Ok(cache)
+        }
+        Error(reason) -> match reason {
+            UntrustedSigner, InvalidSigner -> return .Error(.Untrusted)
+            InvalidSignature, InvalidFeed, StaleFeed -> return .Error(.Damaged)
+        }
+    }
+}
+
+/// The OS may supply its independently retained minimum accepted timestamp.
+/// An old but correctly signed feed cannot roll the cache below that floor.
+/// The value MUST come from rollback-resistant state outside this cache.
+public function readSignedCatalogFileAtLeast(
+    path: borrow String,
+    signer: borrow CatalogSigner,
+    minimumTimestamp: Number
+) -> Result<CatalogCache, SignedCatalogStoreFailure> {
+    if minimumTimestamp < 0 || trunc(minimumTimestamp) != minimumTimestamp {
+        return .Error(.Stale)
+    }
+    let result = try readSignedCatalogFile(path, signer)
+    if result.refreshedAt < minimumTimestamp { return .Error(.Stale) }
+    return .Ok(result)
+}
+
+/// A signed feed is verified *before* a same-directory staged write. The old
+/// cache remains if verification, staleness or a filesystem step fails.
+public function saveSignedCatalogFile(
+    path: borrow String,
+    feed: borrow String,
+    signature: borrow [UN8],
+    signer: borrow CatalogSigner
+) -> Result<Void, SignedCatalogStoreFailure> {
+    var next = CatalogCache {}
+    match refreshSignedCatalog(next, feed, signature, signer) {
+        Ok -> {}
+        Error(reason) -> match reason {
+            UntrustedSigner, InvalidSigner -> return .Error(.Untrusted)
+            InvalidSignature, InvalidFeed, StaleFeed -> return .Error(.Damaged)
+        }
+    }
+    let current = match readSignedCatalogFile(path, signer) {
+        Ok(value) -> value
+        Error(reason) -> return .Error(reason)
+    }
+    if current.refreshedAt >= next.refreshedAt { return .Error(.Stale) }
+    let staged = path + ".next"
+    match linkStatus(staged) {
+        Ok(status) -> if status.kind != .File { return .Error(.UnsafePath) }
+        Error(failure) -> match failure {
+            Missing -> {}
+            else -> return .Error(.Unavailable)
+        }
+    }
+    let text = SignedCatalogText.version + "\n" + "sig " + catalogSignatureHex(signature)
+        + "\n" + feed
+    if text.count > SignedCatalogText.maxBytes { return .Error(.Damaged) }
+    match writeFile(staged, text) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Unavailable)
+        }
+    }
+    match renamePath(staged, path) {
+        Ok -> return .Ok
+        Error(failure) -> {
+            absorb failure
+            match removePath(staged) {
+                Ok -> {}
+                Error(cleanup) -> absorb cleanup
+            }
+            return .Error(.Unavailable)
+        }
+    }
+}
+
+function catalogSignatureHex(signature: borrow [UN8]) -> String {
+    let digits = "0123456789abcdef"
+    var encoded = ""
+    for byte in signature {
+        let hi = trunc(Number(byte) / 16)
+        let lo = Number(byte) % 16
+        encoded += digits.substring(hi, hi + 1) + digits.substring(lo, lo + 1)
+    }
+    return encoded
+}
+
+function parsedCatalogSignature(hex: borrow String) -> [UN8]? {
+    if hex.count != 128 { return .None }
+    var result: [UN8] = []
+    for index in 0..64 {
+        let high = try catalogHexNibble(Number(hex.charAt(index * 2))) otherwise return .None
+        let low = try catalogHexNibble(Number(hex.charAt(index * 2 + 1))) otherwise return .None
+        result.append(UN8(high * 16 + low))
+    }
+    return .Some(result)
+}
+
+function catalogHexNibble(code: Number) -> Number? {
+    if code >= 48 && code <= 57 { return .Some(code - 48) }
+    if code >= 97 && code <= 102 { return .Some(code - 97 + 10) }
+    return .None
+}

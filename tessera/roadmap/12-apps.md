@@ -363,3 +363,17 @@ and a pid namespace are not done.
       MosaicDisplay logs `a display client disconnected or sent an invalid
       frame` for surface 2 and `an application surface went`, keeps the
       scanout, and the platform and the machine run on.
+
+## Installer integrity follow-up (2026-10-31)
+
+PID 1's existing Ed25519 consent check still verifies disk images prior to
+installation. Its installed-image path now refuses a launch when no SHA-256
+record exists, rather than launching unchecked legacy bytes. New installs
+refuse to overwrite an existing display-name image; replacing an app by name
+is not a safe update transaction or proof of publisher identity. A failed
+integrity-record write no longer reports the new image as successfully
+installed, and subsequent launch is refused. Existing installations that
+predate digest records require reinstalling through the trusted installer.
+The necessary versioned image slots, atomic image/metadata activation,
+registry adoption, safe migration and boot tests remain unresolved; these
+source changes are not an end-to-end verified installer.

@@ -1,0 +1,108 @@
+//! Recent documents are references, not access grants. Call `noteOpened` only
+//! after the trusted launcher confirms a successful document open. Missing
+//! files and disconnected volumes remain in the list until removed by choice.
+import Foundation
+
+public struct RecentDocument {
+    let path: String
+    let openedAt: Number
+}
+
+public enum RecentAvailability {
+    Available
+    Unavailable
+    UnsafePath
+}
+
+public struct RecentEntry {
+    let document: RecentDocument
+    let availability: RecentAvailability
+}
+
+public struct RecentDocuments {
+    var items: [RecentDocument] = []
+}
+
+public enum RecentFailure {
+    InvalidPath
+    InvalidTimestamp
+}
+
+public namespace RecentLimits {
+    let maxEntries: Number = 50
+    let maxPathBytes: Number = 4096
+}
+
+extend RecentDocuments {
+    /// The most recent successful open is first; reopening an entry moves it
+    /// to the front without duplicating it. Stale open events cannot rewind
+    /// the timestamp of that entry.
+    function noteOpened(
+        borrow mut self,
+        path: borrow String,
+        at: Number
+    ) -> Result<Void, RecentFailure> {
+        if !validRecentPath(path) { return .Error(.InvalidPath) }
+        if at <= 0 || at > 9007199254740991 || trunc(at) != at
+            || (items.count > 0 && at < items[0].openedAt) {
+            return .Error(.InvalidTimestamp)
+        }
+        var kept: [RecentDocument] = []
+        for document in items {
+            if document.path == path {
+                if document.openedAt > at { return .Error(.InvalidTimestamp) }
+                continue
+            }
+            kept.append(copy document)
+        }
+        var updated: [RecentDocument] = [RecentDocument { path: copy path, openedAt: at }]
+        for document in kept {
+            if updated.count >= RecentLimits.maxEntries { break }
+            updated.append(copy document)
+        }
+        items = move updated
+        return .Ok
+    }
+
+    function forget(borrow mut self, path: borrow String) {
+        var retained: [RecentDocument] = []
+        for document in items {
+            if document.path != path { retained.append(copy document) }
+        }
+        items = move retained
+    }
+
+    /// Availability is a hint for Inlay's UI, not permission to access the
+    /// file. A document picker must regrant access before reopening it.
+    function inspected(borrow self) -> [RecentEntry] {
+        var inspected: [RecentEntry] = []
+        for document in items {
+            inspected.append(
+                RecentEntry {
+                    document: copy document,
+                    availability: recentAvailability(document.path)
+                }
+            )
+        }
+        return inspected
+    }
+}
+
+public function validRecentPath(path: borrow String) -> Bool {
+    return path.startsWith("/") && path.count <= RecentLimits.maxPathBytes
+        && !unsafeBackupPath(path) && !path.contains("\0")
+}
+
+function recentAvailability(path: borrow String) -> RecentAvailability {
+    if !validRecentPath(path) || hasLinkedPathAncestor(path) { return .UnsafePath }
+    match linkStatus(path) {
+        Ok(status) -> match status.kind {
+            File, Directory -> return .Available
+            Link, Other -> return .UnsafePath
+        }
+        Error(failure) -> {
+            absorb failure
+            return .Unavailable
+        }
+    }
+}

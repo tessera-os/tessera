@@ -85,7 +85,11 @@ function sortedByName(entries: borrow [Entry]) -> [Entry] {
     for entry in entries {
         var at = sorted.count
         for (index, placed) in sorted.enumerated() {
-            if compare(entry.name.lowercased(), placed.name.lowercased()) == .Less {
+            let folded = compare(entry.name.lowercased(), placed.name.lowercased())
+            // Two distinct names can have the same case-folded spelling on
+            // case-sensitive filesystems. Tie-break on exact bytes so backup
+            // manifests are reproducible regardless of readdir ordering.
+            if folded == .Less || (folded == .Equal && compare(entry.name, placed.name) == .Less) {
                 at = index
                 break
             }
@@ -132,15 +136,30 @@ public function parentPath(path: borrow String) -> String {
 /// A name for `name` in `folder` that nothing there has yet: `name` itself, or
 /// with ` 2`, ` 3` and on before its extension, as a Mac numbers copies.
 public function freeName(folder: borrow String, name: borrow String) -> String {
-    if !pathExists(childPath(folder, name)) { return copy name }
+    if !occupiedName(childPath(folder, name)) { return copy name }
     let (stem, extension) = nameParts(name)
     var number: Number = 2
     while true {
         let candidate = "\(stem) \(number)\(extension)"
-        if !pathExists(childPath(folder, candidate)) { return candidate }
+        if !occupiedName(childPath(folder, candidate)) { return candidate }
         number += 1
     }
     return copy name
+}
+
+// A dangling symbolic link still occupies a name. On metadata errors, stay
+// conservative rather than risk overwriting a person's existing entry.
+function occupiedName(path: borrow String) -> Bool {
+    return match linkStatus(path) {
+        Ok(status) -> {
+            absorb status
+            true
+        }
+        Error(failure) -> match failure {
+            Missing -> false
+            else -> true
+        }
+    }
 }
 
 /// `name` split before its extension: `notes.txt` is `notes` and `.txt`. A

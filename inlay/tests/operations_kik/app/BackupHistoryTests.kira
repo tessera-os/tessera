@@ -1,0 +1,113 @@
+import Foundation
+import FileOperations
+
+@Test
+function perDocumentHistoryFindsEarlierVersionsAfterCurrentDeletion() {
+    let folder = freshFolder("document-history")
+    let source = childPath(folder, "Documents")
+    let backupRoot = childPath(folder, "Backups")
+    let notes = childPath(source, "Notes")
+    expect!(made(makeDirectory(source)))
+    expect!(made(makeDirectory(notes)))
+    writeText(childPath(notes, "letter.txt"), "first version")
+    let first = try backUp(source, backupRoot, 1000) otherwise return
+    writeText(childPath(notes, "letter.txt"), "second version")
+    let second = try backUp(source, backupRoot, 2000) otherwise return
+    expect!(made(removePath(childPath(notes, "letter.txt"))))
+    let newest = try backUp(source, backupRoot, 3000) otherwise return
+    let history = try versionsOfDocument(backupRoot, "Notes/letter.txt") otherwise return
+    expect!(history.versions.count == 2)
+    expect!(history.damaged == 0)
+    expect!(history.legacy == 0)
+    expect!(history.versions[0].snapshot.name == second.snapshot.name)
+    expect!(history.versions[1].snapshot.name == first.snapshot.name)
+    expect!(history.versions[0].verified)
+    expect!(history.versions[1].verified)
+    expect!(history.versions[0].kind == EntryKind.File)
+    expect!(newest.snapshot.name != history.versions[0].snapshot.name)
+    let restored = try restoreItem(
+        history.versions[1].snapshot,
+        history.versions[1].path,
+        notes
+    ) otherwise return
+    expect!(textAt(restored) == "first version")
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function damagedNewestGenerationIsReportedButNotSelectableHistory() {
+    let folder = freshFolder("history-damaged")
+    let source = childPath(folder, "Documents")
+    let backups = childPath(folder, "Backups")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "note.txt"), "good first")
+    let first = try backUp(source, backups, 1000) otherwise return
+    writeText(childPath(source, "note.txt"), "good second")
+    let damaged = try backUp(source, backups, 2000) otherwise return
+    writeText(childPath(damaged.snapshot.path, "note.txt"), "tampered")
+    let history = try versionsOfDocument(backups, "note.txt") otherwise return
+    expect!(history.damaged == 1)
+    expect!(history.versions.count == 1)
+    expect!(history.versions[0].verified)
+    expect!(history.versions[0].snapshot.name == first.snapshot.name)
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function historyClearlyLabelsUnverifiableLegacyVersions() {
+    let folder = freshFolder("history-legacy")
+    let backupRoot = childPath(folder, "Backups")
+    expect!(made(makeDirectory(backupRoot)))
+    let legacy = childPath(backupRoot, "20000101-000000")
+    expect!(made(makeDirectory(legacy)))
+    writeText(childPath(legacy, ".complete"), "20000101-000000")
+    writeText(childPath(legacy, "note.txt"), "old")
+    let history = try versionsOfDocument(backupRoot, "note.txt") otherwise return
+    expect!(history.versions.count == 1)
+    expect!(history.legacy == 1)
+    expect!(!history.versions[0].verified)
+    expect!(textAt(history.versions[0].path) == "old")
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function historyRejectsTraversalAndLimitsItsResults() {
+    let folder = freshFolder("history-invalid")
+    let source = childPath(folder, "Documents")
+    let backups = childPath(folder, "Backups")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "note.txt"), "one")
+    let first = try backUp(source, backups, 1000) otherwise return
+    writeText(childPath(source, "note.txt"), "two")
+    let second = try backUp(source, backups, 2000) otherwise return
+    for invalid in ["../private", "/note.txt", "notes//letter", "notes/./letter"] {
+        let denied = match versionsOfDocument(backups, invalid) {
+            Ok -> false
+            Error(failure) -> {
+                absorb failure
+                true
+            }
+        }
+        expect!(denied)
+    }
+    let limited = try versionsOfDocument(backups, "note.txt", 1) otherwise return
+    expect!(limited.versions.count == 1)
+    expect!(limited.versions[0].snapshot.name == second.snapshot.name)
+    expect!(first.snapshot.name != second.snapshot.name)
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function legacyHistoryNeverFollowsSymlinksInsideItsGeneration() {
+    let folder = freshFolder("history-legacy-symlink")
+    let root = childPath(folder, "Backups")
+    expect!(made(makeDirectory(root)))
+    let legacy = childPath(root, "20000101-000000")
+    expect!(made(makeDirectory(legacy)))
+    writeText(childPath(legacy, ".complete"), "20000101-000000")
+    expect!(made(makeSymbolicLink("../private", childPath(legacy, "Alias"))))
+    let versions = try versionsOfDocument(root, "Alias/secret.txt") otherwise return
+    expect!(versions.versions.count == 0)
+    expect!(versions.legacy == 1)
+    expect!(removed(removeTree(folder)))
+}

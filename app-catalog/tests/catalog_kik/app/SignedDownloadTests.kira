@@ -1,0 +1,223 @@
+//! Public test signer and signature; no private signing key is included.
+import Foundation
+import AppRegistry
+import AppCatalog
+
+function downloadTestCertificate() -> [UN8] {
+    return [
+        48, 130, 1, 59, 48, 129, 238, 160, 3, 2, 1, 2, 2, 20, 0, 245,
+        182, 112, 175, 81, 28, 177, 67, 148, 218, 122, 176, 217, 113, 168, 138, 11,
+        219, 253, 48, 5, 6, 3, 43, 101, 112, 48, 36, 49, 34, 48, 32, 6,
+        3, 85, 4, 3, 12, 25, 84, 101, 115, 115, 101, 114, 97, 32, 65, 112,
+        112, 32, 86, 101, 114, 105, 102, 105, 101, 114, 32, 84, 101, 115, 116, 48,
+        30, 23, 13, 50, 54, 49, 48, 51, 49, 50, 48, 52, 56, 50, 57, 90,
+        23, 13, 51, 54, 49, 48, 50, 56, 50, 48, 52, 56, 50, 57, 90, 48,
+        36, 49, 34, 48, 32, 6, 3, 85, 4, 3, 12, 25, 84, 101, 115, 115,
+        101, 114, 97, 32, 65, 112, 112, 32, 86, 101, 114, 105, 102, 105, 101, 114,
+        32, 84, 101, 115, 116, 48, 42, 48, 5, 6, 3, 43, 101, 112, 3, 33,
+        0, 203, 73, 161, 114, 240, 231, 108, 190, 109, 211, 66, 21, 100, 49, 8,
+        66, 109, 75, 20, 98, 239, 170, 208, 115, 148, 99, 8, 96, 150, 183, 49,
+        2, 163, 50, 48, 48, 48, 29, 6, 3, 85, 29, 14, 4, 22, 4, 20,
+        55, 17, 246, 219, 113, 71, 26, 61, 13, 190, 177, 238, 183, 52, 223, 20,
+        98, 134, 143, 221, 48, 15, 6, 3, 85, 29, 19, 1, 1, 255, 4, 5,
+        48, 3, 1, 1, 255, 48, 5, 6, 3, 43, 101, 112, 3, 65, 0, 248,
+        150, 163, 248, 220, 9, 115, 129, 222, 164, 12, 88, 7, 201, 162, 203, 192,
+        191, 47, 239, 124, 116, 119, 176, 49, 232, 8, 120, 62, 188, 24, 204, 224,
+        37, 106, 23, 26, 180, 149, 154, 89, 198, 159, 189, 251, 163, 246, 246, 19,
+        117, 62, 157, 9, 109, 76, 71, 14, 120, 208, 147, 122, 9, 233, 11,
+    ]
+}
+
+function downloadTestSignature() -> [UN8] {
+    return [
+        188, 249, 114, 98, 132, 46, 85, 136, 62, 146, 11, 103, 75, 113, 148, 43,
+        44, 239, 171, 44, 193, 102, 226, 4, 158, 43, 233, 31, 64, 20, 162, 225,
+        196, 241, 102, 62, 151, 176, 106, 28, 36, 195, 225, 74, 103, 79, 205, 183,
+        239, 18, 194, 103, 202, 71, 201, 238, 213, 188, 53, 177, 40, 209, 69, 14,
+    ]
+}
+
+function downloadTestPin() -> [UN8] {
+    return [
+        108, 254, 25, 166, 50, 199, 89, 171, 26, 183, 183, 93, 246, 55, 87, 250,
+        117, 192, 75, 183, 156, 108, 14, 229, 31, 216, 196, 240, 8, 116, 247, 215,
+    ]
+}
+
+function signedDownloadTestListing() -> CatalogListing {
+    return CatalogListing {
+        identity: AppIdentity {
+            identifier: "example.notes",
+            publisher: "6cfe19a632c759ab1ab7b75df63757fa75c04bb79c6c0ee51fd8c4f00874f7d7"
+        },
+        name: "Notes",
+        description: "Signed test application",
+        category: "Productivity",
+        version: 1,
+        artifactDigest: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        supportedPlatforms: ["desktop"],
+        minSystemBuild: 26,
+        downloadBytes: 3,
+        requests: ["display", "data"]
+    }
+}
+
+function signedDownloadManifest() -> ApplicationManifest {
+    return ApplicationManifest {
+        identifier: "example.notes",
+        name: "Notes",
+        version: 1,
+        executable: "bin",
+        requests: ["display", "data"]
+    }
+}
+
+function signedDownloadSigner() -> AppImageSigner {
+    return AppImageSigner {
+        certificate: downloadTestCertificate(),
+        trustedCertificateSha256: downloadTestPin()
+    }
+}
+
+@Test
+function queueVerifiesSignedBytesBeforeStagingCatalogInstallation() {
+    let path = ".tessera-catalog-signed-download"
+    match writeFile(path, "abc") {
+        Ok -> {}
+        Error(reason) -> {
+            absorb reason
+            return
+        }
+    }
+    let listing = signedDownloadTestListing()
+    var cache = CatalogCache {}
+    expect!(refreshed(cache, [listing]))
+    var registry = ApplicationRegistry {}
+    var queue = InstallQueue {}
+    expect!(jobSucceeded(queue.request(listing, cache, registry, "desktop", 26)))
+    expect!(jobSucceeded(queue.startDownload(listing.identity)))
+    expect!(jobSucceeded(queue.updateProgress(listing.identity, 3)))
+    expect!(jobSucceeded(queue.finishDownload(listing.identity)))
+    expect!(
+        jobSucceeded(
+            queue.verifyDownloadedImage(
+                listing.identity,
+                path,
+                signedDownloadManifest(),
+                signedDownloadSigner(),
+                downloadTestSignature()
+            )
+        )
+    )
+    expect!(registry.installed.count == 0)
+    expect!(jobSucceeded(queue.stageInstall(listing.identity, registry)))
+    expect!(registry.pending.count == 1)
+    expect!(jobSucceeded(queue.finishInstall(listing.identity, registry)))
+    expect!(registry.installed.count == 1)
+    expect!(
+        (
+            try registry.accepted(listing.identity) otherwise return
+        ).candidate.imageDigest == listing.artifactDigest
+    )
+    match removePath(path) { Ok -> {} Error(reason) -> absorb reason }
+}
+
+@Test
+function invalidSignedBytesRemainUnverifiedAndUninstalled() {
+    let path = ".tessera-catalog-tampered-download"
+    match writeFile(path, "abd") {
+        Ok -> {}
+        Error(reason) -> {
+            absorb reason
+            return
+        }
+    }
+    let listing = signedDownloadTestListing()
+    var cache = CatalogCache {}
+    expect!(refreshed(cache, [listing]))
+    var registry = ApplicationRegistry {}
+    var queue = InstallQueue {}
+    expect!(jobSucceeded(queue.request(listing, cache, registry, "desktop", 26)))
+    expect!(jobSucceeded(queue.startDownload(listing.identity)))
+    expect!(jobSucceeded(queue.updateProgress(listing.identity, 3)))
+    expect!(jobSucceeded(queue.finishDownload(listing.identity)))
+    expect!(
+        !jobSucceeded(
+            queue.verifyDownloadedImage(
+                listing.identity,
+                path,
+                signedDownloadManifest(),
+                signedDownloadSigner(),
+                downloadTestSignature()
+            )
+        )
+    )
+    expect!(queue.jobs[0].phase == InstallPhase.Verifying)
+    expect!(registry.installed.count == 0)
+    expect!(registry.pending.count == 0)
+    match removePath(path) { Ok -> {} Error(reason) -> absorb reason }
+}
+
+@Test
+function changedImageAfterStagingCannotActivateTheQueuedVersion() {
+    let path = ".tessera-catalog-activation-tamper"
+    match writeFile(path, "abc") {
+        Ok -> {}
+        Error(reason) -> {
+            absorb reason
+            return
+        }
+    }
+    let listing = signedDownloadTestListing()
+    var cache = CatalogCache {}
+    expect!(refreshed(cache, [listing]))
+    var registry = ApplicationRegistry {}
+    var queue = InstallQueue {}
+    expect!(jobSucceeded(queue.request(listing, cache, registry, "desktop", 26)))
+    expect!(jobSucceeded(queue.startDownload(listing.identity)))
+    expect!(jobSucceeded(queue.updateProgress(listing.identity, 3)))
+    expect!(jobSucceeded(queue.finishDownload(listing.identity)))
+    expect!(
+        jobSucceeded(
+            queue.verifyDownloadedImage(
+                listing.identity,
+                path,
+                signedDownloadManifest(),
+                signedDownloadSigner(),
+                downloadTestSignature()
+            )
+        )
+    )
+    expect!(jobSucceeded(queue.stageInstall(listing.identity, registry)))
+    expect!(registry.pending.count == 1)
+    match writeFile(path, "abd") { Ok -> {} Error(reason) -> absorb reason }
+    expect!(
+        !jobSucceeded(
+            queue.finishVerifiedInstall(
+                listing.identity,
+                path,
+                signedDownloadManifest(),
+                signedDownloadSigner(),
+                downloadTestSignature(),
+                registry
+            )
+        )
+    )
+    expect!(registry.installed.count == 0)
+    expect!(registry.pending.count == 1)
+    match writeFile(path, "abc") { Ok -> {} Error(reason) -> absorb reason }
+    expect!(
+        jobSucceeded(
+            queue.finishVerifiedInstall(
+                listing.identity,
+                path,
+                signedDownloadManifest(),
+                signedDownloadSigner(),
+                downloadTestSignature(),
+                registry
+            )
+        )
+    )
+    expect!(registry.installed.count == 1)
+    match removePath(path) { Ok -> {} Error(reason) -> absorb reason }
+}

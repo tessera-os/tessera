@@ -1,0 +1,121 @@
+import Foundation
+import AppRegistry
+import AppCatalog
+
+@Test
+function interruptedVerifiedJobCannotBecomeReadyFromSavedJournal() {
+    let listing = sample()
+    var cache = CatalogCache {}
+    expect!(refreshed(cache, [listing]))
+    var registry = ApplicationRegistry {}
+    var queue = InstallQueue {}
+    expect!(jobSucceeded(queue.request(listing, cache, registry, "desktop", 26)))
+    expect!(jobSucceeded(queue.startDownload(listing.identity)))
+    expect!(jobSucceeded(queue.updateProgress(listing.identity, listing.downloadBytes)))
+    expect!(jobSucceeded(queue.finishDownload(listing.identity)))
+    expect!(jobSucceeded(queue.verifiedImage(listing.identity, fromListing(listing))))
+    expect!(queue.jobs[0].phase == InstallPhase.Verified)
+    let recovered = try parsedInstallJournal(
+        installJournalText(queue),
+        cache,
+        registry
+    ) otherwise return
+    expect!(recovered.jobs.count == 1)
+    expect!(recovered.jobs[0].phase == InstallPhase.Failed)
+    expect!(recovered.jobs[0].verified.isNone())
+    expect!(registry.installed.count == 0)
+    expect!(recovered.jobs[0].received == listing.downloadBytes)
+}
+
+@Test
+function journalReadyStateRequiresRealAcceptedRegistry() {
+    let listing = sample()
+    var cache = CatalogCache {}
+    expect!(refreshed(cache, [listing]))
+    var queue = InstallQueue { jobs: [InstallJob { listing: listing, phase: .Ready }] }
+    let unaccepted = try parsedInstallJournal(
+        installJournalText(queue),
+        cache,
+        ApplicationRegistry {}
+    ) otherwise return
+    expect!(unaccepted.jobs[0].phase == InstallPhase.Failed)
+    var accepted = ApplicationRegistry {}
+    prepareInstalled(accepted, listing)
+    let installed = try parsedInstallJournal(
+        installJournalText(queue),
+        cache,
+        accepted
+    ) otherwise return
+    expect!(installed.jobs[0].phase == InstallPhase.Ready)
+}
+
+@Test
+function savedProgressAndFailuresRecoverWithoutAnyVerifierToken() {
+    let listing = sample()
+    var cache = CatalogCache {}
+    expect!(refreshed(cache, [listing]))
+    let queue = InstallQueue {
+        jobs: [InstallJob {
+            listing: listing,
+            phase: .Failed,
+            received: 1200,
+            reason: .Some(.NetworkLost)
+        }]
+    }
+    let loaded = try parsedInstallJournal(
+        installJournalText(queue),
+        cache,
+        ApplicationRegistry {}
+    ) otherwise return
+    expect!(loaded.jobs[0].phase == InstallPhase.Failed)
+    expect!(loaded.jobs[0].reason.isSome())
+    expect!(loaded.jobs[0].verified.isNone())
+    expect!(loaded.jobs[0].received == 1200)
+}
+
+@Test
+function corruptOrWithdrawnInstallJournalCannotInventJobs() {
+    let listing = sample()
+    var cache = CatalogCache {}
+    expect!(refreshed(cache, [listing]))
+    let queue = InstallQueue { jobs: [InstallJob { listing: listing, phase: .Installing }] }
+    let bytes = installJournalText(queue)
+    expect!(
+        parsedInstallJournal(
+            bytes.substring(0, bytes.count - 1),
+            cache,
+            ApplicationRegistry {}
+        ).isNone()
+    )
+    expect!(parsedInstallJournal(bytes + "J\tmissing\n", cache, ApplicationRegistry {}).isNone())
+    let missing = CatalogCache {}
+    expect!(parsedInstallJournal(bytes, missing, ApplicationRegistry {}).isNone())
+}
+
+@Test
+function journalRejectsUncanonicalProgressAndMissingFailureReasons() {
+    let listing = sample()
+    var cache = CatalogCache {}
+    expect!(refreshed(cache, [listing]))
+    let noReason = InstallQueue {
+        jobs: [InstallJob { listing: listing, phase: .Failed, received: 100 }]
+    }
+    expect!(
+        parsedInstallJournal(installJournalText(noReason), cache, ApplicationRegistry {}).isNone()
+    )
+    let proper = InstallQueue {
+        jobs: [InstallJob {
+            listing: listing,
+            phase: .Failed,
+            received: 1200,
+            reason: .Some(.NetworkLost)
+        }]
+    }
+    let encoded = installJournalText(proper)
+    expect!(parsedInstallJournal(encoded, cache, ApplicationRegistry {}).isSome())
+    let earlier = encoded.before("\t1200\t")
+    let after = encoded.substring(earlier.count + 6, encoded.count)
+    let noncanonical = earlier + "\t01200\t" + after
+    expect!(parsedInstallJournal(noncanonical, cache, ApplicationRegistry {}).isNone())
+    expect!(InstallJournalText.maxJobs == 4096)
+}

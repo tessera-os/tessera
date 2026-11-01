@@ -1,0 +1,140 @@
+//! Strict on-disk Open With preferences. Each extension is bound to a stable
+//! publisher fingerprint plus app identifier; a saved preference never
+//! installs, launches or grants file access to that application.
+import Foundation
+
+public namespace AssociationText {
+    let version: String = "Tessera document associations 1"
+    let maxBytes: Number = 32768
+}
+
+public enum AssociationStoreFailure {
+    Unavailable
+    Damaged
+    UnsafePath
+}
+
+public function encodedAssociations(defaults: borrow DocumentAssociations) -> String {
+    var rows: [String] = [AssociationText.version]
+    for item in defaults.defaults {
+        rows.append(
+            "X\t" + item.extension + "\t" + item.application.identifier + "\t" + item.application.publisher
+        )
+    }
+    return joined(rows, "\n") + "\n"
+}
+
+public function decodedAssociations(text: borrow String) -> DocumentAssociations? {
+    if text.count > AssociationText.maxBytes { return .None }
+    let rows = text.split("\n")
+    if rows.count < 2 || rows.count > AssociationLimits.maxDefaults + 2
+        || rows[0] != AssociationText.version || rows[rows.count - 1] != "" {
+        return .None
+    }
+    var defaults = DocumentAssociations {}
+    for index in 1..rows.count - 1 {
+        let parts = rows[index].split("\t")
+        if parts.count != 4 || parts[0] != "X" || !validDocumentExtension(parts[1]) {
+            return .None
+        }
+        let identity = AppIdentity { identifier: copy parts[2], publisher: copy parts[3] }
+        if !validAppIdentity(identity) { return .None }
+        for item in defaults.defaults {
+            if item.extension == parts[1] { return .None }
+        }
+        defaults.defaults.append(
+            DocumentAssociation { extension: copy parts[1], application: identity }
+        )
+    }
+    if encodedAssociations(defaults) != text { return .None }
+    return .Some(defaults)
+}
+
+public function readAssociationFile(
+    path: borrow String
+) -> Result<DocumentAssociations, AssociationStoreFailure> {
+    if unsafeAssociationStorePath(path) { return .Error(.UnsafePath) }
+    match linkStatus(path) {
+        Ok(status) -> {
+            if status.kind != .File { return .Error(.UnsafePath) }
+            if status.size > AssociationText.maxBytes { return .Error(.Damaged) }
+        }
+        Error(failure) -> match failure {
+            Missing -> return .Ok(DocumentAssociations {})
+            else -> return .Error(.Unavailable)
+        }
+    }
+    let text = match readFile(path) {
+        Ok(contents) -> contents.text
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Unavailable)
+        }
+    }
+    return match decodedAssociations(text) {
+        Some(defaults) -> .Ok(defaults)
+        None -> .Error(.Damaged)
+    }
+}
+
+// An association file is user metadata, not a requested filesystem path.
+// Refuse traversal components and linked parents rather than writing through
+// a symbolic-link alias into another directory.
+function unsafeAssociationStorePath(path: borrow String) -> Bool {
+    if path.count == 0 || path == "/" { return true }
+    let parts = path.split("/")
+    for (index, part) in parts.enumerated() {
+        if (part.count == 0 && index != 0) || part == "." || part == ".." { return true }
+    }
+    for index in 1..path.count {
+        if Number(path.charAt(index)) != 47 { continue }
+        let prefix = path.substring(0, index)
+        let kind = match linkStatus(prefix) {
+            Ok(value) -> value.kind
+            Error(failure) -> {
+                absorb failure
+                return true
+            }
+        }
+        if kind == .Link { return true }
+    }
+    return false
+}
+
+public function saveAssociationFile(
+    path: borrow String,
+    defaults: borrow DocumentAssociations
+) -> Result<Void, AssociationStoreFailure> {
+    let text = encodedAssociations(defaults)
+    if decodedAssociations(text).isNone() { return .Error(.Damaged) }
+    match readAssociationFile(path) {
+        Ok(previous) -> absorb previous
+        Error(failure) -> return .Error(failure)
+    }
+    let staging = path + ".next"
+    match linkStatus(staging) {
+        Ok(status) -> if status.kind != .File { return .Error(.UnsafePath) }
+        Error(failure) -> match failure {
+            Missing -> {}
+            else -> return .Error(.Unavailable)
+        }
+    }
+    match writeFile(staging, text) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Unavailable)
+        }
+    }
+    match renamePath(staging, path) {
+        Ok -> return .Ok
+        Error(failure) -> {
+            absorb failure
+            match removePath(staging) {
+                Ok -> {}
+                Error(cleanup) -> absorb cleanup
+            }
+            return .Error(.Unavailable)
+        }
+    }
+}

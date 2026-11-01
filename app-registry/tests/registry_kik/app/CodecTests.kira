@@ -1,0 +1,184 @@
+import Foundation
+import AppRegistry
+
+@Test
+function registryRoundTripsAcceptedPendingGrantsAndIdentity() {
+    var registry = ApplicationRegistry {}
+    let first = candidate(pubA, 1, digestA)
+    let second = candidate(pubB, 1, digestB)
+    expect!(registrationSucceeded(registry.prepare(first)))
+    expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
+    expect!(registrationSucceeded(registry.setGrant(first.identity, "data", true)))
+    expect!(registrationSucceeded(registry.prepare(second)))
+    registry.retainedData.append(AppIdentity { identifier: "example.tasks", publisher: pubA })
+    let saved = registryText(registry)
+    let decoded = try parsedRegistry(saved) otherwise return
+    expect!(registryText(decoded) == saved)
+    expect!(decoded.installed.count == 1)
+    expect!(decoded.pending.count == 1)
+    expect!(decoded.retainedData.count == 1)
+    let accepted = try decoded.accepted(first.identity) otherwise return
+    expect!(accepted.grants == ["data"])
+    expect!(decoded.accepted(second.identity).isNone())
+    expect!(decoded.staged(second.identity).isSome())
+}
+
+@Test
+function registryRejectsTruncationForgedGrantsAndUnknownVersions() {
+    var registry = ApplicationRegistry {}
+    let app = candidate(pubA, 1, digestA)
+    expect!(registrationSucceeded(registry.prepare(app)))
+    expect!(registrationSucceeded(registry.activate(app.identity, digestA)))
+    let saved = registryText(registry)
+    expect!(parsedRegistry(saved).isSome())
+    expect!(parsedRegistry(saved.substring(0, saved.count - 1)).isNone())
+    expect!(parsedRegistry("Tessera application registry 3\n").isNone())
+    expect!(parsedRegistry(saved + "D\tbad/id\t" + pubA + "\n").isNone())
+    let forged = saved.before("\t\t\n") + "\t\tnetwork\n"
+    expect!(parsedRegistry(forged).isNone())
+}
+
+@Test
+function registryEscapesDelimiterAndPercentWithoutLosingUnicode() {
+    var registry = ApplicationRegistry {}
+    let name = AppCandidate {
+        identity: AppIdentity { identifier: "example.notes", publisher: pubA },
+        name: "Café 100% ☀️",
+        version: 1,
+        imageDigest: digestA,
+        management: .Direct,
+        requests: ["data"]
+    }
+    expect!(registrationSucceeded(registry.prepare(name)))
+    let saved = registryText(registry)
+    expect!(saved.contains("Café 100%25 ☀️"))
+    let restored = try parsedRegistry(saved) otherwise return
+    expect!(restored.pending[0].candidate.name == name.name)
+    expect!(registryText(restored) == saved)
+    let malformed = "Tessera application registry 1\nP\t" + name.identity.identifier + "\t" + pubA
+        + "\t1\t" + digestA + "\tdirect\tname%XX\tdata\t\n"
+    expect!(parsedRegistry(malformed).isNone())
+}
+
+@Test
+function duplicateAcceptedOrPendingRecordsAreRejected() {
+    var registry = ApplicationRegistry {}
+    let entry = candidate(pubA, 1, digestA)
+    expect!(registrationSucceeded(registry.prepare(entry)))
+    expect!(registrationSucceeded(registry.activate(entry.identity, digestA)))
+    let saved = registryText(registry)
+    let row = saved.split("\n")[1]
+    expect!(parsedRegistry(saved + row + "\n").isNone())
+    expect!(parsedRegistry("Tessera application registry 1\n" + row + "\n" + row + "\n").isNone())
+}
+
+@Test
+function registryLimitsAreAvailableAndInvalidRowsFailClosed() {
+    let broken = RegistryText.version + "\n" + "X\tbad\n"
+    expect!(parsedRegistry(broken).isNone())
+    expect!(RegistryText.maxBytes == 8388608)
+    expect!(RegistryText.maxEntries == 4096)
+}
+
+@Test
+function rollbackVersionTwoSerializationKeepsThePreviouslyAcceptedImage() {
+    var registry = ApplicationRegistry {}
+    let old = candidate(pubA, 1, digestA)
+    let updated = candidate(pubA, 2, digestB)
+    expect!(registrationSucceeded(registry.prepare(old)))
+    expect!(registrationSucceeded(registry.activate(old.identity, digestA)))
+    expect!(registrationSucceeded(registry.setGrant(old.identity, "data", true)))
+    expect!(registrationSucceeded(registry.prepare(updated)))
+    expect!(registrationSucceeded(registry.activate(updated.identity, digestB)))
+    let text = registryText(registry)
+    expect!(text.startsWith(RegistryText.version + "\n"))
+    expect!(text.contains("B\texample.notes\t" + pubA))
+    let loaded = try parsedRegistry(text) otherwise return
+    expect!(registryText(loaded) == text)
+    expect!((try loaded.previous(old.identity) otherwise return).candidate.version == 1)
+    expect!((try loaded.previous(old.identity) otherwise return).grants == ["data"])
+    expect!(loaded.installed.count == 1)
+}
+
+@Test
+function versionOneAcceptedRegistriesRemainReadableAndUpgradeOnNextWrite() {
+    var registry = ApplicationRegistry {}
+    let item = candidate(pubA, 1, digestA)
+    expect!(registrationSucceeded(registry.prepare(item)))
+    expect!(registrationSucceeded(registry.activate(item.identity, digestA)))
+    let versionTwo = registryText(registry)
+    let prefix = RegistryText.version + "\n"
+    let versionOne = RegistryText.legacyVersion + "\n"
+        + versionTwo.substring(prefix.count, versionTwo.count)
+    let decoded = try parsedRegistry(versionOne) otherwise return
+    expect!(decoded.installed.count == 1)
+    expect!(decoded.previousVersions.count == 0)
+    expect!(registryText(decoded) == versionTwo)
+    expect!(parsedRegistry("Tessera application registry 3\n").isNone())
+}
+
+@Test
+function orphanAndDuplicateRollbackRecordsAreRejected() {
+    var registry = ApplicationRegistry {}
+    let previous = candidate(pubA, 1, digestA)
+    let current = candidate(pubA, 2, digestB)
+    expect!(registrationSucceeded(registry.prepare(previous)))
+    expect!(registrationSucceeded(registry.activate(previous.identity, digestA)))
+    expect!(registrationSucceeded(registry.prepare(current)))
+    expect!(registrationSucceeded(registry.activate(current.identity, digestB)))
+    let text = registryText(registry)
+    let rows = text.split("\n")
+    let rollbackRow = rows[2]
+    expect!(rollbackRow.startsWith("B\t"))
+    expect!(parsedRegistry(text + rollbackRow + "\n").isNone())
+    expect!(parsedRegistry(RegistryText.version + "\n" + rollbackRow + "\n").isNone())
+    var fields = rollbackRow.split("\t")
+    fields[3] = "3"
+    let invalid = RegistryText.version + "\n" + rows[1] + "\n"
+        + joined(fields, "\t") + "\n"
+    expect!(parsedRegistry(invalid).isNone())
+    let legacyWithRollback = RegistryText.legacyVersion + "\n" + rows[1] + "\n" + rollbackRow + "\n"
+    expect!(parsedRegistry(legacyWithRollback).isNone())
+}
+
+@Test
+function versionOneRegistryMigratesWithoutChangingAcceptedPermissions() {
+    var registry = ApplicationRegistry {}
+    let first = candidate(pubA, 1, digestA)
+    expect!(registrationSucceeded(registry.prepare(first)))
+    expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
+    expect!(registrationSucceeded(registry.setGrant(first.identity, "data", true)))
+    let modern = registryText(registry)
+    let old = RegistryText.legacyVersion + modern.substring(
+        RegistryText.version.count,
+        modern.count
+    )
+    let upgraded = try parsedRegistry(old) otherwise return
+    expect!(upgraded.installed.count == 1)
+    expect!(upgraded.previousVersions.count == 0)
+    let accepted = try upgraded.accepted(first.identity) otherwise return
+    expect!(accepted.candidate.imageDigest == digestA)
+    expect!(accepted.grants == ["data"])
+    expect!(registryText(upgraded) == modern)
+}
+
+@Test
+function versionTwoRegistryPreservesPreviousAcceptedImageAcrossReopening() {
+    var registry = ApplicationRegistry {}
+    let first = candidate(pubA, 1, digestA)
+    let second = candidate(pubA, 2, digestB)
+    expect!(registrationSucceeded(registry.prepare(first)))
+    expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
+    expect!(registrationSucceeded(registry.setGrant(first.identity, "data", true)))
+    expect!(registrationSucceeded(registry.prepare(second)))
+    expect!(registrationSucceeded(registry.activate(second.identity, digestB)))
+    let saved = registryText(registry)
+    let reopened = try parsedRegistry(saved) otherwise return
+    expect!(reopened.previousVersions.count == 1)
+    expect!((try reopened.previous(first.identity) otherwise return).candidate.version == 1)
+    expect!(registryText(reopened) == saved)
+    var restored = move reopened
+    expect!(registrationSucceeded(restored.rollBack(first.identity, digestA, true)))
+    expect!((try restored.accepted(first.identity) otherwise return).candidate.version == 1)
+    expect!((try restored.accepted(first.identity) otherwise return).grants == ["data"])
+}

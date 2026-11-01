@@ -1,0 +1,117 @@
+//! Bounded filename search within one explicitly selected folder. This
+//! library never broadens the caller's filesystem grant, follows links or
+//! reads file contents; Inlay must still obtain an authorized root from the
+//! system's trusted document picker.
+import Foundation
+
+public struct NamedDocument {
+    let path: String
+    let name: String
+    let kind: EntryKind
+}
+
+public struct DocumentSearchResults {
+    let matches: [NamedDocument]
+    let foldersScanned: Number
+    /// Some matches may be omitted due to a result, depth or work budget.
+    let truncated: Bool
+}
+
+struct DocumentSearchBuilder {
+    var matches: [NamedDocument] = []
+    var foldersScanned: Number = 0
+    var entriesInspected: Number = 0
+    var truncated: Bool = false
+}
+
+public namespace DocumentSearchLimits {
+    let maxResults: Number = 1000
+    let maxDepth: Number = 32
+    let maxEntriesInspected: Number = 10000
+    let maxQueryBytes: Number = 256
+}
+
+/// Returns filename matches sorted by directory traversal and filename.
+/// `maxDepth = 0` searches only immediate children; deeper recursion is
+/// explicitly bounded and never follows symbolic links or special files.
+public function searchDocumentsByName(
+    root: borrow String,
+    query: borrow String,
+    maxResults: Number = 100,
+    maxDepth: Number = 12
+) -> Result<DocumentSearchResults, ChangeFailure> {
+    if unsafeBackupPath(root) || hasLinkedPathAncestor(root)
+        || query.count == 0 || query.count > DocumentSearchLimits.maxQueryBytes
+        || query.contains("/") || query.contains("\0")
+        || maxResults < 1 || maxResults > DocumentSearchLimits.maxResults
+        || maxResults != trunc(maxResults)
+        || maxDepth < 0 || maxDepth > DocumentSearchLimits.maxDepth
+        || maxDepth != trunc(maxDepth) {
+        return .Error(.Refused(copy root))
+    }
+    let kind = match linkStatus(root) {
+        Ok(value) -> value.kind
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Missing(copy root))
+        }
+    }
+    if kind != .Directory { return .Error(.Refused(copy root)) }
+    var builder = DocumentSearchBuilder {}
+    try searchNamesWithin(root, query.lowercased(), maxResults, maxDepth, 0, builder)
+    return .Ok(
+        DocumentSearchResults {
+            matches: builder.matches,
+            foldersScanned: builder.foldersScanned,
+            truncated: builder.truncated
+        }
+    )
+}
+
+function searchNamesWithin(
+    directory: borrow String,
+    foldedQuery: borrow String,
+    limit: Number,
+    maxDepth: Number,
+    depth: Number,
+    builder: borrow mut DocumentSearchBuilder
+) -> Result<Void, ChangeFailure> {
+    if builder.truncated { return .Ok }
+    let entries = match entriesIn(directory) {
+        Ok(found) -> found
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Refused(copy directory))
+        }
+    }
+    builder.foldersScanned += 1
+    for entry in entries {
+        if builder.entriesInspected >= DocumentSearchLimits.maxEntriesInspected {
+            builder.truncated = true
+            return .Ok
+        }
+        builder.entriesInspected += 1
+        if entry.kind == .Other { continue }
+        if entry.name.lowercased().contains(foldedQuery) {
+            if builder.matches.count >= limit {
+                builder.truncated = true
+                return .Ok
+            }
+            builder.matches.append(
+                NamedDocument { path: copy entry.path, name: copy entry.name, kind: entry.kind }
+            )
+        }
+        if entry.kind == .Folder {
+            if depth < maxDepth {
+                try searchNamesWithin(entry.path, foldedQuery, limit, maxDepth, depth + 1, builder)
+                if builder.truncated { return .Ok }
+            } else {
+                // The caller requested a bounded depth, so nested entries
+                // cannot be assumed absent, even when this folder's name
+                // itself did not match.
+                builder.truncated = true
+            }
+        }
+    }
+    return .Ok
+}

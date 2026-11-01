@@ -1,0 +1,120 @@
+//! Strict and bounded on-disk recent-document cache. The paths are UTF-8
+//! base64 encoded so arbitrary names cannot inject extra records; malformed
+//! caches are refused rather than treated as permission to open any file.
+import Foundation
+
+public namespace RecentText {
+    let version: String = "Tessera recent documents 1"
+    let maxBytes: Number = 300000
+}
+
+public enum RecentStoreFailure {
+    Damaged
+    Unavailable
+    UnsafePath
+}
+
+public function encodedRecentDocuments(recent: borrow RecentDocuments) -> String {
+    var lines: [String] = [RecentText.version]
+    for document in recent.items {
+        lines.append("R\t\(document.openedAt)\t" + base64Text(document.path.utf8()))
+    }
+    return joined(lines, "\n") + "\n"
+}
+
+public function decodedRecentDocuments(text: borrow String) -> RecentDocuments? {
+    if text.count > RecentText.maxBytes { return .None }
+    let lines = text.split("\n")
+    if lines.count < 2 || lines.count > RecentLimits.maxEntries + 2
+        || lines[0] != RecentText.version || lines[lines.count - 1] != "" {
+        return .None
+    }
+    var recent = RecentDocuments {}
+    for index in 1..lines.count - 1 {
+        let parts = lines[index].split("\t")
+        if parts.count != 3 || parts[0] != "R" { return .None }
+        let at = try parts[1].toNumber() otherwise return .None
+        if at <= 0 || trunc(at) != at || at > 9007199254740991 { return .None }
+        let bytes = try base64Decoded(parts[2]) otherwise return .None
+        let path = try textFromBytes(bytes) otherwise return .None
+        if !validRecentPath(path) { return .None }
+        if recent.items.count > 0 && at > recent.items[recent.items.count - 1].openedAt {
+            return .None
+        }
+        for earlier in recent.items {
+            if earlier.path == path { return .None }
+        }
+        recent.items.append(RecentDocument { path: path, openedAt: at })
+    }
+    // Canonical writing rejects altered base64, decimal aliases and unknown
+    // fields without accidentally granting special meaning to them.
+    if encodedRecentDocuments(recent) != text { return .None }
+    return .Some(recent)
+}
+
+public function readRecentDocumentsFile(
+    path: borrow String
+) -> Result<RecentDocuments, RecentStoreFailure> {
+    if unsafeBackupPath(path) || hasLinkedPathAncestor(path) {
+        return .Error(.UnsafePath)
+    }
+    match linkStatus(path) {
+        Ok(status) -> {
+            if status.kind != .File { return .Error(.UnsafePath) }
+            if status.size > RecentText.maxBytes { return .Error(.Damaged) }
+        }
+        Error(failure) -> match failure {
+            Missing -> return .Ok(RecentDocuments {})
+            else -> return .Error(.Unavailable)
+        }
+    }
+    let text = match readFile(path) {
+        Ok(contents) -> contents.text
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Unavailable)
+        }
+    }
+    return match decodedRecentDocuments(text) {
+        Some(value) -> .Ok(value)
+        None -> .Error(.Damaged)
+    }
+}
+
+public function saveRecentDocumentsFile(
+    path: borrow String,
+    recent: borrow RecentDocuments
+) -> Result<Void, RecentStoreFailure> {
+    let text = encodedRecentDocuments(recent)
+    if decodedRecentDocuments(text).isNone() { return .Error(.Damaged) }
+    match readRecentDocumentsFile(path) {
+        Ok(previous) -> absorb previous
+        Error(failure) -> return .Error(failure)
+    }
+    let staging = path + ".next"
+    match linkStatus(staging) {
+        Ok(status) -> if status.kind != .File { return .Error(.UnsafePath) }
+        Error(failure) -> match failure {
+            Missing -> {}
+            else -> return .Error(.Unavailable)
+        }
+    }
+    match writeFile(staging, text) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Unavailable)
+        }
+    }
+    match renamePath(staging, path) {
+        Ok -> return .Ok
+        Error(failure) -> {
+            absorb failure
+            match removePath(staging) {
+                Ok -> {}
+                Error(cleanup) -> absorb cleanup
+            }
+            return .Error(.Unavailable)
+        }
+    }
+}

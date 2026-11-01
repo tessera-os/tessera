@@ -1,0 +1,224 @@
+import Foundation
+import AppRegistry
+import AppCatalog
+
+@Test
+function authenticatedStartupAcceptsOnlyPinnedSignedCacheAndInstalledVersion() {
+    let paths = sessionTestPaths("authenticated")
+    sessionClean(paths)
+    let listing = sample()
+    var registry = ApplicationRegistry {}
+    prepareInstalled(registry, listing)
+    var catalog = CatalogCache {}
+    expect!(refreshed(catalog, [listing]))
+    let journal = InstallQueue { jobs: [InstallJob { listing: listing, phase: .Ready }] }
+    expect!(storeSessionFixture(paths, registry, catalog, journal))
+    // Replaces the unsigned local-demo cache with a signed feed for runtime.
+    match removePath(paths[1]) {
+        Ok -> {}
+        Error(failure) -> absorb failure
+    }
+    expect!(
+        signedStoreAccepted(
+            saveSignedCatalogFile(
+                paths[1],
+                catalogTestFeed(),
+                catalogTestSignature(),
+                trustedTestSigner()
+            )
+        )
+    )
+    let session = try loadAuthenticatedAppStoreSession(
+        paths[0],
+        paths[1],
+        paths[2],
+        trustedTestSigner()
+    ) otherwise return
+    expect!(session.catalogState == TrustedCacheState.Verified)
+    expect!(session.journalState == TrustedJournalState.Loaded)
+    expect!(session.catalog.connection == CatalogConnection.Offline)
+    expect!(session.queue.jobs.count == 1)
+    expect!(session.queue.jobs[0].phase == InstallPhase.Ready)
+    expect!(session.registry.installed.count == 1)
+    sessionClean(paths)
+}
+
+@Test
+function forgedSignedCacheCannotHideAcceptedLocalApplication() {
+    let paths = sessionTestPaths("forged-cache")
+    sessionClean(paths)
+    let listing = sample()
+    var registry = ApplicationRegistry {}
+    prepareInstalled(registry, listing)
+    match saveRegistryFile(paths[0], registry) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    expect!(
+        signedStoreAccepted(
+            saveSignedCatalogFile(
+                paths[1],
+                catalogTestFeed(),
+                catalogTestSignature(),
+                trustedTestSigner()
+            )
+        )
+    )
+    let contents = try readFile(paths[1]) otherwise return
+    let forged = contents.text.before("Productivity") + "Impostor" + contents.text.substring(
+        contents.text.before("Productivity").count + 12,
+        contents.text.count
+    )
+    match writeFile(paths[1], forged) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    let session = try loadAuthenticatedAppStoreSession(
+        paths[0],
+        paths[1],
+        paths[2],
+        trustedTestSigner()
+    ) otherwise return
+    expect!(session.catalogState == TrustedCacheState.Rejected)
+    expect!(session.catalog.listings.count == 0)
+    expect!(session.registry.accepted(listing.identity).isSome())
+    let detail = session.catalog.details(listing.identity, session.registry, "desktop", 26)
+    expect!(detail.primary == CatalogAction.Open)
+    expect!(detail.update.isNone())
+    expect!((try readFile(paths[1]) otherwise return).text == forged)
+    sessionClean(paths)
+}
+
+@Test
+function missingCatalogAndBadJournalStillPreserveOwnerInstallations() {
+    let paths = sessionTestPaths("missing-catalog")
+    sessionClean(paths)
+    let listing = sample()
+    var registry = ApplicationRegistry {}
+    prepareInstalled(registry, listing)
+    match saveRegistryFile(paths[0], registry) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    let missing = try loadAuthenticatedAppStoreSession(
+        paths[0],
+        paths[1],
+        paths[2],
+        trustedTestSigner()
+    ) otherwise return
+    expect!(missing.catalogState == TrustedCacheState.Missing)
+    expect!(missing.journalState == TrustedJournalState.Missing)
+    expect!(missing.registry.accepted(listing.identity).isSome())
+    expect!(
+        signedStoreAccepted(
+            saveSignedCatalogFile(
+                paths[1],
+                catalogTestFeed(),
+                catalogTestSignature(),
+                trustedTestSigner()
+            )
+        )
+    )
+    match writeFile(paths[2], "Tessera install queue 1\nJ\tcorrupt\n") {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    let rejected = try loadAuthenticatedAppStoreSession(
+        paths[0],
+        paths[1],
+        paths[2],
+        trustedTestSigner()
+    ) otherwise return
+    expect!(rejected.catalogState == TrustedCacheState.Verified)
+    expect!(rejected.journalState == TrustedJournalState.Rejected)
+    expect!(rejected.queue.jobs.count == 0)
+    expect!(rejected.registry.installed.count == 1)
+    sessionClean(paths)
+}
+
+@Test
+function invalidAcceptedRegistryRemainsAHardStartupError() {
+    let paths = sessionTestPaths("untrusted-registry")
+    sessionClean(paths)
+    match writeFile(paths[0], "Tessera application registry 1\nA\tbogus\n") {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    expect!(
+        signedStoreAccepted(
+            saveSignedCatalogFile(
+                paths[1],
+                catalogTestFeed(),
+                catalogTestSignature(),
+                trustedTestSigner()
+            )
+        )
+    )
+    let startup = loadAuthenticatedAppStoreSession(
+        paths[0],
+        paths[1],
+        paths[2],
+        trustedTestSigner()
+    )
+    let refused = match startup {
+        Ok -> false
+        Error(failure) -> match failure {
+            RegistryUnavailable -> true
+            CatalogUnavailable, JournalUnavailable -> false
+        }
+    }
+    expect!(refused)
+    sessionClean(paths)
+}
+
+@Test
+function authenticatedStartupWithTrustedFloorRejectsOlderCatalogButKeepsLocalApps() {
+    let paths = sessionTestPaths("trusted-floor")
+    sessionClean(paths)
+    let listing = sample()
+    var registry = ApplicationRegistry {}
+    prepareInstalled(registry, listing)
+    match saveRegistryFile(paths[0], registry) {
+        Ok -> {}
+        Error(reason) -> {
+            absorb reason
+            return
+        }
+    }
+    expect!(
+        signedStoreAccepted(
+            saveSignedCatalogFile(
+                paths[1],
+                catalogTestFeed(),
+                catalogTestSignature(),
+                trustedTestSigner()
+            )
+        )
+    )
+    let session = try loadAuthenticatedAppStoreSession(
+        paths[0],
+        paths[1],
+        paths[2],
+        trustedTestSigner(),
+        101
+    ) otherwise return
+    expect!(session.catalogState == TrustedCacheState.Rejected)
+    expect!(session.registry.accepted(listing.identity).isSome())
+    expect!(session.catalog.listings.count == 0)
+    sessionClean(paths)
+}

@@ -1,0 +1,144 @@
+import Foundation
+import AppRegistry
+
+function preferencesSaved(result: Result<Void, AssociationStoreFailure>) -> Bool {
+    return match result {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+}
+
+@Test
+function openWithPreferencesSurviveRestartWithoutChangingPublisher() {
+    let path = ".tessera-document-associations-test"
+    if pathExists(path) { match removePath(path) { Ok -> {} Error(reason) -> absorb reason } }
+    var registry = ApplicationRegistry {}
+    let first = candidate(pubA, 1, digestA)
+    expect!(registrationSucceeded(registry.prepare(first)))
+    expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
+    var preferences = DocumentAssociations {}
+    expect!(chosen(preferences.chooseDefault("txt", first.identity, registry)))
+    expect!(chosen(preferences.chooseDefault("md", first.identity, registry)))
+    expect!(preferencesSaved(saveAssociationFile(path, preferences)))
+    let loaded = try readAssociationFile(path) otherwise return
+    expect!(loaded.defaults.count == 2)
+    expect!(encodedAssociations(loaded) == encodedAssociations(preferences))
+    let routed = match loaded.route("document.txt", registry) {
+        OpenAccepted(identity) -> sameApp(identity, first.identity)
+        ChooseApplication, DefaultUnavailable -> false
+    }
+    expect!(routed)
+    registry.uninstall(first.identity)
+    let unavailable = match loaded.route("document.txt", registry) {
+        DefaultUnavailable(identity) -> sameApp(identity, first.identity)
+        ChooseApplication, OpenAccepted -> false
+    }
+    expect!(unavailable)
+    match removePath(path) { Ok -> {} Error(reason) -> absorb reason }
+}
+
+@Test
+function duplicateOrNoncanonicalDefaultRecordsAreRejected() {
+    let id = AppIdentity { identifier: "example.notes", publisher: pubA }
+    let one = "X\ttxt\t" + id.identifier + "\t" + id.publisher + "\n"
+    let good = AssociationText.version + "\n" + one
+    expect!(decodedAssociations(good).isSome())
+    expect!(decodedAssociations(good + one).isNone())
+    let invalid = AssociationText.version + "\nX\tTXT\t" + id.identifier + "\t"
+        + id.publisher + "\n"
+    expect!(decodedAssociations(invalid).isNone())
+    expect!(
+        decodedAssociations(
+            AssociationText.version + "\nX\ttxt\tbad/id\t" + id.publisher + "\n"
+        ).isNone()
+    )
+}
+
+@Test
+function damagedOpenWithFileCannotBeSilentlyReplaced() {
+    let path = ".tessera-document-associations-corrupt"
+    if pathExists(path) { match removePath(path) { Ok -> {} Error(reason) -> absorb reason } }
+    match writeFile(path, AssociationText.version + "\nX\tpartial\n") {
+        Ok -> {}
+        Error(reason) -> {
+            absorb reason
+            return
+        }
+    }
+    expect!(!preferencesSaved(saveAssociationFile(path, DocumentAssociations {})))
+    let text = try readFile(path) otherwise return
+    expect!(text.text.contains("partial"))
+    match removePath(path) { Ok -> {} Error(reason) -> absorb reason }
+}
+
+@Test
+function linkedOpenWithFileOrStageCannotOverwriteUnrelatedData() {
+    let path = ".tessera-document-associations-linked"
+    let target = ".tessera-document-associations-protected"
+    if pathExists(path) { match removePath(path) { Ok -> {} Error(reason) -> absorb reason } }
+    if pathExists(target) { match removePath(target) { Ok -> {} Error(reason) -> absorb reason } }
+    match writeFile(target, "protected") {
+        Ok -> {}
+        Error(reason) -> {
+            absorb reason
+            return
+        }
+    }
+    match makeSymbolicLink(target, path) {
+        Ok -> {}
+        Error(reason) -> {
+            absorb reason
+            return
+        }
+    }
+    expect!(!preferencesSaved(saveAssociationFile(path, DocumentAssociations {})))
+    expect!((try readFile(target) otherwise return).text == "protected")
+    match removePath(path) { Ok -> {} Error(reason) -> absorb reason }
+    match makeSymbolicLink(target, path + ".next") {
+        Ok -> {}
+        Error(reason) -> {
+            absorb reason
+            return
+        }
+    }
+    expect!(!preferencesSaved(saveAssociationFile(path, DocumentAssociations {})))
+    expect!((try readFile(target) otherwise return).text == "protected")
+    match removePath(path + ".next") { Ok -> {} Error(reason) -> absorb reason }
+    match removePath(target) { Ok -> {} Error(reason) -> absorb reason }
+}
+
+@Test
+function openWithStoreCannotTraverseLinkedParentDirectory() {
+    let directory = ".tessera-document-associations-parent"
+    let alias = ".tessera-document-associations-parent-link"
+    match makeDirectory(directory) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    match makeSymbolicLink(directory, alias) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    let path = alias + "/defaults"
+    expect!(!preferencesSaved(saveAssociationFile(path, DocumentAssociations {})))
+    let refused = match readAssociationFile(path) {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(refused)
+    expect!(!pathExists(directory + "/defaults"))
+    match removePath(alias) { Ok -> {} Error(failure) -> absorb failure }
+    match removePath(directory) { Ok -> {} Error(failure) -> absorb failure }
+}

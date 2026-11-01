@@ -1,6 +1,6 @@
 //! Tests of the Trash store: which paths may be moved, and how records are read back.
 import Foundation
-import TrashStore
+import TrashRules
 
 // The Trash store's path rules and record format, run on the host with
 // `kira test tests/trash_kik`. The move and put-back round trip needs the data
@@ -8,17 +8,18 @@ import TrashStore
 
 /// Whether a move from `path` is refused.
 function isRefusedPath(path: borrow String) -> Bool {
-    return match refusalOf(path) {
-        Ok -> false
-        Error(reason) -> true
+    return match trashPathStatus(path) {
+        Allowed -> false
+        Invalid -> true
+        Protected -> true
     }
 }
 
 /// The original path a record names, or "" when the record is refused.
 function originalPathOf(text: borrow String) -> String {
-    return match originalOf(text) {
-        Ok(path) -> path
-        Error(reason) -> ""
+    return match rawRecordPath(text) {
+        Some(path) -> path
+        None -> ""
     }
 }
 
@@ -98,4 +99,339 @@ function aPathIsWithinItselfAndItsFolders() {
     expect!(within("/data/a", "/data"))
     expect!(within("/data", "/data"))
     expect!(!within("/database/a", "/data"))
+}
+
+/// Alternate but equivalent spellings must not bypass the system-state exclusion.
+@Test
+function ambiguousPathSegmentsCannotEnterTrash() {
+    expect!(isRefusedPath("/data/./system/settings"))
+    expect!(isRefusedPath("/data//system/settings"))
+    expect!(isRefusedPath("/data/Trash/./items/1"))
+    expect!(isRefusedPath("/data/Documents/./note"))
+    expect!(isRefusedPath("/data/Documents/../system/settings"))
+    expect!(isRefusedPath("/data/Documents//note"))
+    expect!(isRefusedPath("/data/Documents/"))
+    expect!(!isRefusedPath("/data/Documents/note.txt"))
+}
+
+/// Controls may corrupt records or become surprising paths on restore.
+@Test
+function controlsCannotEnterTrashPathsOrRecords() {
+    expect!(isRefusedPath("/data/Documents/a\rb"))
+    expect!(isRefusedPath("/data/Documents/a\tb"))
+    expect!(isRefusedPath("/data/Documents/a\0b"))
+    expect!(originalPathOf("version 1\npath /data/Documents/a\nb\n") == "")
+    expect!(originalPathOf("version 1\npath /data//system/settings\n") == "")
+}
+
+/// Empty Trash must unlink a symbolic link, not recurse into its target.
+@Test
+function deletingTrashedDirectoryDoesNotFollowLinks() {
+    let scratch = ".trash-rules-scratch-links"
+    // A previous interrupted test may leave this isolated test directory.
+    if pathExists(scratch) {
+        match removeTrashTree(scratch) {
+            Ok -> {}
+            Error(failure) -> absorb failure
+        }
+    }
+    let ready = match makeDirectory(scratch) {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+    expect!(ready)
+    let keep = scratch + "/keep"
+    let trashed = scratch + "/trashed"
+    expect!(madeTrashDirectory(keep))
+    expect!(madeTrashDirectory(trashed))
+    expect!(wroteTrashFile(keep + "/important", "preserve me"))
+    expect!(wroteTrashFile(trashed + "/note", "delete me"))
+    let link = match makeSymbolicLink("../keep", trashed + "/link") {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+    expect!(link)
+    let removed = match removeTrashTree(trashed) {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+    expect!(removed)
+    expect!(!pathExists(trashed))
+    expect!(fileExists(keep + "/important"))
+    let content = match readFile(keep + "/important") {
+        Ok(contents) -> contents.text
+        Error(failure) -> {
+            absorb failure
+            ""
+        }
+    }
+    expect!(content == "preserve me")
+    let cleaned = match removeTrashTree(scratch) {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+    expect!(cleaned)
+}
+
+function madeTrashDirectory(path: borrow String) -> Bool {
+    return match makeDirectory(path) {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+}
+
+function wroteTrashFile(path: borrow String, text: borrow String) -> Bool {
+    return match writeFile(path, text) {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+}
+
+/// Renaming a link is harmless, but renaming through a linked parent is not.
+@Test
+function movingThroughLinkedParentIsRejected() {
+    let scratch = ".trash-rules-scratch-parents"
+    if pathExists(scratch) {
+        match removeTrashTree(scratch) {
+            Ok -> {}
+            Error(failure) -> absorb failure
+        }
+    }
+    expect!(madeTrashDirectory(scratch))
+    expect!(madeTrashDirectory(scratch + "/real"))
+    expect!(wroteTrashFile(scratch + "/real/safe.txt", "safe"))
+    let linked = match makeSymbolicLink("real", scratch + "/alias") {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+    expect!(linked)
+    expect!(!hasLinkParent(scratch + "/real/safe.txt"))
+    expect!(hasLinkParent(scratch + "/alias/safe.txt"))
+    expect!(!hasLinkParent(scratch + "/alias"))
+    expect!(directDirectory(scratch + "/real"))
+    expect!(!directDirectory(scratch + "/alias"))
+    expect!(!directDirectory(scratch + "/missing"))
+    let clean = match removeTrashTree(scratch) {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+    expect!(clean)
+}
+
+/// A dangling symbolic link must never be interpreted as a free Trash ID
+/// or a free restoration destination.
+@Test
+function danglingTrashEntryIsOccupiedEvenWhenItsTargetIsMissing() {
+    let scratch = ".trash-rules-scratch-dangling-entry"
+    if occupiedTrashEntry(scratch) {
+        match removeTrashTree(scratch) {
+            Ok -> {}
+            Error(failure) -> absorb failure
+        }
+    }
+    expect!(madeTrashDirectory(scratch))
+    let dangling = scratch + "/1"
+    let link = match makeSymbolicLink("unavailable-target", dangling) {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+    expect!(link)
+    expect!(!pathExists(dangling))
+    expect!(occupiedTrashEntry(dangling))
+    expect!(!directTrashRecord(dangling))
+    expect!(!occupiedTrashEntry(scratch + "/2"))
+    match removeTrashTree(scratch) {
+        Ok -> {}
+        Error(failure) -> absorb failure
+    }
+}
+
+/// A linked record is not an authoritative file even when its target is a
+/// readable, syntactically valid Trash record.
+@Test
+function linkedTrashRecordCannotBeMistakenForARegularRecord() {
+    let scratch = ".trash-rules-scratch-linked-record"
+    if occupiedTrashEntry(scratch) {
+        match removeTrashTree(scratch) {
+            Ok -> {}
+            Error(failure) -> absorb failure
+        }
+    }
+    expect!(madeTrashDirectory(scratch))
+    let real = scratch + "/record"
+    let alias = scratch + "/linked-record"
+    expect!(wroteTrashFile(real, "version 1\npath /data/Documents/note\n"))
+    expect!(directTrashRecord(real))
+    let linked = match makeSymbolicLink("record", alias) {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+    expect!(linked)
+    expect!(!directTrashRecord(alias))
+    expect!(occupiedTrashEntry(alias))
+    match removeTrashTree(scratch) {
+        Ok -> {}
+        Error(failure) -> absorb failure
+    }
+}
+
+@Test
+function trashItemIdsUseOnlyCanonicalAllocatedDecimalNumbers() {
+    expect!(isItemId("1"))
+    expect!(isItemId("999999"))
+    for invalid in ["0", "00", "01", "001", "1000000", "9999999", "-1", "1.0"] {
+        expect!(!isItemId(invalid))
+    }
+}
+
+@Test
+function aLinkedParentIsNotAnAcceptableTrashStorageAncestor() {
+    let scratch = ".trash-rules-scratch-linked-store"
+    if occupiedTrashEntry(scratch) {
+        match removeTrashTree(scratch) {
+            Ok -> {}
+            Error(failure) -> absorb failure
+        }
+    }
+    expect!(madeTrashDirectory(scratch))
+    expect!(madeTrashDirectory(scratch + "/real"))
+    expect!(madeTrashDirectory(scratch + "/real/Trash"))
+    expect!(madeTrashDirectory(scratch + "/real/Trash/items"))
+    let linked = match makeSymbolicLink("real", scratch + "/alias") {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+    expect!(linked)
+    expect!(hasLinkParent(scratch + "/alias/Trash/items"))
+    expect!(!hasLinkParent(scratch + "/real/Trash/items"))
+    match removeTrashTree(scratch) {
+        Ok -> {}
+        Error(failure) -> absorb failure
+    }
+}
+
+@Test
+function trashWireValidatesExactPayloadBytesBeforeDispatch() {
+    let path = "/data/Documents/note.txt".utf8()
+    let id = "12345".utf8()
+    expect!(validTrashWirePayload(1, path))
+    expect!(validTrashWirePayload(2, id))
+    let empty: [UN8] = []
+    expect!(validTrashWirePayload(3, empty))
+    expect!(validTrashWirePayload(4, empty))
+    expect!(!validTrashWirePayload(3, path))
+    expect!(!validTrashWirePayload(4, id))
+    expect!(!validTrashWirePayload(1, empty))
+    expect!(!validTrashWirePayload(2, empty))
+    expect!(!validTrashWirePayload(99, empty))
+}
+
+@Test
+function trashWireRejectsNulSuffixAndNoncanonicalIds() {
+    var disguised = "/data/Documents/note.txt".utf8()
+    disguised.append(UN8(0))
+    for byte in "/data/system/protected".utf8() { disguised.append(byte) }
+    expect!(!validTrashWirePayload(1, disguised))
+    var disguisedId = "1".utf8()
+    disguisedId.append(UN8(0))
+    disguisedId.append(UN8(50))
+    expect!(!validTrashWirePayload(2, disguisedId))
+    expect!(!validTrashWirePayload(2, "001".utf8()))
+    expect!(!validTrashWirePayload(1, "/data/Trash/items/1".utf8()))
+}
+
+@Test
+function trashWireRefusesMalformedUtf8AndOversizedRequest() {
+    let malformed: [UN8] = [255, 254, 253]
+    expect!(!validTrashWirePayload(1, malformed))
+    var huge: [UN8] = []
+    for index in 0..4097 {
+        absorb index
+        huge.append(UN8(65))
+    }
+    expect!(!validTrashWirePayload(1, huge))
+    let valid = "/data/Documents/Résumé.txt".utf8()
+    expect!(validTrashWirePayload(1, valid))
+}
+
+@Test
+function trashWireRejectsUnknownHeaderArgumentsAndAttachedHandles() {
+    expect!(validTrashWireHeader(0, 0, 0, 0, 0))
+    expect!(!validTrashWireHeader(1, 0, 0, 0, 0))
+    expect!(!validTrashWireHeader(0, 1, 0, 0, 0))
+    expect!(!validTrashWireHeader(0, 0, 2, 0, 0))
+    expect!(!validTrashWireHeader(0, 0, 0, 3, 0))
+    expect!(!validTrashWireHeader(0, 0, 0, 0, 1))
+    expect!(!validTrashWireHeader(0, 0, 0, 0, 4))
+}
+
+@Test
+function trashListReplyBudgetNeverTruncatesAsSuccess() {
+    expect!(fitsTrashReply(0, 65536, 65536))
+    expect!(fitsTrashReply(65535, 1, 65536))
+    expect!(!fitsTrashReply(65536, 1, 65536))
+    expect!(!fitsTrashReply(65535, 2, 65536))
+    expect!(!fitsTrashReply(0, 65537, 65536))
+    expect!(!fitsTrashReply(-1, 10, 65536))
+    expect!(!fitsTrashReply(0, 1.5, 65536))
+}
+
+@Test
+function oversizedTrashRecordIsRejectedBeforeReadOrRestore() {
+    let scratch = ".trash-rules-scratch-large-record"
+    if occupiedTrashEntry(scratch) {
+        match removeTrashTree(scratch) {
+            Ok -> {}
+            Error(failure) -> absorb failure
+        }
+    }
+    expect!(madeTrashDirectory(scratch))
+    let path = scratch + "/record"
+    var oversized = TrashLayout.recordVersion + "\n" + TrashLayout.pathPrefix + "/data/Documents/"
+    for index in 0..5000 {
+        absorb index
+        oversized += "a"
+    }
+    oversized += "\n"
+    expect!(wroteTrashFile(path, oversized))
+    expect!(!directTrashRecord(path))
+    expect!(rawRecordPath(oversized).isNone())
+    expect!(TrashLayout.maximumRecordBytes > 4096)
+    match removeTrashTree(scratch) {
+        Ok -> {}
+        Error(failure) -> absorb failure
+    }
 }

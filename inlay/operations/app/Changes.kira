@@ -31,6 +31,17 @@ namespace DuplicateName {
 ///
 /// [`ChangeFailure.Refused`] when the volume does not make it.
 public function makeNewFolder(parent: borrow String) -> Result<String, ChangeFailure> {
+    if unsafeBackupPath(parent) || hasLinkedPathAncestor(parent) {
+        return .Error(.Refused(copy parent))
+    }
+    let parentKind = match linkStatus(parent) {
+        Ok(status) -> status.kind
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Missing(copy parent))
+        }
+    }
+    if parentKind != .Directory { return .Error(.Refused(copy parent)) }
     let path = childPath(parent, freeName(parent, NewFolderName.untitled))
     match makeDirectory(path) {
         Ok -> return .Ok(path)
@@ -43,7 +54,10 @@ public function makeNewFolder(parent: borrow String) -> Result<String, ChangeFai
 
 /// Whether `name` can name an entry.
 public function validName(name: borrow String) -> Bool {
-    return name.count > 0 && !name.contains("/") && name != "." && name != ".."
+    // NUL can truncate a filename at an FFI boundary and make the path
+    // checked by the caller differ from the one the filesystem receives.
+    return name.count > 0 && !name.contains("/") && !name.contains("\0")
+        && name != "." && name != ".."
 }
 
 /// Renames the entry at `path` to `name` in the same folder, and answers its
@@ -58,10 +72,13 @@ public function renameEntry(
     name: borrow String
 ) -> Result<String, ChangeFailure> {
     if !validName(name) { return .Error(.InvalidName(copy name)) }
-    if !pathExists(path) { return .Error(.Missing(copy path)) }
+    if unsafeBackupPath(path) || hasLinkedPathAncestor(path) {
+        return .Error(.Refused(copy path))
+    }
+    if !occupiedName(path) { return .Error(.Missing(copy path)) }
     let target = childPath(parentPath(path), name)
     if target == path { return .Ok(target) }
-    if pathExists(target) { return .Error(.AlreadyExists(target)) }
+    if occupiedName(target) { return .Error(.AlreadyExists(target)) }
     match renamePath(path, target) {
         Ok -> return .Ok(target)
         Error(failure) -> {
@@ -82,7 +99,9 @@ public function duplicateEntry(path: borrow String) -> Result<String, ChangeFail
     let folder = parentPath(path)
     let (stem, extension) = nameParts(lastPathPart(path))
     let target = childPath(folder, freeName(folder, stem + DuplicateName.copySuffix + extension))
-    try copyTree(path, target)
+    // Copy through the cleanup-aware transfer helper: a linked or unreadable
+    // child must not leave behind a misleading partially created duplicate.
+    try copyWhole(path, target)
     return .Ok(target)
 }
 
@@ -92,7 +111,40 @@ public function duplicateEntry(path: borrow String) -> Result<String, ChangeFail
 ///
 /// [`ChangeFailure.Refused`] naming the first entry not copied.
 public function copyTree(from: borrow String, to: borrow String) -> Result<Void, ChangeFailure> {
-    if !isDirectory(from) {
+    // A destination under its own source recursively reproduces the new
+    // folder forever. Reject it before creating even an empty target.
+    let fromFolded = from.lowercased()
+    let toFolded = to.lowercased()
+    if fromFolded == toFolded || toFolded.startsWith(fromFolded + "/") {
+        return .Error(.IntoItself(copy from))
+    }
+    if unsafeBackupPath(from) || unsafeBackupPath(to)
+        || hasLinkedPathAncestor(from) || hasLinkedPathAncestor(to) {
+        return .Error(.Refused(copy from))
+    }
+    // pathExists follows links and can say false for a dangling symlink.
+    // Refuse any existing directory entry at the destination without
+    // following it, even when the link's target has not been created.
+    match linkStatus(to) {
+        Ok(status) -> {
+            absorb status
+            return .Error(.AlreadyExists(copy to))
+        }
+        Error(failure) -> match failure {
+            Missing -> {}
+            else -> return .Error(.Refused(copy to))
+        }
+    }
+    // Do not follow a symlink to read outside the folder being copied.
+    let source = match linkStatus(from) {
+        Ok(status) -> status.kind
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Missing(copy from))
+        }
+    }
+    if source == .Link || source == .Other { return .Error(.Refused(copy from)) }
+    if source == .File {
         match copyFile(from, to) {
             Ok(bytes) -> {
                 absorb bytes
@@ -131,7 +183,23 @@ public function copyTree(from: borrow String, to: borrow String) -> Result<Void,
 ///
 /// [`ChangeFailure.Refused`] naming the first entry the volume kept.
 public function removeTree(path: borrow String) -> Result<Void, ChangeFailure> {
-    if isDirectory(path) {
+    if unsafeBackupPath(path) || hasLinkedPathAncestor(path) {
+        return .Error(.Refused(copy path))
+    }
+    return removeTreeContents(path)
+}
+
+function removeTreeContents(path: borrow String) -> Result<Void, ChangeFailure> {
+    // `isDirectory` follows links. Use linkStatus so removing a link inside a
+    // folder unlinks the link itself rather than deleting its target tree.
+    let status = match linkStatus(path) {
+        Ok(value) -> value
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Missing(copy path))
+        }
+    }
+    if status.kind == .Directory {
         let entries = match entriesIn(path) {
             Ok(found) -> found
             Error(failure) -> {
@@ -140,7 +208,7 @@ public function removeTree(path: borrow String) -> Result<Void, ChangeFailure> {
             }
         }
         for entry in entries {
-            try removeTree(entry.path)
+            try removeTreeContents(entry.path)
         }
     }
     match removePath(path) {

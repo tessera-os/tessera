@@ -1,0 +1,115 @@
+//! Per-path history over completed backup generations. New-format versions
+//! are read-back verified before they are presented as recoverable. Legacy
+//! versions remain visible but are explicitly marked unverified.
+import Foundation
+
+public struct HistoricalItem {
+    let snapshot: Snapshot
+    let path: String
+    let kind: EntryKind
+    let verified: Bool
+}
+
+public struct DocumentHistory {
+    let versions: [HistoricalItem]
+    /// Complete generations with damaged/missing integrity records, omitted
+    /// from the selectable history rather than presented as recoverable.
+    let damaged: Number
+    /// Historical generations without a SHA-256 manifest; these versions can
+    /// be listed, but must never be called cryptographically verified.
+    let legacy: Number
+}
+
+/// Lists the recent versions of `relative` beneath a trusted backup root.
+/// Returns only snapshot items that are currently regular files or folders;
+/// an item absent in a newer generation is not treated as a failed backup.
+/// This path-based history does not follow renames or synchronize app data.
+public function versionsOfDocument(
+    root: borrow String,
+    relative: borrow String,
+    maxVersions: Number = 100
+) -> Result<DocumentHistory, ChangeFailure> {
+    if unsafeBackupPath(root) || hasLinkedPathAncestor(root)
+        || unsafeBackupPath(relative) || relative.startsWith("/")
+        || maxVersions < 1 || maxVersions != trunc(maxVersions) || maxVersions > 1000 {
+        return .Error(.Refused(copy relative))
+    }
+    let rootKind = match linkStatus(root) {
+        Ok(status) -> status.kind
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Missing(copy root))
+        }
+    }
+    if rootKind != .Directory { return .Error(.Refused(copy root)) }
+    var versions: [HistoricalItem] = []
+    var damaged: Number = 0
+    var legacy: Number = 0
+    for snapshot in snapshotsIn(root) {
+        if versions.count >= maxVersions { break }
+        let verified = match verifySnapshot(snapshot) {
+            Ok(result) -> {
+                absorb result
+                true
+            }
+            Error(failure) -> {
+                absorb failure
+                false
+            }
+        }
+        if !verified {
+            // A new-format generation that fails verification is not a
+            // selectable version. The old internal `.complete` format did
+            // not have any external metadata and must be labeled unverified.
+            if occupiedBackupEntry(childPath(root, BackupLayout.completePrefix + snapshot.name))
+                || occupiedBackupEntry(
+                    childPath(root, BackupLayout.manifestPrefix + snapshot.name)
+                ) {
+                damaged += 1
+                continue
+            }
+            legacy += 1
+        }
+        let path = childPath(snapshot.path, relative)
+        let kind = historicalEntryKind(snapshot.path, relative)
+        match kind {
+            Some(found) -> versions.append(
+                HistoricalItem {
+                    snapshot: copy snapshot,
+                    path: path,
+                    kind: found,
+                    verified: verified
+                }
+            )
+            None -> {}
+        }
+    }
+    return .Ok(DocumentHistory { versions: versions, damaged: damaged, legacy: legacy })
+}
+
+// Inspect every relative component without following links. Even an
+// unverified legacy snapshot cannot supply a history item via a link.
+function historicalEntryKind(root: borrow String, relative: borrow String) -> EntryKind? {
+    var path = copy root
+    let names = relative.split("/")
+    for (index, name) in names.enumerated() {
+        path = childPath(path, name)
+        let status = match linkStatus(path) {
+            Ok(found) -> found
+            Error(failure) -> {
+                absorb failure
+                return .None
+            }
+        }
+        if index < names.count - 1 {
+            if status.kind != .Directory { return .None }
+        } else {
+            return match status.kind {
+                File -> .Some(.File)
+                Directory -> .Some(.Folder)
+                Link, Other -> .None
+            }
+        }
+    }
+    return .None
+}

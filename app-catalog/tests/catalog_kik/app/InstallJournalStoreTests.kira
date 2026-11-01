@@ -1,0 +1,89 @@
+import Foundation
+import AppRegistry
+import AppCatalog
+
+function journalStored(result: Result<Void, InstallJournalStoreFailure>) -> Bool {
+    return match result {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+}
+
+@Test
+function savedVerifiedQueueReturnsInterruptedNotAcceptedAfterRestart() {
+    let path = ".tessera-app-install-journal-host"
+    if pathExists(path) {
+        match removePath(path) { Ok -> {} Error(failure) -> absorb failure }
+    }
+    let listing = sample()
+    var cache = CatalogCache {}
+    expect!(refreshed(cache, [listing]))
+    let registry = ApplicationRegistry {}
+    let queued = InstallQueue { jobs: [InstallJob { listing: listing, phase: .Verified }] }
+    expect!(journalStored(saveInstallJournalFile(path, queued, cache, registry)))
+    let reopened = try readInstallJournalFile(path, cache, registry) otherwise return
+    expect!(reopened.jobs.count == 1)
+    expect!(reopened.jobs[0].phase == InstallPhase.Failed)
+    expect!(reopened.jobs[0].verified.isNone())
+    var installed = ApplicationRegistry {}
+    prepareInstalled(installed, listing)
+    let accepted = try readInstallJournalFile(path, cache, installed) otherwise return
+    expect!(accepted.jobs[0].phase == InstallPhase.Ready)
+    match removePath(path) { Ok -> {} Error(failure) -> absorb failure }
+}
+
+@Test
+function malformedJournalCannotReplaceExistingHistory() {
+    let path = ".tessera-app-install-journal-damaged"
+    if pathExists(path) {
+        match removePath(path) { Ok -> {} Error(failure) -> absorb failure }
+    }
+    match writeFile(path, "Tessera install queue 1\nJ\ttruncated\n") {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    let listing = sample()
+    var cache = CatalogCache {}
+    expect!(refreshed(cache, [listing]))
+    let queued = InstallQueue { jobs: [InstallJob { listing: listing }] }
+    expect!(!journalStored(saveInstallJournalFile(path, queued, cache, ApplicationRegistry {})))
+    let original = try readFile(path) otherwise return
+    expect!(original.text == "Tessera install queue 1\nJ\ttruncated\n")
+    match removePath(path) { Ok -> {} Error(failure) -> absorb failure }
+}
+
+@Test
+function linkedJournalCannotOverwriteAnUnrelatedFile() {
+    let path = ".tessera-app-install-journal-link"
+    let target = ".tessera-app-install-journal-target"
+    if pathExists(path) { match removePath(path) { Ok -> {} Error(failure) -> absorb failure } }
+    if pathExists(target) { match removePath(target) { Ok -> {} Error(failure) -> absorb failure } }
+    match writeFile(target, "unrelated") {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    match makeSymbolicLink(target, path) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    let listing = sample()
+    var cache = CatalogCache {}
+    expect!(refreshed(cache, [listing]))
+    let queue = InstallQueue { jobs: [InstallJob { listing: listing }] }
+    expect!(!journalStored(saveInstallJournalFile(path, queue, cache, ApplicationRegistry {})))
+    expect!((try readFile(target) otherwise return).text == "unrelated")
+    match removePath(path) { Ok -> {} Error(failure) -> absorb failure }
+    match removePath(target) { Ok -> {} Error(failure) -> absorb failure }
+}

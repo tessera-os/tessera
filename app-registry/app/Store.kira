@@ -1,0 +1,106 @@
+//! One-writer registry persistence. Accepted state is never exposed from a
+//! truncated file: this service refuses damaged input and replaces a complete
+//! staged record with a same-directory rename. The caller owns the parent
+//! directory and must serialize writers; this is not an fsync guarantee.
+import Foundation
+
+public enum RegistryStoreFailure {
+    Unavailable
+    Damaged
+    UnsafePath
+}
+
+/// No record yet means fresh registration. An existing invalid or linked file
+/// is an error, not a reason to forget the previous accepted installations.
+public function readRegistryFile(
+    path: borrow String
+) -> Result<ApplicationRegistry, RegistryStoreFailure> {
+    if !safeRegistryStorePath(path) { return .Error(.UnsafePath) }
+    match linkStatus(path) {
+        Ok(status) -> {
+            if status.kind != .File { return .Error(.UnsafePath) }
+            if status.size > RegistryText.maxBytes { return .Error(.Damaged) }
+        }
+        Error(failure) -> match failure {
+            Missing -> return .Ok(ApplicationRegistry {})
+            else -> return .Error(.Unavailable)
+        }
+    }
+    let bytes = match readFile(path) {
+        Ok(contents) -> contents.text
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Unavailable)
+        }
+    }
+    return match parsedRegistry(bytes) {
+        Some(registry) -> .Ok(registry)
+        None -> .Error(.Damaged)
+    }
+}
+
+/// Replace the previous complete registry only after a canonical, validated
+/// staged version is available. Never overwrite known-damaged records.
+public function saveRegistryFile(
+    path: borrow String,
+    registry: borrow ApplicationRegistry
+) -> Result<Void, RegistryStoreFailure> {
+    let content = registryText(registry)
+    if parsedRegistry(content).isNone() { return .Error(.Damaged) }
+    match readRegistryFile(path) {
+        Ok(current) -> absorb current
+        Error(failure) -> return .Error(failure)
+    }
+    let stage = path + ".next"
+    // An interrupted previous write might have left an ordinary stage file.
+    // Refuse stages that are links or special files, since writeFile follows
+    // such entries on some filesystems.
+    match linkStatus(stage) {
+        Ok(status) -> if status.kind != .File { return .Error(.UnsafePath) }
+        Error(failure) -> match failure {
+            Missing -> {}
+            else -> return .Error(.Unavailable)
+        }
+    }
+    match writeFile(stage, content) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Unavailable)
+        }
+    }
+    match renamePath(stage, path) {
+        Ok -> return .Ok
+        Error(failure) -> {
+            absorb failure
+            match removePath(stage) {
+                Ok -> {}
+                Error(cleanup) -> absorb cleanup
+            }
+            return .Error(.Unavailable)
+        }
+    }
+}
+
+// The registry and its sidecar must stay under an owned, non-symlinked
+// directory. A linked parent can redirect even a regular-looking file.
+function safeRegistryStorePath(path: borrow String) -> Bool {
+    if path.count == 0 || path == "/" || path.contains("\0") { return false }
+    for (index, segment) in path.split("/").enumerated() {
+        if (segment.count == 0 && index != 0) || segment == "." || segment == ".." {
+            return false
+        }
+    }
+    for index in 1..path.count {
+        if Number(path.charAt(index)) != 47 { continue }
+        let status = match linkStatus(path.substring(0, index)) {
+            Ok(value) -> value
+            Error(failure) -> {
+                absorb failure
+                return false
+            }
+        }
+        if status.kind != .Directory { return false }
+    }
+    return true
+}

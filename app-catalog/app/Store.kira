@@ -1,0 +1,99 @@
+//! Host-independent offline catalog storage. Only metadata is cached. The
+//! store never marks an artifact downloaded or accepted, and the resulting
+//! catalog starts Offline on read. A caller must serialize writers.
+import Foundation
+
+public enum CatalogStoreFailure {
+    Unavailable
+    Damaged
+    UnsafePath
+    StaleSnapshot
+}
+
+public function readCatalogFile(path: borrow String) -> Result<CatalogCache, CatalogStoreFailure> {
+    if !safeCatalogStorePath(path) { return .Error(.UnsafePath) }
+    match linkStatus(path) {
+        Ok(status) -> {
+            if status.kind != .File { return .Error(.UnsafePath) }
+            if status.size > CatalogLimits.maxCacheBytes { return .Error(.Damaged) }
+        }
+        Error(failure) -> match failure {
+            Missing -> return .Ok(CatalogCache {})
+            else -> return .Error(.Unavailable)
+        }
+    }
+    let content = match readFile(path) {
+        Ok(value) -> value.text
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Unavailable)
+        }
+    }
+    return match parsedCatalog(content) {
+        Some(cache) -> .Ok(cache)
+        None -> .Error(.Damaged)
+    }
+}
+
+public function saveCatalogFile(
+    path: borrow String,
+    cache: borrow CatalogCache
+) -> Result<Void, CatalogStoreFailure> {
+    // Refuse a pre-refresh cache or arbitrary corrupted in-memory metadata.
+    let text = catalogText(cache)
+    if parsedCatalog(text).isNone() { return .Error(.Damaged) }
+    let existing = match readCatalogFile(path) {
+        Ok(old) -> old
+        Error(failure) -> return .Error(failure)
+    }
+    if existing.refreshedAt >= cache.refreshedAt { return .Error(.StaleSnapshot) }
+    let staging = path + ".next"
+    match linkStatus(staging) {
+        Ok(status) -> if status.kind != .File { return .Error(.UnsafePath) }
+        Error(failure) -> match failure {
+            Missing -> {}
+            else -> return .Error(.Unavailable)
+        }
+    }
+    match writeFile(staging, text) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Unavailable)
+        }
+    }
+    match renamePath(staging, path) {
+        Ok -> return .Ok
+        Error(failure) -> {
+            absorb failure
+            match removePath(staging) {
+                Ok -> {}
+                Error(cleanup) -> absorb cleanup
+            }
+            return .Error(.Unavailable)
+        }
+    }
+}
+
+// Keep a cache's path under non-linked parents. This is also used by the
+// signed-feed and job-journal stores; it does not replace exclusive I/O.
+function safeCatalogStorePath(path: borrow String) -> Bool {
+    if path.count == 0 || path == "/" || path.contains("\0") { return false }
+    for (index, segment) in path.split("/").enumerated() {
+        if (segment.count == 0 && index != 0) || segment == "." || segment == ".." {
+            return false
+        }
+    }
+    for index in 1..path.count {
+        if Number(path.charAt(index)) != 47 { continue }
+        let status = match linkStatus(path.substring(0, index)) {
+            Ok(value) -> value
+            Error(failure) -> {
+                absorb failure
+                return false
+            }
+        }
+        if status.kind != .Directory { return false }
+    }
+    return true
+}

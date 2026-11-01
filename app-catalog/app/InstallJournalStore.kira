@@ -1,0 +1,81 @@
+//! Persist only installation job *display history*, never a verification
+//! token. On restart, a Ready claim is reconciled with the accepted registry.
+import Foundation
+import AppRegistry
+
+public enum InstallJournalStoreFailure {
+    Unavailable
+    Damaged
+    UnsafePath
+}
+
+public function readInstallJournalFile(
+    path: borrow String,
+    cache: borrow CatalogCache,
+    registry: borrow ApplicationRegistry
+) -> Result<InstallQueue, InstallJournalStoreFailure> {
+    if !safeCatalogStorePath(path) { return .Error(.UnsafePath) }
+    match linkStatus(path) {
+        Ok(status) -> {
+            if status.kind != .File { return .Error(.UnsafePath) }
+            if status.size > InstallJournalText.maxBytes { return .Error(.Damaged) }
+        }
+        Error(failure) -> match failure {
+            Missing -> return .Ok(InstallQueue {})
+            else -> return .Error(.Unavailable)
+        }
+    }
+    let content = match readFile(path) {
+        Ok(bytes) -> bytes.text
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Unavailable)
+        }
+    }
+    return match parsedInstallJournal(content, cache, registry) {
+        Some(queue) -> .Ok(queue)
+        None -> .Error(.Damaged)
+    }
+}
+
+public function saveInstallJournalFile(
+    path: borrow String,
+    queue: borrow InstallQueue,
+    cache: borrow CatalogCache,
+    registry: borrow ApplicationRegistry
+) -> Result<Void, InstallJournalStoreFailure> {
+    let text = installJournalText(queue)
+    // Ensures a corrupt in-memory queue cannot be committed. Note that
+    // interrupted/verified jobs are intentionally downgraded on decode.
+    if parsedInstallJournal(text, cache, registry).isNone() { return .Error(.Damaged) }
+    match readInstallJournalFile(path, cache, registry) {
+        Ok(old) -> absorb old
+        Error(failure) -> return .Error(failure)
+    }
+    let staged = path + ".next"
+    match linkStatus(staged) {
+        Ok(status) -> if status.kind != .File { return .Error(.UnsafePath) }
+        Error(failure) -> match failure {
+            Missing -> {}
+            else -> return .Error(.Unavailable)
+        }
+    }
+    match writeFile(staged, text) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Unavailable)
+        }
+    }
+    match renamePath(staged, path) {
+        Ok -> return .Ok
+        Error(failure) -> {
+            absorb failure
+            match removePath(staged) {
+                Ok -> {}
+                Error(cleanup) -> absorb cleanup
+            }
+            return .Error(.Unavailable)
+        }
+    }
+}

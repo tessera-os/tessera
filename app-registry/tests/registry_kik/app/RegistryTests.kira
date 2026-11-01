@@ -1,0 +1,276 @@
+import Foundation
+import AppRegistry
+
+let pubA: String = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+let pubB: String = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+let digestA: String = "1111111111111111111111111111111111111111111111111111111111111111"
+let digestB: String = "2222222222222222222222222222222222222222222222222222222222222222"
+
+function candidate(
+    publisher: borrow String,
+    version: Number,
+    digest: borrow String,
+    management: AppManagement = .Direct
+) -> AppCandidate {
+    return AppCandidate {
+        identity: AppIdentity { identifier: "example.notes", publisher: copy publisher },
+        name: "Notes",
+        version: version,
+        imageDigest: copy digest,
+        management: management,
+        requests: ["display", "data"]
+    }
+}
+
+@Test
+function twoPublishersCanInstallTheSameVisibleName() {
+    var registry = ApplicationRegistry {}
+    let first = candidate(pubA, 1, digestA)
+    let second = candidate(pubB, 1, digestB)
+    expect!(registrationSucceeded(registry.prepare(first)))
+    expect!(registrationSucceeded(registry.prepare(second)))
+    expect!(registry.installed.count == 0)
+    expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
+    expect!(registrationSucceeded(registry.activate(second.identity, digestB)))
+    expect!(registry.installed.count == 2)
+    expect!(registry.accepted(first.identity).isSome())
+    expect!(registry.accepted(second.identity).isSome())
+}
+
+@Test
+function pendingUpdatesNeverReplaceAcceptedBytesUntilCommitted() {
+    var registry = ApplicationRegistry {}
+    let first = candidate(pubA, 1, digestA)
+    let second = candidate(pubA, 2, digestB)
+    expect!(registrationSucceeded(registry.prepare(first)))
+    expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
+    expect!(registrationSucceeded(registry.prepare(second)))
+    let active = try registry.accepted(first.identity) otherwise return
+    expect!(active.candidate.version == 1)
+    expect!(registrationFailed(registry.activate(first.identity, digestA)))
+    expect!(registry.pending.count == 1)
+    expect!(registrationSucceeded(registry.activate(first.identity, digestB)))
+    let latest = try registry.accepted(first.identity) otherwise return
+    expect!(latest.candidate.version == 2)
+    expect!(registry.pending.count == 0)
+}
+
+@Test
+function newlyRequestedGrantsStayOffAfterAnUpdate() {
+    var registry = ApplicationRegistry {}
+    let first = candidate(pubA, 1, digestA)
+    expect!(registrationSucceeded(registry.prepare(first)))
+    expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
+    expect!(registrationSucceeded(registry.setGrant(first.identity, "data", true)))
+    var update = candidate(pubA, 2, digestB)
+    update.requests = ["data", "network"]
+    expect!(registrationSucceeded(registry.prepare(update)))
+    expect!(registrationSucceeded(registry.activate(update.identity, digestB)))
+    let active = try registry.accepted(first.identity) otherwise return
+    expect!(active.grants == ["data"])
+    expect!(registrationFailed(registry.setGrant(first.identity, "display", true)))
+    expect!(registrationSucceeded(registry.setGrant(first.identity, "network", true)))
+}
+
+@Test
+function canceledAndRejectedUpdatesLeavePreviousInstallationsUntouched() {
+    var registry = ApplicationRegistry {}
+    let first = candidate(pubA, 1, digestA)
+    let second = candidate(pubA, 2, digestB)
+    expect!(registrationSucceeded(registry.prepare(first)))
+    expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
+    expect!(registrationSucceeded(registry.prepare(second)))
+    registry.cancel(first.identity)
+    expect!(registrationFailed(registry.activate(first.identity, digestB)))
+    expect!(registrationFailed(registry.prepare(first)))
+    let active = try registry.accepted(first.identity) otherwise return
+    expect!(active.candidate.version == 1)
+}
+
+@Test
+function directInstallCannotBeSilentlyTakenOverByCatalog() {
+    var registry = ApplicationRegistry {}
+    let original = candidate(pubA, 1, digestA)
+    let update = candidate(pubA, 2, digestB, .Catalog)
+    expect!(registrationSucceeded(registry.prepare(original)))
+    expect!(registrationSucceeded(registry.activate(original.identity, digestA)))
+    expect!(registrationFailed(registry.prepare(update)))
+    expect!(registry.pending.count == 0)
+    expect!(registrationSucceeded(registry.prepare(update, true)))
+}
+
+@Test
+function uninstallationPreservesDataOwnershipByPublisherIdentity() {
+    var registry = ApplicationRegistry {}
+    let first = candidate(pubA, 1, digestA)
+    let second = candidate(pubB, 1, digestB)
+    expect!(registrationSucceeded(registry.prepare(first)))
+    expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
+    registry.uninstall(first.identity)
+    expect!(registry.accepted(first.identity).isNone())
+    expect!(registry.retainedData.contains(first.identity))
+    expect!(!registry.retainedData.contains(second.identity))
+    expect!(registrationSucceeded(registry.prepare(second)))
+    expect!(registrationSucceeded(registry.activate(second.identity, digestB)))
+    expect!(registry.accepted(second.identity).isSome())
+}
+
+@Test
+function metadataValidationRejectsAmbiguousAndMalformedIdentity() {
+    let good = candidate(pubA, 1, digestA)
+    expect!(validAppCandidate(good).isNone())
+    expect!(!validAppIdentity(AppIdentity { identifier: "../Notes", publisher: pubA }))
+    expect!(!validAppIdentity(AppIdentity { identifier: "example..notes", publisher: pubA }))
+    expect!(
+        !validAppIdentity(AppIdentity { identifier: "example.notes", publisher: "not a digest" })
+    )
+    expect!(!validSha256("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"))
+    var broken = candidate(pubA, 1, digestA)
+    broken.requests = ["network", "network"]
+    expect!(validAppCandidate(broken).isSome())
+}
+
+function registrationSucceeded(result: Result<Void, RegistrationFailure>) -> Bool {
+    return match result {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+}
+
+function registrationFailed(result: Result<Void, RegistrationFailure>) -> Bool {
+    return !registrationSucceeded(move result)
+}
+
+@Test
+function unknownUninstallCannotInventAnApplicationDataClaim() {
+    var registry = ApplicationRegistry {}
+    let unknown = AppIdentity { identifier: "example.unknown", publisher: pubA }
+    registry.uninstall(unknown)
+    expect!(registry.retainedData.count == 0)
+    let pending = candidate(pubA, 1, digestA)
+    expect!(registrationSucceeded(registry.prepare(pending)))
+    registry.uninstall(pending.identity)
+    expect!(registry.pending.count == 0)
+    expect!(registry.retainedData.count == 0)
+}
+
+@Test
+function fractionalVersionsAndAmbiguousIdentifiersAreRejected() {
+    let id = AppIdentity { identifier: "example.-notes", publisher: pubA }
+    expect!(!validAppIdentity(id))
+    let trailing = AppIdentity { identifier: "example-.notes", publisher: pubA }
+    expect!(!validAppIdentity(trailing))
+    var invalid = candidate(pubA, 1.5, digestA)
+    expect!(validAppCandidate(invalid).isSome())
+    invalid.requests = ["NETWORK"]
+    expect!(validAppCandidate(invalid).isSome())
+}
+
+@Test
+function registryRejectsVersionsBeyondTheSupportedRange() {
+    let excessive = candidate(pubA, 1000000001, digestA)
+    expect!(validAppCandidate(excessive).isSome())
+    var registry = ApplicationRegistry {}
+    expect!(registrationFailed(registry.prepare(excessive)))
+    expect!(registry.installed.count == 0)
+    expect!(registry.pending.count == 0)
+}
+
+@Test
+function updateKeepsOnePreviousAcceptedVersionForRollback() {
+    var registry = ApplicationRegistry {}
+    let original = candidate(pubA, 1, digestA)
+    let next = candidate(pubA, 2, digestB)
+    expect!(registrationSucceeded(registry.prepare(original)))
+    expect!(registrationSucceeded(registry.activate(original.identity, digestA)))
+    expect!(registrationSucceeded(registry.setGrant(original.identity, "data", true)))
+    expect!(registrationSucceeded(registry.prepare(next)))
+    expect!(registrationSucceeded(registry.activate(next.identity, digestB)))
+    let active = try registry.accepted(original.identity) otherwise return
+    let old = try registry.previous(original.identity) otherwise return
+    expect!(active.candidate.version == 2)
+    expect!(old.candidate.version == 1)
+    expect!(old.grants == ["data"])
+    expect!(registry.previousVersions.count == 1)
+    expect!(registrationFailed(registry.rollBack(original.identity, digestA, false)))
+    expect!(registrationFailed(registry.rollBack(original.identity, digestB, true)))
+    expect!((try registry.accepted(original.identity) otherwise return).candidate.version == 2)
+    expect!(registrationSucceeded(registry.rollBack(original.identity, digestA, true)))
+    expect!((try registry.accepted(original.identity) otherwise return).candidate.version == 1)
+    expect!(registry.previousVersions.count == 0)
+    expect!((try registry.accepted(original.identity) otherwise return).grants == ["data"])
+}
+
+@Test
+function uninstallationClearsRollbackHistoryButKeepsDataOwnership() {
+    var registry = ApplicationRegistry {}
+    let first = candidate(pubA, 1, digestA)
+    let second = candidate(pubA, 2, digestB)
+    expect!(registrationSucceeded(registry.prepare(first)))
+    expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
+    expect!(registrationSucceeded(registry.prepare(second)))
+    expect!(registrationSucceeded(registry.activate(second.identity, digestB)))
+    expect!(registry.previousVersions.count == 1)
+    registry.uninstall(second.identity)
+    expect!(registry.previousVersions.count == 0)
+    expect!(registry.installed.count == 0)
+    expect!(registry.retainedData.count == 1)
+    expect!(registrationFailed(registry.rollBack(first.identity, digestA, true)))
+}
+
+@Test
+function rollbackCannotRestorePermissionsRevokedAfterUpdating() {
+    var registry = ApplicationRegistry {}
+    let original = candidate(pubA, 1, digestA)
+    let latest = candidate(pubA, 2, digestB)
+    expect!(registrationSucceeded(registry.prepare(original)))
+    expect!(registrationSucceeded(registry.activate(original.identity, digestA)))
+    expect!(registrationSucceeded(registry.setGrant(original.identity, "data", true)))
+    expect!(registrationSucceeded(registry.setGrant(original.identity, "display", true)))
+    expect!(registrationSucceeded(registry.prepare(latest)))
+    expect!(registrationSucceeded(registry.activate(latest.identity, digestB)))
+    expect!(registrationSucceeded(registry.setGrant(latest.identity, "data", false)))
+    expect!((try registry.previous(original.identity) otherwise return).grants.contains("data"))
+    expect!(registrationSucceeded(registry.rollBack(latest.identity, digestA, true)))
+    let active = try registry.accepted(original.identity) otherwise return
+    expect!(active.candidate.version == 1)
+    expect!(active.grants == ["display"])
+    expect!(!active.grants.contains("data"))
+}
+
+@Test
+function revokingPermissionWhileUpdateDownloadsCannotRestoreItOnActivation() {
+    var registry = ApplicationRegistry {}
+    let old = candidate(pubA, 1, digestA)
+    let next = candidate(pubA, 2, digestB)
+    expect!(registrationSucceeded(registry.prepare(old)))
+    expect!(registrationSucceeded(registry.activate(old.identity, digestA)))
+    expect!(registrationSucceeded(registry.setGrant(old.identity, "data", true)))
+    expect!(registrationSucceeded(registry.prepare(next)))
+    expect!((try registry.staged(next.identity) otherwise return).carried == ["data"])
+    expect!(registrationSucceeded(registry.setGrant(old.identity, "data", false)))
+    expect!(registrationSucceeded(registry.activate(next.identity, digestB)))
+    expect!((try registry.accepted(next.identity) otherwise return).grants.count == 0)
+}
+
+@Test
+function staleStagedActivationCannotReplaceNewerAcceptedVersionOrRollbackSlot() {
+    var registry = ApplicationRegistry {}
+    let first = candidate(pubA, 1, digestA)
+    let next = candidate(pubA, 2, digestB)
+    expect!(registrationSucceeded(registry.prepare(first)))
+    expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
+    expect!(registrationSucceeded(registry.prepare(next)))
+    expect!(registrationSucceeded(registry.activate(next.identity, digestB)))
+    // A stale installer tries to restage the old version and activate it.
+    expect!(registrationFailed(registry.prepare(first)))
+    expect!(registrationFailed(registry.activate(first.identity, digestA)))
+    let accepted = try registry.accepted(first.identity) otherwise return
+    let rollback = try registry.previous(first.identity) otherwise return
+    expect!(accepted.candidate.version == 2)
+    expect!(rollback.candidate.version == 1)
+    expect!(registry.pending.count == 0)
+}

@@ -111,3 +111,64 @@ The first complete flow needs network configuration, DNS and HTTPS from
 support. It can be proven against a controlled catalogue with two app versions;
 a static storefront mockup does not close install or update checkpoints.
 Publishing to a public catalogue and introducing payments are later work.
+
+## Implementation status (2026-10-31)
+
+A host-testable **App Store core model** now lives in `app-registry/` and
+`app-catalog/`. Its registry binds a stable app ID to a publisher-key
+fingerprint rather than display name. Accepted and pending image versions,
+permission grants, update-ownership consent, retained-data ownership,
+strict versioned persistence, recovery after interrupted writes, and basic
+signed-image *manifest syntax* are modeled and tested. Publisher authentication
+and artifact signature verification are **not** provided by the core model;
+those are the responsibility of the separately privileged installer.
+
+The catalogue model supports browsing and search, category filters, offline
+cache, platform/build compatibility, Open/Update/Get presentation, withdrawn
+listings, downloadable-update availability, a multi-stage install job queue,
+cancellation, progress, and a persisted restart-safe job journal. On restart
+a queued/verified/in-progress job cannot claim an accepted application without
+the independently accepted registry version. A product page retains an Open
+action for a locally installed app even when its new catalogue version is
+withdrawn, offline or incompatible.
+
+This work does **not** implement the network catalogue, signed server feed,
+download transport, quarantine, actual image installation, immutable image
+activation, storefront UI or Home/Settings integration. In particular, no
+metadata file or journal may confer signature trust on executable bytes.
+The original boot and product acceptance checkpoints remain open. The current
+PID 1 installer uses display-name image paths and requires migration to the
+identity-based registry for fully safe, versioned application updates.
+
+
+### Signed application image verification (2026-10-31)
+
+`AppRegistry.verifyAppImageCandidate` checks an immutable staged file's actual
+SHA-256 bytes and a canonical manifest statement under an Ed25519 certificate
+whose SHA-256 fingerprint the privileged installer must supply from a trusted
+policy or explicit owner approval. `AppCatalog.InstallQueue.verifyDownloadedImage`
+connects that verifier to the download transaction and requires the signed
+manifest to match the catalog's publisher identity and image digest. Public
+host fixtures exercise valid signatures, altered bytes and mismatched pins.
+No private signing key is part of the checkout. This does **not** yet provide
+an OS-owned immutable installation slot or a privileged-only queue endpoint;
+`stageInstall` and `finishInstall` still rely on the trusted installer to
+ensure the verified bytes are the bytes eventually activated. Boot acceptance
+checkpoints remain open.
+
+### Staged-image activation safety (2026-10-31)
+
+The signed-image verifier also rejects path-alias and linked-parent staging
+paths, checks file metadata before/after digesting, and exposes a separate
+`finishVerifiedInstall` queue operation that repeats signed-byte checks at the
+activation boundary. Host regressions exercise tampering after download and
+before activation. These checks are defense in depth: the installer still
+needs to own an immutable image file descriptor and atomically activate that
+exact verified image; the public pure-state queue is not an authorization
+service. The model-only `finishInstall` operation remains available for
+internal testing and is *not* a secure API to expose to untrusted clients.
+
+The catalog installation queue enforces a three-active-download slot limit
+and releases a slot on cancellation or when download verification begins;
+queued work remains queued until a slot is available. This is a tested model
+limit and not yet enforced by the missing privileged network downloader.

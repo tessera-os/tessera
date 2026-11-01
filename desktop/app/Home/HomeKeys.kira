@@ -27,7 +27,13 @@ extend HomeScreen {
         if current >= screens.count { return }
         if !keyed {
             keyed = true
-            focusIndex = min(focusIndex, max(screens[current].count - 1, 0))
+            if screens[current].count == 0 {
+                let (screen, index) = steppedFocus(screens, current, 0, step)
+                page = screen
+                focusIndex = index
+            } else {
+                focusIndex = min(focusIndex, screens[current].count - 1)
+            }
             return
         }
         let (screen, index) = steppedFocus(screens, current, focusIndex, step)
@@ -155,7 +161,9 @@ extend HomeScreen {
     // Where the ring is on its saved page, when it is on a page.
     function focusedSlot(arrangement: borrow HomeArrangement) -> HomeSlot? {
         let screens = arrangement.screenPages(homeSpace(launcherMetrics()))
-        if page >= screens.count || focusIndex >= screens[page].count { return .None }
+        if page < 0 || page >= screens.count || focusIndex < 0 || focusIndex >= screens[page].count {
+            return .None
+        }
         return .Some(HomeSlot { page: screens[page].page, index: screens[page].first + focusIndex })
     }
 }

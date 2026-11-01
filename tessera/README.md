@@ -253,3 +253,41 @@ between here and a self-contained Kira userland, in increasing size:
 Nothing above was a reason to wait, and PID 1 is Kira today. Measured on the
 things themselves: `init` is 1.2 MB on x86_64 and 1.3 MB on aarch64, and the
 initramfs it rides in is 4.0 MB and 4.4 MB compressed.
+
+### Local host preflight
+
+From the Tessera source root, run `scripts/verify-host.sh --tests` to check
+available Kira/KLF/KSL tools, local graphics assets, advisory-lock support in
+`.kira-build` and the five host regression suites. The command does not boot
+Tessera, does not change source files and returns a nonzero exit code when a
+required preflight check fails. Use the recommended host toolchain and a
+compatible build filesystem; the Cairn workspace may not support the advisory
+file locks used by the build driver. Passing host tests is not a substitute
+for `kira build boot -arch aarch64 -test` on a working build host.
+
+### Boot-build lock workaround and disk guard
+
+A Cairn filesystem may reject Kira's advisory lock in `.kira-build/lock`.
+Run `scripts/boot-with-local-lock.sh --self-test` from this component's
+folder to check a disposable local lock and verify restoration of the original
+lock file without starting a build. On a host with adequate space, use
+`scripts/boot-with-local-lock.sh --build` to run the default aarch64 boot test.
+The wrapper checks for **at least 10 GiB free** on relevant local build/cache
+filesystems before starting, redirects only the lock to a local temporary file,
+and restores the original on exit or interruption. It serializes wrapper
+invocations with an exclusive guard directory, but do not start ordinary
+`kira build` processes concurrently outside the wrapper. The wrapper is not
+an alternate compiler, does not solve missing platform SDK/Browser payloads,
+and does not count as a successful boot unless the underlying build and boot
+tests complete.
+
+The October 31, 2026 cold boot attempt reached step 5 of 477 with the lock
+workaround, but was interrupted when the local disk approached 3 GiB free.
+The original lock was restored. Host tests and Linux-target compiler checks
+remain separate from full boot acceptance.
+
+Run `scripts/test-boot-with-local-lock.sh` for isolated wrapper regressions.
+The test suite copies the wrapper into a disposable local directory, exercises
+preservation of an existing lock, simultaneous invocation refusal, linked
+and directory lock refusal, and clean handling of an absent lock. It never
+starts a real build or touches the checkout's original build lock.

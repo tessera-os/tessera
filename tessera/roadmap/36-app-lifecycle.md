@@ -141,3 +141,35 @@ restored after a crash and removed with consistent identity and data handling.
       documented compatible app/data pair with no partially registered version.
 - [ ] Uninstall with retained data, inspect its storage ownership and reinstall
       the matching app. A different publisher cannot claim that retained data.
+
+## Implementation notes (2026-10-31)
+
+A Foundation-only `AppRegistry` model and host regression suite now exist at
+`tessera-packages/app-registry/`. It models stable publisher-bound identity,
+a pending versus accepted image version, explicit activation after an image
+digest is externally verified, update ownership, grants separate from requested
+capabilities and data ownership retained after uninstall. Two publishers using
+the same display name remain distinct. This is the transaction *model*, not
+a signed image verifier, durable installer, process manager, running-app
+activation, automatic update service, installed-app migration or App Store.
+The registry now also has strict persisted accepted/pending records and
+startup reconciliation, and checks for real application-manifest fields
+(`id`, `name`, `version`, `exec`, `needs`). `AppCatalog` adds a separate
+versioned offline cache, product action model, install job lifecycle and
+restart-safe journal. These pure state models are tested on the host; none
+provides an authenticated publisher verifier, network installer, OS-backed
+activation, or durable permissions enforcement in PID 1. The original eight
+end-to-end checkpoints above remain open.
+
+App registry v2 retains one rollback candidate with older signed-image
+metadata and preserves it across restart. Owner-approved rollback is gated on
+a reverified previous image digest, and rollback or delayed activation cannot
+re-grant capabilities revoked since the update was staged. Rollback remains a
+state model, not yet a completed immutable-image slot switch in PID 1.
+
+**Publisher identity caveat:** the current verifier binds an app identity to a
+SHA-256 fingerprint of its *certificate DER*, not a standalone public-key
+fingerprint. Certificate renewal will therefore change the identity even when
+the underlying Ed25519 key is unchanged. An owner-approved, authenticated
+certificate-rotation/migration protocol must be implemented before calling
+this a stable production publisher identity across certificate renewals.

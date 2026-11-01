@@ -34,3 +34,84 @@ function anOldArrangementIsReadAsNone() {
     let read = parsedArrangement("version 1\npage\napp Notes\n")
     expect!(read.pages.count == 0)
 }
+
+@Test
+function retainedEmptyPagesSurviveSavingAndInstalling() {
+    var home = HomeArrangement {}
+    home.pages.append(HomePage { items: [.App("Notes")] })
+    home.addPage()
+    home.toggleHidden(1)
+    let saved = arrangementText(home)
+    let restored = parsedArrangement(saved)
+    expect!(arrangementText(restored) == saved)
+    expect!(restored.pages[1].retained)
+    expect!(restored.pages[1].hidden)
+    let updated = withInstalled(restored, ["Notes"], false, smallSpace)
+    expect!(updated.pages.count == 2)
+    expect!(updated.pages[1].retained)
+    expect!(updated.settled().pages.count == 2)
+}
+
+@Test
+function namesWithNewlinesAndPercentSurviveAnArrangementRoundTrip() {
+    let named = "Work\n☀️ 100%\r\t"
+    var home = HomeArrangement { reset: "set%0A\nnow", removed: ["Off\nHome"] }
+    home.pages.append(
+        HomePage {
+            items: [
+                .App("App 100%"),
+                .Folder(HomeFolder { name: named, apps: ["Member\nA", "%20"] })
+            ],
+            widgets: [HomeWidget { kind: "Clock 100%" }]
+        }
+    )
+    let text = arrangementText(home)
+    expect!(text.startsWith(HomeFormat.version + "\n"))
+    expect!(text.contains("folder Work%0A☀️%20100%25%0D%09"))
+    expect!(text.contains("widget Clock%20100%25 small"))
+    let restored = parsedArrangement(text)
+    expect!(arrangementText(restored) == text)
+    expect!(restored.reset == home.reset)
+    expect!(namesOn(restored, 0) == ["App 100%", named])
+    expect!(folderAt(restored, 0, 1) == ["Member\nA", "%20"])
+    expect!(restored.removed == ["Off\nHome"])
+}
+
+@Test
+function legacyVersionTwoArrangementsStayReadable() {
+    let legacy = "version 2\nreset a%0A\npage retained hidden\nfolder Work Notes\nmember A%20B\nremoved In%20Library\n"
+    let read = parsedArrangement(legacy)
+    expect!(read.pages.count == 1)
+    expect!(read.pages[0].retained)
+    expect!(read.pages[0].hidden)
+    expect!(read.reset == "a%0A")
+    expect!(namesOn(read, 0) == ["Work Notes"])
+    expect!(folderAt(read, 0, 0) == ["A%20B"])
+    expect!(read.removed == ["In%20Library"])
+    expect!(arrangementText(read).startsWith("version 3\n"))
+}
+
+@Test
+function invalidEscapesStayLiteral() {
+    let saved = "version 3\npage\nfolder X%ZZ%3%\nmember 100%25\n"
+    let read = parsedArrangement(saved)
+    expect!(namesOn(read, 0) == ["X%ZZ%3%"])
+    expect!(folderAt(read, 0, 0) == ["100%"])
+    expect!(arrangementText(parsedArrangement(arrangementText(read))) == arrangementText(read))
+}
+
+@Test
+function windowsLineEndingsRemainReadableAcrossBothHomeFormats() {
+    let old = "version 2\r\npage\r\nfolder Work Notes\r\nmember A B\r\n"
+    let legacy = parsedArrangement(old)
+    expect!(legacy.pages.count == 1)
+    expect!(folderAt(legacy, 0, 0) == ["A B"])
+
+    let new = "version 3\r\npage retained\r\nfolder Work%20Notes\r\nmember A%20B\r\n"
+    let imported = parsedArrangement(new)
+    expect!(imported.pages.count == 1)
+    expect!(imported.pages[0].retained)
+    expect!(namesOn(imported, 0) == ["Work Notes"])
+    expect!(folderAt(imported, 0, 0) == ["A B"])
+    expect!(arrangementText(imported).startsWith("version 3\n"))
+}

@@ -98,3 +98,133 @@ function widgetsTakeRowsAndFit() {
     }
     expect!(small)
 }
+
+@Test
+function dropOnSelfKeepsTheAppWithoutMakingAFolder() {
+    var home = arranged(["A", "B", "C"])
+    let slot = HomeSlot { page: 0, index: 1 }
+    home.dropItem(slot, slot, smallSpace)
+    expect!(namesOn(home, 0) == ["A", "B", "C"])
+    expect!(home.slotOf("B").isSome())
+}
+
+@Test
+function moveOutOnlyTakesAnExistingFolderMember() {
+    var home = arranged(["A", "B", "C"])
+    home.moveOut("A", 0, smallSpace)
+    home.moveOut("Missing", 0, smallSpace)
+    expect!(namesOn(home, 0) == ["A", "B", "C"])
+    home.dropItem(HomeSlot { page: 0, index: 0 }, HomeSlot { page: 0, index: 1 }, smallSpace)
+    home.moveOut("A", 0, smallSpace)
+    expect!(namesOn(home, 0) == [HomeFolderName.made, "C", "A"])
+    expect!(folderAt(home, 0, 0) == ["B"])
+}
+
+@Test
+function reorderingUnknownMemberDoesNotInsertGhostApp() {
+    var home = arranged(["A", "B", "C"])
+    home.dropItem(HomeSlot { page: 0, index: 0 }, HomeSlot { page: 0, index: 1 }, smallSpace)
+    let slot = HomeSlot { page: 0, index: 0 }
+    home.reorderFolder(slot, "Missing", 0)
+    expect!(folderAt(home, 0, 0) == ["B", "A"])
+    expect!(home.slotOf("Missing").isNone())
+}
+
+@Test
+function invalidWidgetIndicesCannotChangeTheArrangement() {
+    var home = arranged(["A", "B"])
+    home.addWidget(0, HomeWidget { kind: "Clock" }, smallSpace)
+    home.resizeWidget(0, -1, smallSpace)
+    home.shiftWidget(0, -1, 1, smallSpace)
+    expect!(home.pages[0].widgets.count == 1)
+    let kind = home.pages[0].widgets[0].kind
+    expect!(kind == "Clock")
+}
+
+@Test
+function anExplicitEmptyPageSurvivesSettlingAndHiding() {
+    var home = arranged(["A"])
+    home.addPage()
+    expect!(home.pages.count == 2)
+    expect!(home.pages[1].items.count == 0)
+    home.toggleHidden(1)
+    let settled = home.settled()
+    expect!(settled.pages.count == 2)
+    expect!(settled.pages[1].hidden)
+    expect!(settled.pages[1].retained)
+    home.toggleHidden(1)
+    home.movePage(1, 0)
+    expect!(home.pages[0].retained)
+}
+
+@Test
+function removingEmptyPagesNeverHidesEveryScreen() {
+    var home = arranged(["A"])
+    home.addPage()
+    home.addPage()
+    home.toggleHidden(0)
+    home.removeEmptyPage(1)
+    expect!(home.pages.count == 2)
+    expect!(home.shownPages() == [1])
+    home.removeEmptyPage(1)
+    expect!(home.pages.count == 1)
+    expect!(home.shownPages() == [0])
+    home.removeEmptyPage(0)
+    expect!(home.pages.count == 1)
+    expect!(namesOn(home, 0) == ["A"])
+}
+
+@Test
+function removingNonEmptyPagesNeverDiscardsAppsOrWidgets() {
+    var home = arranged(["A", "B", "C", "D", "E"])
+    home.removeEmptyPage(0)
+    expect!(home.pages.count == 2)
+    expect!(namesOn(home, 0) == ["A", "B", "C", "D"])
+    home.addPage()
+    home.addWidget(2, HomeWidget { kind: "Clock" }, smallSpace)
+    home.removeEmptyPage(2)
+    expect!(home.pages.count == 3)
+    expect!(home.pages[2].widgets.count == 1)
+}
+
+@Test
+function settlingPreservesHiddenPagesAndAddsAVisibleOne() {
+    var home = HomeArrangement {
+        pages: [HomePage { items: [.App("A")], hidden: true }, HomePage {}]
+    }
+    let settled = home.settled()
+    expect!(settled.pages.count == 2)
+    expect!(settled.pages[0].hidden)
+    expect!(settled.shownPages() == [1])
+}
+
+@Test
+function negativeTargetPageDoesNotDeleteAnAppOrCreateAnInvalidPage() {
+    var home = arranged(["A", "B", "C"])
+    home.moveItem(HomeSlot { page: 0, index: 1 }, HomeSlot { page: -1, index: 0 }, smallSpace)
+    expect!(namesOn(home, 0) == ["A", "B", "C"])
+    expect!(home.pages.count == 1)
+    home.insert(.App("Z"), HomeSlot { page: -1, index: 0 }, smallSpace)
+    expect!(namesOn(home, 0) == ["A", "B", "C"])
+    expect!(home.slotOf("Z").isNone())
+}
+
+@Test
+function overflowingVisiblePageDoesNotPutIconsOnHiddenPage() {
+    var home = HomeArrangement {
+        pages: [
+            HomePage { items: [.App("A"), .App("B"), .App("C"), .App("D")] },
+            HomePage { items: [.App("Private")], hidden: true, retained: true },
+            HomePage { items: [.App("E")] }
+        ]
+    }
+    home.addToHome("Z", 0, smallSpace)
+    expect!(home.pages.count == 4)
+    expect!(namesOn(home, 0) == ["A", "B", "C", "Z"])
+    expect!(namesOn(home, 1) == ["D"])
+    expect!(home.pages[2].hidden)
+    expect!(namesOn(home, 2) == ["Private"])
+    expect!(home.pages[2].retained)
+    expect!(namesOn(home, 3) == ["E"])
+    expect!(home.shownPages() == [0, 1, 3])
+}

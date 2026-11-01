@@ -1,6 +1,7 @@
 //! The Trash on the data volume: moving items in and out, and the records of where each came from.
 import Foundation
 import LibTessera
+import TrashRules
 
 // The Trash on the data volume (roadmap/19, decisions in its Decisions
 // section): `/data/Trash/items` holds each item, renamed in whole, and
@@ -12,52 +13,29 @@ import LibTessera
 // record unless the record was lost; an item found with no record has no
 // known origin.
 
-/// Where the Trash lives on the data volume: its folders, and the records that tell where each item came from.
-namespace TrashLayout {
-    let root: String = "/data/Trash"
-    let items: String = "/data/Trash/items"
-    let records: String = "/data/Trash/records"
-    // The record's first line: its format.
-    let recordVersion: String = "version 1"
-    // What a record's second line starts with, before the item's path.
-    let pathPrefix: String = "path "
-}
-
-/// Whether `path` is `directory` or lies beneath it.
-function within(path: borrow String, directory: borrow String) -> Bool {
-    return path == directory || path.startsWith(directory + "/")
-}
-
-/// Whether `path` carries a newline, which a record cannot hold, or a `..` segment, which could name a place outside the data volume.
-function hasUnsafeBytes(path: borrow String) -> Bool {
-    for index in 0..path.count {
-        let byte = Number(path.charAt(index))
-        if byte == 10 { return true }
-        if byte == 47 && index + 2 < path.count {
-            let next = Number(path.charAt(index + 1))
-            let after = Number(path.charAt(index + 2))
-            if next == 46 && after == 46 {
-                if index + 3 == path.count { return true }
-                if Number(path.charAt(index + 3)) == 47 { return true }
-            }
-        }
-    }
-    return false
-}
-
-/// Why `path` may not be moved to the Trash, or success when it may: an absolute path beneath the data volume, not the system's state, not the Trash, and with no newline or `..` segment.
+// The path and record rules are in TrashRules, which can run on a host
+// without LibTessera's Linux-only system calls.
 function refusalOf(path: borrow String) -> Result<Void, ErrorCode> {
-    if !within(path, "/data") || path.count <= 6 { return .Error(.InvalidPath) }
-    if hasUnsafeBytes(path) { return .Error(.InvalidPath) }
-    if within(path, "/data/system") || within(path, TrashLayout.root) {
-        return .Error(.AccessDenied)
+    return match trashPathStatus(path) {
+        Allowed -> .Ok
+        Invalid -> .Error(.InvalidPath)
+        Protected -> .Error(.AccessDenied)
     }
-    return .Ok
+}
+
+// Refuse even existing ordinary-looking Trash directories when an ancestor
+// (including /data itself) is a symbolic link. The Trash service runs with
+// filesystem privileges; it must not follow an alias to an unrelated volume.
+function safeTrashFolders() -> Bool {
+    return !hasLinkParent(TrashLayout.root)
+        && !hasLinkParent(TrashLayout.items)
+        && !hasLinkParent(TrashLayout.records)
 }
 
 /// Whether no item or record already has `id`.
 function isFreeId(id: borrow String) -> Bool {
-    return !pathExists(TrashLayout.items + "/" + id) && !pathExists(TrashLayout.records + "/" + id)
+    return !occupiedTrashEntry(TrashLayout.items + "/" + id)
+        && !occupiedTrashEntry(TrashLayout.records + "/" + id)
 }
 
 /// The first id no item or record has, or the reason there is none.
@@ -71,7 +49,10 @@ function freshId() -> Result<String, ErrorCode> {
 
 /// Makes `path` a directory if it is not one already.
 function ensureDirectory(path: borrow String) -> Result<Void, ErrorCode> {
-    if isDirectory(path) { return .Ok }
+    match linkStatus(path) {
+        Ok(status) -> return status.kind == .Directory ? .Ok : .Error(.AccessDenied)
+        Error(failure) -> absorb failure
+    }
     match makeDirectory(path) {
         Ok -> return .Ok
         Error(failed) -> {
@@ -89,49 +70,40 @@ function ensureDirectory(path: borrow String) -> Result<Void, ErrorCode> {
 
 /// Makes the Trash's folders, if they are missing.
 function ensureTrash() -> Result<Void, ErrorCode> {
+    // Check each newly created path only after its parent has been verified.
+    // hasLinkParent intentionally treats a *missing* ancestor as unsafe;
+    // checking all three before creating root would break first boot.
+    if hasLinkParent(TrashLayout.root) { return .Error(.AccessDenied) }
     match ensureDirectory(TrashLayout.root) {
         Ok -> {}
         Error(reason) -> return .Error(reason)
     }
+    if hasLinkParent(TrashLayout.items) { return .Error(.AccessDenied) }
     match ensureDirectory(TrashLayout.items) {
         Ok -> {}
         Error(reason) -> return .Error(reason)
     }
+    if hasLinkParent(TrashLayout.records) { return .Error(.AccessDenied) }
     return ensureDirectory(TrashLayout.records)
 }
 
-/// Whether `id` names an item: digits only, so it cannot name a path.
-function isItemId(id: borrow String) -> Bool {
-    if id.count == 0 || id.count > 20 { return false }
-    for index in 0..id.count {
-        let byte = Number(id.charAt(index))
-        if byte < 48 || byte > 57 { return false }
-    }
-    return true
-}
-
-/// The original path a record names, or the reason the record is not in the form `moveToTrash` writes.
+/// A bad record is not allowed to name a restore destination.
 function originalOf(text: borrow String) -> Result<String, ErrorCode> {
-    let prefix = TrashLayout.recordVersion + "\n" + TrashLayout.pathPrefix
-    if !text.startsWith(prefix) { return .Error(.BadState) }
-    if text.count <= prefix.count + 1 { return .Error(.BadState) }
-    if Number(text.charAt(text.count - 1)) != 10 { return .Error(.BadState) }
-    return .Ok(text.substring(prefix.count, text.count - 1))
-}
-
-/// The folder `path` lies in, for a path with a folder above its name.
-function parentOf(path: borrow String) -> String {
-    for step in 0..path.count {
-        let index = path.count - 1 - step
-        if index > 0 && Number(path.charAt(index)) == 47 { return path.substring(0, index) }
+    return match rawRecordPath(text) {
+        Some(path) -> .Ok(path)
+        None -> .Error(.BadState)
     }
-    return "/"
 }
 
 /// Moves the item `id` back to the path its record names; a crash between the two steps leaves a record with no item, which the next start removes.
 function putBack(id: borrow String) -> Result<Void, ErrorCode> {
     if !isItemId(id) { return .Error(.InvalidArgument) }
+    if !safeTrashFolders() || !directDirectory(TrashLayout.root)
+        || !directDirectory(TrashLayout.items) || !directDirectory(TrashLayout.records) {
+        return .Error(.AccessDenied)
+    }
     let recordPath = TrashLayout.records + "/" + id
+    if !directTrashRecord(recordPath) { return .Error(.NotFound) }
     let text = match readFile(recordPath) {
         Ok(contents) -> contents.text
         Error(failed) -> {
@@ -151,9 +123,10 @@ function putBack(id: borrow String) -> Result<Void, ErrorCode> {
         Ok -> {}
         Error(reason) -> return .Error(reason)
     }
-    if !pathExists(TrashLayout.items + "/" + id) { return .Error(.NotFound) }
-    if pathExists(original) { return .Error(.AlreadyExists) }
+    if !occupiedTrashEntry(TrashLayout.items + "/" + id) { return .Error(.NotFound) }
+    if occupiedTrashEntry(original) { return .Error(.AlreadyExists) }
     if !isDirectory(parentOf(original)) { return .Error(.NotFound) }
+    if hasLinkParent(original) { return .Error(.AccessDenied) }
     match renamePath(TrashLayout.items + "/" + id, original) {
         Ok -> {}
         Error(failed) -> {
@@ -181,7 +154,10 @@ function putBack(id: borrow String) -> Result<Void, ErrorCode> {
 
 /// Removes each record whose item is gone: a record is kept only while its item is in the Trash, and this runs at start, when a move may have been cut short.
 function removeOrphanRecords() {
-    if !isDirectory(TrashLayout.records) { return }
+    // Never clean records through a linked directory, or assume items were
+    // lost while their directory is unavailable.
+    if !safeTrashFolders() || !directDirectory(TrashLayout.root)
+        || !directDirectory(TrashLayout.items) || !directDirectory(TrashLayout.records) { return }
     let listing = match listDirectory(TrashLayout.records) {
         Ok(value) -> value
         Error(failed) -> {
@@ -190,7 +166,7 @@ function removeOrphanRecords() {
         }
     }
     for name in listing.entries {
-        if !pathExists(TrashLayout.items + "/" + name) {
+        if !occupiedTrashEntry(TrashLayout.items + "/" + name) {
             match removePath(TrashLayout.records + "/" + name) {
                 Ok -> {}
                 Error(failed) -> log warn(
@@ -209,7 +185,8 @@ function moveToTrash(path: borrow String) -> Result<String, ErrorCode> {
         Ok -> {}
         Error(reason) -> return .Error(reason)
     }
-    if !pathExists(path) { return .Error(.NotFound) }
+    if !occupiedTrashEntry(path) { return .Error(.NotFound) }
+    if hasLinkParent(path) { return .Error(.AccessDenied) }
     match ensureTrash() {
         Ok -> {}
         Error(reason) -> return .Error(reason)
@@ -261,7 +238,16 @@ struct TrashEntry {
 
 /// Every item in the Trash, by id, with where each came from.
 function trashEntries() -> Result<[TrashEntry], ErrorCode> {
-    if !isDirectory(TrashLayout.items) { return .Ok([]) }
+    if !safeTrashFolders() { return .Error(.AccessDenied) }
+    if !occupiedTrashEntry(TrashLayout.root) || !occupiedTrashEntry(TrashLayout.items) {
+        return .Ok([])
+    }
+    if !directDirectory(TrashLayout.root) || !directDirectory(TrashLayout.items) {
+        return .Error(.AccessDenied)
+    }
+    if occupiedTrashEntry(TrashLayout.records) && !directDirectory(TrashLayout.records) {
+        return .Error(.AccessDenied)
+    }
     let listing = match listDirectory(TrashLayout.items) {
         Ok(value) -> value
         Error(failed) -> {
@@ -279,7 +265,9 @@ function trashEntries() -> Result<[TrashEntry], ErrorCode> {
 
 /// The path item `id`'s record names, none when it has no readable record.
 function recordedOriginal(id: borrow String) -> String? {
-    let text = match readFile(TrashLayout.records + "/" + id) {
+    let record = TrashLayout.records + "/" + id
+    if !directTrashRecord(record) { return .None }
+    let text = match readFile(record) {
         Ok(contents) -> contents.text
         Error(failed) -> {
             // An item without a record has no known origin, as the
@@ -321,29 +309,9 @@ function emptyTrash() -> Result<Void, ErrorCode> {
     return .Ok
 }
 
-/// Removes `path` and everything beneath it.
+/// Removes a trashed tree without following links out of it.
 function removeAll(path: borrow String) -> Result<Void, ErrorCode> {
-    if isDirectory(path) {
-        let listing = match listDirectory(path) {
-            Ok(value) -> value
-            Error(failed) -> {
-                log warn(
-                    "a trashed folder could not be listed",
-                    path: path,
-                    failure: traceText(failed)
-                )
-                return .Error(.AccessDenied)
-            }
-        }
-        for name in listing.entries {
-            if name == "." || name == ".." { continue }
-            match removeAll(path + "/" + name) {
-                Ok -> {}
-                Error(reason) -> return .Error(reason)
-            }
-        }
-    }
-    match removePath(path) {
+    match removeTrashTree(path) {
         Ok -> return .Ok
         Error(failed) -> {
             log warn("a trashed item could not be deleted", path: path, failure: traceText(failed))

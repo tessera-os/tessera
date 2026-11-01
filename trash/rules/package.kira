@@ -1,0 +1,5 @@
+//! Pure path and record rules for Trash; portable to host tests.
+construct TrashRules extends Package {
+    let version: String = "26.10.4"
+    let kind: PackageKind = .Library
+}

@@ -11,15 +11,27 @@ public function installedOnly(
     names: borrow [String]
 ) -> HomeArrangement {
     var kept = HomeArrangement {}
+    // Damaged or older layouts may name an app more than once (including
+    // across a folder and App Library). The first Home position wins; never
+    // draw two launchable icons for one installed app.
+    var seen: [String] = []
     for page in arrangement.pages {
         var items: [HomeItem] = []
         for item in page.items {
             match item {
-                App(app) -> if names.contains(app) { items.append(.App(copy app)) }
+                App(app) -> {
+                    if names.contains(app) && !seen.contains(app) {
+                        items.append(.App(copy app))
+                        seen.append(copy app)
+                    }
+                }
                 Folder(folder) -> {
                     var apps: [String] = []
                     for app in folder.apps {
-                        if names.contains(app) { apps.append(copy app) }
+                        if names.contains(app) && !seen.contains(app) {
+                            apps.append(copy app)
+                            seen.append(copy app)
+                        }
                     }
                     if apps.count > 0 {
                         items.append(.Folder(HomeFolder { name: copy folder.name, apps: apps }))
@@ -28,11 +40,19 @@ public function installedOnly(
             }
         }
         kept.pages.append(
-            HomePage { items: items, hidden: page.hidden, widgets: copy page.widgets }
+            HomePage {
+                items: items,
+                hidden: page.hidden,
+                retained: page.retained,
+                widgets: copy page.widgets
+            }
         )
     }
     for app in arrangement.removed {
-        if names.contains(app) { kept.removed.append(copy app) }
+        if names.contains(app) && !seen.contains(app) {
+            kept.removed.append(copy app)
+            seen.append(copy app)
+        }
     }
     return kept
 }
@@ -49,6 +69,9 @@ public function withInstalled(
 ) -> HomeArrangement {
     var arrangement = installedOnly(saved, names)
     arrangement.reset = copy saved.reset
+    // A malformed or legacy file may have every page hidden. Keep those
+    // pages intact, but give Home a visible destination before adding apps.
+    if arrangement.shownPages().count == 0 { arrangement.pages.append(HomePage {}) }
     let first = saved.pages.count == 0
     for name in names {
         if !arrangement.removed.contains(name) && arrangement.slotOf(name).isNone() {
@@ -82,14 +105,17 @@ extend HomeArrangement {
             let items = self.pages[page].items.count
             let room = self.room(page, space)
             screens.append(HomeScreenPage { page: page, first: 0, count: min(items, room) })
-            let more = items > room ? ceil((items - room) / space.perPage) : 0
+            // Never divide by zero when a display temporarily has no
+            // resolved icon cells (for example during a mode switch).
+            let perScreen = max(space.perPage, 1)
+            let more = items > room ? ceil((items - room) / perScreen) : 0
             for screen in 0..more {
-                let first = room + screen * space.perPage
+                let first = room + screen * perScreen
                 screens.append(
                     HomeScreenPage {
                         page: page,
                         first: first,
-                        count: min(items - first, space.perPage)
+                        count: min(items - first, perScreen)
                     }
                 )
             }
@@ -129,10 +155,31 @@ public function steppedFocus(
     index: Number,
     step: Number
 ) -> (Number, Number) {
+    if screens.count == 0 || current < 0 || current >= screens.count { return (0, 0) }
     let count = screens[current].count
     let next = index + step
-    if next >= 0 && next < count { return (current, next) }
-    if step == 1 && current + 1 < screens.count { return (current + 1, 0) }
-    if step == -1 && current > 0 { return (current - 1, max(screens[current - 1].count - 1, 0)) }
+    if count > 0 && next >= 0 && next < count { return (current, next) }
+    // Empty Home pages are still visible, but a keyboard ring cannot focus
+    // an icon there. Step past them to the nearest non-empty screen.
+    if step > 0 {
+        // A vertical arrow can cross the screen edge by several icon slots.
+        // Preserve its column where possible rather than always picking the
+        // first item on the next non-empty screen.
+        for at in current + 1..screens.count {
+            if screens[at].count > 0 {
+                let wanted = count == 0 ? 0 : next - count
+                return (at, min(max(wanted, 0), screens[at].count - 1))
+            }
+        }
+    }
+    if step < 0 {
+        var at = current - 1
+        while at >= 0 {
+            if screens[at].count > 0 {
+                return (at, min(max(screens[at].count + next, 0), screens[at].count - 1))
+            }
+            at = at - 1
+        }
+    }
     return (current, min(max(next, 0), max(count - 1, 0)))
 }

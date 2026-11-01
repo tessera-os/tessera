@@ -20,8 +20,9 @@ import LibTessera
 // every launch reads the file again and compares: the file is on a volume
 // that can be written, so bytes that no longer match what was installed are
 // refused, the one case where something changed behind the owner's back
-// (roadmap/12-apps.md). Signatures, which say who made the bytes, are not
-// checked yet.
+// (roadmap/12-apps.md). Signature verification is performed by
+// `imagePermitted` before the image is committed. Applications with missing
+// integrity metadata must be reinstalled; their unchecked bytes never run.
 
 namespace Installed {
     let imagesDirectory: String = "/" + SystemDirectory.runtime + "/" + SystemDirectory.applications
@@ -89,9 +90,9 @@ function recordDigest(
     )
 }
 
-// Whether the image installed as `name` still has the bytes it was
-// installed with. One installed before digests were kept has none to be
-// checked against: it opens, and the log says it was not checked.
+// Whether the image installed as `name` still has exactly the bytes it was
+// installed with. A missing integrity record is not evidence of trust.
+// Legacy installations without a digest require reinstalling the image.
 function installedImageIntact(
     calls: Handle,
     name: borrow String,
@@ -103,8 +104,11 @@ function installedImageIntact(
         Error(failed) -> return .Error(.CouldNotRead(failed))
     }
     if !digestPresent {
-        log warn("an installed application has no digest to be checked against", application: name)
-        return .Ok
+        log fault(
+            "refused an installed application without an image-integrity record",
+            application: name
+        )
+        return .Error(.NotIntact)
     }
     let recordBytes = match readWholeFile(calls, record) {
         Ok(value) -> value
@@ -279,6 +283,18 @@ function installApplication(
         log warn("refused to install something that is not a bundle on a volume", path)
         return .Ok(.Refused)
     }
+    // Direct installs are not versioned update transactions. Never let an
+    // unrelated publisher or a different image silently replace an existing
+    // name: that could change a trusted app's identity or leave old data
+    // attributable to the wrong publisher. Updates need a staged activation
+    // mechanism before the current image may be replaced.
+    let destination = "/" + SystemDirectory.applications + "/" + bundle.name + ".app"
+    let existingImage = try pathPresent(calls, destination)
+    if existingImage {
+        consent.refusal = bundle.name + " is already installed. Uninstall it before installing a different image."
+        log warn("refused to overwrite an existing application image", application: bundle.name)
+        return .Ok(.Refused)
+    }
     let volumeIsReadOnly = try readOnlyVolumeAt(bundle.volume)
     if !volumeIsReadOnly {
         log warn("refused to install from a volume that can be written", volume: bundle.volume)
@@ -328,11 +344,15 @@ function installApplication(
     try atomicWriteFile(calls, "/" + SystemDirectory.applications, bundle.name + ".app", image)
     match recordDigest(calls, bundle.name, image) {
         Ok -> {}
-        Error(failed) -> log warn(
-            "an application was installed without a digest to check it against",
-            application: bundle.name,
-            error: errorName(failed)
-        )
+        Error(failed) -> {
+            log fault(
+                "the application image was written but its integrity record failed; launch is refused",
+                application: bundle.name,
+                error: errorName(failed)
+            )
+            consent.refusal = bundle.name + " could not finish installation safely. Its image must be reinstalled."
+            return .Ok(.Refused)
+        }
     }
     log info("installed an application", application: bundle.name, from: disk, bytes: image.count)
     return .Ok(.Installed)

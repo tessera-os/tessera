@@ -1,0 +1,138 @@
+import Foundation
+import AppRegistry
+
+function storeSucceeded(result: Result<Void, RegistryStoreFailure>) -> Bool {
+    return match result {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+}
+
+@Test
+function registryFileKeepsAcceptedInstallationsAndPendingUpdates() {
+    let path = ".tessera-app-registry-host-test"
+    if pathExists(path) { match removePath(path) { Ok -> {} Error(failure) -> absorb failure } }
+    var registry = try readRegistryFile(path) otherwise return
+    let first = candidate(pubA, 1, digestA)
+    let pending = candidate(pubB, 1, digestB)
+    expect!(registrationSucceeded(registry.prepare(first)))
+    expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
+    expect!(registrationSucceeded(registry.prepare(pending)))
+    expect!(storeSucceeded(saveRegistryFile(path, registry)))
+    let reopened = try readRegistryFile(path) otherwise return
+    expect!(reopened.installed.count == 1)
+    expect!(reopened.pending.count == 1)
+    expect!(reopened.accepted(pending.identity).isNone())
+    expect!(registrationSucceeded(registry.activate(pending.identity, digestB)))
+    expect!(storeSucceeded(saveRegistryFile(path, registry)))
+    let updated = try readRegistryFile(path) otherwise return
+    expect!(updated.installed.count == 2)
+    expect!(updated.pending.count == 0)
+    match removePath(path) { Ok -> {} Error(failure) -> absorb failure }
+}
+
+@Test
+function damagedRegistryIsNeverMisreadAsEmptyOrSilentlyReplaced() {
+    let path = ".tessera-app-registry-corruption-test"
+    if pathExists(path) { match removePath(path) { Ok -> {} Error(failure) -> absorb failure } }
+    match writeFile(path, "Tessera application registry 1\nA\tpartial\n") {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    let readFailed = match readRegistryFile(path) {
+        Ok -> false
+        Error(failure) -> match failure {
+            Damaged -> true
+            Unavailable, UnsafePath -> false
+        }
+    }
+    expect!(readFailed)
+    expect!(!storeSucceeded(saveRegistryFile(path, ApplicationRegistry {})))
+    let text = try readFile(path) otherwise return
+    expect!(text.text == "Tessera application registry 1\nA\tpartial\n")
+    match removePath(path) { Ok -> {} Error(failure) -> absorb failure }
+}
+
+@Test
+function linkedRegistryAndLinkedStagingFilesAreRefused() {
+    let path = ".tessera-app-registry-link-test"
+    let target = ".tessera-app-registry-target-test"
+    if pathExists(path) { match removePath(path) { Ok -> {} Error(failure) -> absorb failure } }
+    if pathExists(target) { match removePath(target) { Ok -> {} Error(failure) -> absorb failure } }
+    match writeFile(target, "someone else's data") {
+        Ok -> {} Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    match makeSymbolicLink(target, path) {
+        Ok -> {} Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    expect!(!storeSucceeded(saveRegistryFile(path, ApplicationRegistry {})))
+    let result = readRegistryFile(path)
+    expect!(registryReadFailed(move result))
+    expect!((try readFile(target) otherwise return).text == "someone else's data")
+    match removePath(path) { Ok -> {} Error(failure) -> absorb failure }
+    match makeSymbolicLink(target, path + ".next") {
+        Ok -> {} Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    expect!(!storeSucceeded(saveRegistryFile(path, ApplicationRegistry {})))
+    expect!((try readFile(target) otherwise return).text == "someone else's data")
+    match removePath(path + ".next") { Ok -> {} Error(failure) -> absorb failure }
+    match removePath(target) { Ok -> {} Error(failure) -> absorb failure }
+}
+
+function registryReadFailed(result: Result<ApplicationRegistry, RegistryStoreFailure>) -> Bool {
+    return match result {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+}
+
+@Test
+function registryPersistenceCannotTraverseASymlinkedParent() {
+    let real = ".tessera-registry-safe-parent"
+    let alias = ".tessera-registry-linked-parent"
+    match makeDirectory(real) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    match makeSymbolicLink(real, alias) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    let path = alias + "/registry"
+    let refusedRead = match readRegistryFile(path) {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(refusedRead)
+    expect!(!storeSucceeded(saveRegistryFile(path, ApplicationRegistry {})))
+    expect!(!pathExists(real + "/registry"))
+    match removePath(alias) { Ok -> {} Error(failure) -> absorb failure }
+    match removePath(real) { Ok -> {} Error(failure) -> absorb failure }
+}

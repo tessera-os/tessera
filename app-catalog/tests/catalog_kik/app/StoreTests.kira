@@ -1,0 +1,147 @@
+import Foundation
+import AppRegistry
+import AppCatalog
+
+function cacheSaveSucceeded(result: Result<Void, CatalogStoreFailure>) -> Bool {
+    return match result {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+}
+
+@Test
+function offlineCacheFilePersistsMetadataButNotOnlineAvailability() {
+    let path = ".tessera-app-catalog-cache-host"
+    if pathExists(path) {
+        match removePath(path) { Ok -> {} Error(failure) -> absorb failure }
+    }
+    var cache = try readCatalogFile(path) otherwise return
+    expect!(cache.listings.count == 0)
+    let listing = sample()
+    expect!(refreshed(cache, [listing]))
+    expect!(cacheSaveSucceeded(saveCatalogFile(path, cache)))
+    let reloaded = try readCatalogFile(path) otherwise return
+    expect!(reloaded.listings.count == 1)
+    expect!(reloaded.connection == CatalogConnection.Offline)
+    expect!(
+        reloaded.action(
+            listing.identity,
+            ApplicationRegistry {},
+            "desktop",
+            26
+        ) == CatalogAction.Offline
+    )
+    expect!(!cacheSaveSucceeded(saveCatalogFile(path, cache)))
+    expect!(refreshed(cache, [sample(publisherB)], 101))
+    expect!(cacheSaveSucceeded(saveCatalogFile(path, cache)))
+    let newest = try readCatalogFile(path) otherwise return
+    expect!(newest.refreshedAt == 101)
+    match removePath(path) { Ok -> {} Error(failure) -> absorb failure }
+}
+
+@Test
+function corruptedCacheCannotBeReadAsEmptyOrOverwritten() {
+    let path = ".tessera-app-catalog-cache-damaged"
+    if pathExists(path) { match removePath(path) { Ok -> {} Error(failure) -> absorb failure } }
+    match writeFile(path, "Tessera catalog cache 1\nat\t100\nL\tbroken\n") {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    var fresh = CatalogCache {}
+    expect!(refreshed(fresh, [sample()]))
+    expect!(cacheLoadFailed(readCatalogFile(path)))
+    expect!(!cacheSaveSucceeded(saveCatalogFile(path, fresh)))
+    let content = try readFile(path) otherwise return
+    expect!(content.text == "Tessera catalog cache 1\nat\t100\nL\tbroken\n")
+    match removePath(path) { Ok -> {} Error(failure) -> absorb failure }
+}
+
+@Test
+function linkedCacheCannotOverwriteItsTarget() {
+    let path = ".tessera-app-catalog-cache-link"
+    let target = ".tessera-app-catalog-cache-link-target"
+    if pathExists(path) { match removePath(path) { Ok -> {} Error(failure) -> absorb failure } }
+    if pathExists(target) { match removePath(target) { Ok -> {} Error(failure) -> absorb failure } }
+    match writeFile(target, "private") {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    match makeSymbolicLink(target, path) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    var fresh = CatalogCache {}
+    expect!(refreshed(fresh, [sample()]))
+    expect!(!cacheSaveSucceeded(saveCatalogFile(path, fresh)))
+    expect!((try readFile(target) otherwise return).text == "private")
+    match removePath(path) { Ok -> {} Error(failure) -> absorb failure }
+    match removePath(target) { Ok -> {} Error(failure) -> absorb failure }
+}
+
+function cacheLoadFailed(result: Result<CatalogCache, CatalogStoreFailure>) -> Bool {
+    return match result {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+}
+
+@Test
+function catalogAndJobStoresRejectSymlinkedParentDirectories() {
+    let folder = ".tessera-catalog-safe-parent"
+    let alias = ".tessera-catalog-linked-parent"
+    match makeDirectory(folder) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    match makeSymbolicLink(folder, alias) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    let catalogPath = alias + "/cache"
+    expect!(cacheLoadFailed(readCatalogFile(catalogPath)))
+    expect!(!cacheSaveSucceeded(saveCatalogFile(catalogPath, CatalogCache {})))
+    let refusedSigned = match readSignedCatalogFile(alias + "/signed", trustedTestSigner()) {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(refusedSigned)
+    let refusedJournal = match readInstallJournalFile(
+        alias + "/jobs",
+        CatalogCache {},
+        ApplicationRegistry {}
+    ) {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(refusedJournal)
+    expect!(!pathExists(folder + "/cache"))
+    match removePath(alias) { Ok -> {} Error(failure) -> absorb failure }
+    match removePath(folder) { Ok -> {} Error(failure) -> absorb failure }
+}

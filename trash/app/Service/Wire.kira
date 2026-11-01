@@ -3,6 +3,7 @@ import Foundation
 import Heap
 import LibTessera
 import TrashStore
+import TrashRules
 
 // The wire, as LibTessera `app/Trash/Trash.kira` speaks it: a 32-byte header,
 // `op` @0, `code` @4 (an `ErrorCode` value), `a` @8, `b` @16, `c` @24, then the
@@ -54,20 +55,41 @@ function receive(channel: Handle) -> Result<Request, Refused> {
             Refused { operation: code(Operation.Move), reason: .InvalidArgument }
         )
     }
+    let attachedHandles = received.handles.count
     closeHandles(received.handles)
     if received.bytes < TrashWire.headerBytes {
         return .Error(Refused { operation: code(Operation.Move), reason: .InvalidArgument })
     }
     let raw = blockLoad<U32>(block, 0)
+    if !validTrashWireHeader(
+        Number(blockLoad<U32>(block, 4)),
+        Number(blockLoad<U64>(block, 8)),
+        Number(blockLoad<U64>(block, 16)),
+        Number(blockLoad<U64>(block, 24)),
+        attachedHandles
+    ) {
+        return .Error(Refused { operation: raw, reason: .InvalidArgument })
+    }
     let operation = try caseWithCode(allCases_Operation(), raw) otherwise return .Error(
         Refused { operation: raw, reason: .Unsupported }
     )
-    let payload = heapOffset(block.pointer(), TrashWire.headerBytes)
     let payloadLength = received.bytes - TrashWire.headerBytes
     if payloadLength > TrashWire.maximumPathBytes {
         return .Error(Refused { operation: code(operation), reason: .InvalidArgument })
     }
-    let text = stringFromCBytes(payload, payloadLength)
+    // Decode the exact message length. A C-string conversion can silently
+    // truncate at NUL and accept a request whose suffix was never checked.
+    var payloadBytes: [UN8] = []
+    for index in 0..payloadLength {
+        payloadBytes.append(blockLoad<UN8>(block, TrashWire.headerBytes + index))
+    }
+    if !validTrashWirePayload(Number(raw), payloadBytes) {
+        return .Error(Refused { operation: code(operation), reason: .InvalidArgument })
+    }
+    let text = match textFromBytes(payloadBytes) {
+        Some(value) -> value
+        None -> return .Error(Refused { operation: code(operation), reason: .InvalidArgument })
+    }
     return match operation {
         Move -> .Ok(.Move(text))
         PutBack -> .Ok(.PutBack(text))
@@ -153,7 +175,14 @@ function answerList(channel: Handle) {
             None -> ""
         }
         let pair = entry.id + "\n" + original + "\n"
-        if size + pair.count > TrashWire.maximumListBytes { break }
+        if !fitsTrashReply(size, pair.count, TrashWire.maximumListBytes) {
+            // A partial successful listing is misleading: the owner could
+            // believe they had inspected everything before Empty Trash.
+            // A future paginated protocol may return the rest explicitly.
+            log warn("Trash listing exceeds the IPC reply budget", count: entries.count)
+            answer(channel, code(Operation.List), .NoSpace)
+            return
+        }
         size += pair.count
         lines.append(pair)
     }

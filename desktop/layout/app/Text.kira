@@ -1,13 +1,15 @@
 //! Home's arrangement as Desktop writes it down, one line an entry:
 //!
 //! ```text
-//! version 2
+//! version 3
 //! reset 1792414882134
 //! page
 //! app Notes
-//! folder Utilities
+//! folder Work%0ANotes
 //! member Clock
 //! page hidden
+//! page retained
+//! page retained hidden
 //! widget Clock medium
 //! removed Welcome
 //! ```
@@ -18,36 +20,50 @@ import Foundation
 public function parsedArrangement(text: borrow String) -> HomeArrangement {
     var arrangement = HomeArrangement {}
     let lines = text.split("\n")
-    if lines.count == 0 || lines[0] != HomeFormat.version { return arrangement }
-    for line in lines {
+    if lines.count == 0 { return arrangement }
+    let version = withoutLineEnding(lines[0])
+    let escaped = version == HomeFormat.version
+    if !escaped && version != HomeFormat.previous { return arrangement }
+    for raw in lines {
+        let line = withoutLineEnding(raw)
         if line.startsWith("reset ") {
-            arrangement.reset = line.substring(6, line.count)
+            arrangement.reset = readField(line.substring(6, line.count), escaped)
             continue
         }
-        if line == "page" || line == "page hidden" {
-            arrangement.pages.append(HomePage { hidden: line == "page hidden" })
+        if line == "page" || line == "page hidden" || line == "page retained" || line == "page retained hidden" {
+            arrangement.pages.append(
+                HomePage {
+                    hidden: line == "page hidden" || line == "page retained hidden",
+                    retained: line == "page retained" || line == "page retained hidden"
+                }
+            )
             continue
         }
         if arrangement.pages.count == 0 && !line.startsWith("removed ") { continue }
         let last = arrangement.pages.count - 1
         if line.startsWith("app ") {
-            arrangement.pages[last].items.append(.App(line.substring(4, line.count)))
+            arrangement.pages[last].items.append(
+                .App(readField(line.substring(4, line.count), escaped))
+            )
         } else if line.startsWith("folder ") {
             arrangement.pages[last].items.append(
-                .Folder(HomeFolder { name: line.substring(7, line.count) })
+                .Folder(HomeFolder { name: readField(line.substring(7, line.count), escaped) })
             )
         } else if line.startsWith("member ") {
             arrangement.pages[last].items = withMember(
                 arrangement.pages[last].items,
-                line.substring(7, line.count)
+                readField(line.substring(7, line.count), escaped)
             )
         } else if line.startsWith("removed ") {
-            arrangement.removed.append(line.substring(8, line.count))
+            arrangement.removed.append(readField(line.substring(8, line.count), escaped))
         } else if line.startsWith("widget ") {
             let parts = line.substring(7, line.count).split(" ")
             if parts.count == 2 {
                 arrangement.pages[last].widgets.append(
-                    HomeWidget { kind: copy parts[0], size: homeWidgetSizeNamed(parts[1]) }
+                    HomeWidget {
+                        kind: readField(parts[0], escaped),
+                        size: homeWidgetSizeNamed(parts[1])
+                    }
                 )
             }
         }
@@ -75,22 +91,107 @@ function withMember(items: borrow [HomeItem], app: String) -> [HomeItem] {
 // The arrangement as it is written down.
 public function arrangementText(arrangement: borrow HomeArrangement) -> String {
     var lines: [String] = [HomeFormat.version]
-    if arrangement.reset.count > 0 { lines.append("reset " + arrangement.reset) }
+    if arrangement.reset.count > 0 { lines.append("reset " + writtenField(arrangement.reset)) }
     for page in arrangement.pages {
-        lines.append(page.hidden ? "page hidden" : "page")
+        if page.retained {
+            lines.append(page.hidden ? "page retained hidden" : "page retained")
+        } else {
+            lines.append(page.hidden ? "page hidden" : "page")
+        }
         for widget in page.widgets {
-            lines.append("widget " + widget.kind + " " + widget.size.word())
+            lines.append("widget " + writtenField(widget.kind) + " " + widget.size.word())
         }
         for item in page.items {
             match item {
-                App(app) -> lines.append("app " + app)
+                App(app) -> lines.append("app " + writtenField(app))
                 Folder(folder) -> {
-                    lines.append("folder " + folder.name)
-                    for app in folder.apps { lines.append("member " + app) }
+                    lines.append("folder " + writtenField(folder.name))
+                    for app in folder.apps { lines.append("member " + writtenField(app)) }
                 }
             }
         }
     }
-    for app in arrangement.removed { lines.append("removed " + app) }
+    for app in arrangement.removed { lines.append("removed " + writtenField(app)) }
     return joined(lines, "\n") + "\n"
+}
+
+// Escape the ASCII controls that would break the line-oriented format. Both
+// directions operate on UTF-8 bytes, leaving multibyte characters intact.
+namespace HomeTextByte {
+    let percent: Number = 37
+    let lineFeed: Number = 10
+    let carriageReturn: Number = 13
+    let tab: Number = 9
+    let space: Number = 32
+    let tokenDigits: Number = 2
+    let tokenWidth: Number = 3
+}
+
+// Plain bytes need no encoding; only reserved bytes produce an escape.
+function encodedByte(byte: Number) -> String? {
+    if byte == HomeTextByte.percent { return .Some("%25") }
+    if byte == HomeTextByte.lineFeed { return .Some("%0A") }
+    if byte == HomeTextByte.carriageReturn { return .Some("%0D") }
+    if byte == HomeTextByte.tab { return .Some("%09") }
+    if byte == HomeTextByte.space { return .Some("%20") }
+    return .None
+}
+
+function decodedToken(token: borrow String) -> String? {
+    return match token {
+        "25" -> .Some("%")
+        "0A" -> .Some("\n")
+        "0D" -> .Some("\r")
+        "09" -> .Some("\t")
+        "20" -> .Some(" ")
+        else -> .None
+    }
+}
+
+// A literal percent is escaped too, so a name like "%0A" round-trips.
+function writtenField(text: borrow String) -> String {
+    var written = ""
+    var start: Number = 0
+    for index in 0..text.count {
+        match encodedByte(text.charAt(index)) {
+            Some(code) -> {
+                written += text.substring(start, index) + code
+                start = index + 1
+            }
+            None -> {}
+        }
+    }
+    return written + text.substring(start, text.count)
+}
+
+// Version 2 Home.txt values were raw text. Decode only version 3, keeping
+// unknown sequences literally to avoid losing text from damaged files.
+function readField(text: borrow String, escaped: Bool) -> String {
+    if !escaped { return copy text }
+    var read = ""
+    var start: Number = 0
+    var index: Number = 0
+    while index + HomeTextByte.tokenDigits < text.count {
+        if text.charAt(index) == HomeTextByte.percent {
+            let code = text.substring(index + 1, index + HomeTextByte.tokenWidth)
+            match decodedToken(code) {
+                Some(decoded) -> {
+                    read += text.substring(start, index) + decoded
+                    index += HomeTextByte.tokenWidth
+                    start = index
+                    continue
+                }
+                None -> {}
+            }
+        }
+        index += 1
+    }
+    return read + text.substring(start, text.count)
+}
+
+// Text exported from another host may use CRLF. Strip only the line's CR,
+// leaving meaningful whitespace in legacy names intact.
+function withoutLineEnding(line: borrow String) -> String {
+    if line.endsWith("\r") { return line.substring(0, line.count - 1) }
+    return copy line
 }

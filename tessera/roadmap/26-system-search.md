@@ -104,8 +104,11 @@ copies an answer. Home opens it with Command-Space or a pull down on a page.
 Documents are found by name by walking Documents at each query, bounded to
 2000 entries and six folders deep, and open Inlay on their folder. Every
 provider answers synchronously, so results always belong to the latest
-query. The index service, content search and the platforms' own invocation
-are not started. No checkpoint is verified on a boot yet.
+query. Search now follows the selected result's identity when its ranking
+changes, and the keyboard can move through the full result set instead of
+stopping at the first nine visible rows. The index service, content search and
+the platforms' own invocation are not started. No checkpoint is verified on
+a boot yet.
 
 ## Checkpoints
 

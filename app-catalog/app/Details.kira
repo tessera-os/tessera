@@ -1,0 +1,52 @@
+//! Product-page state. A catalog version is an *offer*, not the app's
+//! accepted executable version. The Open action stays available when an
+//! update cannot be downloaded, is incompatible, or was withdrawn.
+import Foundation
+import AppRegistry
+
+public struct CatalogProductDetails {
+    let listing: CatalogListing?
+    let installed: AcceptedApp?
+    /// If installed, this always opens the trusted local version. Otherwise
+    /// this starts (or explains why it cannot start) a catalog installation.
+    let primary: CatalogAction
+    /// An optional, separate update offer or state. Never blocks Open.
+    let update: CatalogAction?
+}
+
+extend CatalogCache {
+    function details(
+        borrow self,
+        identity: borrow AppIdentity,
+        registry: borrow ApplicationRegistry,
+        platform: borrow String,
+        systemBuild: Number
+    ) -> CatalogProductDetails {
+        let listing = self.listing(identity)
+        let installed = registry.accepted(identity)
+        let proposed = self.action(identity, registry, platform, systemBuild)
+        match installed {
+            Some(active) -> {
+                var update: CatalogAction? = .None
+                match listing {
+                    Some(candidate) -> if candidate.version > active.candidate.version {
+                        update = .Some(proposed)
+                    }
+                    None -> {}
+                }
+                return CatalogProductDetails {
+                    listing: listing,
+                    installed: installed,
+                    primary: .Open,
+                    update: update
+                }
+            }
+            None -> return CatalogProductDetails {
+                listing: listing,
+                installed: installed,
+                primary: proposed,
+                update: .None
+            }
+        }
+    }
+}

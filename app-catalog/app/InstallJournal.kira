@@ -1,0 +1,169 @@
+//! Recoverable App Store job display state. A journal cannot authenticate a
+//! download or preserve signature-verification results across a process boot.
+import Foundation
+import AppRegistry
+
+public namespace InstallJournalText {
+    let version: String = "Tessera install queue 1"
+    let maxBytes: Number = 4194304
+    let maxJobs: Number = 4096
+}
+
+public function installJournalText(queue: borrow InstallQueue) -> String {
+    var lines: [String] = [InstallJournalText.version]
+    for job in queue.jobs { lines.append(installJobLine(job)) }
+    return joined(lines, "\n") + "\n"
+}
+
+function installJobLine(job: borrow InstallJob) -> String {
+    return "J\t" + job.listing.identity.identifier + "\t" + job.listing.identity.publisher
+        + "\t\(job.listing.version)\t" + job.listing.artifactDigest
+        + "\t" + installPhaseWord(job.phase) + "\t\(job.received)"
+        + "\t" + installFailureWord(job.reason)
+        + "\t" + (job.takeOver ? "consent" : "no-consent")
+}
+
+/// A caller supplies the independently loaded registry and cached listing
+/// metadata. A previously accepted image can be Ready; all other unfinished
+/// work is Interrupted and must restart trusted download/verification.
+public function parsedInstallJournal(
+    text: borrow String,
+    cache: borrow CatalogCache,
+    registry: borrow ApplicationRegistry
+) -> InstallQueue? {
+    if text.count > InstallJournalText.maxBytes { return .None }
+    let lines = text.split("\n")
+    if lines.count > InstallJournalText.maxJobs + 2 { return .None }
+    if lines.count == 0 || lines[0] != InstallJournalText.version
+        || lines[lines.count - 1] != "" { return .None }
+    var queue = InstallQueue {}
+    for index in 1..lines.count - 1 {
+        let fields = lines[index].split("\t")
+        if fields.count != 9 || fields[0] != "J" { return .None }
+        let identity = AppIdentity { identifier: copy fields[1], publisher: copy fields[2] }
+        if !validAppIdentity(identity) || queue.job(identity).isSome() { return .None }
+        let version = try fields[3].toNumber() otherwise return .None
+        let listing = try cache.listing(identity) otherwise return .None
+        if listing.version != version || listing.artifactDigest != fields[4] { return .None }
+        let phase = try parsedInstallPhase(fields[5]) otherwise return .None
+        let received = try fields[6].toNumber() otherwise return .None
+        if received < 0 || received > listing.downloadBytes || received != trunc(received) {
+            return .None
+        }
+        let oldReason = try parsedInstallFailure(fields[7]) otherwise return .None
+        let takeOver = match fields[8] {
+            "consent" -> true
+            "no-consent" -> false
+            else -> return .None
+        }
+        if phase == .Failed && oldReason.isNone() { return .None }
+        if phase != .Failed && oldReason.isSome() { return .None }
+        // Reject alternate numeric spellings and other noncanonical journal
+        // records, even though restoring will downgrade their phase safely.
+        let source = InstallJob {
+            listing: listing,
+            phase: phase,
+            received: received,
+            reason: oldReason,
+            takeOver: takeOver
+        }
+        if installJobLine(source) != lines[index] { return .None }
+        var restored = InstallJob { listing: listing, received: received, takeOver: takeOver }
+        let accepted = registry.accepted(identity)
+        let installed = match accepted {
+            Some(
+                app
+            ) -> app.candidate.version == version && app.candidate.imageDigest == listing.artifactDigest
+            None -> false
+        }
+        if installed {
+            restored.phase = .Ready
+        } else if phase == .Canceled {
+            restored.phase = .Canceled
+        } else if phase == .Failed {
+            restored.phase = .Failed
+            restored.reason = oldReason
+        } else {
+            restored.phase = .Failed
+            restored.reason = .Some(.Interrupted)
+        }
+        queue.jobs.append(restored)
+    }
+    return .Some(queue)
+}
+
+function installPhaseWord(phase: InstallPhase) -> String {
+    return match phase {
+        Queued -> "queued"
+        Downloading -> "downloading"
+        Verifying -> "verifying"
+        Verified -> "verified"
+        Installing -> "installing"
+        Ready -> "ready"
+        Failed -> "failed"
+        Canceled -> "canceled"
+    }
+}
+
+function parsedInstallPhase(value: borrow String) -> InstallPhase? {
+    return match value {
+        "queued" -> .Some(.Queued)
+        "downloading" -> .Some(.Downloading)
+        "verifying" -> .Some(.Verifying)
+        "verified" -> .Some(.Verified)
+        "installing" -> .Some(.Installing)
+        "ready" -> .Some(.Ready)
+        "failed" -> .Some(.Failed)
+        "canceled" -> .Some(.Canceled)
+        else -> .None
+    }
+}
+
+function installFailureWord(reason: borrow InstallFailure?) -> String {
+    return match reason {
+        None -> "none"
+        Some(failure) -> match failure {
+            NotAvailable -> "not-available"
+            NotCompatible -> "not-compatible"
+            NeedsOwnerConsent -> "needs-consent"
+            AlreadyAccepted -> "already-accepted"
+            DifferentJobInProgress -> "different-job"
+            MissingJob -> "missing-job"
+            WrongPhase -> "wrong-phase"
+            InvalidProgress -> "invalid-progress"
+            MissingBytes -> "missing-bytes"
+            ArtifactMismatch -> "artifact-mismatch"
+            PublisherMismatch -> "publisher-mismatch"
+            MetadataMismatch -> "metadata-mismatch"
+            RegistryRejected -> "registry-rejected"
+            NetworkLost -> "network-lost"
+            TooManyDownloads -> "too-many-downloads"
+            OutOfSpace -> "out-of-space"
+            Interrupted -> "interrupted"
+        }
+    }
+}
+
+function parsedInstallFailure(value: borrow String) -> Result<InstallFailure?, CatalogFailure> {
+    return match value {
+        "none" -> .Ok(.None)
+        "not-available" -> .Ok(.Some(.NotAvailable))
+        "not-compatible" -> .Ok(.Some(.NotCompatible))
+        "needs-consent" -> .Ok(.Some(.NeedsOwnerConsent))
+        "already-accepted" -> .Ok(.Some(.AlreadyAccepted))
+        "different-job" -> .Ok(.Some(.DifferentJobInProgress))
+        "missing-job" -> .Ok(.Some(.MissingJob))
+        "wrong-phase" -> .Ok(.Some(.WrongPhase))
+        "invalid-progress" -> .Ok(.Some(.InvalidProgress))
+        "missing-bytes" -> .Ok(.Some(.MissingBytes))
+        "artifact-mismatch" -> .Ok(.Some(.ArtifactMismatch))
+        "publisher-mismatch" -> .Ok(.Some(.PublisherMismatch))
+        "metadata-mismatch" -> .Ok(.Some(.MetadataMismatch))
+        "registry-rejected" -> .Ok(.Some(.RegistryRejected))
+        "network-lost" -> .Ok(.Some(.NetworkLost))
+        "too-many-downloads" -> .Ok(.Some(.TooManyDownloads))
+        "out-of-space" -> .Ok(.Some(.OutOfSpace))
+        "interrupted" -> .Ok(.Some(.Interrupted))
+        else -> .Error(.InvalidListing)
+    }
+}

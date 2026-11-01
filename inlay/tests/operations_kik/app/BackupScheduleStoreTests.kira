@@ -1,0 +1,125 @@
+import Foundation
+import FileOperations
+
+function scheduleStored(result: Result<Void, BackupScheduleStoreFailure>) -> Bool {
+    return match result {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+}
+
+@Test
+function backupScheduleRoundTripsAcrossAFileRestart() {
+    let folder = freshFolder("backup-schedule-file")
+    let path = childPath(folder, "schedule")
+    let schedule = BackupSchedule {
+        frequency: .Weekly,
+        lastVerifiedAt: 1000000000,
+        lastFailureAt: 1000000500,
+        requireExternalPower: true,
+        requireIdle: true,
+        reservedFreeBytes: 1073741824,
+        retryDelayMillis: 900000
+    }
+    expect!(scheduleStored(saveBackupScheduleFile(path, schedule)))
+    let restored = try readBackupScheduleFile(path) otherwise return
+    expect!(encodedBackupSchedule(restored) == encodedBackupSchedule(schedule))
+    expect!(backupDue(restored, backupHost(1000000501)) == BackupDueState.NotDue)
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function scheduleCorruptionCannotAuthorizeBackupOrBeSilentlyOverwritten() {
+    let folder = freshFolder("backup-schedule-corruption")
+    let path = childPath(folder, "schedule")
+    writeText(path, "Tessera backup schedule 1\ncadence daily\nverified -1\n")
+    let damaged = match readBackupScheduleFile(path) {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(damaged)
+    expect!(!scheduleStored(saveBackupScheduleFile(path, BackupSchedule {})))
+    expect!(textAt(path).contains("verified -1"))
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function linkedScheduleCannotOverwriteOtherFiles() {
+    let folder = freshFolder("backup-schedule-link")
+    let target = childPath(folder, "protected")
+    let link = childPath(folder, "schedule")
+    writeText(target, "important")
+    expect!(made(makeSymbolicLink("protected", link)))
+    expect!(!scheduleStored(saveBackupScheduleFile(link, BackupSchedule { frequency: .Daily })))
+    expect!(textAt(target) == "important")
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function scheduledBackupRejectsNoncanonicalFractionalAndNegativeValues() {
+    let original = BackupSchedule { frequency: .Daily, lastVerifiedAt: 1000000000 }
+    let text = encodedBackupSchedule(original)
+    let altered = text.before("verified 1000000000") + "verified 01000000000"
+        + text.substring(text.before("verified 1000000000").count + 19, text.count)
+    expect!(decodedBackupSchedule(altered).isNone())
+    expect!(decodedBackupSchedule(text).isSome())
+    expect!(decodedBackupSchedule("Tessera backup schedule 2\n").isNone())
+}
+
+@Test
+function staleBackupPolicyCannotRewriteVerifiedSuccessOrFailureHistory() {
+    let folder = freshFolder("schedule-stale-writes")
+    let path = childPath(folder, "schedule")
+    let current = BackupSchedule {
+        frequency: .Daily,
+        lastVerifiedAt: 1000000000,
+        lastFailureAt: 1000000500
+    }
+    expect!(scheduleStored(saveBackupScheduleFile(path, current)))
+    let staleVerified = BackupSchedule {
+        frequency: .Weekly,
+        lastVerifiedAt: 999999999,
+        lastFailureAt: 1000000500
+    }
+    expect!(!scheduleStored(saveBackupScheduleFile(path, staleVerified)))
+    let staleFailure = BackupSchedule { frequency: .Manual, lastVerifiedAt: 1000000000 }
+    expect!(!scheduleStored(saveBackupScheduleFile(path, staleFailure)))
+    expect!(
+        encodedBackupSchedule(
+            try readBackupScheduleFile(path) otherwise return
+        ) == encodedBackupSchedule(current)
+    )
+    let success = BackupSchedule { frequency: .Weekly, lastVerifiedAt: 1000001000 }
+    expect!(scheduleStored(saveBackupScheduleFile(path, success)))
+    let actual = try readBackupScheduleFile(path) otherwise return
+    expect!(actual.lastVerifiedAt == 1000001000)
+    expect!(actual.lastFailureAt == 0)
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function backupScheduleStoreRefusesLinkedParentDirectories() {
+    let folder = freshFolder("schedule-linked-parent")
+    let protected = childPath(folder, "Protected")
+    expect!(made(makeDirectory(protected)))
+    let alias = childPath(folder, "Alias")
+    expect!(made(makeSymbolicLink("Protected", alias)))
+    let path = childPath(alias, "schedule")
+    expect!(!scheduleStored(saveBackupScheduleFile(path, BackupSchedule { frequency: .Daily })))
+    let refusedRead = match readBackupScheduleFile(path) {
+        Ok -> false
+        Error(reason) -> {
+            absorb reason
+            true
+        }
+    }
+    expect!(refusedRead)
+    expect!(!pathExists(childPath(protected, "schedule")))
+    expect!(removed(removeTree(folder)))
+}

@@ -1,0 +1,103 @@
+import Foundation
+import FileOperations
+
+@Test
+function documentPreviewReadsSmallUtf8TextWithoutEditingIt() {
+    let folder = freshFolder("preview-text")
+    let path = childPath(folder, "note.txt")
+    writeText(path, "Résumé\nA quiet note")
+    let preview = try previewDocument(path) otherwise return
+    let text = match preview.content {
+        Text(value) -> value
+        ImageFormat, Unsupported -> ""
+    }
+    expect!(text == "Résumé\nA quiet note")
+    expect!(!preview.truncated)
+    expect!(textAt(path) == text)
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function documentPreviewIdentifiesImageSignaturesWithoutDecodingPixels() {
+    let folder = freshFolder("preview-signatures")
+    let png = childPath(folder, "picture.png")
+    let jpeg = childPath(folder, "picture.jpg")
+    expect!(made(writeFileBytes(png, [137, 80, 78, 71, 13, 10, 26, 10, 0, 1, 2])))
+    expect!(made(writeFileBytes(jpeg, [255, 216, 255, 0, 1, 2])))
+    let first = try previewDocument(png) otherwise return
+    let second = try previewDocument(jpeg) otherwise return
+    let pngKind = match first.content {
+        ImageFormat(value) -> value == "PNG"
+        Text, Unsupported -> false
+    }
+    let jpegKind = match second.content {
+        ImageFormat(value) -> value == "JPEG"
+        Text, Unsupported -> false
+    }
+    expect!(pngKind)
+    expect!(jpegKind)
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function documentPreviewRejectsLinksAndUnprintableBinary() {
+    let folder = freshFolder("preview-links")
+    let real = childPath(folder, "private.bin")
+    expect!(made(writeFileBytes(real, [1, 0, 2, 3, 4])))
+    let alias = childPath(folder, "Alias")
+    expect!(made(makeSymbolicLink("private.bin", alias)))
+    let blocked = match previewDocument(alias) {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(blocked)
+    let unsupported = try previewDocument(real) otherwise return
+    let binary = match unsupported.content {
+        Unsupported -> true
+        Text, ImageFormat -> false
+    }
+    expect!(binary)
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function documentPreviewHonorsBoundedTextBytesAndMarksTruncation() {
+    let folder = freshFolder("preview-bounded")
+    let path = childPath(folder, "large.txt")
+    writeText(path, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+    let preview = try previewDocument(path, 16) otherwise return
+    expect!(preview.truncated)
+    expect!(preview.bytesRead == 16)
+    let short = match preview.content {
+        Text(value) -> value
+        ImageFormat, Unsupported -> ""
+    }
+    expect!(short == "abcdefghijklmnop")
+    let rejected = match previewDocument(path, 70000) {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(rejected)
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function documentPreviewTrimsPartialUtf8SequenceAtBoundedEnd() {
+    let folder = freshFolder("preview-utf8")
+    let path = childPath(folder, "note.txt")
+    writeText(path, "123456789012345émore")
+    let preview = try previewDocument(path, 16) otherwise return
+    let text = match preview.content {
+        Text(value) -> value
+        ImageFormat, Unsupported -> ""
+    }
+    expect!(text == "123456789012345")
+    expect!(preview.truncated)
+    expect!(removed(removeTree(folder)))
+}

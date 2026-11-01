@@ -1,0 +1,6 @@
+//! Host-side tests for the application registry rules.
+construct RegistryKik extends Package {
+    let version: String = "0.1.0"
+    let kind: PackageKind = .App
+    let dependencies: [Dependency] = [Dependency { name: "AppRegistry", path: "../.." }]
+}

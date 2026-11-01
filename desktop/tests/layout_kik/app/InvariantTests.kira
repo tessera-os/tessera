@@ -1,0 +1,54 @@
+import Foundation
+import HomeLayout
+
+function countEverywhere(home: borrow HomeArrangement, app: borrow String) -> Number {
+    var count: Number = 0
+    for page in home.pages {
+        for item in page.items {
+            match item {
+                App(name) -> if name == app { count += 1 }
+                Folder(folder) -> for name in folder.apps {
+                    if name == app { count += 1 }
+                }
+            }
+        }
+    }
+    for name in home.removed { if name == app { count += 1 } }
+    return count
+}
+
+function everyAppHasOnePlace(home: borrow HomeArrangement, names: borrow [String]) {
+    for app in names {
+        expect!(countEverywhere(home, app) == 1)
+    }
+    expect!(home.shownPages().count > 0)
+}
+
+@Test
+function repeatedMixedHomeEditsPreserveUniqueApplicationLocations() {
+    let names: [String] = ["A", "B", "C", "D", "E", "F", "G", "H"]
+    var home = withInstalled(HomeArrangement {}, names, false, smallSpace)
+    everyAppHasOnePlace(home, names)
+    home.moveItem(HomeSlot { page: 1, index: 3 }, HomeSlot { page: 0, index: 0 }, smallSpace)
+    everyAppHasOnePlace(home, names)
+    home.dropItem(HomeSlot { page: 0, index: 0 }, HomeSlot { page: 0, index: 1 }, smallSpace)
+    everyAppHasOnePlace(home, names)
+    home.moveOut("H", 2, smallSpace)
+    everyAppHasOnePlace(home, names)
+    home.removeFromHome("C")
+    everyAppHasOnePlace(home, names)
+    home.addToHome("C", 0, smallSpace)
+    everyAppHasOnePlace(home, names)
+    home.addPage()
+    everyAppHasOnePlace(home, names)
+    home.movePage(0, home.pages.count - 1)
+    everyAppHasOnePlace(home, names)
+    home.toggleHidden(0)
+    everyAppHasOnePlace(home, names)
+    home.addToHome("C", 0, smallSpace)
+    everyAppHasOnePlace(home, names)
+    home = home.settled()
+    everyAppHasOnePlace(home, names)
+    let restored = parsedArrangement(arrangementText(home))
+    everyAppHasOnePlace(restored, names)
+}

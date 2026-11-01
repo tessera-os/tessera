@@ -71,23 +71,56 @@ extend Transfer {
     function step(borrow mut self, choice: Collision?) -> TransferStep {
         if pending.count == 0 { return .Finished }
         let source = copy pending[0]
+        // Moving by rename must obey the same no-link-parent rule as copying
+        // and deleting. Otherwise the fast path can traverse a linked parent.
+        if unsafeBackupPath(source) || unsafeBackupPath(destination)
+            || hasLinkedPathAncestor(source) || hasLinkedPathAncestor(destination) {
+            return self.keep(source, .Failed(.Refused(copy source)))
+        }
+        let destinationKind = match linkStatus(destination) {
+            Ok(status) -> status.kind
+            Error(failure) -> {
+                absorb failure
+                return self.keep(source, .Failed(.Missing(copy destination)))
+            }
+        }
+        if destinationKind != .Directory {
+            return self.keep(source, .Failed(.Refused(copy destination)))
+        }
         let name = lastPathPart(source)
         var target = childPath(destination, name)
-        if target == source {
-            // A copy into the folder it is in is a duplicate, never a
-            // collision with itself.
+        if target.lowercased() == source.lowercased() {
+            // Moving a file to its existing location is a no-op, not a
+            // rename to a numbered copy. Copying to itself duplicates it.
+            if kind == .Move { return self.keep(source, .Skipped(copy source)) }
             target = childPath(destination, freeName(destination, name))
         }
-        if isDirectory(source) && (destination == source || destination.startsWith(source + "/")) {
+        let sourceFolded = source.lowercased()
+        let destinationFolded = destination.lowercased()
+        if isDirectory(source) && (
+            destinationFolded == sourceFolded || destinationFolded.startsWith(sourceFolded + "/")
+        ) {
             return self.keep(source, .Failed(.IntoItself(copy source)))
         }
-        if pathExists(target) {
+        // Check the source *before* accepting Replace: the old destination
+        // must not be deleted when a missing or uncopyable source will fail.
+        let sourceKind = match linkStatus(source) {
+            Ok(status) -> status.kind
+            Error(failure) -> {
+                absorb failure
+                return self.keep(source, .Failed(.Missing(copy source)))
+            }
+        }
+        if kind == .Copy && (sourceKind == .Link || sourceKind == .Other) {
+            return self.keep(source, .Failed(.Refused(copy source)))
+        }
+        if occupiedTarget(target) {
             match choice {
                 Some(chosen) -> match chosen {
-                    Replace -> match removeTree(target) {
-                        Ok -> {}
-                        Error(failure) -> return self.keep(source, .Failed(failure))
-                    }
+                    // Preserve the old destination until the new transfer
+                    // actually arrives. Failed copies must never destroy an
+                    // existing document the user chose to replace.
+                    Replace -> return self.replaceOne(source, target)
                     KeepBoth -> target = childPath(destination, freeName(destination, name))
                     Skip -> return self.keep(source, .Skipped(copy source))
                 }
@@ -101,6 +134,67 @@ extend Transfer {
                 return .Arrived(target)
             }
             Error(failure) -> return self.keep(source, .Failed(failure))
+        }
+    }
+
+    /// A best-effort replacement transaction. The old entry is moved aside
+    /// on the same destination volume, and restored if the transfer fails.
+    /// If rollback itself fails, keep the old bytes at `preserved` for recovery.
+    function replaceOne(
+        borrow mut self,
+        source: borrow String,
+        target: borrow String
+    ) -> TransferStep {
+        let preserved = childPath(
+            destination,
+            freeName(destination, ".tessera-replaced-" + lastPathPart(target))
+        )
+        match renamePath(target, preserved) {
+            Ok -> {}
+            Error(failure) -> {
+                absorb failure
+                return self.keep(source, .Failed(.Refused(copy target)))
+            }
+        }
+        match self.transferOne(source, target) {
+            Ok -> {
+                // The newly arrived item is complete. If cleanup fails,
+                // retain the old version under its recovery name rather
+                // than reporting a failed move that already happened.
+                match removeTree(preserved) {
+                    Ok -> {}
+                    Error(failure) -> {
+                        log warn(
+                            "old replaced item remains under its recovery name",
+                            path: preserved,
+                            error: traceText(failure)
+                        )
+                    }
+                }
+                self.pending = rest(self.pending)
+                self.arrived.append(copy target)
+                return .Arrived(copy target)
+            }
+            Error(failure) -> {
+                // The copy fallback can leave partial output after an I/O
+                // failure. Clear it before putting the original item back.
+                if occupiedTarget(target) {
+                    match removeTree(target) {
+                        Ok -> {}
+                        Error(problem) -> {
+                            absorb problem
+                            return self.keep(source, .Failed(.Refused(copy preserved)))
+                        }
+                    }
+                }
+                match renamePath(preserved, target) {
+                    Ok -> return self.keep(source, .Failed(failure))
+                    Error(problem) -> {
+                        absorb problem
+                        return self.keep(source, .Failed(.Refused(copy preserved)))
+                    }
+                }
+            }
         }
     }
 
@@ -147,6 +241,9 @@ function renamed(source: borrow String, target: borrow String) -> Bool {
 
 // Copies `source` to `target`, removing a partial copy when it fails.
 function copyWhole(source: borrow String, target: borrow String) -> Result<Void, ChangeFailure> {
+    // If another entry appeared between collision selection and the copy,
+    // never delete it in partial-copy cleanup.
+    if occupiedTarget(target) { return .Error(.AlreadyExists(copy target)) }
     match copyTree(source, target) {
         Ok -> return .Ok
         Error(failure) -> {
@@ -164,4 +261,19 @@ function rest(items: borrow [String]) -> [String] {
     var kept: [String] = []
     for index in 1..items.count { kept.append(copy items[index]) }
     return kept
+}
+
+// A dangling symlink still occupies a directory entry. Do not use
+// pathExists, which follows the link and can mistake it for a free name.
+function occupiedTarget(path: borrow String) -> Bool {
+    return match linkStatus(path) {
+        Ok(status) -> {
+            absorb status
+            true
+        }
+        Error(failure) -> match failure {
+            Missing -> false
+            else -> true
+        }
+    }
 }

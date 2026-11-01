@@ -45,6 +45,30 @@ namespace SearchCalculation {
     let operators: [String] = ["+", "-", "*", "/", "×", "÷", "%", "^", "(", ")"]
 }
 
+// Search selection follows the result, not its row. Refining a query can
+// rerank results without activating whichever item inherited its old index.
+public function searchResultIdentity(result: borrow SearchResult) -> String {
+    return match result.target {
+        Application(application) -> "app:" + application.path()
+        Pane(pane) -> "pane:" + pane.word()
+        Document(path) -> "document:" + path
+        Answer -> "calculation:" + result.detail
+    }
+}
+
+// The selected result's current position, or the first item if it is gone.
+public function searchSelectedIndex(
+    results: borrow [SearchResult],
+    identity: borrow String
+) -> Number {
+    if identity.count > 0 {
+        for index in 0..results.count {
+            if searchResultIdentity(results[index]) == identity { return index }
+        }
+    }
+    return 0
+}
+
 /// The results for `query` among `installed`, grouped: applications, then
 /// documents, then Settings panes, then the calculation. An empty query has
 /// none.
@@ -120,7 +144,7 @@ function collectDocuments(
     seen: borrow mut Number,
     found: borrow mut [(SearchMatch, SearchResult)]
 ) {
-    if depth > DocumentSearch.depth { return }
+    if depth > DocumentSearch.depth || !directSearchFolder(folder) { return }
     let listing = match listDirectory(folder) {
         Ok(value) -> value
         Error(failure) -> {
@@ -149,7 +173,21 @@ function collectDocuments(
             // The name does not hold the query.
             None -> {}
         }
-        if isDirectory(path) { collectDocuments(path, wanted, depth + 1, seen, found) }
+        // isDirectory follows symlinks. Search must not walk a linked folder
+        // outside the person's Documents, including a cycle back to root.
+        if directSearchFolder(path) { collectDocuments(path, wanted, depth + 1, seen, found) }
+    }
+}
+
+// Only an actual directory can be recursively searched. Files and symbolic
+// links can still match by name but must not be followed for descendants.
+public function directSearchFolder(path: borrow String) -> Bool {
+    return match linkStatus(path) {
+        Ok(status) -> status.kind == .Directory
+        Error(failure) -> {
+            absorb failure
+            false
+        }
     }
 }
 

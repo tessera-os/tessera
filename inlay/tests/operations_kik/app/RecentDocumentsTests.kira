@@ -1,0 +1,150 @@
+import Foundation
+import FileOperations
+
+function recentRecorded(result: Result<Void, RecentFailure>) -> Bool {
+    return match result {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+}
+
+function recentSaved(result: Result<Void, RecentStoreFailure>) -> Bool {
+    return match result {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+}
+
+@Test
+function recentDocumentsUpdateAfterOpenWithoutDuplicatingOrRewinding() {
+    let folder = freshFolder("recents-basic")
+    let cwd = try currentDirectory() otherwise return
+    let first = childPath(cwd, childPath(folder, "one.txt"))
+    let second = childPath(cwd, childPath(folder, "two.txt"))
+    writeText(first, "one")
+    writeText(second, "two")
+    var recents = RecentDocuments {}
+    expect!(recentRecorded(recents.noteOpened(first, 1000)))
+    expect!(recentRecorded(recents.noteOpened(second, 2000)))
+    expect!(recentRecorded(recents.noteOpened(first, 3000)))
+    expect!(recents.items.count == 2)
+    expect!(recents.items[0].path == first)
+    expect!(recents.items[0].openedAt == 3000)
+    expect!(!recentRecorded(recents.noteOpened(first, 1500)))
+    expect!(recents.items[0].openedAt == 3000)
+    recents.forget(first)
+    expect!(recents.items.count == 1)
+    expect!(recents.items[0].path == second)
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function disconnectedRecentDocumentsStayVisibleButUnavailable() {
+    let folder = freshFolder("recents-offline")
+    let cwd = try currentDirectory() otherwise return
+    let file = childPath(cwd, childPath(folder, "removable.txt"))
+    writeText(file, "on disk")
+    var recents = RecentDocuments {}
+    expect!(recentRecorded(recents.noteOpened(file, 1000)))
+    expect!(recents.inspected()[0].availability == RecentAvailability.Available)
+    expect!(made(removePath(file)))
+    expect!(recents.inspected()[0].availability == RecentAvailability.Unavailable)
+    expect!(recents.items.count == 1)
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function recentDocumentsSaveAndReopenSpecialUtf8Filenames() {
+    let folder = freshFolder("recents-save")
+    let path = childPath(folder, "recent-cache")
+    let cwd = try currentDirectory() otherwise return
+    let document = childPath(cwd, childPath(folder, "Résumé\ncolours%\t.txt"))
+    writeText(document, "content")
+    var recents = RecentDocuments {}
+    expect!(recentRecorded(recents.noteOpened(document, 1000)))
+    expect!(recentSaved(saveRecentDocumentsFile(path, recents)))
+    let restored = try readRecentDocumentsFile(path) otherwise return
+    expect!(restored.items.count == 1)
+    expect!(restored.items[0].path == document)
+    expect!(encodedRecentDocuments(restored) == encodedRecentDocuments(recents))
+    expect!(restored.inspected()[0].availability == RecentAvailability.Available)
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function damagedRecentCacheCannotBeSilentlyReset() {
+    let folder = freshFolder("recents-corruption")
+    let path = childPath(folder, "recent-cache")
+    writeText(path, "Tessera recent documents 1\nR\tgarbage\n")
+    let refused = match readRecentDocumentsFile(path) {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(refused)
+    expect!(!recentSaved(saveRecentDocumentsFile(path, RecentDocuments {})))
+    expect!(textAt(path).contains("garbage"))
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function recentDocumentsRejectLinkedCacheAndLinkedRecentItems() {
+    let folder = freshFolder("recents-links")
+    let target = childPath(folder, "target")
+    writeText(target, "private")
+    let alias = childPath(folder, "Alias")
+    expect!(made(makeSymbolicLink("target", alias)))
+    expect!(!recentSaved(saveRecentDocumentsFile(alias, RecentDocuments {})))
+    expect!(textAt(target) == "private")
+    let cwd = try currentDirectory() otherwise return
+    var recents = RecentDocuments {}
+    expect!(recentRecorded(recents.noteOpened(childPath(cwd, alias), 1000)))
+    expect!(recents.inspected()[0].availability == RecentAvailability.UnsafePath)
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function staleOpenEventsCannotReorderRecentDocuments() {
+    var recent = RecentDocuments {}
+    expect!(recentRecorded(recent.noteOpened("/Documents/first.txt", 1000)))
+    expect!(recentRecorded(recent.noteOpened("/Documents/second.txt", 2000)))
+    expect!(!recentRecorded(recent.noteOpened("/Documents/third.txt", 1500)))
+    expect!(recent.items.count == 2)
+    expect!(recent.items[0].path == "/Documents/second.txt")
+    expect!(recent.items[1].path == "/Documents/first.txt")
+}
+
+@Test
+function recentDocumentsListHasAFixedBoundAndRejectsBadPaths() {
+    var recent = RecentDocuments {}
+    for index in 1..70 {
+        expect!(recentRecorded(recent.noteOpened("/Documents/\(index).txt", index)))
+    }
+    expect!(recent.items.count == RecentLimits.maxEntries)
+    expect!(recent.items[0].openedAt == 69)
+    expect!(recent.items[recent.items.count - 1].openedAt == 20)
+    expect!(!recentRecorded(recent.noteOpened("../private", 70)))
+    expect!(!recentRecorded(recent.noteOpened("/Documents/../private", 70)))
+    expect!(!recentRecorded(recent.noteOpened("/Documents/evil\0file", 70)))
+    expect!(recent.items.count == RecentLimits.maxEntries)
+}
+
+@Test
+function recentDocumentsDecoderRejectsDisorderedTimestampRows() {
+    var recent = RecentDocuments {}
+    expect!(recentRecorded(recent.noteOpened("/Documents/first", 1000)))
+    expect!(recentRecorded(recent.noteOpened("/Documents/second", 2000)))
+    let good = encodedRecentDocuments(recent)
+    let rows = good.split("\n")
+    let reordered = rows[0] + "\n" + rows[2] + "\n" + rows[1] + "\n"
+    expect!(decodedRecentDocuments(good).isSome())
+    expect!(decodedRecentDocuments(reordered).isNone())
+}

@@ -1,0 +1,206 @@
+import Foundation
+import AppRegistry
+import AppCatalog
+
+function jobSucceeded(result: Result<Void, InstallFailure>) -> Bool {
+    return match result {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+}
+
+function fromListing(listing: borrow CatalogListing) -> AppCandidate {
+    return AppCandidate {
+        identity: copy listing.identity,
+        name: copy listing.name,
+        version: listing.version,
+        imageDigest: copy listing.artifactDigest,
+        management: .Catalog,
+        requests: copy listing.requests
+    }
+}
+
+@Test
+function repeatedGetStartsExactlyOneJobAndNeverAcceptsItEarly() {
+    var cache = CatalogCache {}
+    let listing = sample()
+    expect!(refreshed(cache, [listing]))
+    var registry = ApplicationRegistry {}
+    var queue = InstallQueue {}
+    expect!(jobSucceeded(queue.request(listing, cache, registry, "desktop", 26)))
+    expect!(jobSucceeded(queue.request(listing, cache, registry, "desktop", 26)))
+    expect!(queue.jobs.count == 1)
+    expect!(registry.installed.count == 0)
+    expect!(jobSucceeded(queue.startDownload(listing.identity)))
+    expect!(jobSucceeded(queue.updateProgress(listing.identity, 100)))
+    expect!(!jobSucceeded(queue.updateProgress(listing.identity, 50)))
+    expect!(!jobSucceeded(queue.finishDownload(listing.identity)))
+    expect!(jobSucceeded(queue.updateProgress(listing.identity, listing.downloadBytes)))
+    expect!(jobSucceeded(queue.finishDownload(listing.identity)))
+    expect!(queue.jobs[0].phase == InstallPhase.Verifying)
+    expect!(registry.installed.count == 0)
+}
+
+@Test
+function verifiedInstallAcceptsOnlyAnExplicitMatchingArtifact() {
+    var cache = CatalogCache {}
+    let listing = sample()
+    expect!(refreshed(cache, [listing]))
+    var registry = ApplicationRegistry {}
+    var queue = InstallQueue {}
+    expect!(jobSucceeded(queue.request(listing, cache, registry, "desktop", 26)))
+    expect!(jobSucceeded(queue.startDownload(listing.identity)))
+    expect!(jobSucceeded(queue.updateProgress(listing.identity, listing.downloadBytes)))
+    expect!(jobSucceeded(queue.finishDownload(listing.identity)))
+    expect!(!jobSucceeded(queue.verifiedImage(listing.identity, fromListing(sample(publisherB)))))
+    expect!(
+        !jobSucceeded(queue.verifiedImage(listing.identity, fromListing(sample(publisherA, 2))))
+    )
+    expect!(jobSucceeded(queue.verifiedImage(listing.identity, fromListing(listing))))
+    expect!(registry.installed.count == 0)
+    expect!(jobSucceeded(queue.stageInstall(listing.identity, registry)))
+    expect!(registry.pending.count == 1)
+    expect!(registry.installed.count == 0)
+    expect!(jobSucceeded(queue.finishInstall(listing.identity, registry)))
+    expect!(registry.installed.count == 1)
+    expect!(registry.pending.count == 0)
+    expect!(queue.jobs[0].phase == InstallPhase.Ready)
+}
+
+@Test
+function interruptedUpdateLeavesPreviousVersionLaunchable() {
+    let old = sample()
+    let next = sample(publisherA, 2)
+    var registry = ApplicationRegistry {}
+    prepareInstalled(registry, old)
+    var cache = CatalogCache {}
+    expect!(refreshed(cache, [next]))
+    var queue = InstallQueue {}
+    expect!(jobSucceeded(queue.request(next, cache, registry, "desktop", 26)))
+    expect!(jobSucceeded(queue.startDownload(next.identity)))
+    expect!(jobSucceeded(queue.updateProgress(next.identity, next.downloadBytes)))
+    expect!(jobSucceeded(queue.finishDownload(next.identity)))
+    expect!(jobSucceeded(queue.verifiedImage(next.identity, fromListing(next))))
+    expect!(jobSucceeded(queue.stageInstall(next.identity, registry)))
+    queue.reconcile(registry)
+    let job = try queue.job(next.identity) otherwise return
+    expect!(job.phase == InstallPhase.Failed)
+    expect!(registry.pending.count == 0)
+    let accepted = try registry.accepted(next.identity) otherwise return
+    expect!(accepted.candidate.version == 1)
+    expect!(jobSucceeded(queue.request(next, cache, registry, "desktop", 26)))
+    expect!(queue.jobs.count == 1)
+}
+
+@Test
+function failedDownloadAndCancelRetainExistingApplication() {
+    let old = sample()
+    let next = sample(publisherA, 2)
+    var registry = ApplicationRegistry {}
+    prepareInstalled(registry, old)
+    var cache = CatalogCache {}
+    expect!(refreshed(cache, [next]))
+    var queue = InstallQueue {}
+    expect!(jobSucceeded(queue.request(next, cache, registry, "desktop", 26)))
+    expect!(jobSucceeded(queue.startDownload(next.identity)))
+    queue.fail(next.identity, .NetworkLost, registry)
+    expect!(queue.jobs[0].phase == InstallPhase.Failed)
+    expect!(jobSucceeded(queue.request(next, cache, registry, "desktop", 26)))
+    expect!(jobSucceeded(queue.cancel(next.identity)))
+    expect!(queue.jobs[0].phase == InstallPhase.Canceled)
+    expect!(registry.installed.count == 1)
+    let accepted = try registry.accepted(next.identity) otherwise return
+    expect!(accepted.candidate.version == 1)
+}
+
+@Test
+function offlineOrIncompatibleJobsCannotBeQueued() {
+    var cache = CatalogCache {}
+    let listing = sample()
+    expect!(refreshed(cache, [listing]))
+    let registry = ApplicationRegistry {}
+    var queue = InstallQueue {}
+    cache.connection = .Offline
+    expect!(!jobSucceeded(queue.request(listing, cache, registry, "desktop", 26)))
+    cache.connection = .Online
+    expect!(!jobSucceeded(queue.request(listing, cache, registry, "mobile", 26)))
+    expect!(queue.jobs.count == 0)
+}
+
+@Test
+function signedManifestCannotDisagreeWithCatalogNameOrPermissions() {
+    var cache = CatalogCache {}
+    let listing = sample()
+    expect!(refreshed(cache, [listing]))
+    var registry = ApplicationRegistry {}
+    var queue = InstallQueue {}
+    expect!(jobSucceeded(queue.request(listing, cache, registry, "desktop", 26)))
+    expect!(jobSucceeded(queue.startDownload(listing.identity)))
+    expect!(jobSucceeded(queue.updateProgress(listing.identity, listing.downloadBytes)))
+    expect!(jobSucceeded(queue.finishDownload(listing.identity)))
+    let renamed = AppCandidate {
+        identity: copy listing.identity,
+        name: "Something Else",
+        version: listing.version,
+        imageDigest: copy listing.artifactDigest,
+        management: .Catalog,
+        requests: copy listing.requests
+    }
+    expect!(!jobSucceeded(queue.verifiedImage(listing.identity, renamed)))
+    let extraGrant = AppCandidate {
+        identity: copy listing.identity,
+        name: copy listing.name,
+        version: listing.version,
+        imageDigest: copy listing.artifactDigest,
+        management: .Catalog,
+        requests: ["network"]
+    }
+    expect!(!jobSucceeded(queue.verifiedImage(listing.identity, extraGrant)))
+    expect!(queue.jobs[0].phase == InstallPhase.Verifying)
+    expect!(registry.installed.count == 0)
+}
+
+@Test
+function atMostThreeDownloadsCanProceedConcurrently() {
+    var queue = InstallQueue {}
+    var cache = CatalogCache {}
+    var listings: [CatalogListing] = []
+    for index in 0..4 {
+        let original = sample()
+        listings.append(
+            CatalogListing {
+                identity: AppIdentity {
+                    identifier: "example.app\(index)",
+                    publisher: copy original.identity.publisher
+                },
+                name: copy original.name,
+                description: copy original.description,
+                category: copy original.category,
+                version: original.version,
+                artifactDigest: copy original.artifactDigest,
+                supportedPlatforms: copy original.supportedPlatforms,
+                minSystemBuild: original.minSystemBuild,
+                downloadBytes: original.downloadBytes,
+                requests: copy original.requests
+            }
+        )
+    }
+    expect!(refreshed(cache, listings))
+    let registry = ApplicationRegistry {}
+    for listing in listings {
+        expect!(jobSucceeded(queue.request(listing, cache, registry, "desktop", 26)))
+    }
+    for index in 0..3 {
+        expect!(jobSucceeded(queue.startDownload(listings[index].identity)))
+    }
+    expect!(queue.activeDownloads() == DownloadLimits.parallel)
+    expect!(!jobSucceeded(queue.startDownload(listings[3].identity)))
+    expect!(queue.jobs[3].phase == InstallPhase.Queued)
+    expect!(jobSucceeded(queue.cancel(listings[1].identity)))
+    expect!(queue.activeDownloads() == 2)
+    expect!(jobSucceeded(queue.startDownload(listings[3].identity)))
+    expect!(queue.activeDownloads() == 3)
+}

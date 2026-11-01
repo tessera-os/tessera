@@ -12,7 +12,18 @@ import KiraUI
 
 // Keeps the arrangement as it is now, for cancelling the edit beginning.
 function beginHomeEdit() {
-    match writeFile(HomeStore.before, arrangementText(loadArrangement())) {
+    // A previous process may have stopped during an edit. Discard its old
+    // snapshot first, so a failed new snapshot cannot restore stale data.
+    if fileExists(HomeStore.before) {
+        match removePath(HomeStore.before) {
+            Ok -> {}
+            Error(failure) -> {
+                log warn("could not discard stale Home edit snapshot", failure)
+                return
+            }
+        }
+    }
+    match writeHomeText(HomeStore.before, arrangementText(loadArrangement())) {
         Ok -> {}
         Error(failure) -> log warn("could not keep Home from before the edit", failure)
     }

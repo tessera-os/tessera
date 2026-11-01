@@ -1,0 +1,22 @@
+//! Shared conservative checks for filesystem operations. Do not traverse
+//! symbolic-link ancestors from untrusted navigation paths; an opened file
+//! descriptor with openat2-style resolution is still needed for race safety.
+import Foundation
+
+// A parent link could redirect a copy, delete, restore or backup outside the
+// requested tree. Refuse it before performing any filesystem modification.
+function hasLinkedPathAncestor(path: borrow String) -> Bool {
+    for index in 1..path.count {
+        if Number(path.charAt(index)) != 47 { continue }
+        let prefix = path.substring(0, index)
+        let status = match linkStatus(prefix) {
+            Ok(value) -> value
+            Error(failure) -> {
+                absorb failure
+                return true
+            }
+        }
+        if status.kind == .Link { return true }
+    }
+    return false
+}

@@ -1,0 +1,160 @@
+import Foundation
+import AppCatalog
+
+function signedStoreAccepted(result: Result<Void, SignedCatalogStoreFailure>) -> Bool {
+    return match result {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+}
+
+function cleanSignedFile(path: borrow String) {
+    for name in [copy path, path + ".next"] {
+        if !pathExists(name) { continue }
+        match removePath(name) {
+            Ok -> {}
+            Error(failure) -> absorb failure
+        }
+    }
+}
+
+@Test
+function signedFeedReopensOfflineButAuthenticated() {
+    let path = ".tessera-signed-catalog-readback"
+    cleanSignedFile(path)
+    let signer = trustedTestSigner()
+    let raw = catalogTestFeed()
+    expect!(signedStoreAccepted(saveSignedCatalogFile(path, raw, catalogTestSignature(), signer)))
+    let verified = try readSignedCatalogFile(path, signer) otherwise return
+    expect!(verified.refreshedAt == 100)
+    expect!(catalogText(verified) == raw)
+    expect!(verified.listings.count == 1)
+    expect!(verified.connection == CatalogConnection.Offline)
+    expect!(!signedStoreAccepted(saveSignedCatalogFile(path, raw, catalogTestSignature(), signer)))
+    cleanSignedFile(path)
+}
+
+@Test
+function editingStoredSignedCatalogFailsClosedWithoutErasingIt() {
+    let path = ".tessera-signed-catalog-corrupted"
+    cleanSignedFile(path)
+    let signer = trustedTestSigner()
+    expect!(
+        signedStoreAccepted(
+            saveSignedCatalogFile(path, catalogTestFeed(), catalogTestSignature(), signer)
+        )
+    )
+    let valid = try readFile(path) otherwise return
+    let altered = valid.text.before("Productivity") + "Fraud" + valid.text.substring(
+        valid.text.before("Productivity").count + 12,
+        valid.text.count
+    )
+    match writeFile(path, altered) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    let refused = match readSignedCatalogFile(path, signer) {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(refused)
+    expect!(
+        !signedStoreAccepted(
+            saveSignedCatalogFile(path, catalogTestFeed(), catalogTestSignature(), signer)
+        )
+    )
+    expect!((try readFile(path) otherwise return).text == altered)
+    cleanSignedFile(path)
+}
+
+@Test
+function untrustedSignerCannotReadEvenAValidSignedCache() {
+    let path = ".tessera-signed-catalog-untrusted"
+    cleanSignedFile(path)
+    let signer = trustedTestSigner()
+    expect!(
+        signedStoreAccepted(
+            saveSignedCatalogFile(path, catalogTestFeed(), catalogTestSignature(), signer)
+        )
+    )
+    let untrusted = CatalogSigner {
+        certificate: signer.certificate,
+        pinnedCertificateSha256: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    }
+    let blocked = match readSignedCatalogFile(path, untrusted) {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(blocked)
+    cleanSignedFile(path)
+}
+
+@Test
+function linkedSignedCacheCanNeverOverwriteAnotherFile() {
+    let path = ".tessera-signed-catalog-link"
+    let target = ".tessera-signed-catalog-target"
+    cleanSignedFile(path)
+    cleanSignedFile(target)
+    match writeFile(target, "private") {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    match makeSymbolicLink(target, path) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    expect!(
+        !signedStoreAccepted(
+            saveSignedCatalogFile(
+                path,
+                catalogTestFeed(),
+                catalogTestSignature(),
+                trustedTestSigner()
+            )
+        )
+    )
+    expect!((try readFile(target) otherwise return).text == "private")
+    cleanSignedFile(path)
+    cleanSignedFile(target)
+}
+
+@Test
+function independentTimestampFloorRejectsAValidButRolledBackSignedFeed() {
+    let path = ".tessera-signed-catalog-rollback-floor"
+    cleanSignedFile(path)
+    let signer = trustedTestSigner()
+    expect!(
+        signedStoreAccepted(
+            saveSignedCatalogFile(path, catalogTestFeed(), catalogTestSignature(), signer)
+        )
+    )
+    let current = try readSignedCatalogFileAtLeast(path, signer, 100) otherwise return
+    expect!(current.refreshedAt == 100)
+    let rejected = match readSignedCatalogFileAtLeast(path, signer, 101) {
+        Ok -> false
+        Error(reason) -> match reason {
+            Stale -> true
+            Unavailable, Damaged, Untrusted, UnsafePath -> false
+        }
+    }
+    expect!(rejected)
+    cleanSignedFile(path)
+}

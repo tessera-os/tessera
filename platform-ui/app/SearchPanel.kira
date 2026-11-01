@@ -31,13 +31,14 @@ let searchDim: RGBAColor = RGBAColor { r: 0.0, g: 0.0, b: 0.0, a: 0.2 }
 /// System search over what is behind it; `dismiss` puts it away.
 public construct SearchPanel(installed: [Application], dismiss: () -> Void) extends Widget {
     @State var query: String = ""
-    @State var chosen: Number = 0
+    @State var selectedIdentity: String = ""
     @FocusState var typing: Bool = true
 
     body {
         let results = searchResults(query, installed)
-        let shown = min(results.count, SearchPanelLook.shown)
-        let at = min(chosen, max(shown - 1, 0))
+        let at = searchSelectedIndex(results, selectedIdentity)
+        let first = max(at - SearchPanelLook.shown + 1, 0)
+        let shown = min(results.count - first, SearchPanelLook.shown)
         let closing = copy dismiss
         ZStack(alignment = .Top) {
             Rectangle().fill(searchDim).fillWidth().fillHeight().onClick(copy dismiss)
@@ -45,7 +46,7 @@ public construct SearchPanel(installed: [Application], dismiss: () -> Void) exte
                 TextField(title = "Search", text = $query)
                 .onSubmit({ in self.open(results, at) })
                 .focused($typing)
-                searchRows(results, shown, at, { index in self.open(results, index) })
+                searchRows(results, first, shown, at, { index in self.open(results, index) })
                 if query.trim().count > 0 && results.count == 0 {
                     Text("No Results")
                     .font(size: resolvedLength(SearchPanelLook.title), weight: .SemiBold)
@@ -61,16 +62,27 @@ public construct SearchPanel(installed: [Application], dismiss: () -> Void) exte
         .fillHeight()
         .onKeyPress(
             KeyEquivalent.downArrow,
-            action = { in chosen = min(at + 1, max(shown - 1, 0)) }
+            action = { in
+                if results.count > 0 {
+                    selectedIdentity = searchResultIdentity(results[min(at + 1, results.count - 1)])
+                }
+            }
         )
-        .onKeyPress(KeyEquivalent.upArrow, action = { in chosen = max(at - 1, 0) })
+        .onKeyPress(
+            KeyEquivalent.upArrow,
+            action = { in
+                if results.count > 0 {
+                    selectedIdentity = searchResultIdentity(results[max(at - 1, 0)])
+                }
+            }
+        )
         .onKeyPress(KeyEquivalent.escape, action = closing)
     }
 
     // Opens the result at `index`, then puts search away; a copy that fails
     // keeps search open and says so.
     function open(results: borrow [SearchResult], index: Number) {
-        if index >= results.count { return }
+        if index < 0 || index >= results.count { return }
         match activateSearchResult(results[index], installed) {
             Ok -> dismiss()
             Error(failed) -> log warn("a search result could not be used", error: errorName(failed))
@@ -78,18 +90,19 @@ public construct SearchPanel(installed: [Application], dismiss: () -> Void) exte
     }
 }
 
-// The first `shown` of `results`, with a header over each group's first, the
-// one at `chosen` lit; pressing one calls `open` with its place.
+// The visible window of `results`, with a header for the first row and
+// each new group. The keyboard can reach items beyond the first window.
 function searchRows(
     results: borrow [SearchResult],
+    first: Number,
     shown: Number,
     chosen: Number,
     open: (Number) -> Void
 ) -> Any Widget {
     var rows: [Any Widget] = []
-    for index in 0..shown {
+    for index in first..first + shown {
         let result = results[index]
-        if index == 0 || results[index - 1].group != result.group {
+        if index == first || results[index - 1].group != result.group {
             rows.append(
                 Text(searchGroupTitle(result.group)).font(
                     size: resolvedLength(SearchPanelLook.header),

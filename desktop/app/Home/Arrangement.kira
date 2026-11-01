@@ -9,7 +9,7 @@ import PlatformUI
 // lists. It is kept by application name in Desktop's data folder, one line
 // an entry, and read again each time Home is drawn:
 //
-//     version 2
+//     version 3
 //     reset 1792414882134
 //     page
 //     app Notes
@@ -43,18 +43,32 @@ function loadArrangement() -> HomeArrangement {
     }
 }
 
-// Saves `arrangement`; Home keeps working from memory when it cannot.
-function saveArrangement(arrangement: borrow HomeArrangement) {
-    if !isDirectory(HomeStore.folder) {
-        match makeDirectory(HomeStore.folder) {
-            Ok -> {}
-            Error(failure) -> {
-                log warn("could not make Home's folder", failure)
-                return
-            }
+// Save a complete text file beside its destination, then replace it with
+// one rename. A failed write must never truncate a previously valid layout.
+// This also works for the pre-edit snapshot used by Cancel.
+function writeHomeText(path: borrow String, content: borrow String) -> Result<Void, FileFailure> {
+    if !isDirectory(HomeStore.folder) { try makeDirectory(HomeStore.folder) }
+    let next = path + ".next"
+    match writeFile(next, content) {
+        Ok -> {}
+        Error(failure) -> {
+            // A failed staging write must not modify the destination.
+            match removePath(next) { Ok -> {} Error(cleanup) -> absorb cleanup }
+            return .Error(failure)
         }
     }
-    match writeFile(HomeStore.file, arrangementText(arrangement)) {
+    match renamePath(next, path) {
+        Ok -> return .Ok
+        Error(failure) -> {
+            match removePath(next) { Ok -> {} Error(cleanup) -> absorb cleanup }
+            return .Error(failure)
+        }
+    }
+}
+
+// Saves `arrangement`; Home keeps working from memory when it cannot.
+function saveArrangement(arrangement: borrow HomeArrangement) {
+    match writeHomeText(HomeStore.file, arrangementText(arrangement)) {
         Ok -> {}
         Error(failure) -> log warn("could not save Home", failure)
     }

@@ -1,0 +1,146 @@
+//! Safe, bounded document preview metadata. Only UTF-8 text is surfaced as
+//! content; image signatures identify possible display formats but do not
+//! decode pixels or claim that an image is valid. Never execute the file.
+import Foundation
+
+public enum DocumentPreviewContent {
+    Text(String)
+    ImageFormat(String)
+    Unsupported
+}
+
+public struct DocumentPreview {
+    let content: DocumentPreviewContent
+    let bytesRead: Number
+    let totalBytes: Number
+    let truncated: Bool
+}
+
+public enum DocumentPreviewFailure {
+    InvalidLimit
+    UnsafePath
+    Unavailable
+    ChangedDuringRead
+}
+
+public namespace PreviewLimits {
+    let defaultBytes: Number = 4096
+    let maxBytes: Number = 65536
+}
+
+/// Inspect only at most `maxBytes` bytes of an explicitly granted file path.
+/// Names containing path aliases, symbolic links or device entries refuse.
+/// The caller still needs an OS-issued document access grant for `path`.
+public function previewDocument(
+    path: borrow String,
+    maxBytes: Number = PreviewLimits.defaultBytes
+) -> Result<DocumentPreview, DocumentPreviewFailure> {
+    if maxBytes < 16 || maxBytes > PreviewLimits.maxBytes
+        || maxBytes != trunc(maxBytes) { return .Error(.InvalidLimit) }
+    if unsafeBackupPath(path) || hasLinkedPathAncestor(path) { return .Error(.UnsafePath) }
+    let before = match linkStatus(path) {
+        Ok(status) -> status
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Unavailable)
+        }
+    }
+    if before.kind != .File { return .Error(.UnsafePath) }
+    let count = min(Number(before.size), maxBytes)
+    let bytes = match readFileRange(path, 0, count) {
+        Ok(contents) -> contents
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Unavailable)
+        }
+    }
+    if bytes.count != count { return .Error(.ChangedDuringRead) }
+    let after = match linkStatus(path) {
+        Ok(status) -> status
+        Error(failure) -> {
+            absorb failure
+            return .Error(.ChangedDuringRead)
+        }
+    }
+    if after.kind != .File || after.size != before.size || after.modified != before.modified {
+        return .Error(.ChangedDuringRead)
+    }
+    let truncated = Number(before.size) > bytes.count
+    let detected = imagePreviewFormat(bytes)
+    match detected {
+        Some(format) -> return .Ok(
+            DocumentPreview {
+                content: .ImageFormat(format),
+                bytesRead: bytes.count,
+                totalBytes: Number(before.size),
+                truncated: truncated
+            }
+        )
+        None -> {}
+    }
+    // A text preview must not expose arbitrary binary or NUL/control bytes.
+    for byte in bytes {
+        let value = Number(byte)
+        if value == 0 || value == 127
+            || (value < 32 && value != 9 && value != 10 && value != 13) {
+            return .Ok(
+                DocumentPreview {
+                    content: .Unsupported,
+                    bytesRead: bytes.count,
+                    totalBytes: Number(before.size),
+                    truncated: truncated
+                }
+            )
+        }
+    }
+    let decoded = readablePreviewText(bytes, truncated)
+    return .Ok(
+        DocumentPreview {
+            content: match decoded {
+                Some(text) -> .Text(text)
+                None -> .Unsupported
+            },
+            bytesRead: bytes.count,
+            totalBytes: Number(before.size),
+            truncated: truncated
+        }
+    )
+}
+
+// If the bounded preview ends in a partial UTF-8 scalar, remove at most
+// three trailing bytes. Invalid text in the middle remains unsupported.
+function readablePreviewText(bytes: borrow [UN8], truncated: Bool) -> String? {
+    match textFromBytes(bytes) {
+        Some(text) -> return .Some(text)
+        None -> if !truncated { return .None }
+    }
+    for discarded in 1..min(4, bytes.count + 1) {
+        let prefix = bytes.prefix(bytes.count - discarded)
+        match textFromBytes(prefix) {
+            Some(text) -> return .Some(text)
+            None -> {}
+        }
+    }
+    return .None
+}
+
+// Signature recognition is only a hint for a future trusted image decoder.
+function imagePreviewFormat(bytes: borrow [UN8]) -> String? {
+    if bytes.count >= 8 && Number(bytes[0]) == 137
+        && bytes[1] == 80 && bytes[2] == 78 && bytes[3] == 71
+        && bytes[4] == 13 && bytes[5] == 10 && bytes[6] == 26 && bytes[7] == 10 {
+        return .Some("PNG")
+    }
+    if bytes.count >= 3 && Number(bytes[0]) == 255 && Number(bytes[1]) == 216
+        && Number(bytes[2]) == 255 { return .Some("JPEG") }
+    if bytes.count >= 6 && bytes[0] == 71 && bytes[1] == 73 && bytes[2] == 70
+        && bytes[3] == 56 && (bytes[4] == 55 || bytes[4] == 57) && bytes[5] == 97 {
+        return .Some("GIF")
+    }
+    if bytes.count >= 12 && bytes[0] == 82 && bytes[1] == 73
+        && bytes[2] == 70 && bytes[3] == 70
+        && bytes[8] == 87 && bytes[9] == 69 && bytes[10] == 66 && bytes[11] == 80 {
+        return .Some("WebP")
+    }
+    return .None
+}

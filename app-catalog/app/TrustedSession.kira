@@ -1,0 +1,92 @@
+//! The production-facing App Store startup path. Catalogue metadata is used
+//! only after pinning and Ed25519 verification. Damaged cache/journal files
+//! remain on disk for diagnostics; they never erase accepted applications.
+import Foundation
+import AppRegistry
+
+public enum TrustedCacheState {
+    Verified
+    Missing
+    Rejected
+}
+
+public enum TrustedJournalState {
+    Loaded
+    Missing
+    Rejected
+}
+
+public struct AuthenticatedAppStoreSession {
+    var registry: ApplicationRegistry
+    var catalog: CatalogCache
+    var queue: InstallQueue
+    let discardedPending: Number
+    let catalogState: TrustedCacheState
+    let journalState: TrustedJournalState
+}
+
+/// `signer` must come from the immutable operating-system trust policy,
+/// never a download, web response or cached file. A damaged *registry* is a
+/// fatal startup error because it holds accepted versions and owner grants.
+/// Bad optional catalog or job caches are quarantined logically instead.
+public function loadAuthenticatedAppStoreSession(
+    registryPath: borrow String,
+    signedCatalogPath: borrow String,
+    journalPath: borrow String,
+    signer: borrow CatalogSigner,
+    minimumCatalogTimestamp: Number = 0
+) -> Result<AuthenticatedAppStoreSession, SessionLoadFailure> {
+    var registry = match readRegistryFile(registryPath) {
+        Ok(value) -> value
+        Error(failure) -> {
+            absorb failure
+            return .Error(.RegistryUnavailable)
+        }
+    }
+    let discarded = registry.pending.count
+    registry.pending = []
+    var catalog = CatalogCache {}
+    var catalogState = TrustedCacheState.Missing
+    if pathExists(signedCatalogPath) {
+        match readSignedCatalogFileAtLeast(signedCatalogPath, signer, minimumCatalogTimestamp) {
+            Ok(value) -> {
+                catalog = value
+                catalogState = .Verified
+            }
+            Error(failure) -> {
+                absorb failure
+                catalogState = .Rejected
+            }
+        }
+    }
+    var queue = InstallQueue {}
+    var journalState = TrustedJournalState.Missing
+    if pathExists(journalPath) {
+        // If there is no authenticated catalog, the journal has no trusted
+        // listing to reconcile and cannot confer downloaded/Ready status.
+        if catalogState != .Verified {
+            journalState = .Rejected
+        } else {
+            match readInstallJournalFile(journalPath, catalog, registry) {
+                Ok(value) -> {
+                    queue = value
+                    journalState = .Loaded
+                }
+                Error(failure) -> {
+                    absorb failure
+                    journalState = .Rejected
+                }
+            }
+        }
+    }
+    return .Ok(
+        AuthenticatedAppStoreSession {
+            registry: registry,
+            catalog: catalog,
+            queue: queue,
+            discardedPending: discarded,
+            catalogState: catalogState,
+            journalState: journalState
+        }
+    )
+}

@@ -1,0 +1,148 @@
+//! Cryptographically verifies a staged application image before turning its
+//! declared manifest into a registry candidate. The caller MUST guarantee the
+//! image is immutable between verification and installation/activation; a
+//! matching digest is not permission to execute an attacker-swapped path.
+import Foundation
+
+public struct AppImageSigner {
+    /// End-entity X.509 DER certificate with an Ed25519 public key.
+    let certificate: [UN8]
+    /// SHA-256 pin from an OS trust store or an explicit owner approval;
+    /// never from the app bundle or its catalog record.
+    let trustedCertificateSha256: [UN8]
+}
+
+public enum AppImageVerificationFailure {
+    UnsafeImagePath
+    InvalidSigner
+    UntrustedPublisher
+    ImageUnavailable
+    InvalidManifest
+    InvalidSignature
+    CatalogDigestMismatch
+}
+
+/// Signature covers the complete app manifest identity, executable, requested
+/// capabilities, version and *actual image byte digest* in a canonical form.
+/// The signer's pinned *certificate* digest becomes the publisher identity.
+// Certificate renewal must be an explicit, separately authenticated rotation.
+public function verifyAppImageCandidate(
+    manifest: borrow ApplicationManifest,
+    imagePath: borrow String,
+    signer: borrow AppImageSigner,
+    signature: borrow [UN8],
+    management: AppManagement,
+    expectedCatalogDigest: borrow String = ""
+) -> Result<AppCandidate, AppImageVerificationFailure> {
+    if !safeImageStagingPath(imagePath) { return .Error(.UnsafeImagePath) }
+    let status = match linkStatus(imagePath) {
+        Ok(value) -> value
+        Error(reason) -> {
+            absorb reason
+            return .Error(.ImageUnavailable)
+        }
+    }
+    if status.kind != .File { return .Error(.UnsafeImagePath) }
+    if signer.certificate.count < 64 || signer.certificate.count > 4096
+        || signer.trustedCertificateSha256.count != 32 { return .Error(.InvalidSigner) }
+    if signature.count != 64 { return .Error(.InvalidSignature) }
+    let fingerprint = match digest(.Sha256, signer.certificate) {
+        Ok(bytes) -> bytes
+        Error(reason) -> {
+            absorb reason
+            return .Error(.InvalidSigner)
+        }
+    }
+    if fingerprint != signer.trustedCertificateSha256 { return .Error(.UntrustedPublisher) }
+    // Reject mutation of the staged file during digest verification. This is
+    // an extra consistency check, not a substitute for the privileged
+    // installer's immutable file descriptor and activation transaction.
+    let before = status
+    let actual = match digestFile(.Sha256, imagePath) {
+        Ok(bytes) -> bytes
+        Error(reason) -> {
+            absorb reason
+            return .Error(.ImageUnavailable)
+        }
+    }
+    if actual.count != 32 { return .Error(.ImageUnavailable) }
+    let after = match linkStatus(imagePath) {
+        Ok(value) -> value
+        Error(reason) -> {
+            absorb reason
+            return .Error(.ImageUnavailable)
+        }
+    }
+    if after.kind != .File || after.size != before.size {
+        return .Error(.ImageUnavailable)
+    }
+    let imageDigest = appHex(actual)
+    if expectedCatalogDigest.count > 0 && expectedCatalogDigest != imageDigest {
+        return .Error(.CatalogDigestMismatch)
+    }
+    let publisher = appHex(fingerprint)
+    let candidate = match candidateFromManifest(manifest, publisher, imageDigest, management) {
+        Ok(value) -> value
+        Error(reason) -> {
+            absorb reason
+            return .Error(.InvalidManifest)
+        }
+    }
+    let statement = appSignatureStatement(manifest, imageDigest)
+    var statementBytes: [UN8] = []
+    for index in 0..statement.count {
+        statementBytes.append(UN8(Number(statement.charAt(index))))
+    }
+    match verifySignature(.Ed25519, signer.certificate, statementBytes, signature) {
+        Ok -> return .Ok(candidate)
+        Error(reason) -> {
+            absorb reason
+            return .Error(.InvalidSignature)
+        }
+    }
+}
+
+// The verified image must not arrive through a linked parent or a path
+// normalization alias. Checking the path is defense in depth: only an OS-owned
+// immutable descriptor can fully prevent replacement during activation.
+function safeImageStagingPath(path: borrow String) -> Bool {
+    if path.count == 0 || path == "/" || path.contains("\0") || path.contains("\\") {
+        return false
+    }
+    for (index, part) in path.split("/").enumerated() {
+        if (part.count == 0 && index != 0) || part == "." || part == ".." { return false }
+    }
+    for index in 1..path.count {
+        if Number(path.charAt(index)) != 47 { continue }
+        let parent = path.substring(0, index)
+        let kind = match linkStatus(parent) {
+            Ok(status) -> status.kind
+            Error(failure) -> {
+                absorb failure
+                return false
+            }
+        }
+        if kind != .Directory { return false }
+    }
+    return true
+}
+
+public function appSignatureStatement(
+    manifest: borrow ApplicationManifest,
+    imageDigest: borrow String
+) -> String {
+    return "Tessera app image 1\n" + manifest.identifier + "\n" + manifest.name + "\n"
+        + "\(manifest.version)\n" + manifest.executable + "\n"
+        + joined(manifest.requests, ",") + "\n" + imageDigest + "\n"
+}
+
+function appHex(bytes: borrow [UN8]) -> String {
+    let digits = "0123456789abcdef"
+    var result = ""
+    for byte in bytes {
+        let upper = trunc(Number(byte) / 16)
+        let lower = Number(byte) % 16
+        result += digits.substring(upper, upper + 1) + digits.substring(lower, lower + 1)
+    }
+    return result
+}

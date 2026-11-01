@@ -1,0 +1,78 @@
+import Foundation
+import AppCatalog
+
+function trustedTestSigner() -> CatalogSigner {
+    return CatalogSigner {
+        certificate: catalogTestCertificate(),
+        pinnedCertificateSha256: catalogTestPin()
+    }
+}
+
+function feedAccepted(result: Result<Void, CatalogSignatureFailure>) -> Bool {
+    return match result {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+}
+
+@Test
+function pinnedSignedFeedCanReplaceCatalogMetadata() {
+    var cache = CatalogCache {}
+    let expected = CatalogCache { listings: [sample()], refreshedAt: 100 }
+    let signed = catalogTestFeed()
+    expect!(catalogText(expected) == signed)
+    expect!(
+        feedAccepted(
+            refreshSignedCatalog(cache, signed, catalogTestSignature(), trustedTestSigner())
+        )
+    )
+    expect!(cache.refreshedAt == 100)
+    expect!(cache.listings.count == 1)
+    expect!(cache.connection == CatalogConnection.Online)
+}
+
+@Test
+function tamperedFeedOrSignatureCannotReplaceAcceptedCache() {
+    var cache = CatalogCache {}
+    let feed = catalogTestFeed()
+    let signer = trustedTestSigner()
+    expect!(feedAccepted(refreshSignedCatalog(cache, feed, catalogTestSignature(), signer)))
+    let old = catalogText(cache)
+    let changed = feed.before("Productivity") + "Malware" + feed.substring(
+        feed.before("Productivity").count + 12,
+        feed.count
+    )
+    expect!(!feedAccepted(refreshSignedCatalog(cache, changed, catalogTestSignature(), signer)))
+    var alteredSignature = catalogTestSignature()
+    alteredSignature[0] = 0
+    expect!(!feedAccepted(refreshSignedCatalog(cache, feed, alteredSignature, signer)))
+    expect!(catalogText(cache) == old)
+}
+
+@Test
+function attackerChosenCertificateWithoutPinnedTrustIsRejected() {
+    var cache = CatalogCache {}
+    let signer = CatalogSigner {
+        certificate: catalogTestCertificate(),
+        pinnedCertificateSha256: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    }
+    expect!(
+        !feedAccepted(
+            refreshSignedCatalog(cache, catalogTestFeed(), catalogTestSignature(), signer)
+        )
+    )
+    expect!(cache.listings.count == 0)
+}
+
+@Test
+function validSignedFeedCannotReplayAnOlderTimestamp() {
+    var cache = CatalogCache {}
+    let feed = catalogTestFeed()
+    let signer = trustedTestSigner()
+    expect!(feedAccepted(refreshSignedCatalog(cache, feed, catalogTestSignature(), signer)))
+    expect!(!feedAccepted(refreshSignedCatalog(cache, feed, catalogTestSignature(), signer)))
+    expect!(cache.refreshedAt == 100)
+}

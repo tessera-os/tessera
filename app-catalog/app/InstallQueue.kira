@@ -1,0 +1,351 @@
+//! App Store installation transactions. External workers download into
+//! quarantine, verify image bytes plus publisher signature, and install to an
+//! immutable path. This queue coordinates and exposes those states; it does
+//! not itself authenticate the worker or install executable files.
+import Foundation
+import AppRegistry
+
+public enum InstallPhase {
+    Queued
+    Downloading
+    Verifying
+    Verified
+    Installing
+    Ready
+    Failed
+    Canceled
+}
+
+public enum InstallFailure {
+    NotAvailable
+    NotCompatible
+    NeedsOwnerConsent
+    AlreadyAccepted
+    DifferentJobInProgress
+    MissingJob
+    WrongPhase
+    InvalidProgress
+    MissingBytes
+    ArtifactMismatch
+    PublisherMismatch
+    MetadataMismatch
+    RegistryRejected
+    NetworkLost
+    TooManyDownloads
+    OutOfSpace
+    Interrupted
+}
+
+public struct InstallJob {
+    let listing: CatalogListing
+    var phase: InstallPhase = .Queued
+    var received: Number = 0
+    var reason: InstallFailure? = .None
+    var takeOver: Bool = false
+    // Ephemeral verified result supplied by an external image verifier.
+    // Never persist this proof across a process restart.
+    var verified: AppCandidate? = .None
+}
+
+public struct InstallQueue {
+    var jobs: [InstallJob] = []
+}
+
+public namespace DownloadLimits {
+    let parallel: Number = 3
+}
+
+extend InstallQueue {
+    function job(borrow self, identity: borrow AppIdentity) -> InstallJob? {
+        for current in jobs {
+            if sameApp(current.listing.identity, identity) { return .Some(copy current) }
+        }
+        return .None
+    }
+
+    function request(
+        borrow mut self,
+        listing: borrow CatalogListing,
+        cache: borrow CatalogCache,
+        registry: borrow ApplicationRegistry,
+        platform: borrow String,
+        systemBuild: Number,
+        takeOver: Bool = false
+    ) -> Result<Void, InstallFailure> {
+        let catalogEntry = try cache.listing(listing.identity) otherwise return .Error(
+            .NotAvailable
+        )
+        if catalogEntry.version != listing.version
+            || catalogEntry.artifactDigest != listing.artifactDigest {
+            return .Error(.NotAvailable)
+        }
+        let action = cache.action(listing.identity, registry, platform, systemBuild)
+        match action {
+            Open -> return .Error(.AlreadyAccepted)
+            Offline, NetworkFailure, Unavailable -> return .Error(.NotAvailable)
+            UnsupportedPlatform, RequiresSystemUpdate -> return .Error(.NotCompatible)
+            NeedsOwnershipConsent -> if !takeOver { return .Error(.NeedsOwnerConsent) }
+            Get, Update -> {}
+            Pending -> return .Error(.DifferentJobInProgress)
+        }
+        for index in 0..jobs.count {
+            if !sameApp(jobs[index].listing.identity, listing.identity) { continue }
+            let current = jobs[index]
+            if current.listing.version != listing.version
+                || current.listing.artifactDigest != listing.artifactDigest {
+                if current.phase != .Failed && current.phase != .Canceled {
+                    return .Error(.DifferentJobInProgress)
+                }
+            } else if current.phase != .Failed && current.phase != .Canceled {
+                // Double-clicking Get/Update must not start a second download.
+                return .Ok
+            }
+            jobs[index] = InstallJob { listing: copy catalogEntry, takeOver: takeOver }
+            return .Ok
+        }
+        jobs.append(InstallJob { listing: copy catalogEntry, takeOver: takeOver })
+        return .Ok
+    }
+
+    // Count only transfers that actively consume a download slot. Jobs
+    // waiting for signature checks or disk activation do not hold one.
+    function activeDownloads(borrow self) -> Number {
+        var running: Number = 0
+        for job in jobs { if job.phase == .Downloading { running += 1 } }
+        return running
+    }
+
+    function startDownload(
+        borrow mut self,
+        identity: borrow AppIdentity
+    ) -> Result<Void, InstallFailure> {
+        let index = try self.indexOf(identity) otherwise return .Error(.MissingJob)
+        if jobs[index].phase != .Queued { return .Error(.WrongPhase) }
+        if self.activeDownloads() >= DownloadLimits.parallel {
+            return .Error(.TooManyDownloads)
+        }
+        jobs[index].phase = .Downloading
+        return .Ok
+    }
+
+    function updateProgress(
+        borrow mut self,
+        identity: borrow AppIdentity,
+        bytes: Number
+    ) -> Result<Void, InstallFailure> {
+        let index = try self.indexOf(identity) otherwise return .Error(.MissingJob)
+        if jobs[index].phase != .Downloading { return .Error(.WrongPhase) }
+        let job = jobs[index]
+        if bytes < job.received || bytes > job.listing.downloadBytes
+            || bytes != trunc(bytes) { return .Error(.InvalidProgress) }
+        jobs[index].received = bytes
+        return .Ok
+    }
+
+    function finishDownload(
+        borrow mut self,
+        identity: borrow AppIdentity
+    ) -> Result<Void, InstallFailure> {
+        let index = try self.indexOf(identity) otherwise return .Error(.MissingJob)
+        if jobs[index].phase != .Downloading { return .Error(.WrongPhase) }
+        if jobs[index].received != jobs[index].listing.downloadBytes {
+            return .Error(.MissingBytes)
+        }
+        jobs[index].phase = .Verifying
+        return .Ok
+    }
+
+    /// The trusted verifier must independently verify both the image bytes
+    /// and signer key *before* calling this method. This comparison ensures
+    /// they match the catalog listing selected for the job.
+    function verifiedImage(
+        borrow mut self,
+        identity: borrow AppIdentity,
+        candidate: borrow AppCandidate
+    ) -> Result<Void, InstallFailure> {
+        let index = try self.indexOf(identity) otherwise return .Error(.MissingJob)
+        if jobs[index].phase != .Verifying { return .Error(.WrongPhase) }
+        let listing = jobs[index].listing
+        if candidate.identity.publisher != listing.identity.publisher
+            || candidate.identity.identifier != listing.identity.identifier {
+            return .Error(.PublisherMismatch)
+        }
+        if candidate.imageDigest != listing.artifactDigest { return .Error(.ArtifactMismatch) }
+        if candidate.version != listing.version || candidate.requests != listing.requests
+            || candidate.name != listing.name || candidate.management != .Catalog
+            || validAppCandidate(candidate).isSome() {
+            return .Error(.MetadataMismatch)
+        }
+        jobs[index].verified = .Some(copy candidate)
+        jobs[index].phase = .Verified
+        return .Ok
+    }
+
+    /// Verify actual downloaded image bytes against the pinned publisher
+    /// certificate, signed manifest and selected catalog digest. Only then
+    /// can the job enter Verified. The installer must keep the staged image
+    /// immutable until it activates the same checked bytes.
+    function verifyDownloadedImage(
+        borrow mut self,
+        identity: borrow AppIdentity,
+        imagePath: borrow String,
+        manifest: borrow ApplicationManifest,
+        signer: borrow AppImageSigner,
+        signature: borrow [UN8]
+    ) -> Result<Void, InstallFailure> {
+        let index = try self.indexOf(identity) otherwise return .Error(.MissingJob)
+        if jobs[index].phase != .Verifying { return .Error(.WrongPhase) }
+        let expected = jobs[index].listing.artifactDigest
+        let verified = match verifyAppImageCandidate(
+            manifest,
+            imagePath,
+            signer,
+            signature,
+            .Catalog,
+            expected
+        ) {
+            Ok(candidate) -> candidate
+            Error(reason) -> {
+                absorb reason
+                return .Error(.ArtifactMismatch)
+            }
+        }
+        return self.verifiedImage(identity, verified)
+    }
+
+    function stageInstall(
+        borrow mut self,
+        identity: borrow AppIdentity,
+        registry: borrow mut ApplicationRegistry
+    ) -> Result<Void, InstallFailure> {
+        let index = try self.indexOf(identity) otherwise return .Error(.MissingJob)
+        if jobs[index].phase != .Verified { return .Error(.WrongPhase) }
+        let candidate = try jobs[index].verified otherwise return .Error(.WrongPhase)
+        match registry.prepare(candidate, jobs[index].takeOver) {
+            Ok -> {}
+            Error(failure) -> {
+                absorb failure
+                return .Error(.RegistryRejected)
+            }
+        }
+        jobs[index].phase = .Installing
+        return .Ok
+    }
+
+    /// Only call after the immutable image was installed and the running-app
+    /// activation point is safe. This changes the accepted registry version.
+    function finishInstall(
+        borrow mut self,
+        identity: borrow AppIdentity,
+        registry: borrow mut ApplicationRegistry
+    ) -> Result<Void, InstallFailure> {
+        let index = try self.indexOf(identity) otherwise return .Error(.MissingJob)
+        if jobs[index].phase != .Installing { return .Error(.WrongPhase) }
+        let candidate = try jobs[index].verified otherwise return .Error(.WrongPhase)
+        match registry.activate(identity, candidate.imageDigest) {
+            Ok -> {}
+            Error(failure) -> {
+                absorb failure
+                return .Error(.RegistryRejected)
+            }
+        }
+        jobs[index].verified = .None
+        jobs[index].phase = .Ready
+        return .Ok
+    }
+
+    /// Recheck staged image bytes and the signed manifest immediately before
+    /// committing the accepted version. The trusted installer must ensure
+    /// no unprivileged writer can modify the image between this read and the
+    /// actual immutable-slot switch. Only then call this activation entry.
+    function finishVerifiedInstall(
+        borrow mut self,
+        identity: borrow AppIdentity,
+        imagePath: borrow String,
+        manifest: borrow ApplicationManifest,
+        signer: borrow AppImageSigner,
+        signature: borrow [UN8],
+        registry: borrow mut ApplicationRegistry
+    ) -> Result<Void, InstallFailure> {
+        let index = try self.indexOf(identity) otherwise return .Error(.MissingJob)
+        if jobs[index].phase != .Installing { return .Error(.WrongPhase) }
+        let staged = try jobs[index].verified otherwise return .Error(.WrongPhase)
+        let digest = jobs[index].listing.artifactDigest
+        let confirmed = match verifyAppImageCandidate(
+            manifest,
+            imagePath,
+            signer,
+            signature,
+            .Catalog,
+            digest
+        ) {
+            Ok(candidate) -> candidate
+            Error(reason) -> {
+                absorb reason
+                return .Error(.ArtifactMismatch)
+            }
+        }
+        if !sameApp(confirmed.identity, staged.identity) || confirmed.version != staged.version
+            || confirmed.imageDigest != staged.imageDigest
+            || confirmed.requests != staged.requests {
+            return .Error(.MetadataMismatch)
+        }
+        return self.finishInstall(identity, registry)
+    }
+
+    function fail(
+        borrow mut self,
+        identity: borrow AppIdentity,
+        reason: InstallFailure,
+        registry: borrow mut ApplicationRegistry
+    ) {
+        let index = try self.indexOf(identity) otherwise return
+        if jobs[index].phase == .Ready || jobs[index].phase == .Canceled { return }
+        registry.cancel(identity)
+        jobs[index].verified = .None
+        jobs[index].phase = .Failed
+        jobs[index].reason = .Some(reason)
+    }
+
+    function cancel(borrow mut self, identity: borrow AppIdentity) -> Result<Void, InstallFailure> {
+        let index = try self.indexOf(identity) otherwise return .Error(.MissingJob)
+        if jobs[index].phase == .Installing || jobs[index].phase == .Ready {
+            return .Error(.WrongPhase)
+        }
+        jobs[index].phase = .Canceled
+        jobs[index].verified = .None
+        return .Ok
+    }
+
+    /// A restart erases ephemeral verification and reconciles with the actual
+    /// accepted registry. No merely staged version becomes ready by itself.
+    function reconcile(borrow mut self, registry: borrow mut ApplicationRegistry) {
+        for index in 0..jobs.count {
+            let job = jobs[index]
+            if job.phase == .Ready || job.phase == .Canceled || job.phase == .Failed { continue }
+            let active = registry.accepted(job.listing.identity)
+            match active {
+                Some(accepted) -> {
+                    if accepted.candidate.version == job.listing.version
+                        && accepted.candidate.imageDigest == job.listing.artifactDigest {
+                        jobs[index].phase = .Ready
+                        jobs[index].verified = .None
+                        continue
+                    }
+                }
+                None -> {}
+            }
+            registry.cancel(job.listing.identity)
+            jobs[index].phase = .Failed
+            jobs[index].verified = .None
+            jobs[index].reason = .Some(.Interrupted)
+        }
+    }
+
+    function indexOf(borrow self, identity: borrow AppIdentity) -> Number? {
+        for index in 0..jobs.count {
+            if sameApp(jobs[index].listing.identity, identity) { return .Some(index) }
+        }
+        return .None
+    }
+}

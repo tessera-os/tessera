@@ -1,0 +1,69 @@
+import Foundation
+import AppRegistry
+import AppCatalog
+
+@Test
+function cachedListingsRoundTripOfflineWithTheirRefreshTimestamp() {
+    var cache = CatalogCache {}
+    let first = sample()
+    let second = sample(publisherB, 2)
+    expect!(refreshed(cache, [first, second]))
+    let text = catalogText(cache)
+    let reloaded = try parsedCatalog(text) otherwise return
+    expect!(catalogText(reloaded) == text)
+    expect!(reloaded.refreshedAt == 100)
+    expect!(reloaded.connection == CatalogConnection.Offline)
+    expect!(reloaded.browse("notes").listings.count == 2)
+    expect!(
+        reloaded.action(
+            first.identity,
+            ApplicationRegistry {},
+            "desktop",
+            26
+        ) == CatalogAction.Offline
+    )
+}
+
+@Test
+function cachedCatalogDescriptionsAndSpecialCharactersRemainIntact() {
+    var cache = CatalogCache {}
+    let first = CatalogListing {
+        identity: AppIdentity { identifier: "example.notes", publisher: publisherA },
+        name: "Café 100%",
+        description: "Write\nnotes and keep tables\torganized",
+        category: "Productivity",
+        version: 1,
+        artifactDigest: digestA,
+        supportedPlatforms: ["desktop"],
+        minSystemBuild: 26,
+        downloadBytes: 1000
+    }
+    expect!(refreshed(cache, [first]))
+    let text = catalogText(cache)
+    expect!(text.contains("Café 100%25"))
+    expect!(text.contains("Write%0Anotes and keep tables%09organized"))
+    let restored = try parsedCatalog(text) otherwise return
+    expect!(restored.listings[0].description == first.description)
+    expect!(restored.listings[0].name == first.name)
+}
+
+@Test
+function malformedAndDuplicateCatalogCacheIsRejected() {
+    var cache = CatalogCache {}
+    let notes = sample()
+    expect!(refreshed(cache, [notes]))
+    let complete = catalogText(cache)
+    expect!(parsedCatalog(complete.substring(0, complete.count - 1)).isNone())
+    expect!(parsedCatalog(complete + "X\tforged\n").isNone())
+    let row = complete.split("\n")[2]
+    expect!(parsedCatalog(complete + row + "\n").isNone())
+    expect!(
+        parsedCatalog(
+            complete.before("Notes") + "Notes%XX" + complete.substring(
+                complete.before("Notes").count + 5,
+                complete.count
+            )
+        ).isNone()
+    )
+    expect!(parsedCatalog("Tessera catalog cache 1\nat\t0\n").isNone())
+}

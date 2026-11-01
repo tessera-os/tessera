@@ -3,5 +3,5 @@
 construct TrashKik extends Package {
     let version: String = "0.1.0"
     let kind: PackageKind = .App
-    let dependencies: [Dependency] = [Dependency { name: "TrashStore", path: "../../store" }]
+    let dependencies: [Dependency] = [Dependency { name: "TrashRules", path: "../../rules" }]
 }

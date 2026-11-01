@@ -1,0 +1,212 @@
+//! Host-testable path validation and record parsing for Tessera Trash.
+import Foundation
+
+/// Where the Trash lives on the data volume: its folders, and the records that tell where each item came from.
+namespace TrashLayout {
+    let root: String = "/data/Trash"
+    let items: String = "/data/Trash/items"
+    let records: String = "/data/Trash/records"
+    // The record's first line: its format.
+    let recordVersion: String = "version 1"
+    // What a record's second line starts with, before the item's path.
+    let pathPrefix: String = "path "
+    // A valid request path is <=4096 UTF-8 bytes. Permit only a small
+    // fixed envelope for record metadata, not arbitrary filesystem content.
+    let maximumRecordBytes: Number = 4144
+}
+
+/// Whether `path` is `directory` or lies beneath it.
+function within(path: borrow String, directory: borrow String) -> Bool {
+    return path == directory || path.startsWith(directory + "/")
+}
+
+/// Reject controls and ambiguous path spellings. Every internal component
+/// must be nonempty and distinct from `.` and `..`; otherwise `/data/./system`
+/// or `/data//system` could bypass the protected path check.
+function hasUnsafeBytes(path: borrow String) -> Bool {
+    var start: Number = 0
+    for index in 0..path.count {
+        let byte = Number(path.charAt(index))
+        if byte < 32 || byte == 127 { return true }
+        if byte == 47 {
+            let component = path.substring(start, index)
+            if (index > 0 && component.count == 0) || component == "." || component == ".." {
+                return true
+            }
+            start = index + 1
+        }
+    }
+    let final = path.substring(start, path.count)
+    return final.count == 0 || final == "." || final == ".."
+}
+
+/// Whether a path is allowed to enter Trash, malformed, or protected.
+/// The store maps this answer to LibTessera's ErrorCode at the service edge.
+enum TrashPathStatus {
+    Allowed
+    Invalid
+    Protected
+}
+
+function trashPathStatus(path: borrow String) -> TrashPathStatus {
+    if !within(path, "/data") || path.count <= 6 || hasUnsafeBytes(path) {
+        return .Invalid
+    }
+    if within(path, "/data/system") || within(path, TrashLayout.root) {
+        return .Protected
+    }
+    return .Allowed
+}
+
+/// The original path in a single, complete Trash record, if its syntax is valid.
+function rawRecordPath(text: borrow String) -> String? {
+    if text.count > TrashLayout.maximumRecordBytes { return .None }
+    let prefix = TrashLayout.recordVersion + "\n" + TrashLayout.pathPrefix
+    if !text.startsWith(prefix) || text.count <= prefix.count + 1 { return .None }
+    if Number(text.charAt(text.count - 1)) != 10 { return .None }
+    let path = text.substring(prefix.count, text.count - 1)
+    if hasUnsafeBytes(path) { return .None }
+    return .Some(move path)
+}
+
+/// A single-message list reply has a strict budget. Treat exceeding that
+/// budget as an error instead of silently omitting records while answering
+/// success to a client that believes it saw the entire Trash.
+function fitsTrashReply(
+    currentBytes: Number,
+    additionalBytes: Number,
+    maximumBytes: Number
+) -> Bool {
+    if currentBytes < 0 || additionalBytes < 0 || maximumBytes < 0 { return false }
+    if currentBytes != trunc(currentBytes) || additionalBytes != trunc(additionalBytes)
+        || maximumBytes != trunc(maximumBytes) { return false }
+    if currentBytes > maximumBytes { return false }
+    return additionalBytes <= maximumBytes - currentBytes
+}
+
+/// The client writes zero into every reserved request-header field. Reject
+/// hidden arguments, nonzero reply/status codes and unexpected IPC handles
+/// rather than interpreting a noncanonical request with discarded metadata.
+function validTrashWireHeader(
+    replyCode: Number,
+    a: Number,
+    b: Number,
+    c: Number,
+    handles: Number
+) -> Bool {
+    return replyCode == 0 && a == 0 && b == 0 && c == 0 && handles == 0
+}
+
+/// The complete binary wire payload must be validated before converting
+/// it to a String. C-string decoding alone could hide an embedded NUL and
+/// suffix, granting a malformed Move or PutBack request a different meaning.
+/// Wire operation numbers are 1=Move, 2=PutBack, 3=List, 4=Empty.
+function validTrashWirePayload(operation: Number, bytes: borrow [UN8]) -> Bool {
+    if operation == 3 || operation == 4 { return bytes.count == 0 }
+    if operation != 1 && operation != 2 { return false }
+    if bytes.count == 0 || bytes.count > 4096 { return false }
+    for byte in bytes {
+        if Number(byte) == 0 { return false }
+    }
+    let decoded = try textFromBytes(bytes) otherwise return false
+    if decoded.utf8().count != bytes.count { return false }
+    if operation == 1 { return trashPathStatus(decoded) == .Allowed }
+    return isItemId(decoded)
+}
+
+/// Item IDs are decimal only and bounded for filesystem handling.
+function isItemId(id: borrow String) -> Bool {
+    // Fresh IDs are allocated as canonical decimal integers from 1..999999.
+    // Refusing aliases like 0001 avoids ambiguous filesystem record names.
+    if id.count == 0 || id.count > 6 || Number(id.charAt(0)) == 48 { return false }
+    for index in 0..id.count {
+        let byte = Number(id.charAt(index))
+        if byte < 48 || byte > 57 { return false }
+    }
+    return true
+}
+
+/// The containing directory, for an absolute path.
+function parentOf(path: borrow String) -> String {
+    for step in 0..path.count {
+        let index = path.count - 1 - step
+        if index > 0 && Number(path.charAt(index)) == 47 { return path.substring(0, index) }
+    }
+    return "/"
+}
+
+/// Delete a tree without following symbolic links found inside it. In
+/// particular a link in the Trash cannot turn Empty Trash into deletion of
+/// the link's target. Link status is queried without following the final
+/// component. Concurrent renames still require higher-level isolation.
+function removeTrashTree(path: borrow String) -> Result<Void, FileFailure> {
+    let status = try linkStatus(path)
+    if status.kind == .Directory {
+        let listing = try listDirectory(path)
+        for name in listing.entries {
+            if name == "." || name == ".." { continue }
+            try removeTrashTree(path + "/" + name)
+        }
+    }
+    return removePath(path)
+}
+
+/// Whether any ancestor directory is itself a symbolic link. Do not follow
+/// a link through to protected state when moving or putting back an item;
+/// the final item may be a link, since renaming it moves only that link.
+/// The service must still prevent concurrent path replacement separately.
+function hasLinkParent(path: borrow String) -> Bool {
+    for index in 1..path.count {
+        if Number(path.charAt(index)) != 47 { continue }
+        let ancestor = path.substring(0, index)
+        match linkStatus(ancestor) {
+            Ok(status) -> if status.kind == .Link { return true }
+            // If a parent cannot be inspected, its safety is unknown.
+            Error(failure) -> {
+                absorb failure
+                return true
+            }
+        }
+    }
+    return false
+}
+
+/// A dangling symbolic link still occupies a directory entry. Treat other
+/// metadata errors as occupied too: an inaccessible ID or restore target
+/// must not be overwritten on the assumption that it is missing.
+function occupiedTrashEntry(path: borrow String) -> Bool {
+    return match linkStatus(path) {
+        Ok(status) -> {
+            absorb status
+            true
+        }
+        Error(failure) -> match failure {
+            Missing -> false
+            else -> true
+        }
+    }
+}
+
+/// Trash metadata must be an actual file, not a symbolic link pointing to a
+/// mutable record elsewhere on the data volume.
+function directTrashRecord(path: borrow String) -> Bool {
+    return match linkStatus(path) {
+        Ok(status) -> status.kind == .File && status.size <= TrashLayout.maximumRecordBytes
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+}
+
+/// A real directory, not a symbolic link to one. The Trash's own root and
+/// item/record folders must pass this check before serving destructive calls.
+function directDirectory(path: borrow String) -> Bool {
+    return match linkStatus(path) {
+        Ok(status) -> status.kind == .Directory
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+}

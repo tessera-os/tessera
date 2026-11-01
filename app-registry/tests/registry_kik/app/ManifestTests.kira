@@ -1,0 +1,110 @@
+import Foundation
+import AppRegistry
+
+function manifestFiles(
+    folder: borrow String,
+    version: borrow String = "1",
+    executable: borrow String = "bin"
+) {
+    match makeDirectory(folder) {
+        Ok -> {}
+        Error(failure) -> absorb failure
+    }
+    for (name, content) in [
+        ("id", "example.notes\n"),
+        ("name", "Notes\n"),
+        ("version", copy version + "\n"),
+        ("exec", copy executable + "\n"),
+        ("needs", "display data\n")
+    ] {
+        match writeFile(folder + "/" + name, content) {
+            Ok -> {}
+            Error(failure) -> absorb failure
+        }
+    }
+}
+
+function cleanupManifest(folder: borrow String) {
+    for name in ["id", "name", "version", "exec", "needs"] {
+        match removePath(folder + "/" + name) {
+            Ok -> {}
+            Error(failure) -> absorb failure
+        }
+    }
+    match removePath(folder) {
+        Ok -> {}
+        Error(failure) -> absorb failure
+    }
+}
+
+@Test
+function signedImageManifestFieldsProduceOnlyAPendingCandidate() {
+    let dir = ".registry-manifest-happy"
+    manifestFiles(dir)
+    let manifest = try readAppManifest(dir) otherwise return
+    expect!(manifest.identifier == "example.notes")
+    expect!(manifest.executable == "bin")
+    expect!(manifest.requests == ["display", "data"])
+    let candidate = try candidateFromManifest(manifest, pubA, digestA, .Direct) otherwise return
+    var registry = ApplicationRegistry {}
+    expect!(registrationSucceeded(registry.prepare(candidate)))
+    expect!(registry.installed.count == 0)
+    expect!(registry.pending.count == 1)
+    cleanupManifest(dir)
+}
+
+@Test
+function manifestRejectsTraversalAndAbsoluteExecutables() {
+    for (name, executable) in [
+        ("relative", "../bin"),
+        ("absolute", "/bin"),
+        ("embedded", "bin/../../boot"),
+        ("empty", ""),
+        ("slash", "bin//program"),
+        ("windows", "C:\\system.exe")
+    ] {
+        let dir = ".registry-manifest-" + name
+        manifestFiles(dir, "1", executable)
+        let result = readAppManifest(dir)
+        expect!(manifestRefused(move result))
+        cleanupManifest(dir)
+    }
+    expect!(validExecutablePath("bin/main"))
+}
+
+@Test
+function malformedManifestCannotCreateCandidate() {
+    let dir = ".registry-manifest-bad-version"
+    manifestFiles(dir, "1.5")
+    expect!(manifestRefused(readAppManifest(dir)))
+    cleanupManifest(dir)
+    let forged = ApplicationManifest {
+        identifier: "example.notes",
+        name: "Notes",
+        version: 1,
+        executable: "bin",
+        requests: ["network"]
+    }
+    expect!(candidateRefused(candidateFromManifest(forged, "wrong-publisher", digestA, .Direct)))
+    expect!(candidateRefused(candidateFromManifest(forged, pubA, "wrong-hash", .Direct)))
+}
+
+function manifestRefused(result: Result<ApplicationManifest, ManifestFailure>) -> Bool {
+    return match result {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+}
+
+function candidateRefused(result: Result<AppCandidate, ManifestFailure>) -> Bool {
+    return match result {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+}

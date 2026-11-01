@@ -1,0 +1,76 @@
+import Foundation
+import FileOperations
+
+function backupHost(
+    at: Number,
+    free: Number = 10000000000,
+    size: Number = 100000000,
+    power: Bool = true,
+    idle: Bool = true,
+    running: Bool = false
+) -> BackupHostState {
+    return BackupHostState {
+        nowMillis: at,
+        freeBytes: free,
+        estimatedCopyBytes: size,
+        externalPower: power,
+        idle: idle,
+        backupRunning: running
+    }
+}
+
+@Test
+function dailyBackupsOnlyBecomeDueAfterVerifiedGenerationAge() {
+    let yesterday = 1000000000
+    let schedule = BackupSchedule { frequency: .Daily, lastVerifiedAt: yesterday }
+    expect!(backupDue(schedule, backupHost(yesterday + 86399999)) == BackupDueState.NotDue)
+    expect!(backupDue(schedule, backupHost(yesterday + 86400000)) == BackupDueState.Due)
+}
+
+@Test
+function weeklyAndManualSchedulesHaveDistinctSemantics() {
+    let yesterday = 1000000000
+    let weekly = BackupSchedule { frequency: .Weekly, lastVerifiedAt: yesterday }
+    expect!(backupDue(weekly, backupHost(yesterday + 86400000)) == BackupDueState.NotDue)
+    expect!(backupDue(weekly, backupHost(yesterday + 604800000)) == BackupDueState.Due)
+    expect!(
+        backupDue(BackupSchedule {}, backupHost(yesterday + 604800000)) == BackupDueState.ManualOnly
+    )
+}
+
+@Test
+function backupSchedulerNeverRunsDuringUnsafeOrUnavailableConditions() {
+    let schedule = BackupSchedule { frequency: .Daily, requireExternalPower: true }
+    let now = 1000000000
+    expect!(backupDue(schedule, backupHost(now, power: false)) == BackupDueState.PowerRequired)
+    expect!(backupDue(schedule, backupHost(now, idle: false)) == BackupDueState.IdleRequired)
+    expect!(backupDue(schedule, backupHost(now, running: true)) == BackupDueState.Busy)
+    expect!(backupDue(schedule, backupHost(now, free: 100000000)) == BackupDueState.LowSpace)
+    expect!(backupDue(schedule, backupHost(now)) == BackupDueState.Due)
+}
+
+@Test
+function failedBackupRetriesOnlyAfterBackoffAndNeverClaimsSuccess() {
+    let failure = 1000000000
+    let schedule = BackupSchedule { frequency: .Daily, lastFailureAt: failure }
+    expect!(backupDue(schedule, backupHost(failure + 3599999)) == BackupDueState.RetryLater)
+    expect!(backupDue(schedule, backupHost(failure + 3600000)) == BackupDueState.Due)
+}
+
+@Test
+function invalidClockAndNegativeSpaceCannotTriggerAutomaticBackup() {
+    let schedule = BackupSchedule { frequency: .Daily, lastVerifiedAt: 1000000000 }
+    expect!(backupDue(schedule, backupHost(999999999)) == BackupDueState.InvalidState)
+    expect!(backupDue(schedule, backupHost(1000000001, free: -1)) == BackupDueState.InvalidState)
+    expect!(backupDue(schedule, backupHost(1000000001.5)) == BackupDueState.InvalidState)
+}
+
+@Test
+function fractionalSpaceAndExcessiveClockValuesCannotTriggerBackup() {
+    let plan = BackupSchedule { frequency: .Daily }
+    expect!(
+        backupDue(plan, backupHost(1000000000, free: 9000000000.5)) == BackupDueState.InvalidState
+    )
+    expect!(backupDue(plan, backupHost(1000000000, size: 100.5)) == BackupDueState.InvalidState)
+    expect!(backupDue(plan, backupHost(9007199254740992)) == BackupDueState.InvalidState)
+}

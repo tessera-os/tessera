@@ -56,6 +56,22 @@ over extra screens without changing the saved arrangement. These compile
 against the train's libraries; the checkpoints stay open until a boot shows
 them.
 
+Status (2026-10-31): Home's page overview now adds a page explicitly and
+removes empty pages without deleting apps or widgets. Pages created on purpose
+stay in `Home.txt` even while empty, hidden or reordered; ending an edit always
+leaves a visible page. Home now also protects against duplicate and missing
+applications, and the `version 3` text format escapes saved names while
+accepting legacy `version 2` layouts. The host HomeLayout tests pass (34/34),
+with zero findings from the Working with Kira result-rule checker. The staged
+filesystem save helper passes an isolated write/rename test. The full desktop
+boot checkpoints remain open.
+
+Follow-up (2026-10-31): Home tolerates a zero-cell viewport during display
+changes, and it restores a visible page if an old or damaged arrangement has
+only hidden pages. New applications no longer get placed on a hidden trailing
+page. The layout suite now passes 38/38 host tests, including the new recovery
+and viewport cases. None of these host tests replaces the required boot check.
+
 ## 2. App Library and discovery
 
 App Library lists every installed launchable app, including apps absent from

@@ -1,0 +1,113 @@
+//! Strict, versioned offline catalog cache. This is presentation metadata,
+//! not a signed installer receipt or a verified application image.
+import Foundation
+import AppRegistry
+
+public namespace CatalogText {
+    let version: String = "Tessera catalog cache 1"
+}
+
+public function catalogText(cache: borrow CatalogCache) -> String {
+    var lines: [String] = [CatalogText.version, "at\t\(cache.refreshedAt)"]
+    for item in cache.listings {
+        lines.append(
+            "L\t" + item.identity.identifier + "\t" + item.identity.publisher + "\t\(item.version)\t" + item.artifactDigest + "\t" + catalogEncoded(
+                item.name
+            ) + "\t" + catalogEncoded(item.description) + "\t" + catalogEncoded(
+                item.category
+            ) + "\t" + joined(
+                item.supportedPlatforms,
+                ","
+            ) + "\t\(item.minSystemBuild)\t\(item.downloadBytes)\t" + joined(item.requests, ",")
+        )
+    }
+    return joined(lines, "\n") + "\n"
+}
+
+/// Recovered snapshots always begin offline; a cached timestamp is not proof
+/// a feed is currently reachable or an artifact can be downloaded.
+public function parsedCatalog(text: borrow String) -> CatalogCache? {
+    if text.count > CatalogLimits.maxCacheBytes { return .None }
+    let lines = text.split("\n")
+    if lines.count < 3 || lines[0] != CatalogText.version
+        || lines[lines.count - 1] != "" { return .None }
+    let meta = lines[1].split("\t")
+    if meta.count != 2 || meta[0] != "at" { return .None }
+    let timestamp = try meta[1].toNumber() otherwise return .None
+    if timestamp <= 0 || timestamp != trunc(timestamp) { return .None }
+    var items: [CatalogListing] = []
+    var identities: [AppIdentity] = []
+    for index in 2..lines.count - 1 {
+        if items.count >= CatalogLimits.maxListings { return .None }
+        let fields = lines[index].split("\t")
+        if fields.count != 12 || fields[0] != "L" { return .None }
+        let version = try fields[3].toNumber() otherwise return .None
+        let name = try catalogDecoded(fields[5]) otherwise return .None
+        let description = try catalogDecoded(fields[6]) otherwise return .None
+        let category = try catalogDecoded(fields[7]) otherwise return .None
+        let supported: [String] = fields[8].count == 0 ? [] : fields[8].split(",")
+        let minBuild = try fields[9].toNumber() otherwise return .None
+        let bytes = try fields[10].toNumber() otherwise return .None
+        let requests: [String] = fields[11].count == 0 ? [] : fields[11].split(",")
+        let item = CatalogListing {
+            identity: AppIdentity { identifier: copy fields[1], publisher: copy fields[2] },
+            version: version,
+            artifactDigest: copy fields[4],
+            name: name,
+            description: description,
+            category: category,
+            supportedPlatforms: supported,
+            minSystemBuild: minBuild,
+            downloadBytes: bytes,
+            requests: requests
+        }
+        if !validCatalogListing(item) || identities.contains(item.identity) { return .None }
+        identities.append(copy item.identity)
+        items.append(item)
+    }
+    let cache = CatalogCache { listings: items, refreshedAt: timestamp, connection: .Offline }
+    if catalogText(cache) != text { return .None }
+    return .Some(cache)
+}
+
+function catalogEncoded(text: borrow String) -> String {
+    var output = ""
+    var start: Number = 0
+    for index in 0..text.count {
+        let escaped = match Number(text.charAt(index)) {
+            37 -> "%25"
+            9 -> "%09"
+            10 -> "%0A"
+            13 -> "%0D"
+            else -> ""
+        }
+        if escaped.count == 0 { continue }
+        output += text.substring(start, index) + escaped
+        start = index + 1
+    }
+    return output + text.substring(start, text.count)
+}
+
+function catalogDecoded(text: borrow String) -> String? {
+    var output = ""
+    var start: Number = 0
+    var index: Number = 0
+    while index < text.count {
+        if Number(text.charAt(index)) != 37 {
+            index += 1
+            continue
+        }
+        if index + 2 >= text.count { return .None }
+        let value = match text.substring(index + 1, index + 3) {
+            "25" -> "%"
+            "09" -> "\t"
+            "0A" -> "\n"
+            "0D" -> "\r"
+            else -> return .None
+        }
+        output += text.substring(start, index) + value
+        index += 3
+        start = index
+    }
+    return .Some(output + text.substring(start, text.count))
+}

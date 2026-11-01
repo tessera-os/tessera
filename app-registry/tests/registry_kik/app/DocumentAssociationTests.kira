@@ -1,0 +1,94 @@
+import Foundation
+import AppRegistry
+
+function chosen(result: Result<Void, AssociationFailure>) -> Bool {
+    return match result {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+}
+
+@Test
+function openWithRoutesOnlyToTheAcceptedPublisherIdentity() {
+    var registry = ApplicationRegistry {}
+    let first = candidate(pubA, 1, digestA)
+    let otherPublisher = candidate(pubB, 1, digestB)
+    expect!(registrationSucceeded(registry.prepare(first)))
+    expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
+    var associations = DocumentAssociations {}
+    expect!(chosen(associations.chooseDefault("TXT", first.identity, registry)))
+    let route = associations.route("Letter.TXT", registry)
+    let correct = match route {
+        OpenAccepted(identity) -> sameApp(identity, first.identity)
+        DefaultUnavailable, ChooseApplication -> false
+    }
+    expect!(correct)
+    registry.uninstall(first.identity)
+    expect!(registrationSucceeded(registry.prepare(otherPublisher)))
+    expect!(registrationSucceeded(registry.activate(otherPublisher.identity, digestB)))
+    let missing = associations.route("Letter.txt", registry)
+    let unavailable = match missing {
+        DefaultUnavailable(identity) -> sameApp(identity, first.identity)
+        OpenAccepted, ChooseApplication -> false
+    }
+    expect!(unavailable)
+    expect!(associations.defaults.count == 1)
+}
+
+@Test
+function openWithWillNotRegisterAnUninstalledOrUnrequestedApplication() {
+    var registry = ApplicationRegistry {}
+    var associations = DocumentAssociations {}
+    let first = candidate(pubA, 1, digestA)
+    expect!(!chosen(associations.chooseDefault("txt", first.identity, registry)))
+    expect!(associations.route("notes.txt", registry) == DocumentRoute.ChooseApplication)
+    expect!(registrationSucceeded(registry.prepare(first)))
+    expect!(!chosen(associations.chooseDefault("txt", first.identity, registry)))
+    expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
+    expect!(chosen(associations.chooseDefault("txt", first.identity, registry)))
+}
+
+@Test
+function openWithExtractsOnlySafeConventionalFinalExtensions() {
+    let okay = try documentExtension("/Documents/photo.JPEG") otherwise return
+    expect!(okay == "jpeg")
+    let archive = try documentExtension("archive.tar.gz") otherwise return
+    expect!(archive == "gz")
+    for name in [".gitignore", "README", "note.", "/Documents/", "bad.😃", "bad.some-thing"] {
+        expect!(documentExtension(name).isNone())
+    }
+}
+
+@Test
+function choosingANewDefaultReplacesOnlyTheSelectedExtension() {
+    var registry = ApplicationRegistry {}
+    let first = candidate(pubA, 1, digestA)
+    let second = candidate(pubB, 1, digestB)
+    expect!(registrationSucceeded(registry.prepare(first)))
+    expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
+    expect!(registrationSucceeded(registry.prepare(second)))
+    expect!(registrationSucceeded(registry.activate(second.identity, digestB)))
+    var defaults = DocumentAssociations {}
+    expect!(chosen(defaults.chooseDefault("txt", first.identity, registry)))
+    expect!(chosen(defaults.chooseDefault("md", first.identity, registry)))
+    expect!(chosen(defaults.chooseDefault("TXT", second.identity, registry)))
+    expect!(defaults.defaults.count == 2)
+    let txt = defaults.route("note.txt", registry)
+    let md = defaults.route("note.md", registry)
+    let txtReplaced = match txt {
+        OpenAccepted(identity) -> sameApp(identity, second.identity)
+        ChooseApplication, DefaultUnavailable -> false
+    }
+    let mdUnchanged = match md {
+        OpenAccepted(identity) -> sameApp(identity, first.identity)
+        ChooseApplication, DefaultUnavailable -> false
+    }
+    expect!(txtReplaced)
+    expect!(mdUnchanged)
+    defaults.forgetDefault("TXT")
+    expect!(defaults.route("note.txt", registry) == DocumentRoute.ChooseApplication)
+    expect!(defaults.defaults.count == 1)
+}

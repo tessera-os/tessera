@@ -1,0 +1,200 @@
+//! Catalog listings are proposals, not proof of an installed or trusted app.
+//! A trusted download + signer + image verifier must produce the registry's
+//! accepted app independently before any listing can say Open or Update.
+import Foundation
+import AppRegistry
+
+public struct CatalogListing {
+    let identity: AppIdentity
+    let name: String
+    let description: String
+    let category: String
+    let version: Number
+    /// SHA-256 of the expected immutable image; never use a listing as proof.
+    let artifactDigest: String
+    let supportedPlatforms: [String]
+    let minSystemBuild: Number
+    let downloadBytes: Number
+    let requests: [String] = []
+}
+
+public enum CatalogConnection {
+    Online
+    Offline
+    Failed
+}
+
+public struct CatalogCache {
+    var listings: [CatalogListing] = []
+    var refreshedAt: Number = 0
+    var connection: CatalogConnection = .Offline
+}
+
+public enum CatalogFailure {
+    InvalidListing
+    DuplicateIdentity
+    OlderSnapshot
+}
+
+public namespace CatalogLimits {
+    let maxListings: Number = 4096
+    let maxCacheBytes: Number = 8388608
+    let maxVersion: Number = 1000000000
+    let maxDownloadBytes: Number = 1099511627776
+}
+
+public enum CatalogAction {
+    // This is a local, already accepted installation. It launches through
+    // the system's normal trusted launcher, never from catalog metadata.
+    Open
+    // Offers updates, but not as installed until verified and activated.
+    Update
+    // An update/install request was staged, not accepted or launchable.
+    Pending
+    // An owner must explicitly consent before a catalog takes over a direct app.
+    NeedsOwnershipConsent
+    // Only an offer to initiate a verified install; not a completed install.
+    Get
+    Offline
+    NetworkFailure
+    UnsupportedPlatform
+    RequiresSystemUpdate
+    Unavailable
+}
+
+public struct CatalogBrowse {
+    let listings: [CatalogListing]
+    let refreshedAt: Number
+    let connection: CatalogConnection
+}
+
+public function validCatalogListing(listing: borrow CatalogListing) -> Bool {
+    if !validAppIdentity(listing.identity) || !validSha256(listing.artifactDigest)
+        || listing.name.count == 0 || listing.name.count > 120
+        || listing.description.count > 10000 || listing.category.count == 0
+        || listing.category.count > 96
+        || listing.version <= 0 || listing.version > CatalogLimits.maxVersion
+        || listing.version != trunc(listing.version)
+        || listing.minSystemBuild <= 0 || listing.minSystemBuild > CatalogLimits.maxVersion
+        || listing.minSystemBuild != trunc(listing.minSystemBuild)
+        || listing.downloadBytes <= 0 || listing.downloadBytes > CatalogLimits.maxDownloadBytes
+        || listing.downloadBytes != trunc(listing.downloadBytes)
+        || listing.supportedPlatforms.count == 0 { return false }
+    var platforms: [String] = []
+    for platform in listing.supportedPlatforms {
+        if !validPlatform(platform) || platforms.contains(platform) { return false }
+        platforms.append(copy platform)
+    }
+    var capabilities: [String] = []
+    for capability in listing.requests {
+        if !recognizedCapability(capability) || capabilities.contains(capability) { return false }
+        capabilities.append(copy capability)
+    }
+    for text in [listing.name, listing.description, listing.category] {
+        for index in 0..text.count {
+            let byte = Number(text.charAt(index))
+            if byte == 0 || byte == 127 { return false }
+        }
+    }
+    return true
+}
+
+public function validPlatform(name: borrow String) -> Bool {
+    return name == "desktop" || name == "tablet" || name == "mobile"
+}
+
+extend CatalogCache {
+    /// Replace an entire metadata snapshot or keep the old cache unchanged.
+    function refresh(
+        borrow mut self,
+        listings: borrow [CatalogListing],
+        at: Number
+    ) -> Result<Void, CatalogFailure> {
+        if at <= 0 || at <= refreshedAt || at != trunc(at) || at > 9007199254740991 {
+            return .Error(.OlderSnapshot)
+        }
+        if listings.count > CatalogLimits.maxListings { return .Error(.InvalidListing) }
+        var seen: [AppIdentity] = []
+        for listing in listings {
+            if !validCatalogListing(listing) { return .Error(.InvalidListing) }
+            if seen.contains(listing.identity) { return .Error(.DuplicateIdentity) }
+            seen.append(copy listing.identity)
+        }
+        // Budget the canonical serialized form before accepting new state.
+        // A huge description set must not overflow the offline cache or UI.
+        let encoded = catalogText(CatalogCache { listings: copy listings, refreshedAt: at })
+        if encoded.count > CatalogLimits.maxCacheBytes { return .Error(.InvalidListing) }
+        self.listings = copy listings
+        self.refreshedAt = at
+        self.connection = .Online
+        return .Ok
+    }
+
+    function listing(borrow self, identity: borrow AppIdentity) -> CatalogListing? {
+        for item in listings {
+            if sameApp(item.identity, identity) { return .Some(copy item) }
+        }
+        return .None
+    }
+
+    /// Search and category filtering work with a cached feed while offline.
+    function browse(
+        borrow self,
+        search: borrow String = "",
+        category: borrow String = ""
+    ) -> CatalogBrowse {
+        let query = search.lowercased()
+        var results: [CatalogListing] = []
+        for item in listings {
+            if category.count > 0 && item.category != category { continue }
+            if query.count > 0 && !item.name.lowercased().contains(query)
+                && !item.description.lowercased().contains(query) { continue }
+            results.append(copy item)
+        }
+        return CatalogBrowse { listings: results, refreshedAt: refreshedAt, connection: connection }
+    }
+
+    /// A requested link names a stable publisher-bound application ID, not
+    /// a display name. Unknown and withdrawn IDs are unavailable.
+    function action(
+        borrow self,
+        identity: borrow AppIdentity,
+        registry: borrow ApplicationRegistry,
+        platform: borrow String,
+        systemBuild: Number
+    ) -> CatalogAction {
+        let found = match self.listing(identity) {
+            Some(item) -> item
+            // A withdrawn listing does not revoke a separately accepted app.
+            None -> return registry.accepted(identity).isSome() ? .Open : .Unavailable
+        }
+        // A local accepted app can always Open even when the catalog is old
+        // or offline. Do not let an incompatible *new listing* hide the app.
+        let installed = registry.accepted(identity)
+        match installed {
+            Some(active) -> if active.candidate.version >= found.version { return .Open }
+            None -> {}
+        }
+        if !found.supportedPlatforms.contains(platform) { return .UnsupportedPlatform }
+        if systemBuild < found.minSystemBuild { return .RequiresSystemUpdate }
+        match registry.staged(identity) {
+            Some(pending) -> if pending.candidate.version == found.version
+                && pending.candidate.imageDigest == found.artifactDigest { return .Pending }
+            None -> {}
+        }
+        // Cached listings can describe a newer version while offline, but
+        // must never imply that version is downloadable now.
+        match connection {
+            Offline -> return .Offline
+            Failed -> return .NetworkFailure
+            Online -> {}
+        }
+        return match installed {
+            Some(active) -> {
+                if active.candidate.management == .Direct { return .NeedsOwnershipConsent }
+                .Update
+            }
+            None -> .Get
+        }
+    }
+}

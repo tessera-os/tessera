@@ -39,7 +39,8 @@ function describeComponents(
     let root = graph.root
     var described: [DescribedComponent] = []
     let browser = webkitBrowserAvailable(graph, context.architecture)
-    for component in tesseraComponents() {
+    for source in tesseraComponents() {
+        let component = resolvedComponent(root, source)
         if component.name == "tessera-browser" && !browser { continue }
         let facts = match readPackage(root, component.location) {
             Ok(read) -> read

@@ -23,7 +23,66 @@ public struct BackupSummary {
 }
 
 namespace BackupLayout {
-    let marker: String = ".complete"
+    let legacyMarker: String = ".complete"
+    let completePrefix: String = ".tessera-complete-"
+    let manifestPrefix: String = ".tessera-manifest-"
+    // Kept next to the snapshot, not inside it: a backed-up document cannot
+    // overwrite this marker and accidentally authorize cleanup.
+    let pendingPrefix: String = ".tessera-incomplete-"
+}
+
+// The external sidecar is authoritative for new backups. Only snapshots
+// without any in-progress marker may use the historical `.complete` file.
+// Otherwise a person's backed-up `.complete` document could mistakenly
+// authorize an interrupted new-generation snapshot as a legacy generation.
+function completedSnapshot(root: borrow String, name: borrow String, path: borrow String) -> Bool {
+    let sidecar = childPath(root, BackupLayout.completePrefix + name)
+    match linkStatus(sidecar) {
+        Ok(status) -> {
+            if status.kind != .File { return false }
+            return markerMatchesName(sidecar, name)
+        }
+        Error(failure) -> match failure {
+            Missing -> {}
+            else -> return false
+        }
+    }
+    let inProgress = childPath(root, BackupLayout.pendingPrefix + name)
+    match linkStatus(inProgress) {
+        Ok(status) -> {
+            absorb status
+            return false
+        }
+        Error(failure) -> match failure {
+            Missing -> {}
+            else -> return false
+        }
+    }
+    // A new-format manifest is also evidence this was *not* a legacy
+    // generation, even when its completion marker has been deleted or lost.
+    // Fail closed instead of interpreting a person's `.complete` document
+    // as internal backup metadata.
+    if occupiedBackupEntry(childPath(root, BackupLayout.manifestPrefix + name)) { return false }
+    let legacy = childPath(path, BackupLayout.legacyMarker)
+    return markerMatchesName(legacy, name)
+}
+
+function markerMatchesName(path: borrow String, name: borrow String) -> Bool {
+    let status = match linkStatus(path) {
+        Ok(value) -> value
+        Error(failure) -> {
+            absorb failure
+            return false
+        }
+    }
+    if status.kind != .File { return false }
+    return match readFile(path) {
+        Ok(contents) -> contents.text == name
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
 }
 
 /// The complete backups under `root`, newest first; one cut short is left
@@ -40,8 +99,8 @@ public function snapshotsIn(root: borrow String) -> [Snapshot] {
     var found: [Snapshot] = []
     for index in 0..entries.count {
         let entry = entries[entries.count - 1 - index]
-        if entry.kind != .Folder { continue }
-        if !pathExists(childPath(entry.path, BackupLayout.marker)) { continue }
+        if entry.kind != .Folder || !isSnapshotName(entry.name) { continue }
+        if !completedSnapshot(root, entry.name, entry.path) { continue }
         found.append(Snapshot { name: copy entry.name, path: copy entry.path })
     }
     return found
@@ -60,6 +119,36 @@ public function backUp(
     root: borrow String,
     at: Number
 ) -> Result<BackupSummary, ChangeFailure> {
+    // A backup inside its source would recursively copy itself. Also reject
+    // ambiguous path components instead of allowing an alias to bypass this.
+    // Avoid recursion through case-only aliases on case-insensitive volumes.
+    // Reject rather than rely on the host filesystem's case semantics.
+    let sourceFolded = source.lowercased()
+    let rootFolded = root.lowercased()
+    if unsafeBackupPath(source) || unsafeBackupPath(root)
+        || hasLinkedPathAncestor(source) || hasLinkedPathAncestor(root)
+        || sourceFolded == rootFolded || rootFolded.startsWith(sourceFolded + "/")
+        || at < 0 || at != trunc(at) || at >= 253402300800000 {
+        return .Error(.Refused(copy root))
+    }
+    let sourceKind = match linkStatus(source) {
+        Ok(status) -> status.kind
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Missing(copy source))
+        }
+    }
+    if sourceKind != .Directory { return .Error(.Refused(copy source)) }
+    if pathExists(root) {
+        let rootKind = match linkStatus(root) {
+            Ok(status) -> status.kind
+            Error(failure) -> {
+                absorb failure
+                return .Error(.Refused(copy root))
+            }
+        }
+        if rootKind != .Directory { return .Error(.Refused(copy root)) }
+    }
     if !isDirectory(root) {
         match makeDirectory(root) {
             Ok -> {}
@@ -72,26 +161,66 @@ public function backUp(
     try removePartials(root)
     let earlier = snapshotsIn(root)
     let previous: String? = earlier.count > 0 ? .Some(copy earlier[0].path) : .None
-    let name = freeName(root, snapshotName(at))
+    let name = availableSnapshotName(root, at)
     let path = childPath(root, name)
+    let pending = childPath(root, BackupLayout.pendingPrefix + name)
+    match writeFile(pending, name) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Refused(copy pending))
+        }
+    }
     var counts = BackupCounts {}
     match backUpTree(source, path, previous, counts) {
         Ok -> {}
         Error(failure) -> {
             match removeTree(path) {
                 Ok -> {}
-                // The partial backup is marked as one and goes next time.
+                // The pending marker is kept when cleanup failed.
+                Error(left) -> {
+                    absorb left
+                    return .Error(failure)
+                }
+            }
+            match removePath(pending) {
+                Ok -> {}
                 Error(left) -> absorb left
             }
             return .Error(failure)
         }
     }
-    match writeFile(childPath(path, BackupLayout.marker), name) {
+    // Completion lives beside the snapshot, not inside the person's saved
+    // tree. A document literally named `.complete` is never overwritten.
+    // Keep the file/directory listing and its cryptographic hashes outside
+    // the person's backup tree. Commit it before the completion sidecar.
+    let contents = match manifestOf(path) {
+        Ok(value) -> value
+        Error(failure) -> return .Error(failure)
+    }
+    // Fail closed if entries appeared, disappeared, or changed during the
+    // copying window. Never commit a manifest for a known-incomplete copy.
+    if !backupMatchesSource(source, path) { return .Error(.Refused(copy source)) }
+    let manifestPath = childPath(root, BackupLayout.manifestPrefix + name)
+    match writeFile(manifestPath, contents.text) {
         Ok -> {}
         Error(failure) -> {
             absorb failure
+            return .Error(.Refused(manifestPath))
+        }
+    }
+    match writeFile(childPath(root, BackupLayout.completePrefix + name), name) {
+        Ok -> {}
+        Error(failure) -> {
+            // The in-progress marker makes an interrupted snapshot eligible
+            // for cleanup on the next run; no partial counts as complete.
+            absorb failure
             return .Error(.Refused(copy path))
         }
+    }
+    match removePath(pending) {
+        Ok -> {}
+        Error(failure) -> absorb failure
     }
     return .Ok(
         BackupSummary {
@@ -117,8 +246,18 @@ function removePartials(root: borrow String) -> Result<Void, ChangeFailure> {
         }
     }
     for entry in entries {
-        if entry.kind == .Folder && !pathExists(childPath(entry.path, BackupLayout.marker)) {
+        // A matching in-progress marker beside the folder proves Tessera
+        // created it; a person's similarly named folder must survive.
+        if entry.kind == .Folder && isSnapshotName(entry.name)
+            && !completedSnapshot(root, entry.name, entry.path) {
+            let pending = childPath(root, BackupLayout.pendingPrefix + entry.name)
+            // Never follow a linked marker when deciding whether we may
+            // delete an interrupted snapshot directory.
+            if !markerMatchesName(pending, entry.name) { continue }
             try removeTree(entry.path)
+            try removeSnapshotSidecar(childPath(root, BackupLayout.manifestPrefix + entry.name))
+            try removeSnapshotSidecar(childPath(root, BackupLayout.completePrefix + entry.name))
+            try removeSnapshotSidecar(pending)
         }
     }
     return .Ok
@@ -155,8 +294,9 @@ function backUpTree(
         match entry.kind {
             Folder -> try backUpTree(entry.path, target, earlier, counts)
             File -> try backUpFile(entry, target, earlier, counts)
-            // A link or a device is not backed up.
-            Other -> {}
+            // Refuse an unsupported item rather than labeling a generation
+            // complete after silently omitting a link or device.
+            Other -> return .Error(.Refused(copy entry.path))
         }
     }
     return .Ok
@@ -172,6 +312,9 @@ function backUpFile(
         Some(path) -> if unchanged(entry, path) {
             match makeHardLink(path, target) {
                 Ok -> {
+                    if !copiedFileMatchesSource(entry.path, target) {
+                        return .Error(.Refused(copy entry.path))
+                    }
                     counts.linked += 1
                     return .Ok
                 }
@@ -184,6 +327,9 @@ function backUpFile(
     match copyFile(entry.path, target) {
         Ok(bytes) -> {
             absorb bytes
+            if !copiedFileMatchesSource(entry.path, target) {
+                return .Error(.Refused(copy entry.path))
+            }
             counts.copied += 1
             return .Ok
         }
@@ -194,18 +340,99 @@ function backUpFile(
     }
 }
 
+// Check a copied or linked file against the current source before counting
+// it as complete. This detects mid-copy changes and truncated output. It is
+// not a substitute for a filesystem-consistent snapshot of the source tree.
+function copiedFileMatchesSource(source: borrow String, target: borrow String) -> Bool {
+    let before = match linkStatus(source) {
+        Ok(value) -> value
+        Error(failure) -> {
+            absorb failure
+            return false
+        }
+    }
+    let targetStatus = match linkStatus(target) {
+        Ok(value) -> value
+        Error(failure) -> {
+            absorb failure
+            return false
+        }
+    }
+    if before.kind != .File || targetStatus.kind != .File || before.size != targetStatus.size {
+        return false
+    }
+    let left = match digestFile(.Sha256, source) {
+        Ok(bytes) -> bytes
+        Error(failure) -> {
+            absorb failure
+            return false
+        }
+    }
+    let right = match digestFile(.Sha256, target) {
+        Ok(bytes) -> bytes
+        Error(failure) -> {
+            absorb failure
+            return false
+        }
+    }
+    let after = match linkStatus(source) {
+        Ok(value) -> value
+        Error(failure) -> {
+            absorb failure
+            return false
+        }
+    }
+    return after.kind == .File && after.size == before.size
+        && after.modified == before.modified && left.count == 32 && left == right
+}
+
 // Whether the backed-up file at `path` is `entry` as it is now: the same
 // size, and not changed since it was copied.
 function unchanged(entry: borrow Entry, path: borrow String) -> Bool {
-    return match fileStatus(path) {
-        Ok(
-            status
-        ) -> status.kind == .File && status.size == entry.size && status.modified >= entry.modified
+    // An empty file has no bytes to compare; still verify the live source is
+    // a regular file rather than a deleted path or replacement symlink.
+    let current = match linkStatus(entry.path) {
+        Ok(value) -> value
         Error(failure) -> {
             absorb failure
-            false
+            return false
         }
     }
+    if current.kind != .File || current.size != entry.size { return false }
+    let status = match linkStatus(path) {
+        Ok(value) -> value
+        Error(failure) -> {
+            absorb failure
+            return false
+        }
+    }
+    if status.kind != .File || status.size != entry.size { return false }
+    // Modification timestamps alone are not proof: a same-size rewrite can
+    // be invisible at the volume's timestamp granularity, and copied files
+    // can have a newer timestamp than their source. Confirm equal contents
+    // in bounded chunks before hard-linking an old backup into a new one.
+    let chunk: Number = 65536
+    var offset: Number = 0
+    while offset < Number(entry.size) {
+        let size = min(chunk, Number(entry.size) - offset)
+        let current = match readFileRange(entry.path, offset, size) {
+            Ok(bytes) -> bytes
+            Error(failure) -> {
+                absorb failure
+                return false
+            }
+        }
+        let previous = match readFileRange(path, offset, size) {
+            Ok(bytes) -> bytes
+            Error(failure) -> {
+                absorb failure
+                return false
+            }
+        }
+        if current.count != size || previous != current { return false }
+        offset += size
+    }
+    return true
 }
 
 /// Copies `item`, a path inside `snapshot`, back into `folder`, under its
@@ -216,13 +443,92 @@ function unchanged(entry: borrow Entry, path: borrow String) -> Bool {
 ///
 /// [`ChangeFailure`] when the item is not in the backup or cannot be copied.
 public function restoreItem(
+    snapshot: borrow Snapshot,
     item: borrow String,
     folder: borrow String
 ) -> Result<String, ChangeFailure> {
-    if !pathExists(item) { return .Error(.Missing(copy item)) }
+    // Restore only an item beneath an actually completed generation. The
+    // caller must choose a Snapshot from snapshotsIn, not hand us a raw path.
+    if !isSnapshotName(snapshot.name) || lastPathPart(snapshot.path) != snapshot.name
+        || unsafeBackupPath(snapshot.path) || unsafeBackupPath(item)
+        || unsafeBackupPath(folder) || !item.startsWith(snapshot.path + "/") {
+        return .Error(.Refused(copy item))
+    }
+    if !completedSnapshot(parentPath(snapshot.path), snapshot.name, snapshot.path) {
+        return .Error(.Refused(copy snapshot.path))
+    }
+    if !isDirectory(folder) { return .Error(.Missing(copy folder)) }
+    if hasLinkedPathAncestor(folder) || hasLinkedPathAncestor(snapshot.path) {
+        return .Error(.Refused(copy folder))
+    }
+    if folder == snapshot.path || folder.startsWith(snapshot.path + "/") {
+        return .Error(.Refused(copy folder))
+    }
+    // New snapshots carry a manifest: never restore damaged or incomplete
+    // saved bytes. Legacy generations are still restorable without one, but
+    // cannot claim verification.
+    let completeSidecar = childPath(
+        parentPath(snapshot.path),
+        BackupLayout.completePrefix + snapshot.name
+    )
+    if pathExists(completeSidecar) {
+        match verifySnapshot(snapshot) {
+            Ok(result) -> absorb result
+            Error(failure) -> return .Error(failure)
+        }
+    }
+    // A link anywhere inside the snapshot path could redirect a restore
+    // outside the chosen generation. Refuse rather than follow it.
+    let relative = item.substring(snapshot.path.count + 1, item.count)
+    let parts = relative.split("/")
+    var inspected = copy snapshot.path
+    for part in parts {
+        inspected = childPath(inspected, part)
+        let status = match linkStatus(inspected) {
+            Ok(value) -> value
+            Error(failure) -> {
+                absorb failure
+                return .Error(.Missing(copy item))
+            }
+        }
+        if status.kind == .Link || status.kind == .Other { return .Error(.Refused(copy item)) }
+    }
     let target = childPath(folder, freeName(folder, lastPathPart(item)))
-    try copyTree(item, target)
-    return .Ok(target)
+    let staging = childPath(folder, freeName(folder, ".tessera-restore-" + lastPathPart(item)))
+    match copyTree(item, staging) {
+        Ok -> {}
+        Error(failure) -> {
+            // Drop a partial copy; the current version of the user's file
+            // was never touched.
+            if pathExists(staging) {
+                match removeTree(staging) {
+                    Ok -> {}
+                    Error(cleanup) -> absorb cleanup
+                }
+            }
+            return .Error(failure)
+        }
+    }
+    // A dangling link occupies the intended restored name, too. Refuse an
+    // unexpected collision before the final rename instead of overwriting it.
+    if occupiedBackupEntry(target) {
+        match removeTree(staging) {
+            Ok -> {}
+            Error(cleanup) -> absorb cleanup
+        }
+        return .Error(.AlreadyExists(target))
+    }
+    match renamePath(staging, target) {
+        Ok -> return .Ok(target)
+        Error(failure) -> {
+            absorb failure
+            match removeTree(staging) {
+                Ok -> {}
+                Error(cleanup) -> absorb cleanup
+            }
+            return .Error(.Refused(target))
+        }
+    }
 }
 
 /// Removes all but the newest `keep` backups under `root`.
@@ -231,10 +537,121 @@ public function restoreItem(
 ///
 /// [`ChangeFailure`] naming the first backup that could not be removed.
 public function pruneSnapshots(root: borrow String, keep: Number) -> Result<Void, ChangeFailure> {
-    for (index, snapshot) in snapshotsIn(root).enumerated() {
-        if index >= keep { try removeTree(snapshot.path) }
+    // Retention cannot deliberately remove every recoverable generation or
+    // traverse a linked root into an unrelated directory tree.
+    if keep < 1 || keep != trunc(keep) || keep > 9007199254740991
+        || unsafeBackupPath(root) || hasLinkedPathAncestor(root) {
+        return .Error(.Refused(copy root))
+    }
+    let rootKind = match linkStatus(root) {
+        Ok(status) -> status.kind
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Refused(copy root))
+        }
+    }
+    if rootKind != .Directory { return .Error(.Refused(copy root)) }
+    let candidates = snapshotsIn(root)
+    if candidates.count <= keep { return .Ok }
+    // Never discard an older recovery copy while the generations we would
+    // retain have missing or changed bytes. Legacy backups without manifests
+    // cannot prove integrity and cannot authorize a destructive prune.
+    for (index, snapshot) in candidates.enumerated() {
+        if index >= keep { break }
+        match verifySnapshot(snapshot) {
+            Ok(result) -> absorb result
+            Error(failure) -> {
+                absorb failure
+                return .Error(.Refused(copy snapshot.path))
+            }
+        }
+    }
+    for (index, snapshot) in candidates.enumerated() {
+        if index < keep { continue }
+        // Delete the generation before its sidecars, so an interrupted prune
+        // cannot hide a still-present generation without removing its data.
+        try removeTree(snapshot.path)
+        try removeSnapshotSidecar(childPath(root, BackupLayout.manifestPrefix + snapshot.name))
+        try removeSnapshotSidecar(childPath(root, BackupLayout.completePrefix + snapshot.name))
+        try removeSnapshotSidecar(childPath(root, BackupLayout.pendingPrefix + snapshot.name))
     }
     return .Ok
+}
+
+function removeSnapshotSidecar(path: borrow String) -> Result<Void, ChangeFailure> {
+    if !occupiedBackupEntry(path) { return .Ok }
+    match removePath(path) {
+        Ok -> return .Ok
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Refused(copy path))
+        }
+    }
+}
+
+// Reserve a snapshot name not already used by a directory or any metadata.
+// A stale orphan sidecar must never be overwritten by a new generation.
+function availableSnapshotName(root: borrow String, at: Number) -> String {
+    let base = snapshotName(at)
+    var name = copy base
+    var suffix: Number = 2
+    while occupiedBackupEntry(childPath(root, name))
+        || occupiedBackupEntry(childPath(root, BackupLayout.pendingPrefix + name))
+        || occupiedBackupEntry(childPath(root, BackupLayout.completePrefix + name))
+        || occupiedBackupEntry(childPath(root, BackupLayout.manifestPrefix + name)) {
+        name = base + " \(suffix)"
+        suffix += 1
+    }
+    return name
+}
+
+// An entry whose symbolic-link target is missing still occupies its name.
+// Treat metadata errors conservatively rather than overwriting that entry.
+function occupiedBackupEntry(path: borrow String) -> Bool {
+    return match linkStatus(path) {
+        Ok(status) -> {
+            absorb status
+            true
+        }
+        Error(failure) -> match failure {
+            Missing -> false
+            else -> true
+        }
+    }
+}
+
+// A generated snapshot folder's strict timestamp name, optionally with the
+// ` 2`, ` 3` suffix made by freeName for a repeated timestamp. Never sweep
+// arbitrary folder names out of a user-provided backup destination.
+function isSnapshotName(name: borrow String) -> Bool {
+    if name.count < 15 || Number(name.charAt(8)) != 45 { return false }
+    for index in 0..15 {
+        if index == 8 { continue }
+        let digit = Number(name.charAt(index))
+        if digit < 48 || digit > 57 { return false }
+    }
+    if name.count == 15 { return true }
+    if name.count < 17 || Number(name.charAt(15)) != 32 { return false }
+    if Number(name.charAt(16)) < 50 || Number(name.charAt(16)) > 57 { return false }
+    for index in 17..name.count {
+        let digit = Number(name.charAt(index))
+        if digit < 48 || digit > 57 { return false }
+    }
+    return true
+}
+
+// Refuse `.` and `..` path aliases, repeated separators and trailing slashes.
+// Slash-leading paths have one empty first segment; ordinary relative paths
+// have none. This is the conservative input rule for backup source and root.
+function unsafeBackupPath(path: borrow String) -> Bool {
+    if path.count == 0 || path == "/" { return true }
+    let segments = path.split("/")
+    for (index, segment) in segments.enumerated() {
+        if (segment.count == 0 && index != 0) || segment == "." || segment == ".." {
+            return true
+        }
+    }
+    return false
 }
 
 /// When `millis` since 1970 is, in UTC, as a backup's folder is named:

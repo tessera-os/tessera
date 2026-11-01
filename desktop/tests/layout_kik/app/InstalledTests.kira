@@ -37,3 +37,99 @@ function aNewAppFollowsThePlacementChoice() {
     expect!(library)
     expect!(toLibrary.removed.contains("B"))
 }
+
+@Test
+function addToHomeHonorsAFullSelectedPage() {
+    var home = arranged(["A", "B", "C", "D", "E"])
+    home.removeFromHome("E")
+    home.addToHome("E", 0, smallSpace)
+    expect!(namesOn(home, 0) == ["A", "B", "C", "E"])
+    expect!(namesOn(home, 1) == ["D"])
+    expect!(!home.removed.contains("E"))
+    home.addToHome("E", 0, smallSpace)
+    expect!(namesOn(home, 0) == ["A", "B", "C", "E"])
+}
+
+@Test
+function addToHomeOnAWidgetOnlyPageUsesAnotherPage() {
+    var home = arranged(["A", "B", "C", "D"])
+    home.removeFromHome("A")
+    home.addWidget(0, HomeWidget { kind: "Clock" }, smallSpace)
+    home.addToHome("A", 0, smallSpace)
+    expect!(home.pages[0].widgets.count == 1)
+    expect!(namesOn(home, 0).count == 0)
+    let placed = home.slotOf("A")
+    expect!(placed.isSome())
+    match placed {
+        Some(slot) -> expect!(slot.page > 0)
+        None -> expect!(false)
+    }
+}
+
+@Test
+function corruptedDuplicateIconsAreDeduplicatedAcrossPagesAndFolders() {
+    let saved = HomeArrangement {
+        pages: [
+            HomePage {
+                items: [
+                    .App("Notes"),
+                    .Folder(HomeFolder { name: "Work", apps: ["Notes", "Clock", "Clock"] })
+                ]
+            },
+            HomePage { items: [.App("Clock"), .App("Browser")] }
+        ],
+        removed: ["Clock", "Browser", "Missing", "Missing"]
+    }
+    let restored = withInstalled(saved, ["Notes", "Clock", "Browser"], false, smallSpace)
+    expect!(namesOn(restored, 0) == ["Notes", "Work"])
+    expect!(folderAt(restored, 0, 1) == ["Clock"])
+    expect!(namesOn(restored, 1).count == 1)
+    expect!(namesOn(restored, 1) == ["Browser"])
+    expect!(restored.removed.count == 0)
+    expect!(
+        arrangementText(
+            withInstalled(restored, ["Notes", "Clock", "Browser"], false, smallSpace)
+        ) == arrangementText(restored)
+    )
+}
+
+@Test
+function anUnknownAppCannotBeRemovedBeforeInstallation() {
+    var home = arranged(["Notes"])
+    home.removeFromHome("NotInstalled")
+    expect!(home.removed.count == 0)
+    let later = withInstalled(home, ["Notes", "NotInstalled"], false, smallSpace)
+    expect!(namesOn(later, 0) == ["Notes", "NotInstalled"])
+}
+
+@Test
+function aLayoutWithEveryPageHiddenGetsAVisibleRecoveryPage() {
+    let saved = HomeArrangement {
+        pages: [
+            HomePage { items: [.App("Private")], hidden: true, retained: true },
+            HomePage { items: [.App("AlsoPrivate")], hidden: true }
+        ]
+    }
+    let home = withInstalled(saved, ["Private", "AlsoPrivate", "New"], false, smallSpace)
+    expect!(home.pages.count == 3)
+    expect!(home.pages[0].hidden && home.pages[1].hidden)
+    expect!(home.shownPages() == [2])
+    expect!(namesOn(home, 2) == ["New"])
+    expect!(namesOn(home, 0) == ["Private"])
+    expect!(namesOn(home, 1) == ["AlsoPrivate"])
+}
+
+@Test
+function addingNewAppsDoesNotPutThemOnAHiddenTailPage() {
+    let saved = HomeArrangement {
+        pages: [
+            HomePage { items: [.App("Notes")] },
+            HomePage { items: [.App("Hidden")], hidden: true }
+        ]
+    }
+    let home = withInstalled(saved, ["Notes", "Hidden", "New"], false, smallSpace)
+    expect!(home.pages.count == 3)
+    expect!(home.shownPages() == [0, 2])
+    expect!(namesOn(home, 1) == ["Hidden"])
+    expect!(namesOn(home, 2) == ["New"])
+}

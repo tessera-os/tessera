@@ -81,6 +81,34 @@ failed or cancelled move had not finished copying. The rules are the
 `inlay/tests/operations_kik` (12 passed). The Trash service gained List and
 Empty for Inlay's Trash view. Not yet shown on a boot.
 
+### Host file-operation safety update (2026-10-31)
+
+The `FileOperations` layer now rejects symbolic-link parent traversal in
+recursive delete, copy, move, rename and folder creation. It treats dangling
+links as occupied names, and failed Duplicate operations clean up partial
+copies. Replace now moves the existing target aside on its destination volume
+until the incoming transfer completes; if copying fails, the previous item is
+restored. Successful replacements remove the old entry, and failed restoration
+leaves the recovery-named entry rather than discarding its bytes. Host tests
+cover these cases, including folder contents with unsupported links. This is
+a **best-effort transaction**: it does not yet use fd-relative filesystem
+operations or a kernel no-replace rename, and it cannot guarantee correctness
+if another process concurrently swaps or creates path entries. The real boot,
+removable-volume and user-interface checkpoints above remain open.
+
+### Open With identity and preference model (2026-10-31)
+
+`AppRegistry.DocumentAssociations` now routes conventional filename extensions
+to a currently accepted publisher-bound application identity. User-selected
+defaults survive restart in a strict, bounded preference file and fail closed
+on damaged or linked metadata. An uninstalled default remains an unavailable
+identity, not a request to open a similarly named app from another publisher.
+The model does not execute an application, establish a trusted document handle,
+or install a file association in the running shell. PID 1 and Inlay must still
+wire these choices through the verified launcher and document access grants.
+Host tests cover identity isolation, duplicate extensions, corruption,
+persistence, and symlinked preference paths.
+
 ## 2. Open and save documents
 
 Applications declare the document types they can open. Inlay opens a document
@@ -109,6 +137,21 @@ Ends when Notes can edit an ordinary document outside its private data folder.
 - [ ] Open With chooses between two registered applications and remembers the
       selected default across a reboot.
 
+### Read-only document discovery foundation (2026-10-31)
+
+The host `FileOperations` library now includes `searchDocumentsByName` with
+bounded folder depth, result count, total entries examined, case-insensitive
+filename matching and deterministic traversal; it refuses linked roots and
+does not follow links to neighbouring folders. `previewDocument` reads at most
+64 KiB, returns bounded printable UTF-8 text or a candidate PNG/JPEG/GIF/WebP
+signature, and never executes content or decodes arbitrary image pixels.
+`RecentDocuments` records successful-open events in a versioned UTF-8-safe
+cache, keeps missing removable documents as unavailable, refuses unsafe path
+entries, and supports an explicit Forget operation. The read-only APIs and
+persistence have host regressions. They do not constitute the Inlay search,
+preview or Recents UI, an image decoder, access-grant enforcement or a boot
+acceptance run; those original checkpoints remain open.
+
 ## 3. Find and inspect documents
 
 Inlay searches names within the current folder or the person's document
@@ -127,3 +170,9 @@ Content search can follow once name search works.
       application. A malformed file reports a preview failure without ending Inlay.
 - [ ] A recent document reopens after a reboot; one on an absent removable
       volume is shown as unavailable and can be removed from the list.
+
+On case-insensitive volumes, copy and transfer containment checks now compare
+folded paths conservatively. A same-folder transfer using a differently cased
+alias duplicates the item rather than offering to replace its own source.
+Hostname-independent symlink and casing tests remain part of the host harness;
+OS-backed no-replace rename and concurrent mutation safety are still open.

@@ -15,10 +15,14 @@ namespace HomePagesLook {
     let icon: Number = 14
     let spacing: Number = 24
     let corner: Number = 18
+    let actionFont: Number = 17
+    let actionPadding: Number = 10
 }
 
 // What the pages overview asks of Home.
 public struct HomePagesActions {
+    var add: () -> Void
+    var remove: (Number) -> Void
     var toggle: (Number) -> Void
     var shift: (Number, Number) -> Void
     var done: () -> Void
@@ -32,6 +36,7 @@ function homePagesOverview(
     for page in 0..arrangement.pages.count {
         cards.append(pageCard(arrangement.pages[page], page, arrangement.pages.count, actions))
     }
+    let add = copy actions.add
     let done = copy actions.done
     return ZStack(alignment = .Center) {
         Rectangle()
@@ -40,13 +45,24 @@ function homePagesOverview(
         .fillHeight()
         VStack(spacing = .Large, alignment = .Center) {
             HStack(spacing = .Length(HomePagesLook.spacing), alignment = .Top, children = cards)
-            Button(action = move done) {
-                Text("Done").font(size: resolvedLength(17), weight: .SemiBold).padding(
-                    resolvedLength(10)
-                )
+            HStack(spacing = .Medium, alignment = .Center) {
+                Button(action = move add) {
+                    Text("Add Page").font(
+                        size: resolvedLength(HomePagesLook.actionFont),
+                        weight: .SemiBold
+                    ).padding(resolvedLength(HomePagesLook.actionPadding))
+                }
+                .buttonStyle(.Plain)
+                .glassEffect()
+                Button(action = move done) {
+                    Text("Done").font(
+                        size: resolvedLength(HomePagesLook.actionFont),
+                        weight: .SemiBold
+                    ).padding(resolvedLength(HomePagesLook.actionPadding))
+                }
+                .buttonStyle(.Plain)
+                .glassEffect()
             }
-            .buttonStyle(.Plain)
-            .glassEffect()
         }
     }
     .fillWidth()
@@ -67,6 +83,7 @@ function pageCard(
         icons.append(ApplicationIcon(name = item.name(), side = HomePagesLook.icon))
     }
     let toggle = copy actions.toggle
+    let remove = copy actions.remove
     let earlier = copy actions.shift
     let later = copy actions.shift
     return VStack(spacing = .Small, alignment = .Center) {
@@ -89,6 +106,11 @@ function pageCard(
         .opacity(page.hidden ? 0.5 : 1)
         HStack(spacing = .Small, alignment = .Center) {
             folderMove(.ChevronLeft, at > 0, { in earlier(at, -1) })
+            folderMove(
+                .Trash,
+                count > 1 && page.items.count == 0 && page.widgets.count == 0,
+                { in remove(at) }
+            )
             Button(action = { in toggle(at) }) {
                 Icon(symbol = page.hidden ? .Circle : .CheckmarkCircleFill)
                 .font(size: resolvedLength(24))

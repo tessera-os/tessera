@@ -1,0 +1,59 @@
+//! Ed25519-authenticated catalog refresh. Only a caller-controlled pin for
+//! a certificate shipped in the immutable OS configuration conveys signer
+//! trust. Neither the feed nor its server may select the pin itself.
+import Foundation
+
+public struct CatalogSigner {
+    /// DER-encoded X.509 end-entity certificate holding the Ed25519 key.
+    let certificate: [UN8]
+    /// SHA-256 pin of that exact certificate, from trusted system settings.
+    let pinnedCertificateSha256: [UN8]
+}
+
+public enum CatalogSignatureFailure {
+    InvalidSigner
+    UntrustedSigner
+    InvalidSignature
+    InvalidFeed
+    StaleFeed
+}
+
+/// Verify the signature over the exact received canonical feed bytes before
+/// parsing or changing any cached listings. This checks *catalog* metadata,
+/// never installed image signatures; downloads require a separate verifier.
+public function refreshSignedCatalog(
+    cache: borrow mut CatalogCache,
+    feed: borrow String,
+    signature: borrow [UN8],
+    signer: borrow CatalogSigner
+) -> Result<Void, CatalogSignatureFailure> {
+    if signer.certificate.count < 64 || signer.certificate.count > 4096
+        || signer.pinnedCertificateSha256.count != 32 { return .Error(.InvalidSigner) }
+    if signature.count != 64 { return .Error(.InvalidSignature) }
+    if feed.count > CatalogLimits.maxCacheBytes { return .Error(.InvalidFeed) }
+    let fingerprint = match digest(.Sha256, signer.certificate) {
+        Ok(value) -> value
+        Error(failure) -> {
+            absorb failure
+            return .Error(.InvalidSigner)
+        }
+    }
+    if fingerprint != signer.pinnedCertificateSha256 { return .Error(.UntrustedSigner) }
+    var bytes: [UN8] = []
+    for index in 0..feed.count { bytes.append(UN8(Number(feed.charAt(index)))) }
+    match verifySignature(.Ed25519, signer.certificate, bytes, signature) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return .Error(.InvalidSignature)
+        }
+    }
+    let parsed = try parsedCatalog(feed) otherwise return .Error(.InvalidFeed)
+    match cache.refresh(parsed.listings, parsed.refreshedAt) {
+        Ok -> return .Ok
+        Error(reason) -> match reason {
+            OlderSnapshot -> return .Error(.StaleFeed)
+            InvalidListing, DuplicateIdentity -> return .Error(.InvalidFeed)
+        }
+    }
+}

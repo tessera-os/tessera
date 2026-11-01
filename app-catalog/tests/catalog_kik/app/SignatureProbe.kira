@@ -1,0 +1,79 @@
+//! Public test-only Ed25519 certificate and signature. The private key stays
+//! outside the checkout. These fixtures are not production trust anchors.
+import Foundation
+import AppCatalog
+
+function catalogTestCertificate() -> [UN8] {
+    return [
+        48, 130, 1, 49, 48, 129, 228, 160, 3, 2, 1, 2, 2, 20, 104, 37,
+        161, 101, 20, 206, 244, 86, 189, 7, 63, 94, 232, 252, 141, 81, 19, 250,
+        146, 64, 48, 5, 6, 3, 43, 101, 112, 48, 31, 49, 29, 48, 27, 6,
+        3, 85, 4, 3, 12, 20, 84, 101, 115, 115, 101, 114, 97, 32, 67, 97,
+        116, 97, 108, 111, 103, 32, 84, 101, 115, 116, 48, 30, 23, 13, 50, 54,
+        49, 48, 51, 49, 49, 57, 53, 51, 49, 50, 90, 23, 13, 51, 54, 49,
+        48, 50, 56, 49, 57, 53, 51, 49, 50, 90, 48, 31, 49, 29, 48, 27,
+        6, 3, 85, 4, 3, 12, 20, 84, 101, 115, 115, 101, 114, 97, 32, 67,
+        97, 116, 97, 108, 111, 103, 32, 84, 101, 115, 116, 48, 42, 48, 5, 6,
+        3, 43, 101, 112, 3, 33, 0, 31, 255, 59, 66, 247, 108, 8, 55, 5,
+        13, 42, 211, 216, 215, 228, 149, 161, 8, 254, 94, 229, 38, 121, 2, 214,
+        14, 4, 59, 59, 89, 171, 29, 163, 50, 48, 48, 48, 29, 6, 3, 85,
+        29, 14, 4, 22, 4, 20, 227, 131, 4, 48, 89, 236, 47, 139, 47, 113,
+        202, 219, 98, 181, 112, 213, 151, 78, 162, 8, 48, 15, 6, 3, 85, 29,
+        19, 1, 1, 255, 4, 5, 48, 3, 1, 1, 255, 48, 5, 6, 3, 43,
+        101, 112, 3, 65, 0, 197, 15, 175, 180, 127, 211, 79, 127, 116, 218, 65,
+        112, 229, 138, 137, 142, 179, 219, 25, 209, 149, 101, 167, 219, 57, 248, 93,
+        153, 40, 93, 147, 53, 79, 165, 62, 247, 82, 214, 125, 203, 49, 225, 23,
+        201, 249, 1, 50, 201, 222, 206, 220, 36, 162, 102, 55, 103, 12, 11, 156,
+        179, 90, 166, 64, 13,
+    ]
+}
+
+function catalogTestSignature() -> [UN8] {
+    return [
+        160, 93, 175, 186, 182, 54, 196, 42, 200, 249, 113, 118, 248, 21, 163, 229,
+        66, 97, 197, 169, 161, 193, 144, 55, 147, 78, 176, 179, 200, 246, 94, 185,
+        242, 40, 59, 171, 70, 65, 235, 28, 214, 204, 226, 132, 190, 176, 29, 18,
+        121, 55, 5, 18, 53, 61, 52, 131, 58, 194, 177, 204, 80, 83, 143, 9,
+    ]
+}
+
+function catalogTestPin() -> [UN8] {
+    return [
+        55, 171, 232, 109, 115, 97, 163, 184, 12, 11, 152, 25, 62, 24, 39, 127,
+        217, 127, 80, 253, 242, 109, 242, 20, 187, 57, 27, 36, 216, 153, 190, 149,
+    ]
+}
+
+function catalogTestFeed() -> String {
+    return "Tessera catalog cache 1\nat\t100\nL\texample.notes\t" + publisherA
+        + "\t1\t" + digestA
+        + "\tNotes\tWrite and organize documents\tProductivity\tdesktop,tablet\t26\t20000000\tdisplay,data\n"
+}
+
+@Test
+function ed25519CatalogFixtureIsVerifiedByHostCryptoService() {
+    let certificate = catalogTestCertificate()
+    let signature = catalogTestSignature()
+    var payload: [UN8] = []
+    for index in 0..catalogTestFeed().count {
+        payload.append(UN8(Number(catalogTestFeed().charAt(index))))
+    }
+    let allowed = match verifySignature(.Ed25519, certificate, payload, signature) {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+    expect!(allowed)
+    var damaged = copy payload
+    damaged[0] = 0
+    let refused = match verifySignature(.Ed25519, certificate, damaged, signature) {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(refused)
+}

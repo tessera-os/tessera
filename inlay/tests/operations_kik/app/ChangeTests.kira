@@ -54,3 +54,259 @@ function duplicatesCopyWholeFolders() {
     expect!(removed(removeTree(folder)))
     expect!(!pathExists(folder))
 }
+
+@Test
+function deletingFolderDoesNotFollowSymbolicLinks() {
+    let folder = freshFolder("remove-links")
+    let protected = childPath(folder, "protected")
+    let victim = childPath(folder, "delete")
+    expect!(made(makeDirectory(protected)))
+    expect!(made(makeDirectory(victim)))
+    writeText(childPath(protected, "important.txt"), "preserve")
+    writeText(childPath(victim, "temporary.txt"), "discard")
+    expect!(made(makeSymbolicLink("../protected", childPath(victim, "link"))))
+    expect!(removed(removeTree(victim)))
+    expect!(textAt(childPath(protected, "important.txt")) == "preserve")
+    expect!(!pathExists(victim))
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function copyingDirectoryRefusesToFollowSymbolicLinks() {
+    let folder = freshFolder("copy-links")
+    let protected = childPath(folder, "protected")
+    let source = childPath(folder, "source")
+    expect!(made(makeDirectory(protected)))
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(protected, "important.txt"), "private")
+    expect!(made(makeSymbolicLink("../protected", childPath(source, "link"))))
+    let rejected = match copyTree(childPath(source, "link"), childPath(folder, "copied")) {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(rejected)
+    expect!(!pathExists(childPath(folder, "copied")))
+    let directoryRejected = match copyTree(source, childPath(folder, "copied-source")) {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(directoryRejected)
+    expect!(textAt(childPath(protected, "important.txt")) == "private")
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function aDirectFolderCopyCannotCopyInsideItself() {
+    let folder = freshFolder("copy-into-self")
+    let source = childPath(folder, "Source")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "important.txt"), "preserve")
+    let destination = childPath(source, "Nested")
+    let outcome = copyTree(source, destination)
+    let refused = match outcome {
+        Ok -> false
+        Error(failure) -> match failure {
+            IntoItself -> true
+            InvalidName, AlreadyExists, Missing, Refused -> false
+        }
+    }
+    expect!(refused)
+    expect!(!pathExists(destination))
+    expect!(textAt(childPath(source, "important.txt")) == "preserve")
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function caseFoldedFilenameTiesHaveStableOrderingForManifests() {
+    let folder = freshFolder("casefold-sort")
+    writeText(childPath(folder, "readme"), "lower")
+    writeText(childPath(folder, "README"), "upper")
+    writeText(childPath(folder, "ReadMe"), "mixed")
+    let first = try entriesIn(folder) otherwise return
+    let second = try entriesIn(folder) otherwise return
+    expect!(first.count == second.count)
+    for index in 0..first.count { expect!(first[index].name == second[index].name) }
+    if first.count == 3 {
+        expect!(first[0].name == "README")
+        expect!(first[1].name == "ReadMe")
+        expect!(first[2].name == "readme")
+    }
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function directCopyRefusesDanglingDestinationSymlink() {
+    let folder = freshFolder("dangling-copy-target")
+    let source = childPath(folder, "source.txt")
+    let target = childPath(folder, "destination.txt")
+    let unintended = childPath(folder, "missing-outside.txt")
+    writeText(source, "safe")
+    expect!(made(makeSymbolicLink("missing-outside.txt", target)))
+    let failed = match copyTree(source, target) {
+        Ok -> false
+        Error(reason) -> {
+            absorb reason
+            true
+        }
+    }
+    expect!(failed)
+    expect!(!pathExists(unintended))
+    expect!(textAt(source) == "safe")
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function removingAChildThroughLinkedParentNeverDeletesExternalData() {
+    let folder = freshFolder("remove-link-parent")
+    let protected = childPath(folder, "Protected")
+    expect!(made(makeDirectory(protected)))
+    let important = childPath(protected, "important.txt")
+    writeText(important, "must survive")
+    let alias = childPath(folder, "Alias")
+    expect!(made(makeSymbolicLink("Protected", alias)))
+    let rejected = match removeTree(childPath(alias, "important.txt")) {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(rejected)
+    expect!(textAt(important) == "must survive")
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function copyAndCreateRefuseLinkedParentPaths() {
+    let folder = freshFolder("copy-link-parent")
+    let protected = childPath(folder, "Protected")
+    expect!(made(makeDirectory(protected)))
+    writeText(childPath(protected, "important.txt"), "safe")
+    let source = childPath(folder, "source.txt")
+    writeText(source, "public")
+    let alias = childPath(folder, "Alias")
+    expect!(made(makeSymbolicLink("Protected", alias)))
+    let badSource = match copyTree(
+        childPath(alias, "important.txt"),
+        childPath(folder, "copy.txt")
+    ) {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    let badTarget = match copyTree(source, childPath(alias, "new-file.txt")) {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    let badFolder = match makeNewFolder(alias) {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(badSource)
+    expect!(badTarget)
+    expect!(badFolder)
+    expect!(!pathExists(childPath(protected, "new-file.txt")))
+    expect!(textAt(childPath(protected, "important.txt")) == "safe")
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function renameCannotReplaceADanglingLinkOrTraverseLinkedParent() {
+    let folder = freshFolder("rename-dangling-target")
+    let source = childPath(folder, "note.txt")
+    writeText(source, "source")
+    let dangling = childPath(folder, "other.txt")
+    expect!(made(makeSymbolicLink("missing", dangling)))
+    let occupied = match renameEntry(source, "other.txt") {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(occupied)
+    expect!(textAt(source) == "source")
+    let alias = childPath(folder, "Alias")
+    expect!(made(makeSymbolicLink(".", alias)))
+    let denied = match renameEntry(childPath(alias, "note.txt"), "new.txt") {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(denied)
+    expect!(textAt(source) == "source")
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function failedDuplicateNeverLeavesHalfCopiedFolder() {
+    let folder = freshFolder("duplicate-partial-cleanup")
+    let source = childPath(folder, "Project")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "a.txt"), "saved")
+    expect!(made(makeSymbolicLink("missing", childPath(source, "zlink"))))
+    let duplicate = match duplicateEntry(source) {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+    expect!(!duplicate)
+    expect!(!pathExists(childPath(folder, "Project copy")))
+    expect!(textAt(childPath(source, "a.txt")) == "saved")
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function caseOnlyAliasCannotCopyAFolderInsideItself() {
+    let folder = freshFolder("casefold-copy")
+    let source = childPath(folder, "Documents")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "note.txt"), "safe")
+    let disguisedTarget = childPath(folder, "documents/Copied")
+    let refused = match copyTree(source, disguisedTarget) {
+        Ok -> false
+        Error(failure) -> match failure {
+            IntoItself -> true
+            InvalidName, AlreadyExists, Missing, Refused -> false
+        }
+    }
+    expect!(refused)
+    expect!(!pathExists(childPath(source, "Copied")))
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function newNamesCannotContainNulBytes() {
+    expect!(!validName("name\0suffix"))
+    let folder = freshFolder("rename-null-byte")
+    let source = childPath(folder, "note.txt")
+    writeText(source, "important")
+    let denied = match renameEntry(source, "note\0.txt") {
+        Ok -> false
+        Error(failure) -> match failure {
+            InvalidName -> true
+            AlreadyExists, Missing, Refused, IntoItself -> false
+        }
+    }
+    expect!(denied)
+    expect!(textAt(source) == "important")
+    expect!(removed(removeTree(folder)))
+}

@@ -1,0 +1,102 @@
+//! One-shot, opt-in automatic backup orchestration. No daemon or timer lives
+//! here: the trusted OS scheduler must supply host state and call this only
+//! with a user-selected destination. Never infer consent from a missing file.
+import Foundation
+
+public enum AutomaticBackupFailure {
+    SettingsUnavailable
+    BackupFailed
+    VerificationFailed
+    ScheduleSaveFailed
+    RetentionFailed
+}
+
+public enum AutomaticBackupOutcome {
+    Skipped(BackupDueState)
+    Saved(Snapshot)
+}
+
+/// Performs at most one backup and never prunes older generations until the
+/// new one passed SHA-256 read-back and its success timestamp was durably
+/// stored. A failed copy records retry backoff but cannot claim success.
+public function runDueBackup(
+    source: borrow String,
+    backupRoot: borrow String,
+    settingsPath: borrow String,
+    host: borrow BackupHostState,
+    // Zero means keep all generations; deletion requires explicit retention.
+    generationsToKeep: Number = 0
+) -> Result<AutomaticBackupOutcome, AutomaticBackupFailure> {
+    let policy = match readBackupScheduleFile(settingsPath) {
+        Ok(value) -> value
+        Error(reason) -> {
+            absorb reason
+            return .Error(.SettingsUnavailable)
+        }
+    }
+    let decision = backupDue(policy, host)
+    if decision != .Due { return .Ok(.Skipped(decision)) }
+    if generationsToKeep < 0 || generationsToKeep != trunc(generationsToKeep)
+        || generationsToKeep > 1000 { return .Error(.RetentionFailed) }
+    let summary = match backUp(source, backupRoot, host.nowMillis) {
+        Ok(value) -> value
+        Error(reason) -> {
+            absorb reason
+            try recordScheduledBackupFailure(policy, settingsPath, host.nowMillis)
+            return .Error(.BackupFailed)
+        }
+    }
+    match verifySnapshot(summary.snapshot) {
+        Ok(verified) -> absorb verified
+        Error(reason) -> {
+            absorb reason
+            try recordScheduledBackupFailure(policy, settingsPath, host.nowMillis)
+            return .Error(.VerificationFailed)
+        }
+    }
+    let succeeded = match recordedVerifiedBackup(policy, host.nowMillis) {
+        Ok(value) -> value
+        Error(reason) -> {
+            absorb reason
+            return .Error(.ScheduleSaveFailed)
+        }
+    }
+    match saveBackupScheduleFile(settingsPath, succeeded) {
+        Ok -> {}
+        Error(reason) -> {
+            absorb reason
+            return .Error(.ScheduleSaveFailed)
+        }
+    }
+    if generationsToKeep == 0 { return .Ok(.Saved(summary.snapshot)) }
+    match pruneSnapshots(backupRoot, generationsToKeep) {
+        Ok -> return .Ok(.Saved(summary.snapshot))
+        Error(reason) -> {
+            absorb reason
+            return .Error(.RetentionFailed)
+        }
+    }
+}
+
+// Both copy failures and read-back verification failures must back off. A
+// saved failure changes no last-verified timestamp or retained generation.
+function recordScheduledBackupFailure(
+    schedule: borrow BackupSchedule,
+    settingsPath: borrow String,
+    whenMillis: Number
+) -> Result<Void, AutomaticBackupFailure> {
+    let failed = match recordedBackupFailure(schedule, whenMillis) {
+        Ok(value) -> value
+        Error(reason) -> {
+            absorb reason
+            return .Error(.ScheduleSaveFailed)
+        }
+    }
+    match saveBackupScheduleFile(settingsPath, failed) {
+        Ok -> return .Ok
+        Error(reason) -> {
+            absorb reason
+            return .Error(.ScheduleSaveFailed)
+        }
+    }
+}

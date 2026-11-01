@@ -1,0 +1,6 @@
+//! App Store catalog, filtering and presentation status without network or UI.
+construct AppCatalog extends Package {
+    let version: String = "26.10.4"
+    let kind: PackageKind = .Library
+    let dependencies: [Dependency] = [Dependency { name: "AppRegistry", path: "../app-registry" }]
+}

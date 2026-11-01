@@ -1913,3 +1913,62 @@ base workspace stay cached; executing the consumer confirms the new value.
 The disk helper test verifies isolated writes, stable reopen, and rejection
 of a different base. A full train build and real VM overlay boot are still
 pending sufficient storage or access to the larger build machine.
+
+## 2026-10-31 Cairn implementation follow-up
+
+The Cairn Tessera workspace has a review changeset for host-tested product and
+safety work. The source remains in review until it is explicitly accepted;
+these notes do not mark any QEMU/desktop boot checkpoint complete.
+
+**Home / Desktop:** Layout edits now guard self-drops, duplicate/unknown
+folder members and invalid widget indices. The page overview can explicitly
+add/remove empty pages. A retained empty page persists; `Home.txt` v3 escapes
+unsafe delimiters and reads legacy v2. Adding apps to a full selected page
+preserves user placement by moving existing icons forward.
+
+**Files / Backup:** Transfer collision checks use no-follow metadata so a
+broken symbolic link cannot appear to be a free destination. Backup copying
+checks bytes and full tree manifests before marking a generation complete;
+verified restores stage changes without replacing current documents.
+`FileOperations` now includes a strict, persisted opt-in daily/weekly schedule
+with power/idle/space and failure backoff decisions. A one-shot runner can
+execute a due backup and record success only after verification; it does not
+start a daemon. Its retention default is to keep **all** previous backups;
+pruning requires an explicit positive count. Its source-tree consistency
+check is not a filesystem-atomic snapshot.
+
+**App identity / Store foundation:** `app-registry` provides publisher-bound
+identities, versioned accepted and pending records, preserved data ownership,
+rollback metadata and consent-gated rollback. Current permissions are
+rechecked at delayed activation and rollback so revoked access is never
+re-granted from a previous state. The registry v2 file format reads legacy v1.
+`app-catalog` provides offline search/browse, compatible install/update
+states, bounded cached metadata, Ed25519-signed feeds, pinned trusted
+certificate checks, a download queue with at most three active downloads,
+and restart-reconciled job history. The image-verification component checks
+actual staged image bytes plus signed manifest metadata, with a recheck at
+activation. The signer is currently identified by the SHA-256 of certificate
+DER bytes: certificate renewal needs an authenticated migration policy. The
+privileged immutable-image installer and OS-backed permission enforcement
+are **not** implemented by these pure models.
+
+**Host checks:** Run from the Cairn Tessera root with the working Kira/KLF
+host toolchain and platform linker:
+
+```
+kira test tessera-packages/desktop/tests/layout_kik
+kira test tessera-packages/trash/tests/trash_kik
+kira test tessera-packages/inlay/tests/operations_kik
+kira test tessera-packages/app-registry/tests/registry_kik
+kira test tessera-packages/app-catalog/tests/catalog_kik
+kira check --target aarch64-unknown-linux-gnu tessera-packages/app-registry
+kira check --target aarch64-unknown-linux-gnu tessera-packages/app-catalog
+kira check --target aarch64-unknown-linux-gnu tessera-packages/inlay/operations
+```
+
+The Kira host preflight `tessera-packages/tessera/scripts/verify-host.sh --tests`
+checks tool availability, assets and whether the build-output directory
+supports advisory locking. The Cairn-backed build directory may refuse
+advisory locks; a full `kira build boot -arch aarch64 -test` still needs a
+compatible build filesystem and complete train SDK integration. Host
+compilation and tests must never be presented as successful OS boot tests.

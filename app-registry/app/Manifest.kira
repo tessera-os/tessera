@@ -1,0 +1,115 @@
+//! The fields an app declares *inside* its immutable, verified image.
+//! Parsing these fields does not verify the image or authenticate its signer.
+import Foundation
+
+public struct ApplicationManifest {
+    let identifier: String
+    let name: String
+    let version: Number
+    /// A relative executable path within the mounted, read-only image.
+    let executable: String
+    let requests: [String] = []
+}
+
+public enum ManifestFailure {
+    MissingField
+    InvalidField
+    InvalidExecutable
+    InvalidCapability
+}
+
+/// Loads the manifest with one file per field, as in roadmap/12-apps.md.
+/// The trusted installer must provide a verified read-only mount directory;
+/// these reads cannot establish its signature or provenance by themselves.
+public function readAppManifest(
+    folder: borrow String
+) -> Result<ApplicationManifest, ManifestFailure> {
+    let id = try manifestField(folder, "id") otherwise return .Error(.MissingField)
+    let name = try manifestField(folder, "name") otherwise return .Error(.MissingField)
+    let versionText = try manifestField(folder, "version") otherwise return .Error(.MissingField)
+    let executable = try manifestField(folder, "exec") otherwise return .Error(.MissingField)
+    let version = try versionText.toNumber() otherwise return .Error(.InvalidField)
+    var requests: [String] = []
+    let needs = try manifestField(folder, "needs") otherwise ""
+    for word in needs.split(" ") {
+        if word.count == 0 { continue }
+        if !recognizedCapability(word) || requests.contains(word) {
+            return .Error(.InvalidCapability)
+        }
+        requests.append(copy word)
+    }
+    let manifest = ApplicationManifest {
+        identifier: id,
+        name: name,
+        version: version,
+        executable: executable,
+        requests: requests
+    }
+    if !validExecutablePath(manifest.executable) { return .Error(.InvalidExecutable) }
+    // The candidate validator checks the remaining fields after an accepted
+    // publisher key and artifact digest have been supplied.
+    if manifest.version <= 0 || trunc(manifest.version) != manifest.version
+        || manifest.name.count == 0 || manifest.name.count > 120 {
+        return .Error(.InvalidField)
+    }
+    return .Ok(manifest)
+}
+
+/// Converts verified metadata into a *candidate*, not an accepted install.
+public function candidateFromManifest(
+    manifest: borrow ApplicationManifest,
+    publisherFingerprint: borrow String,
+    verifiedImageDigest: borrow String,
+    management: AppManagement
+) -> Result<AppCandidate, ManifestFailure> {
+    if !validExecutablePath(manifest.executable) { return .Error(.InvalidExecutable) }
+    let candidate = AppCandidate {
+        identity: AppIdentity {
+            identifier: copy manifest.identifier,
+            publisher: copy publisherFingerprint
+        },
+        name: copy manifest.name,
+        version: manifest.version,
+        imageDigest: copy verifiedImageDigest,
+        management: management,
+        requests: copy manifest.requests
+    }
+    match validAppCandidate(candidate) {
+        Some(failure) -> {
+            absorb failure
+            return .Error(.InvalidField)
+        }
+        None -> return .Ok(candidate)
+    }
+}
+
+/// The entry point must never escape the image or be an absolute/local
+/// filesystem path outside it. A launcher still opens it only from the
+/// caller-supplied trusted image mount, not from any writable directory.
+public function validExecutablePath(path: borrow String) -> Bool {
+    if path.count == 0 || path.count > 240 || path.startsWith("/")
+        || path.endsWith("/") || path.contains("\\") { return false }
+    for part in path.split("/") {
+        if part.count == 0 || part == "." || part == ".." { return false }
+        for index in 0..part.count {
+            let byte = Number(part.charAt(index))
+            if byte < 32 || byte == 127 || byte == 58 { return false }
+        }
+    }
+    return true
+}
+
+function manifestField(folder: borrow String, name: borrow String) -> String? {
+    let content = match readFile(folder + "/" + name) {
+        Ok(value) -> value.text
+        Error(failure) -> {
+            absorb failure
+            return .None
+        }
+    }
+    // These are single logical line fields, with a newline allowed as the
+    // common POSIX text-file terminator. Additional lines are refused.
+    let field = content.endsWith("\n") ? content.substring(0, content.count - 1) : content
+    if field.contains("\n") || field.contains("\r") || field.contains("\0") { return .None }
+    return .Some(field)
+}

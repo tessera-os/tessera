@@ -1,0 +1,131 @@
+import Foundation
+import AppRegistry
+import AppCatalog
+
+function sessionTestPaths(label: borrow String) -> [String] {
+    let base = ".tessera-store-session-" + label
+    return [base + ".registry", base + ".cache", base + ".jobs"]
+}
+
+function sessionClean(paths: borrow [String]) {
+    for path in paths {
+        for destination in [path, path + ".next"] {
+            if !pathExists(destination) { continue }
+            match removePath(destination) {
+                Ok -> {}
+                Error(failure) -> absorb failure
+            }
+        }
+    }
+}
+
+@Test
+function startupPreservesAcceptedAppButRejectsPreviousPendingUpdate() {
+    let paths = sessionTestPaths("interrupted")
+    sessionClean(paths)
+    let old = sample()
+    let next = sample(publisherA, 2)
+    var registry = ApplicationRegistry {}
+    prepareInstalled(registry, old)
+    let attempted = fromListing(next)
+    match registry.prepare(attempted) {
+        Ok -> {}
+        Error(failure) -> absorb failure
+    }
+    expect!(registry.pending.count == 1)
+    var catalog = CatalogCache {}
+    expect!(refreshed(catalog, [next]))
+    let pending = InstallQueue { jobs: [InstallJob { listing: next, phase: .Installing }] }
+    expect!(storeSessionFixture(paths, registry, catalog, pending))
+    let restored = try loadAppStoreSession(paths[0], paths[1], paths[2]) otherwise return
+    expect!(restored.discardedPending == 1)
+    expect!(restored.registry.pending.count == 0)
+    expect!(restored.registry.installed.count == 1)
+    let accepted = try restored.registry.accepted(old.identity) otherwise return
+    expect!(accepted.candidate.version == 1)
+    expect!(restored.catalog.connection == CatalogConnection.Offline)
+    expect!(restored.queue.jobs[0].phase == InstallPhase.Failed)
+    expect!(restored.queue.jobs[0].verified.isNone())
+    sessionClean(paths)
+}
+
+@Test
+function startupNeverErasesCorruptedAcceptedRegistry() {
+    let paths = sessionTestPaths("damaged")
+    sessionClean(paths)
+    let corrupted = "Tessera application registry 1\nA\tuntrusted\n"
+    match writeFile(paths[0], corrupted) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    let result = loadAppStoreSession(paths[0], paths[1], paths[2])
+    let refused = match result {
+        Ok -> false
+        Error(failure) -> match failure {
+            RegistryUnavailable -> true
+            CatalogUnavailable, JournalUnavailable -> false
+        }
+    }
+    expect!(refused)
+    expect!((try readFile(paths[0]) otherwise return).text == corrupted)
+    sessionClean(paths)
+}
+
+@Test
+function acceptedInstalledVersionIsStillReadyAfterASafeRestart() {
+    let paths = sessionTestPaths("ready")
+    sessionClean(paths)
+    let listing = sample()
+    var registry = ApplicationRegistry {}
+    prepareInstalled(registry, listing)
+    var catalog = CatalogCache {}
+    expect!(refreshed(catalog, [listing]))
+    let jobs = InstallQueue { jobs: [InstallJob { listing: listing, phase: .Ready }] }
+    expect!(storeSessionFixture(paths, registry, catalog, jobs))
+    let restored = try loadAppStoreSession(paths[0], paths[1], paths[2]) otherwise return
+    expect!(restored.discardedPending == 0)
+    expect!(restored.queue.jobs[0].phase == InstallPhase.Ready)
+    expect!(restored.catalog.connection == CatalogConnection.Offline)
+    expect!(
+        restored.catalog.action(
+            listing.identity,
+            restored.registry,
+            "desktop",
+            26
+        ) == CatalogAction.Open
+    )
+    sessionClean(paths)
+}
+
+function storeSessionFixture(
+    paths: borrow [String],
+    registry: borrow ApplicationRegistry,
+    catalog: borrow CatalogCache,
+    jobs: borrow InstallQueue
+) -> Bool {
+    let registrySaved = match saveRegistryFile(paths[0], registry) {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+    let catalogSaved = match saveCatalogFile(paths[1], catalog) {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+    let jobsSaved = match saveInstallJournalFile(paths[2], jobs, catalog, registry) {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+    return registrySaved && catalogSaved && jobsSaved
+}

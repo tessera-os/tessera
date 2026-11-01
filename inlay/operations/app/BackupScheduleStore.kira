@@ -1,0 +1,153 @@
+//! Durable automatic-backup preferences. On a missing file the default is
+//! Manual; malformed existing state is an error, not a reason to overwrite
+//! the user's settings or claim that a backup last succeeded.
+import Foundation
+
+public namespace BackupScheduleText {
+    let version: String = "Tessera backup schedule 1"
+    let maxBytes: Number = 2048
+}
+
+public enum BackupScheduleStoreFailure {
+    Damaged
+    Unavailable
+    UnsafePath
+    StaleHistory
+}
+
+public function encodedBackupSchedule(schedule: borrow BackupSchedule) -> String {
+    let cadence = match schedule.frequency {
+        Manual -> "manual"
+        Daily -> "daily"
+        Weekly -> "weekly"
+    }
+    return BackupScheduleText.version + "\n"
+        + "cadence " + cadence + "\n"
+        + "verified \(schedule.lastVerifiedAt)\n"
+        + "failure \(schedule.lastFailureAt)\n"
+        + "power " + (schedule.requireExternalPower ? "1" : "0") + "\n"
+        + "idle " + (schedule.requireIdle ? "1" : "0") + "\n"
+        + "reserve \(schedule.reservedFreeBytes)\n"
+        + "retry \(schedule.retryDelayMillis)\n"
+}
+
+public function decodedBackupSchedule(text: borrow String) -> BackupSchedule? {
+    if text.count > BackupScheduleText.maxBytes { return .None }
+    let lines = text.split("\n")
+    if lines.count != 9 || lines[0] != BackupScheduleText.version || lines[8] != "" {
+        return .None
+    }
+    let cadence = match lines[1] {
+        "cadence manual" -> BackupFrequency.Manual
+        "cadence daily" -> BackupFrequency.Daily
+        "cadence weekly" -> BackupFrequency.Weekly
+        else -> return .None
+    }
+    let verified = try scheduleNumber(lines[2], "verified ") otherwise return .None
+    let failure = try scheduleNumber(lines[3], "failure ") otherwise return .None
+    let power = match lines[4] {
+        "power 1" -> true
+        "power 0" -> false
+        else -> return .None
+    }
+    let idle = match lines[5] {
+        "idle 1" -> true
+        "idle 0" -> false
+        else -> return .None
+    }
+    let reserve = try scheduleNumber(lines[6], "reserve ") otherwise return .None
+    let retry = try scheduleNumber(lines[7], "retry ") otherwise return .None
+    for value in [verified, failure, reserve, retry] {
+        if value < 0 || value != trunc(value) || value > 9007199254740991 { return .None }
+    }
+    let schedule = BackupSchedule {
+        frequency: cadence,
+        lastVerifiedAt: verified,
+        lastFailureAt: failure,
+        requireExternalPower: power,
+        requireIdle: idle,
+        reservedFreeBytes: reserve,
+        retryDelayMillis: retry
+    }
+    if encodedBackupSchedule(schedule) != text { return .None }
+    return .Some(schedule)
+}
+
+function scheduleNumber(line: borrow String, prefix: borrow String) -> Number? {
+    if !line.startsWith(prefix) { return .None }
+    return line.substring(prefix.count, line.count).toNumber()
+}
+
+public function readBackupScheduleFile(
+    path: borrow String
+) -> Result<BackupSchedule, BackupScheduleStoreFailure> {
+    if unsafeBackupPath(path) || hasLinkedPathAncestor(path) { return .Error(.UnsafePath) }
+    match linkStatus(path) {
+        Ok(status) -> {
+            if status.kind != .File { return .Error(.UnsafePath) }
+            if status.size > BackupScheduleText.maxBytes { return .Error(.Damaged) }
+        }
+        Error(failure) -> match failure {
+            Missing -> return .Ok(BackupSchedule {})
+            else -> return .Error(.Unavailable)
+        }
+    }
+    let content = match readFile(path) {
+        Ok(value) -> value.text
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Unavailable)
+        }
+    }
+    return match decodedBackupSchedule(content) {
+        Some(value) -> .Ok(value)
+        None -> .Error(.Damaged)
+    }
+}
+
+public function saveBackupScheduleFile(
+    path: borrow String,
+    schedule: borrow BackupSchedule
+) -> Result<Void, BackupScheduleStoreFailure> {
+    let text = encodedBackupSchedule(schedule)
+    if decodedBackupSchedule(text).isNone() { return .Error(.Damaged) }
+    let previous = match readBackupScheduleFile(path) {
+        Ok(value) -> value
+        Error(reason) -> return .Error(reason)
+    }
+    // A delayed writer cannot erase the record of a more recent verified
+    // generation or clear the failure backoff without recording a newer
+    // verified success. The trusted service must serialize concurrent writes.
+    if schedule.lastVerifiedAt < previous.lastVerifiedAt
+        || (
+            schedule.lastFailureAt < previous.lastFailureAt && schedule.lastVerifiedAt <= previous.lastVerifiedAt
+        ) {
+        return .Error(.StaleHistory)
+    }
+    let stage = path + ".next"
+    match linkStatus(stage) {
+        Ok(status) -> if status.kind != .File { return .Error(.UnsafePath) }
+        Error(failure) -> match failure {
+            Missing -> {}
+            else -> return .Error(.Unavailable)
+        }
+    }
+    match writeFile(stage, text) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Unavailable)
+        }
+    }
+    match renamePath(stage, path) {
+        Ok -> return .Ok
+        Error(failure) -> {
+            absorb failure
+            match removePath(stage) {
+                Ok -> {}
+                Error(cleanup) -> absorb cleanup
+            }
+            return .Error(.Unavailable)
+        }
+    }
+}

@@ -1,0 +1,138 @@
+//! Application identity and accepted-version state (roadmap/36).
+//!
+//! No network, image installation or signature verification happens here.
+//! A trusted installer verifies a signed image and supplies its publisher key
+//! fingerprint and content digest. This model rejects inconsistent metadata
+//! and ensures an unaccepted staging entry never becomes launchable.
+import Foundation
+
+/// The same application over updates, independent of its visible label or PID.
+public struct AppIdentity {
+    /// A reverse-domain-style ID declared inside the signed image.
+    let identifier: String
+    /// Lowercase SHA-256 pin of the accepted X.509 certificate DER bytes.
+    /// Certificate renewal can change this identifier even with the same key;
+    /// seamless renewal requires an explicitly authorized rotation policy.
+    let publisher: String
+}
+
+/// Ownership of updates; direct installations cannot be taken over silently.
+public enum AppManagement {
+    Direct
+    Catalog
+}
+
+/// Metadata that must be bound to a separately verified application image.
+public struct AppCandidate {
+    let identity: AppIdentity
+    let name: String
+    let version: Number
+    /// Lowercase SHA-256 digest of the candidate's immutable image bytes.
+    let imageDigest: String
+    let management: AppManagement
+    /// Declarations are not grants: a newly requested capability stays off.
+    var requests: [String] = []
+}
+
+/// An image that the system may launch, after explicit commit.
+public struct AcceptedApp {
+    let candidate: AppCandidate
+    /// The owner's effective permissions, separately chosen from requests.
+    var grants: [String] = []
+}
+
+/// Pending work is never returned by `accepted` or `installed`.
+public struct PendingApp {
+    let candidate: AppCandidate
+    /// Existing grants can be carried forward only when still declared.
+    let carried: [String]
+}
+
+public struct ApplicationRegistry {
+    var installed: [AcceptedApp] = []
+    // One last-accepted version per identity, kept for an owner-approved
+    // rollback after an updated image has been independently verified.
+    var previousVersions: [AcceptedApp] = []
+    var pending: [PendingApp] = []
+    /// Data belongs to an identity even after uninstall; the registry never
+    /// deletes it by implication or reassigns it by matching display name.
+    var retainedData: [AppIdentity] = []
+}
+
+public enum RegistrationFailure {
+    InvalidIdentity
+    InvalidMetadata
+    InvalidCapability
+    AlreadyInstalled
+    VersionNotNewer
+    PendingDifferentImage
+    NotStaged
+    DigestMismatch
+    OwnershipNeedsConsent
+    NotInstalled
+    NotRequested
+    NoRollbackAvailable
+    RollbackNeedsConsent
+}
+
+public function sameApp(a: borrow AppIdentity, b: borrow AppIdentity) -> Bool {
+    return a.identifier == b.identifier && a.publisher == b.publisher
+}
+
+// Accept a simple, unambiguous ID instead of names or local executable paths.
+// The publisher digest is part of the key: two publishers can call their app
+// "Notes" and never share data, effective grants, or update ownership.
+public function validAppIdentity(id: borrow AppIdentity) -> Bool {
+    if id.identifier.count < 3 || id.identifier.count > 200
+        || !id.identifier.contains(".") || !validSha256(id.publisher) { return false }
+    var segmentLength: Number = 0
+    for index in 0..id.identifier.count {
+        let code = Number(id.identifier.charAt(index))
+        if code == 46 {
+            if segmentLength == 0 || Number(id.identifier.charAt(index - 1)) == 45 { return false }
+            segmentLength = 0
+            continue
+        }
+        let letter = code >= 97 && code <= 122
+        let digit = code >= 48 && code <= 57
+        if !letter && !digit && code != 45 { return false }
+        if segmentLength == 0 && code == 45 { return false }
+        segmentLength += 1
+    }
+    return segmentLength > 0 && Number(id.identifier.charAt(id.identifier.count - 1)) != 45
+}
+
+public function validSha256(text: borrow String) -> Bool {
+    if text.count != 64 { return false }
+    for index in 0..text.count {
+        let code = Number(text.charAt(index))
+        if !(code >= 48 && code <= 57) && !(code >= 97 && code <= 102) { return false }
+    }
+    return true
+}
+
+public function recognizedCapability(name: borrow String) -> Bool {
+    return name == "display" || name == "input" || name == "data" || name == "network"
+}
+
+public function validAppCandidate(candidate: borrow AppCandidate) -> RegistrationFailure? {
+    if !validAppIdentity(candidate.identity) { return .Some(.InvalidIdentity) }
+    if candidate.version <= 0 || candidate.version > 1000000000
+        || trunc(candidate.version) != candidate.version
+        || !validSha256(candidate.imageDigest)
+        || candidate.name.count == 0 || candidate.name.count > 120 {
+        return .Some(.InvalidMetadata)
+    }
+    for index in 0..candidate.name.count {
+        let byte = Number(candidate.name.charAt(index))
+        if byte < 32 || byte == 127 { return .Some(.InvalidMetadata) }
+    }
+    var seen: [String] = []
+    for request in candidate.requests {
+        if !recognizedCapability(request) || seen.contains(request) {
+            return .Some(.InvalidCapability)
+        }
+        seen.append(copy request)
+    }
+    return .None
+}

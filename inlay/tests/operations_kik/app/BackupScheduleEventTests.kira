@@ -1,0 +1,80 @@
+import Foundation
+import FileOperations
+
+@Test
+function failurePreservesLastVerifiedGenerationAndStartsBackoff() {
+    let original = BackupSchedule { frequency: .Daily, lastVerifiedAt: 1000000000 }
+    let failed = try recordedBackupFailure(original, 1000000000 + 86400000) otherwise return
+    expect!(failed.lastVerifiedAt == original.lastVerifiedAt)
+    expect!(failed.lastFailureAt > failed.lastVerifiedAt)
+    expect!(backupDue(failed, backupHost(failed.lastFailureAt + 60)) == BackupDueState.RetryLater)
+    let verified = try recordedVerifiedBackup(
+        failed,
+        failed.lastFailureAt + 3600000
+    ) otherwise return
+    expect!(verified.lastFailureAt == 0)
+    expect!(verified.lastVerifiedAt > failed.lastVerifiedAt)
+    expect!(
+        backupDue(verified, backupHost(verified.lastVerifiedAt + 1000)) == BackupDueState.NotDue
+    )
+}
+
+@Test
+function staleEventsCannotRewindScheduleState() {
+    let schedule = BackupSchedule {
+        frequency: .Weekly,
+        lastVerifiedAt: 1000000000,
+        lastFailureAt: 1000000100
+    }
+    let staleSuccess = recordedVerifiedBackup(schedule, 999999999)
+    let staleFailure = recordedBackupFailure(schedule, 1000000050)
+    let successBeforeFailure = recordedVerifiedBackup(schedule, 1000000050)
+    let failedSuccess = match staleSuccess {
+        Ok -> false
+        Error(reason) -> {
+            absorb reason
+            true
+        }
+    }
+    let failedFailure = match staleFailure {
+        Ok -> false
+        Error(reason) -> {
+            absorb reason
+            true
+        }
+    }
+    expect!(failedSuccess)
+    expect!(failedFailure)
+    let falseSuccess = match successBeforeFailure {
+        Ok -> false
+        Error(reason) -> {
+            absorb reason
+            true
+        }
+    }
+    expect!(falseSuccess)
+    expect!(schedule.lastVerifiedAt == 1000000000)
+}
+
+@Test
+function backupEventTimestampsMustBePositiveIntegralMilliseconds() {
+    let schedule = BackupSchedule { frequency: .Daily }
+    let invalid = recordedVerifiedBackup(schedule, 100.5)
+    let zero = recordedBackupFailure(schedule, 0)
+    let refused = match invalid {
+        Ok -> false
+        Error(reason) -> {
+            absorb reason
+            true
+        }
+    }
+    let refusedZero = match zero {
+        Ok -> false
+        Error(reason) -> {
+            absorb reason
+            true
+        }
+    }
+    expect!(refused)
+    expect!(refusedZero)
+}

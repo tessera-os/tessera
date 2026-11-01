@@ -1,0 +1,62 @@
+//! Startup reconciliation for App Store metadata. The read order matters:
+//! accepted versions first, cached product metadata second, and finally the
+//! job history. An unverified pending registry entry from a prior process must
+//! not appear as a prepared install on restart.
+import Foundation
+import AppRegistry
+
+public struct AppStoreSession {
+    var registry: ApplicationRegistry
+    var catalog: CatalogCache
+    var queue: InstallQueue
+    /// Pending registry entries found at startup were not trusted and must
+    /// be discarded by a privileged installer before new work begins.
+    let discardedPending: Number
+}
+
+public enum SessionLoadFailure {
+    RegistryUnavailable
+    CatalogUnavailable
+    JournalUnavailable
+}
+
+public function loadAppStoreSession(
+    registryPath: borrow String,
+    catalogPath: borrow String,
+    journalPath: borrow String
+) -> Result<AppStoreSession, SessionLoadFailure> {
+    var registry = match readRegistryFile(registryPath) {
+        Ok(value) -> value
+        Error(failure) -> {
+            absorb failure
+            return .Error(.RegistryUnavailable)
+        }
+    }
+    let oldPending = registry.pending.count
+    // An in-memory pending entry is never a certificate that a new executable
+    // was installed. A trusted installer must independently re-verify bytes,
+    // signer and activation state to stage it again after restart.
+    registry.pending = []
+    let catalog = match readCatalogFile(catalogPath) {
+        Ok(value) -> value
+        Error(failure) -> {
+            absorb failure
+            return .Error(.CatalogUnavailable)
+        }
+    }
+    let queue = match readInstallJournalFile(journalPath, catalog, registry) {
+        Ok(value) -> value
+        Error(failure) -> {
+            absorb failure
+            return .Error(.JournalUnavailable)
+        }
+    }
+    return .Ok(
+        AppStoreSession {
+            registry: registry,
+            catalog: catalog,
+            queue: queue,
+            discardedPending: oldPending
+        }
+    )
+}

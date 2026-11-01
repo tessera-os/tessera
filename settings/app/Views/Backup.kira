@@ -38,6 +38,14 @@ construct BackupPane() extends Widget {
             .disabled(destination.count == 0)
         ]
         let snapshots = snapshotsIn(backupRoot(destination))
+        if snapshots.count > 0 {
+            let latest = copy snapshots[0]
+            rows.append(
+                Button(action = { in said = verifyBackupText(latest) }) {
+                    Text("Verify Latest Backup")
+                }
+            )
+        }
         rows.append(
             LabeledContent(label = "Latest Backup") {
                 Text(snapshots.count > 0 ? backupDate(snapshots[0].name) : "None")
@@ -93,10 +101,11 @@ function restoreSection(destination: borrow String, say: (String) -> Void) -> An
         if index >= BackupPlace.listed { break }
         if entry.name.startsWith(".") { continue }
         let item = copy entry.path
+        let chosen = copy snapshots[0]
         let told = copy say
         rows.append(
             LabeledContent(label = copy entry.name) {
-                Button(action = { in told(restoreText(item)) }) { Text("Restore") }
+                Button(action = { in told(restoreText(chosen, item)) }) { Text("Restore") }
             }
         )
     }
@@ -121,6 +130,19 @@ function backUpNow(destination: borrow String) -> String {
     let root = backupRoot(destination)
     match backUp(documentsPath(), root, unixMillis()) {
         Ok(summary) -> {
+            // Never prune older recoverable generations unless the newest
+            // snapshot can be read back against its committed SHA-256 manifest.
+            match verifySnapshot(summary.snapshot) {
+                Ok(result) -> log info(
+                    "verified a new backup",
+                    files: result.files,
+                    folders: result.folders
+                )
+                Error(failure) -> {
+                    log warn("new backup verification failed", failure: traceText(failure))
+                    return "Backup saved, but verification failed. Earlier backups were preserved."
+                }
+            }
             match pruneSnapshots(root, BackupPlace.kept) {
                 Ok -> {}
                 Error(failure) -> log warn(
@@ -133,17 +155,31 @@ function backUpNow(destination: borrow String) -> String {
         }
         Error(failure) -> {
             log warn("Documents could not be backed up", failure: traceText(failure))
-            return "The backup did not finish; nothing partial is kept."
+            return "The backup did not finish; earlier backups remain available."
         }
     }
 }
 
-function restoreText(item: borrow String) -> String {
-    match restoreItem(item, documentsPath()) {
+function restoreText(snapshot: borrow Snapshot, item: borrow String) -> String {
+    match restoreItem(snapshot, item, documentsPath()) {
         Ok(path) -> return "Restored as \(lastPathPart(path))."
         Error(failure) -> {
             log warn("an item could not be restored", failure: traceText(failure))
             return "\(lastPathPart(item)) could not be restored."
+        }
+    }
+}
+
+// Reread all files in the selected generation and compare their SHA-256
+// digests and names with the manifest committed when the backup completed.
+function verifyBackupText(snapshot: borrow Snapshot) -> String {
+    return match verifySnapshot(snapshot) {
+        Ok(result) -> "Verified \(result.files) files and \(result.folders) folders."
+        Error(failure) -> match failure {
+            Missing(path) -> "Verification failed: \(lastPathPart(path)) is missing."
+            Refused(path) -> "Verification failed: \(lastPathPart(path)) may be damaged."
+            InvalidName, AlreadyExists, IntoItself ->
+            "Verification failed. The backup may contain missing or damaged items."
         }
     }
 }

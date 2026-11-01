@@ -29,6 +29,8 @@ public enum HomeItem {
 public struct HomePage {
     var items: [HomeItem] = []
     var hidden: Bool = false
+    // An intentionally created page stays even while it has no items.
+    var retained: Bool = false
     // The widgets along its top.
     var widgets: [HomeWidget] = []
 }
@@ -44,7 +46,8 @@ public struct HomeArrangement {
 public namespace HomeFormat {
     // The first line of an arrangement this Home reads; one written before
     // it is arranged again from what is installed.
-    let version: String = "version 2"
+    let version: String = "version 3"
+    let previous: String = "version 2"
 }
 
 // Where an item stands: its page, and its place on it.

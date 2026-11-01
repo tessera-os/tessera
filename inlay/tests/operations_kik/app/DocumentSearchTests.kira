@@ -1,0 +1,120 @@
+import Foundation
+import FileOperations
+
+@Test
+function filenameSearchFindsCaseInsensitiveNestedDocuments() {
+    let folder = freshFolder("document-search")
+    let first = childPath(folder, "Work")
+    let second = childPath(first, "Archive")
+    expect!(made(makeDirectory(first)))
+    expect!(made(makeDirectory(second)))
+    writeText(childPath(first, "Report.txt"), "one")
+    writeText(childPath(second, "report-final.txt"), "two")
+    writeText(childPath(second, "notes.txt"), "three")
+    let results = try searchDocumentsByName(folder, "REPORT") otherwise return
+    expect!(results.matches.count == 2)
+    // A depth-first scan follows each folder's sorted entry order; Archive
+    // is visited before the file alongside it in Work.
+    expect!(results.matches[0].name == "report-final.txt")
+    expect!(results.matches[1].name == "Report.txt")
+    expect!(!results.truncated)
+    expect!(results.foldersScanned == 3)
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function filenameSearchWillNotFollowSymbolicLinkOutsideSelectedRoot() {
+    let folder = freshFolder("search-links")
+    let inside = childPath(folder, "Documents")
+    let outside = childPath(folder, "Private")
+    expect!(made(makeDirectory(inside)))
+    expect!(made(makeDirectory(outside)))
+    writeText(childPath(outside, "secret-letter.txt"), "private")
+    writeText(childPath(inside, "letter-public.txt"), "public")
+    expect!(made(makeSymbolicLink("../Private", childPath(inside, "Other"))))
+    let result = try searchDocumentsByName(inside, "letter") otherwise return
+    expect!(result.matches.count == 1)
+    expect!(result.matches[0].name == "letter-public.txt")
+    expect!(result.foldersScanned == 1)
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function searchResultLimitReportsOmittedMatchesWithoutCrossingRoot() {
+    let folder = freshFolder("search-limits")
+    writeText(childPath(folder, "note-a"), "a")
+    writeText(childPath(folder, "note-b"), "b")
+    writeText(childPath(folder, "note-c"), "c")
+    let result = try searchDocumentsByName(folder, "note", 2) otherwise return
+    expect!(result.matches.count == 2)
+    expect!(result.truncated)
+    expect!(result.matches[0].name == "note-a")
+    expect!(result.matches[1].name == "note-b")
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function searchDepthLimitReportsUnscannedNestedFolders() {
+    let folder = freshFolder("search-depth")
+    let nested = childPath(folder, "Nested")
+    expect!(made(makeDirectory(nested)))
+    writeText(childPath(nested, "target.txt"), "child")
+    let shallow = try searchDocumentsByName(folder, "target", 10, 0) otherwise return
+    expect!(shallow.matches.count == 0)
+    expect!(shallow.truncated)
+    let deep = try searchDocumentsByName(folder, "target", 10, 1) otherwise return
+    expect!(deep.matches.count == 1)
+    expect!(!deep.truncated)
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function searchRejectsLinkedRootsAndInvalidInputs() {
+    let folder = freshFolder("search-invalid")
+    let inner = childPath(folder, "Documents")
+    expect!(made(makeDirectory(inner)))
+    let alias = childPath(folder, "Alias")
+    expect!(made(makeSymbolicLink("Documents", alias)))
+    for request in ["", "a/b"] {
+        let rejected = match searchDocumentsByName(inner, request) {
+            Ok -> false
+            Error(failure) -> {
+                absorb failure
+                true
+            }
+        }
+        expect!(rejected)
+    }
+    let linked = match searchDocumentsByName(alias, "note") {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(linked)
+    let invalidLimit = match searchDocumentsByName(inner, "note", 0) {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(invalidLimit)
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function filenameSearchRefusesAnEmbeddedNulQuery() {
+    let folder = freshFolder("search-null-byte")
+    writeText(childPath(folder, "document.txt"), "safe")
+    let refused = match searchDocumentsByName(folder, "doc\0ument") {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(refused)
+    expect!(removed(removeTree(folder)))
+}

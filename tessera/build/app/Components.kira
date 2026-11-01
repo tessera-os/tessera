@@ -29,6 +29,17 @@ function kiraComponent(name: borrow String) -> Component {
     return Component { name: copy name, kind: .Library, location: "../" + name }
 }
 
+// A flat train has every component beside Tessera. In the Cairn monorepo,
+// Kira libraries are grouped under `kira-packages/`; use them there when
+// present while preserving the flat checkout paths as the default.
+function resolvedComponent(root: borrow String, component: borrow Component) -> Component {
+    let grouped = "../../kira-packages/" + component.name
+    if component.kind == .Library && fileExists(joinedPath(root, grouped) + "/package.kira") {
+        return Component { name: copy component.name, kind: component.kind, location: grouped }
+    }
+    return copy component
+}
+
 // Every component, each library after the libraries it links. The system
 // volume's init and the installer's formatter are the /init of other images.
 function tesseraComponents() -> [Component] {
@@ -135,10 +146,14 @@ function readPackage(root: borrow String, location: borrow String) -> Result<Pac
     }
     var imports: [String] = []
     var visited: [String] = []
-    collectPackageImports(joinedPath(root, location), manifest, imports, visited)
+    collectPackageImports(root, joinedPath(root, location), manifest, imports, visited)
+    let module = match manifestModule(manifest) {
+        Some(value) -> value
+        None -> return .Error("no module declaration in package at \(location)")
+    }
     return .Ok(
         PackageFacts {
-            module: manifestModule(manifest),
+            module: move module,
             imports: imports,
             assets: quotedList(manifest, "let assets")
         }
@@ -146,24 +161,26 @@ function readPackage(root: borrow String, location: borrow String) -> Result<Pac
 }
 
 // The module a manifest names.
-function manifestModule(manifest: borrow String) -> String {
+function manifestModule(manifest: borrow String) -> String? {
     for line in manifest.split("\n") {
         let trimmed = line.trim()
         if trimmed.startsWith("let moduleRoot") {
             let named = quotedList(trimmed, "let moduleRoot")
-            if named.count > 0 { return copy named[0] }
+            if named.count > 0 { return .Some(copy named[0]) }
         }
         if trimmed.startsWith("construct ") {
             let rest = trimmed.substring(10, trimmed.count)
             match rest.indexOf(" ") {
                 Some(space) -> {
-                    if manifest.indexOf("moduleRoot").isNone() { return rest.substring(0, space) }
+                    if manifest.indexOf("moduleRoot").isNone() {
+                        return .Some(rest.substring(0, space))
+                    }
                 }
                 None -> {}
             }
         }
     }
-    return ""
+    return .None
 }
 
 // The quoted strings on the line of `manifest` that starts with `prefix`.
@@ -189,6 +206,7 @@ function quotedList(manifest: borrow String, prefix: borrow String) -> [String] 
 // section 27.7 rule 3), so a component needs the contract of each framework
 // any package it compiles in imports, not only the ones it imports itself.
 function collectPackageImports(
+    root: borrow String,
     directory: borrow String,
     manifest: borrow String,
     imports: borrow mut [String],
@@ -197,13 +215,35 @@ function collectPackageImports(
     visited.append(copy directory)
     collectImports(directory + "/app", imports)
     for path in dependencyPaths(manifest) {
-        let dependency = joinedPath(directory, path)
-        if visited.contains(dependency) { continue }
+        let dependency = dependencyDirectory(root, directory, path)
+        if visited.contains(dependency) || !fileExists(dependency + "/package.kira") { continue }
         match readFile(dependency + "/package.kira") {
-            Ok(contents) -> collectPackageImports(dependency, contents.text, imports, visited)
+            Ok(contents) -> collectPackageImports(root, dependency, contents.text, imports, visited)
             Error(failure) -> absorb failure
         }
     }
+}
+
+// A source package's declared relative dependency wins. In the Cairn
+// monorepo, the original flat sibling path may be absent because packages
+// were grouped by family, so the import scanner follows the same source under
+// the documented group. This only affects the build's discovery of contracts;
+// in flat train checkouts nothing is remapped.
+function dependencyDirectory(
+    root: borrow String,
+    directory: borrow String,
+    path: borrow String
+) -> String {
+    let original = joinedPath(directory, path)
+    if fileExists(original + "/package.kira") { return original }
+    let monorepo = parentOf(parentOf(root))
+    if !fileExists(monorepo + "/SOURCES.txt") { return original }
+    let name = lastNameOf(path)
+    for family in ["tessera-packages", "kira-packages", "languages"] {
+        let grouped = monorepo + "/" + family + "/" + name
+        if fileExists(grouped + "/package.kira") { return grouped }
+    }
+    return original
 }
 
 // The `path:` of every dependency `manifest` declares.

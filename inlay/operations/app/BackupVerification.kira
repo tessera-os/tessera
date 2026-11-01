@@ -1,0 +1,225 @@
+//! Read-back integrity checks for a Tessera backup generation. A snapshot's
+//! sidecar manifest records the exact relative names and SHA-256 digests of
+//! its files, plus empty directories. These checks detect accidental loss or
+//! damage; an unkeyed manifest is not an authenticity signature.
+import Foundation
+
+/// The files and directories verified against the saved generation manifest.
+public struct BackupVerification {
+    let files: Number
+    let folders: Number
+}
+
+struct BackupManifest {
+    let text: String
+    let files: Number
+    let folders: Number
+}
+
+struct ManifestBuilder {
+    var lines: [String] = ["Tessera backup manifest 1\n"]
+    var files: Number = 0
+    var folders: Number = 0
+}
+
+// Enumerate deterministically, and hash files in the kernel without loading
+// them whole into the UI process. Every name is hex-encoded as UTF-8 bytes,
+// so newlines, tabs and filenames containing `%` cannot alter the format.
+function manifestOf(snapshotPath: borrow String) -> Result<BackupManifest, ChangeFailure> {
+    var builder = ManifestBuilder {}
+    try manifestDirectory(snapshotPath, snapshotPath, builder)
+    return .Ok(
+        BackupManifest {
+            text: joined(builder.lines, ""),
+            files: builder.files,
+            folders: builder.folders
+        }
+    )
+}
+
+function manifestDirectory(
+    root: borrow String,
+    directory: borrow String,
+    builder: borrow mut ManifestBuilder
+) -> Result<Void, ChangeFailure> {
+    let entries = match entriesIn(directory) {
+        Ok(found) -> found
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Missing(copy directory))
+        }
+    }
+    for entry in entries {
+        let relative = entry.path.substring(root.count + 1, entry.path.count)
+        let name = encodedText(relative)
+        match entry.kind {
+            Folder -> {
+                builder.lines.append("D " + name + "\n")
+                builder.folders += 1
+                try manifestDirectory(root, entry.path, builder)
+            }
+            File -> {
+                let hash = match digestFile(.Sha256, entry.path) {
+                    Ok(bytes) -> bytes
+                    Error(failure) -> {
+                        absorb failure
+                        return .Error(.Refused(copy entry.path))
+                    }
+                }
+                if hash.count != 32 { return .Error(.Refused(copy entry.path)) }
+                builder.lines.append("F " + name + " " + encodedBytes(hash) + "\n")
+                builder.files += 1
+            }
+            Other -> return .Error(.Refused(copy entry.path))
+        }
+    }
+    return .Ok
+}
+
+function encodedText(text: borrow String) -> String {
+    var encoded = ""
+    for index in 0..text.count { encoded += encodedByte(Number(text.charAt(index))) }
+    return encoded
+}
+
+function encodedBytes(bytes: borrow [UN8]) -> String {
+    var encoded = ""
+    for byte in bytes { encoded += encodedByte(Number(byte)) }
+    return encoded
+}
+
+function encodedByte(byte: Number) -> String {
+    let digits = "0123456789abcdef"
+    let upper = trunc(byte / 16)
+    let lower = byte % 16
+    return digits.substring(upper, upper + 1) + digits.substring(lower, lower + 1)
+}
+
+// A source tree can gain or lose entries during the copy. Before publishing
+// a generation compare its complete path/digest manifest with the live source.
+// This is a best-effort consistency check, not a filesystem-atomic snapshot.
+function backupMatchesSource(source: borrow String, copyAt: borrow String) -> Bool {
+    let snapshot = match manifestOf(copyAt) {
+        Ok(value) -> value
+        Error(failure) -> {
+            absorb failure
+            return false
+        }
+    }
+    let current = match manifestOf(source) {
+        Ok(value) -> value
+        Error(failure) -> {
+            absorb failure
+            return false
+        }
+    }
+    return snapshot.text == current.text
+}
+
+/// Compares a complete backup with its saved file list, directory list and
+/// SHA-256 digests. Failure leaves the generation and all older ones intact.
+/// Legacy generations without a manifest report `Missing`, not verified.
+public function verifySnapshot(
+    snapshot: borrow Snapshot
+) -> Result<BackupVerification, ChangeFailure> {
+    let root = parentPath(snapshot.path)
+    if !isSnapshotName(snapshot.name) || lastPathPart(snapshot.path) != snapshot.name
+        || unsafeBackupPath(snapshot.path) || hasLinkedPathAncestor(snapshot.path)
+        || !completedSnapshot(root, snapshot.name, snapshot.path) {
+        return .Error(.Refused(copy snapshot.path))
+    }
+    let snapshotKind = match linkStatus(snapshot.path) {
+        Ok(value) -> value.kind
+        Error(reason) -> {
+            absorb reason
+            return .Error(.Missing(copy snapshot.path))
+        }
+    }
+    if snapshotKind != .Directory { return .Error(.Refused(copy snapshot.path)) }
+    let manifestPath = childPath(root, BackupLayout.manifestPrefix + snapshot.name)
+    let manifestKind = match linkStatus(manifestPath) {
+        Ok(value) -> value.kind
+        Error(reason) -> {
+            absorb reason
+            return .Error(.Missing(manifestPath))
+        }
+    }
+    if manifestKind != .File { return .Error(.Refused(manifestPath)) }
+    let expected = match readFile(manifestPath) {
+        Ok(contents) -> contents.text
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Missing(manifestPath))
+        }
+    }
+    let actual = try manifestOf(snapshot.path)
+    if actual.text != expected {
+        // Distinguish a vanished saved item from one whose bytes changed.
+        // Return the first offending path, not just its generation's folder.
+        let affected = manifestDifferencePath(snapshot.path, expected, actual.text)
+        match linkStatus(affected) {
+            Ok(status) -> {
+                absorb status
+                return .Error(.Refused(affected))
+            }
+            Error(failure) -> match failure {
+                Missing -> return .Error(.Missing(affected))
+                else -> return .Error(.Refused(affected))
+            }
+        }
+    }
+    return .Ok(BackupVerification { files: actual.files, folders: actual.folders })
+}
+
+// Look up the first changed manifest record. Sorting is deterministic, so
+// most corruptions differ at the same index. If an extra item was inserted,
+// an expected line still appears later and the added line is the culprit.
+function manifestDifferencePath(
+    root: borrow String,
+    expected: borrow String,
+    actual: borrow String
+) -> String {
+    let left = expected.split("\n")
+    let right = actual.split("\n")
+    for index in 0..max(left.count, right.count) {
+        let before = index < left.count ? left[index] : ""
+        let after = index < right.count ? right[index] : ""
+        if before == after { continue }
+        let preferred = index < left.count && actual.contains("\n" + before + "\n")
+        ? after : before
+        let entry = match relativeManifestName(preferred) {
+            Some(value) -> value
+            None -> match relativeManifestName(after) {
+                Some(value) -> value
+                None -> return copy root
+            }
+        }
+        return childPath(root, entry)
+    }
+    return copy root
+}
+
+// A manifest's filename is hex-encoded UTF-8. Decode only canonical safe
+// relative paths for diagnostics; never follow or use a malformed manifest
+// path to perform any filesystem operation.
+function relativeManifestName(line: borrow String) -> String? {
+    let fields = line.split(" ")
+    if fields.count < 2 || (fields[0] != "F" && fields[0] != "D") { return .None }
+    let hex = fields[1]
+    if hex.count == 0 || hex.count % 2 != 0 { return .None }
+    var decoded: [UN8] = []
+    for index in 0..trunc(hex.count / 2) {
+        let upper = try manifestHexNibble(Number(hex.charAt(index * 2))) otherwise return .None
+        let lower = try manifestHexNibble(Number(hex.charAt(index * 2 + 1))) otherwise return .None
+        decoded.append(UN8(upper * 16 + lower))
+    }
+    let path = try textFromBytes(decoded) otherwise return .None
+    if path.startsWith("/") || unsafeBackupPath(path) { return .None }
+    return .Some(path)
+}
+
+function manifestHexNibble(byte: Number) -> Number? {
+    if byte >= 48 && byte <= 57 { return .Some(byte - 48) }
+    if byte >= 97 && byte <= 102 { return .Some(byte - 97 + 10) }
+    return .None
+}

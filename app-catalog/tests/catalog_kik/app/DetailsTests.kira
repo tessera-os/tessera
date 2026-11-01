@@ -1,0 +1,105 @@
+import Foundation
+import AppRegistry
+import AppCatalog
+
+@Test
+function anOfflineUpdateDoesNotHideTheOpenButton() {
+    var cache = CatalogCache {}
+    let latest = sample(publisherA, 2)
+    var registry = ApplicationRegistry {}
+    prepareInstalled(registry, sample())
+    expect!(refreshed(cache, [latest]))
+    cache.connection = .Offline
+    let details = cache.details(latest.identity, registry, "desktop", 26)
+    expect!(details.primary == CatalogAction.Open)
+    expect!(details.update.isSome())
+    expect!(updateIs(details.update, CatalogAction.Offline))
+    expect!(details.installed.isSome())
+    cache.connection = .Online
+    let online = cache.details(latest.identity, registry, "desktop", 26)
+    expect!(online.primary == CatalogAction.Open)
+    expect!(updateIs(online.update, CatalogAction.Update))
+}
+
+@Test
+function aWithdrawnCatalogListingCannotHideAnAcceptedApp() {
+    let listing = sample()
+    var registry = ApplicationRegistry {}
+    prepareInstalled(registry, listing)
+    let cache = CatalogCache {}
+    let details = cache.details(listing.identity, registry, "desktop", 26)
+    expect!(details.listing.isNone())
+    expect!(details.installed.isSome())
+    expect!(details.primary == CatalogAction.Open)
+    expect!(details.update.isNone())
+    expect!(cache.action(listing.identity, registry, "desktop", 26) == CatalogAction.Open)
+    expect!(
+        cache.details(
+            AppIdentity { identifier: "missing.app", publisher: publisherA },
+            registry,
+            "desktop",
+            26
+        ).primary == CatalogAction.Unavailable
+    )
+}
+
+@Test
+function incompatibleUpdateCannotBlockEarlierWorkingVersion() {
+    let earlier = sample()
+    var registry = ApplicationRegistry {}
+    prepareInstalled(registry, earlier)
+    let newer = CatalogListing {
+        identity: copy earlier.identity,
+        name: "Notes",
+        description: "Write and organize documents",
+        category: "Productivity",
+        version: 2,
+        artifactDigest: digestB,
+        supportedPlatforms: ["tablet"],
+        minSystemBuild: 99,
+        downloadBytes: 20000000
+    }
+    var cache = CatalogCache {}
+    expect!(refreshed(cache, [newer]))
+    let details = cache.details(earlier.identity, registry, "desktop", 26)
+    expect!(details.primary == CatalogAction.Open)
+    expect!(updateIs(details.update, CatalogAction.UnsupportedPlatform))
+}
+
+@Test
+function updatePendingStillKeepsPreviouslyAcceptedOpenAction() {
+    let earlier = sample()
+    let later = sample(publisherA, 2)
+    var registry = ApplicationRegistry {}
+    prepareInstalled(registry, earlier)
+    var cache = CatalogCache {}
+    expect!(refreshed(cache, [later]))
+    let waiting = fromListing(later)
+    match registry.prepare(waiting) {
+        Ok -> {}
+        Error(failure) -> absorb failure
+    }
+    let details = cache.details(earlier.identity, registry, "desktop", 26)
+    expect!(details.primary == CatalogAction.Open)
+    expect!(updateIs(details.update, CatalogAction.Pending))
+    let accepted = try details.installed otherwise return
+    expect!(accepted.candidate.version == 1)
+}
+
+@Test
+function anUninstalledAppOffersGetButNotOpen() {
+    let listing = sample()
+    var cache = CatalogCache {}
+    expect!(refreshed(cache, [listing]))
+    let details = cache.details(listing.identity, ApplicationRegistry {}, "desktop", 26)
+    expect!(details.primary == CatalogAction.Get)
+    expect!(details.installed.isNone())
+    expect!(details.update.isNone())
+}
+
+function updateIs(value: borrow CatalogAction?, expected: CatalogAction) -> Bool {
+    return match value {
+        Some(action) -> action == expected
+        None -> false
+    }
+}

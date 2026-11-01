@@ -1,0 +1,175 @@
+//! Versioned registry serialization. Reject damaged, ambiguous or unknown
+//! records as a whole; never treat partial bytes as accepted installations.
+import Foundation
+
+public namespace RegistryText {
+    let version: String = "Tessera application registry 2"
+    let legacyVersion: String = "Tessera application registry 1"
+    let maxBytes: Number = 8388608
+    let maxEntries: Number = 4096
+}
+
+/// A strictly delimited, UTF-8-preserving format. Display names escape tabs,
+/// newlines and percent; publisher keys and app IDs are validated on read.
+public function registryText(registry: borrow ApplicationRegistry) -> String {
+    var lines: [String] = [RegistryText.version]
+    for entry in registry.installed { lines.append(acceptedRow("A", entry)) }
+    for entry in registry.previousVersions { lines.append(acceptedRow("B", entry)) }
+    for entry in registry.pending {
+        lines.append(candidateRow("P", entry.candidate, entry.carried))
+    }
+    for id in registry.retainedData {
+        lines.append("D\t" + id.identifier + "\t" + id.publisher)
+    }
+    return joined(lines, "\n") + "\n"
+}
+
+function acceptedRow(prefix: borrow String, entry: borrow AcceptedApp) -> String {
+    return candidateRow(prefix, entry.candidate, entry.grants)
+}
+
+function candidateRow(
+    prefix: borrow String,
+    candidate: borrow AppCandidate,
+    grants: borrow [String]
+) -> String {
+    return prefix + "\t" + candidate.identity.identifier + "\t" + candidate.identity.publisher
+        + "\t\(candidate.version)\t" + candidate.imageDigest + "\t"
+        + managementWord(candidate.management) + "\t" + writtenRegistryField(candidate.name)
+        + "\t" + joined(candidate.requests, ",") + "\t" + joined(grants, ",")
+}
+
+/// Parses all records atomically. Unknown versions, repeated identities,
+/// malformed fields and invented grants refuse the entire registry.
+public function parsedRegistry(text: borrow String) -> ApplicationRegistry? {
+    if text.count > RegistryText.maxBytes { return .None }
+    let lines = text.split("\n")
+    if lines.count > RegistryText.maxEntries * 3 + 2 { return .None }
+    if lines.count < 2 || lines[lines.count - 1] != "" { return .None }
+    let legacy = lines[0] == RegistryText.legacyVersion
+    if !legacy && lines[0] != RegistryText.version { return .None }
+    var registry = ApplicationRegistry {}
+    for index in 1..lines.count - 1 {
+        let row = lines[index].split("\t")
+        if row.count == 0 { return .None }
+        if row[0] == "D" {
+            if row.count != 3 { return .None }
+            let id = AppIdentity { identifier: copy row[1], publisher: copy row[2] }
+            if !validAppIdentity(id) || registry.retainedData.count >= RegistryText.maxEntries
+                || registry.retainedData.contains(id) { return .None }
+            registry.retainedData.append(id)
+            continue
+        }
+        if row[0] != "A" && row[0] != "P" && (row[0] != "B" || legacy) {
+            return .None
+        }
+        if row.count != 9 { return .None }
+        let version = try row[3].toNumber() otherwise return .None
+        let management = match row[5] {
+            "direct" -> AppManagement.Direct
+            "catalog" -> AppManagement.Catalog
+            else -> return .None
+        }
+        let name = try readRegistryField(row[6]) otherwise return .None
+        let requests: [String] = row[7].count == 0 ? [] : row[7].split(",")
+        let grants: [String] = row[8].count == 0 ? [] : row[8].split(",")
+        let app = AppCandidate {
+            identity: AppIdentity { identifier: copy row[1], publisher: copy row[2] },
+            name: name,
+            version: version,
+            imageDigest: copy row[4],
+            management: management,
+            requests: requests
+        }
+        if validAppCandidate(app).isSome() { return .None }
+        var seen: [String] = []
+        for grant in grants {
+            if !app.requests.contains(grant) || seen.contains(grant) { return .None }
+            seen.append(copy grant)
+        }
+        if row[0] == "A" {
+            if registry.installed.count >= RegistryText.maxEntries
+                || registry.accepted(app.identity).isSome() { return .None }
+            registry.installed.append(AcceptedApp { candidate: app, grants: grants })
+        } else if row[0] == "B" {
+            if registry.previousVersions.count >= RegistryText.maxEntries
+                || registry.previous(app.identity).isSome() { return .None }
+            registry.previousVersions.append(AcceptedApp { candidate: app, grants: grants })
+        } else {
+            if registry.pending.count >= RegistryText.maxEntries
+                || registry.staged(app.identity).isSome() { return .None }
+            registry.pending.append(PendingApp { candidate: app, carried: grants })
+        }
+    }
+    // An old install cannot be paired with an equal or older pending version.
+    for item in registry.pending {
+        match registry.accepted(item.candidate.identity) {
+            Some(active) -> if item.candidate.version <= active.candidate.version { return .None }
+            None -> {}
+        }
+    }
+    for item in registry.previousVersions {
+        let current = try registry.accepted(item.candidate.identity) otherwise return .None
+        if item.candidate.version >= current.candidate.version { return .None }
+    }
+    // A strict canonical spelling protects against forged or repeated records.
+    // Preserve v1 files on read; the next successful write upgrades to v2.
+    let canonical = registryText(registry)
+    if legacy {
+        let currentPrefix = RegistryText.version + "\n"
+        let old = RegistryText.legacyVersion + "\n"
+            + canonical.substring(currentPrefix.count, canonical.count)
+        if old != text { return .None }
+    } else if canonical != text { return .None }
+    return .Some(move registry)
+}
+
+function managementWord(way: AppManagement) -> String {
+    return match way {
+        Direct -> "direct"
+        Catalog -> "catalog"
+    }
+}
+
+// Escaping byte-wise leaves other valid UTF-8 bytes intact.
+function writtenRegistryField(text: borrow String) -> String {
+    var output = ""
+    var start: Number = 0
+    for index in 0..text.count {
+        let encoded = match Number(text.charAt(index)) {
+            37 -> "%25"
+            9 -> "%09"
+            10 -> "%0A"
+            13 -> "%0D"
+            else -> ""
+        }
+        if encoded.count == 0 { continue }
+        output += text.substring(start, index) + encoded
+        start = index + 1
+    }
+    return output + text.substring(start, text.count)
+}
+
+function readRegistryField(text: borrow String) -> String? {
+    var output = ""
+    var start: Number = 0
+    var index: Number = 0
+    while index < text.count {
+        if Number(text.charAt(index)) != 37 {
+            index += 1
+            continue
+        }
+        if index + 2 >= text.count { return .None }
+        let decoded = match text.substring(index + 1, index + 3) {
+            "25" -> "%"
+            "09" -> "\t"
+            "0A" -> "\n"
+            "0D" -> "\r"
+            else -> return .None
+        }
+        output += text.substring(start, index) + decoded
+        index += 3
+        start = index
+    }
+    return .Some(output + text.substring(start, text.count))
+}

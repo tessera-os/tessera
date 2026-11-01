@@ -1,0 +1,51 @@
+//! Policy state changes are separate from the I/O runner. Call verified only
+//! after the snapshot passed SHA-256 read-back; a started or copied backup is
+//! not proof of a successfully completed generation.
+import Foundation
+
+public enum BackupScheduleEventFailure {
+    InvalidTimestamp
+    OutOfOrder
+}
+
+public function recordedVerifiedBackup(
+    schedule: borrow BackupSchedule,
+    verifiedAt: Number
+) -> Result<BackupSchedule, BackupScheduleEventFailure> {
+    if verifiedAt <= 0 || verifiedAt != trunc(verifiedAt) { return .Error(.InvalidTimestamp) }
+    if verifiedAt < schedule.lastVerifiedAt || verifiedAt < schedule.lastFailureAt {
+        return .Error(.OutOfOrder)
+    }
+    return .Ok(
+        BackupSchedule {
+            frequency: schedule.frequency,
+            lastVerifiedAt: verifiedAt,
+            lastFailureAt: 0,
+            requireExternalPower: schedule.requireExternalPower,
+            requireIdle: schedule.requireIdle,
+            reservedFreeBytes: schedule.reservedFreeBytes,
+            retryDelayMillis: schedule.retryDelayMillis
+        }
+    )
+}
+
+public function recordedBackupFailure(
+    schedule: borrow BackupSchedule,
+    failedAt: Number
+) -> Result<BackupSchedule, BackupScheduleEventFailure> {
+    if failedAt <= 0 || failedAt != trunc(failedAt) { return .Error(.InvalidTimestamp) }
+    if failedAt < schedule.lastFailureAt || failedAt < schedule.lastVerifiedAt {
+        return .Error(.OutOfOrder)
+    }
+    return .Ok(
+        BackupSchedule {
+            frequency: schedule.frequency,
+            lastVerifiedAt: schedule.lastVerifiedAt,
+            lastFailureAt: failedAt,
+            requireExternalPower: schedule.requireExternalPower,
+            requireIdle: schedule.requireIdle,
+            reservedFreeBytes: schedule.reservedFreeBytes,
+            retryDelayMillis: schedule.retryDelayMillis
+        }
+    )
+}

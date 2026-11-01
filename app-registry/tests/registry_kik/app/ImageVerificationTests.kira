@@ -1,0 +1,236 @@
+//! Public-only test certificate and signature. No private signing key is
+//! checked into the repository. This certificate is NOT a production anchor.
+import Foundation
+import AppRegistry
+
+function appTestCertificate() -> [UN8] {
+    return [
+        48, 130, 1, 59, 48, 129, 238, 160, 3, 2, 1, 2, 2, 20, 0, 245,
+        182, 112, 175, 81, 28, 177, 67, 148, 218, 122, 176, 217, 113, 168, 138, 11,
+        219, 253, 48, 5, 6, 3, 43, 101, 112, 48, 36, 49, 34, 48, 32, 6,
+        3, 85, 4, 3, 12, 25, 84, 101, 115, 115, 101, 114, 97, 32, 65, 112,
+        112, 32, 86, 101, 114, 105, 102, 105, 101, 114, 32, 84, 101, 115, 116, 48,
+        30, 23, 13, 50, 54, 49, 48, 51, 49, 50, 48, 52, 56, 50, 57, 90,
+        23, 13, 51, 54, 49, 48, 50, 56, 50, 48, 52, 56, 50, 57, 90, 48,
+        36, 49, 34, 48, 32, 6, 3, 85, 4, 3, 12, 25, 84, 101, 115, 115,
+        101, 114, 97, 32, 65, 112, 112, 32, 86, 101, 114, 105, 102, 105, 101, 114,
+        32, 84, 101, 115, 116, 48, 42, 48, 5, 6, 3, 43, 101, 112, 3, 33,
+        0, 203, 73, 161, 114, 240, 231, 108, 190, 109, 211, 66, 21, 100, 49, 8,
+        66, 109, 75, 20, 98, 239, 170, 208, 115, 148, 99, 8, 96, 150, 183, 49,
+        2, 163, 50, 48, 48, 48, 29, 6, 3, 85, 29, 14, 4, 22, 4, 20,
+        55, 17, 246, 219, 113, 71, 26, 61, 13, 190, 177, 238, 183, 52, 223, 20,
+        98, 134, 143, 221, 48, 15, 6, 3, 85, 29, 19, 1, 1, 255, 4, 5,
+        48, 3, 1, 1, 255, 48, 5, 6, 3, 43, 101, 112, 3, 65, 0, 248,
+        150, 163, 248, 220, 9, 115, 129, 222, 164, 12, 88, 7, 201, 162, 203, 192,
+        191, 47, 239, 124, 116, 119, 176, 49, 232, 8, 120, 62, 188, 24, 204, 224,
+        37, 106, 23, 26, 180, 149, 154, 89, 198, 159, 189, 251, 163, 246, 246, 19,
+        117, 62, 157, 9, 109, 76, 71, 14, 120, 208, 147, 122, 9, 233, 11,
+    ]
+}
+
+function appTestSignature() -> [UN8] {
+    return [
+        188, 249, 114, 98, 132, 46, 85, 136, 62, 146, 11, 103, 75, 113, 148, 43,
+        44, 239, 171, 44, 193, 102, 226, 4, 158, 43, 233, 31, 64, 20, 162, 225,
+        196, 241, 102, 62, 151, 176, 106, 28, 36, 195, 225, 74, 103, 79, 205, 183,
+        239, 18, 194, 103, 202, 71, 201, 238, 213, 188, 53, 177, 40, 209, 69, 14,
+    ]
+}
+
+function appTestPin() -> [UN8] {
+    return [
+        108, 254, 25, 166, 50, 199, 89, 171, 26, 183, 183, 93, 246, 55, 87, 250,
+        117, 192, 75, 183, 156, 108, 14, 229, 31, 216, 196, 240, 8, 116, 247, 215,
+    ]
+}
+
+function appTestManifest() -> ApplicationManifest {
+    return ApplicationManifest {
+        identifier: "example.notes",
+        name: "Notes",
+        version: 1,
+        executable: "bin",
+        requests: ["display", "data"]
+    }
+}
+
+function appTestSigner() -> AppImageSigner {
+    return AppImageSigner {
+        certificate: appTestCertificate(),
+        trustedCertificateSha256: appTestPin()
+    }
+}
+
+function appVerified(result: Result<AppCandidate, AppImageVerificationFailure>) -> Bool {
+    return match result {
+        Ok -> true
+        Error(reason) -> {
+            absorb reason
+            false
+        }
+    }
+}
+
+@Test
+function pinnedEd25519SignatureAuthenticatesManifestAndStagedImageBytes() {
+    let path = ".tessera-app-image-proof-test"
+    match writeFile(path, "abc") {
+        Ok -> {}
+        Error(reason) -> {
+            absorb reason
+            return
+        }
+    }
+    let actual = try verifyAppImageCandidate(
+        appTestManifest(),
+        path,
+        appTestSigner(),
+        appTestSignature(),
+        .Direct
+    ) otherwise return
+    expect!(actual.identity.publisher.count == 64)
+    expect!(actual.identity.identifier == "example.notes")
+    expect!(
+        actual.imageDigest == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    )
+    expect!(actual.requests == ["display", "data"])
+    var registry = ApplicationRegistry {}
+    expect!(registrationSucceeded(registry.prepare(actual)))
+    expect!(registry.installed.count == 0)
+    match removePath(path) { Ok -> {} Error(reason) -> absorb reason }
+}
+
+@Test
+function alteringStagedBytesOrManifestInvalidatesSignature() {
+    let path = ".tessera-app-image-proof-tampered"
+    match writeFile(path, "abc") {
+        Ok -> {}
+        Error(reason) -> {
+            absorb reason
+            return
+        }
+    }
+    let manifest = ApplicationManifest {
+        identifier: "example.notes",
+        name: "Notes",
+        version: 1,
+        executable: "bin",
+        requests: ["display", "network"]
+    }
+    expect!(
+        !appVerified(
+            verifyAppImageCandidate(manifest, path, appTestSigner(), appTestSignature(), .Direct)
+        )
+    )
+    match writeFile(path, "abd") { Ok -> {} Error(reason) -> absorb reason }
+    expect!(
+        !appVerified(
+            verifyAppImageCandidate(
+                appTestManifest(),
+                path,
+                appTestSigner(),
+                appTestSignature(),
+                .Direct
+            )
+        )
+    )
+    match removePath(path) { Ok -> {} Error(reason) -> absorb reason }
+}
+
+@Test
+function signerPinAndCatalogImageDigestCannotBeSelectedByAnAttacker() {
+    let path = ".tessera-app-image-proof-pin"
+    match writeFile(path, "abc") {
+        Ok -> {}
+        Error(reason) -> {
+            absorb reason
+            return
+        }
+    }
+    let wrong = AppImageSigner {
+        certificate: appTestCertificate(),
+        trustedCertificateSha256: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    }
+    expect!(
+        !appVerified(
+            verifyAppImageCandidate(appTestManifest(), path, wrong, appTestSignature(), .Direct)
+        )
+    )
+    expect!(
+        !appVerified(
+            verifyAppImageCandidate(
+                appTestManifest(),
+                path,
+                appTestSigner(),
+                appTestSignature(),
+                .Catalog,
+                "1111111111111111111111111111111111111111111111111111111111111111"
+            )
+        )
+    )
+    match removePath(path) { Ok -> {} Error(reason) -> absorb reason }
+}
+
+@Test
+function signedImageVerifierRefusesLinkedParentAndTraversalAliases() {
+    let folder = ".tessera-app-image-parent-check"
+    let alias = ".tessera-app-image-parent-alias"
+    match makeDirectory(folder) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    let image = folder + "/image.bin"
+    match writeFile(image, "abc") {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    match makeSymbolicLink(folder, alias) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    expect!(
+        appVerified(
+            verifyAppImageCandidate(
+                appTestManifest(),
+                image,
+                appTestSigner(),
+                appTestSignature(),
+                .Direct
+            )
+        )
+    )
+    expect!(
+        !appVerified(
+            verifyAppImageCandidate(
+                appTestManifest(),
+                alias + "/image.bin",
+                appTestSigner(),
+                appTestSignature(),
+                .Direct
+            )
+        )
+    )
+    expect!(
+        !appVerified(
+            verifyAppImageCandidate(
+                appTestManifest(),
+                folder + "/../" + folder + "/image.bin",
+                appTestSigner(),
+                appTestSignature(),
+                .Direct
+            )
+        )
+    )
+    match removePath(alias) { Ok -> {} Error(failure) -> absorb failure }
+    match removePath(image) { Ok -> {} Error(failure) -> absorb failure }
+    match removePath(folder) { Ok -> {} Error(failure) -> absorb failure }
+}

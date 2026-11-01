@@ -1,0 +1,84 @@
+//! Deterministic backup scheduling policy. The service that reads power,
+//! storage and activity state is separate; this pure decision function can be
+//! host-tested and must not run an unconsented backup by itself.
+import Foundation
+
+public enum BackupFrequency {
+    Manual
+    Daily
+    Weekly
+}
+
+public struct BackupSchedule {
+    let frequency: BackupFrequency = .Manual
+    /// Unix milliseconds of the last generation that passed read-back
+    /// verification, not merely the last attempted backup.
+    let lastVerifiedAt: Number = 0
+    let lastFailureAt: Number = 0
+    let requireExternalPower: Bool = false
+    let requireIdle: Bool = true
+    /// Space available *after* the estimated new generation should stay
+    /// above this reserve; conservative on copy-only volumes.
+    let reservedFreeBytes: Number = 2147483648
+    let retryDelayMillis: Number = 3600000
+}
+
+public struct BackupHostState {
+    let nowMillis: Number
+    let freeBytes: Number
+    let estimatedCopyBytes: Number
+    let externalPower: Bool
+    let idle: Bool
+    let backupRunning: Bool
+}
+
+public enum BackupDueState {
+    Due
+    ManualOnly
+    NotDue
+    RetryLater
+    Busy
+    PowerRequired
+    IdleRequired
+    LowSpace
+    InvalidState
+}
+
+public function backupDue(
+    schedule: borrow BackupSchedule,
+    host: borrow BackupHostState
+) -> BackupDueState {
+    if schedule.frequency == .Manual { return .ManualOnly }
+    if !validSchedule(schedule, host) { return .InvalidState }
+    if host.backupRunning { return .Busy }
+    let interval = match schedule.frequency {
+        Daily -> 86400000
+        Weekly -> 604800000
+        Manual -> 0
+    }
+    if schedule.lastVerifiedAt > 0 && host.nowMillis - schedule.lastVerifiedAt < interval {
+        return .NotDue
+    }
+    if schedule.lastFailureAt > 0
+        && host.nowMillis - schedule.lastFailureAt < schedule.retryDelayMillis {
+        return .RetryLater
+    }
+    if schedule.requireExternalPower && !host.externalPower { return .PowerRequired }
+    if schedule.requireIdle && !host.idle { return .IdleRequired }
+    if host.freeBytes - host.estimatedCopyBytes < schedule.reservedFreeBytes {
+        return .LowSpace
+    }
+    return .Due
+}
+
+function validSchedule(schedule: borrow BackupSchedule, host: borrow BackupHostState) -> Bool {
+    let values = [host.nowMillis, host.freeBytes, host.estimatedCopyBytes, schedule.reservedFreeBytes, schedule.retryDelayMillis, schedule.lastVerifiedAt, schedule.lastFailureAt]
+    for value in values {
+        if value < 0 || value > 9007199254740991 || trunc(value) != value { return false }
+    }
+    if host.nowMillis <= 0 { return false }
+    if schedule.lastVerifiedAt > host.nowMillis || schedule.lastFailureAt > host.nowMillis {
+        return false
+    }
+    return true
+}

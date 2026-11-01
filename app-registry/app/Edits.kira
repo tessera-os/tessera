@@ -1,0 +1,224 @@
+//! Pure registry transactions. A separate trusted installer must verify the
+//! image and decide when it is safe to activate (including running apps).
+import Foundation
+
+extend ApplicationRegistry {
+    function accepted(borrow self, identity: borrow AppIdentity) -> AcceptedApp? {
+        for item in installed {
+            if sameApp(item.candidate.identity, identity) { return .Some(copy item) }
+        }
+        return .None
+    }
+
+    function previous(borrow self, identity: borrow AppIdentity) -> AcceptedApp? {
+        for item in previousVersions {
+            if sameApp(item.candidate.identity, identity) { return .Some(copy item) }
+        }
+        return .None
+    }
+
+    function staged(borrow self, identity: borrow AppIdentity) -> PendingApp? {
+        for item in pending {
+            if sameApp(item.candidate.identity, identity) { return .Some(copy item) }
+        }
+        return .None
+    }
+
+    /// Stage a version without disrupting a usable installation. `takeOver`
+    /// means the person explicitly accepted catalog management of a direct app.
+    function prepare(
+        borrow mut self,
+        candidate: borrow AppCandidate,
+        takeOver: Bool = false
+    ) -> Result<Void, RegistrationFailure> {
+        match validAppCandidate(candidate) {
+            Some(failure) -> return .Error(failure)
+            None -> {}
+        }
+        let existing = self.accepted(candidate.identity)
+        var carried: [String] = []
+        match existing {
+            Some(active) -> {
+                if candidate.version <= active.candidate.version { return .Error(.VersionNotNewer) }
+                if active.candidate.management == .Direct && candidate.management == .Catalog && !takeOver {
+                    return .Error(.OwnershipNeedsConsent)
+                }
+                for grant in active.grants {
+                    if candidate.requests.contains(grant) { carried.append(copy grant) }
+                }
+            }
+            None -> {}
+        }
+        match self.staged(candidate.identity) {
+            Some(current) -> {
+                if current.candidate.version == candidate.version
+                    && current.candidate.imageDigest == candidate.imageDigest
+                    && current.candidate.management == candidate.management {
+                    return .Ok
+                }
+                return .Error(.PendingDifferentImage)
+            }
+            None -> {}
+        }
+        pending.append(PendingApp { candidate: copy candidate, carried: carried })
+        return .Ok
+    }
+
+    /// Commit only the staged bytes the trusted installer confirmed. Passing
+    /// a mismatched digest leaves the previous accepted app untouched.
+    function activate(
+        borrow mut self,
+        identity: borrow AppIdentity,
+        verifiedDigest: borrow String
+    ) -> Result<Void, RegistrationFailure> {
+        var replacement: PendingApp? = .None
+        var remaining: [PendingApp] = []
+        for item in pending {
+            if sameApp(item.candidate.identity, identity) {
+                replacement = .Some(copy item)
+            } else {
+                remaining.append(copy item)
+            }
+        }
+        let stage = match replacement {
+            Some(item) -> item
+            None -> return .Error(.NotStaged)
+        }
+        if stage.candidate.imageDigest != verifiedDigest { return .Error(.DigestMismatch) }
+        var next: [AcceptedApp] = []
+        var rollback: [AcceptedApp] = []
+        // A permission may have been revoked while the download was staged.
+        // Recheck current grants at activation rather than restoring the
+        // snapshot taken by prepare().
+        var effective: [String] = []
+        let now = self.accepted(identity)
+        match now {
+            Some(active) -> {
+                for grant in stage.carried {
+                    if active.grants.contains(grant)
+                        && stage.candidate.requests.contains(grant) {
+                        effective.append(copy grant)
+                    }
+                }
+            }
+            None -> {}
+        }
+        for item in previousVersions {
+            if !sameApp(item.candidate.identity, identity) { rollback.append(copy item) }
+        }
+        for item in installed {
+            if sameApp(item.candidate.identity, identity) {
+                // A stage prepared earlier must not downgrade a concurrently
+                // accepted newer version, even with a matching digest.
+                if stage.candidate.version <= item.candidate.version {
+                    return .Error(.VersionNotNewer)
+                }
+                rollback.append(copy item)
+            } else {
+                next.append(copy item)
+            }
+        }
+        next.append(AcceptedApp { candidate: copy stage.candidate, grants: effective })
+        installed = move next
+        previousVersions = move rollback
+        pending = move remaining
+        return .Ok
+    }
+
+    /// Rollback is a new activation, not an unverified file rename. The OS
+    /// installer independently rechecks the previous immutable image and its
+    /// signature; the digest argument may only come from that trusted check.
+    function rollBack(
+        borrow mut self,
+        identity: borrow AppIdentity,
+        verifiedPreviousDigest: borrow String,
+        ownerConsent: Bool
+    ) -> Result<Void, RegistrationFailure> {
+        if !ownerConsent { return .Error(.RollbackNeedsConsent) }
+        let previous = try self.previous(identity) otherwise return .Error(.NoRollbackAvailable)
+        let active = try self.accepted(identity) otherwise return .Error(.NotInstalled)
+        if previous.candidate.imageDigest != verifiedPreviousDigest {
+            return .Error(.DigestMismatch)
+        }
+        if previous.candidate.version >= active.candidate.version {
+            return .Error(.VersionNotNewer)
+        }
+        var kept: [AcceptedApp] = []
+        var old: [AcceptedApp] = []
+        for item in installed {
+            if !sameApp(item.candidate.identity, identity) { kept.append(copy item) }
+        }
+        for item in previousVersions {
+            if !sameApp(item.candidate.identity, identity) { old.append(copy item) }
+        }
+        // Rollback must never resurrect a capability the owner revoked in
+        // the newer version. Preserve only grants still active now and also
+        // requested by the older app. Historical permissions are not an
+        // authorization to elevate a restored executable.
+        var restoredGrants: [String] = []
+        for grant in previous.grants {
+            if active.grants.contains(grant) && previous.candidate.requests.contains(grant) {
+                restoredGrants.append(copy grant)
+            }
+        }
+        kept.append(AcceptedApp { candidate: copy previous.candidate, grants: restoredGrants })
+        installed = move kept
+        previousVersions = move old
+        self.cancel(identity)
+        return .Ok
+    }
+
+    function cancel(borrow mut self, identity: borrow AppIdentity) {
+        var remaining: [PendingApp] = []
+        for item in pending {
+            if !sameApp(item.candidate.identity, identity) { remaining.append(copy item) }
+        }
+        pending = move remaining
+    }
+
+    /// A UI permission action must be separate from merely requesting access.
+    function setGrant(
+        borrow mut self,
+        identity: borrow AppIdentity,
+        capability: borrow String,
+        allowed: Bool
+    ) -> Result<Void, RegistrationFailure> {
+        if !recognizedCapability(capability) { return .Error(.InvalidCapability) }
+        var found: Number = -1
+        for index in 0..installed.count {
+            if sameApp(installed[index].candidate.identity, identity) {
+                found = index
+                break
+            }
+        }
+        if found < 0 { return .Error(.NotInstalled) }
+        if !installed[found].candidate.requests.contains(capability) {
+            return .Error(.NotRequested)
+        }
+        var updated: [String] = []
+        for grant in installed[found].grants {
+            if grant != capability { updated.append(copy grant) }
+        }
+        if allowed { updated.append(copy capability) }
+        installed[found].grants = move updated
+        return .Ok
+    }
+
+    /// Uninstall clears registration and staged work, not the identity's data.
+    function uninstall(borrow mut self, identity: borrow AppIdentity) {
+        let wasAccepted = self.accepted(identity).isSome()
+        var kept: [AcceptedApp] = []
+        for item in installed {
+            if !sameApp(item.candidate.identity, identity) { kept.append(copy item) }
+        }
+        installed = move kept
+        var older: [AcceptedApp] = []
+        for item in previousVersions {
+            if !sameApp(item.candidate.identity, identity) { older.append(copy item) }
+        }
+        previousVersions = move older
+        self.cancel(identity)
+        // A never-installed app cannot reserve an identity's data namespace.
+        if wasAccepted && !retainedData.contains(identity) { retainedData.append(copy identity) }
+    }
+}

@@ -1,0 +1,109 @@
+//! User-selected default applications for document extensions. This is a
+//! routing preference, not an executable launcher or filesystem access grant.
+//! The caller must use the trusted launcher and an OS-granted document handle.
+import Foundation
+
+public struct DocumentAssociation {
+    let extension: String
+    let application: AppIdentity
+}
+
+public struct DocumentAssociations {
+    var defaults: [DocumentAssociation] = []
+}
+
+public enum AssociationFailure {
+    InvalidExtension
+    ApplicationNotInstalled
+}
+
+public enum DocumentRoute {
+    ChooseApplication
+    OpenAccepted(AppIdentity)
+    DefaultUnavailable(AppIdentity)
+}
+
+public namespace AssociationLimits {
+    let maxDefaults: Number = 256
+    let maxExtensionBytes: Number = 16
+}
+
+public function validDocumentExtension(extension: borrow String) -> Bool {
+    if extension.count == 0 || extension.count > AssociationLimits.maxExtensionBytes {
+        return false
+    }
+    for index in 0..extension.count {
+        let code = Number(extension.charAt(index))
+        let alpha = code >= 97 && code <= 122
+        let number = code >= 48 && code <= 57
+        if !alpha && !number { return false }
+    }
+    return true
+}
+
+/// Extracts only a conventional final filename extension, rather than
+/// trusting any filename to designate executable or document privileges.
+public function documentExtension(filename: borrow String) -> String? {
+    let parts = filename.split("/")
+    if parts.count == 0 { return .None }
+    let name = parts[parts.count - 1]
+    var dot: Number = -1
+    for index in 0..name.count {
+        if Number(name.charAt(index)) == 46 { dot = index }
+    }
+    if dot < 1 || dot >= name.count - 1 { return .None }
+    let extension = name.substring(dot + 1, name.count).lowercased()
+    return validDocumentExtension(extension) ? .Some(extension) : .None
+}
+
+extend DocumentAssociations {
+    /// A default is added only for a currently accepted publisher identity.
+    /// A later uninstall does not silently transfer it to another publisher.
+    function chooseDefault(
+        borrow mut self,
+        extension: borrow String,
+        identity: borrow AppIdentity,
+        registry: borrow ApplicationRegistry
+    ) -> Result<Void, AssociationFailure> {
+        let normalized = extension.lowercased()
+        if !validDocumentExtension(normalized) { return .Error(.InvalidExtension) }
+        if registry.accepted(identity).isNone() { return .Error(.ApplicationNotInstalled) }
+        var kept: [DocumentAssociation] = []
+        for entry in defaults {
+            if entry.extension != normalized { kept.append(copy entry) }
+        }
+        if kept.count >= AssociationLimits.maxDefaults { return .Error(.InvalidExtension) }
+        kept.append(DocumentAssociation { extension: normalized, application: copy identity })
+        defaults = move kept
+        return .Ok
+    }
+
+    function forgetDefault(borrow mut self, extension: borrow String) {
+        let normalized = extension.lowercased()
+        var kept: [DocumentAssociation] = []
+        for entry in defaults {
+            if entry.extension != normalized { kept.append(copy entry) }
+        }
+        defaults = move kept
+    }
+
+    /// The trusted document opener must independently verify application
+    /// registration and the document's granted handle at launch time.
+    function route(
+        borrow self,
+        filename: borrow String,
+        registry: borrow ApplicationRegistry
+    ) -> DocumentRoute {
+        let extension = match documentExtension(filename) {
+            Some(found) -> found
+            None -> return .ChooseApplication
+        }
+        for entry in defaults {
+            if entry.extension != extension { continue }
+            return registry.accepted(entry.application).isSome()
+            ? .OpenAccepted(copy entry.application)
+            : .DefaultUnavailable(copy entry.application)
+        }
+        return .ChooseApplication
+    }
+}

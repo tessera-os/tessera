@@ -622,6 +622,16 @@ construct HomeScreen(applications: [Application], notice: String?) extends Widge
     // The pages side by side, to hide, show and move.
     function pagesOverview(arrangement: borrow HomeArrangement) -> Any Widget {
         let actions = HomePagesActions {
+            add: { in
+                var changed = loadArrangement()
+                changed.addPage()
+                commitHome(changed)
+            },
+            remove: { at in
+                var changed = loadArrangement()
+                changed.removeEmptyPage(at)
+                commitHome(changed)
+            },
             toggle: { at in
                 var changed = loadArrangement()
                 changed.toggleHidden(at)

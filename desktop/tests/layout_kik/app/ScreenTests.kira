@@ -34,3 +34,84 @@ function theRingStepsAcrossScreens() {
     expect!(stay == 1)
     expect!(clamped == 0)
 }
+
+@Test
+function keyboardFocusSkipsEmptyPagesInBothDirections() {
+    let screens = [
+        HomeScreenPage { page: 0, first: 0, count: 2 },
+        HomeScreenPage { page: 1, first: 0, count: 0 },
+        HomeScreenPage { page: 2, first: 0, count: 0 },
+        HomeScreenPage { page: 3, first: 0, count: 3 }
+    ]
+    let (forward, start) = steppedFocus(screens, 0, 1, 1)
+    expect!(forward == 3)
+    expect!(start == 0)
+    let (back, last) = steppedFocus(screens, 3, 0, -1)
+    expect!(back == 0)
+    expect!(last == 1)
+    let (fromEmpty, first) = steppedFocus(screens, 1, 0, 1)
+    expect!(fromEmpty == 3)
+    expect!(first == 0)
+    let (reverseEmpty, end) = steppedFocus(screens, 2, 0, -1)
+    expect!(reverseEmpty == 0)
+    expect!(end == 1)
+}
+
+@Test
+function keyboardFocusHandlesNoScreenOrNoIcon() {
+    let (page, item) = steppedFocus([], 0, 0, 1)
+    expect!(page == 0)
+    expect!(item == 0)
+    let empty: [HomeScreenPage] = [HomeScreenPage { page: 0, first: 0, count: 0 }]
+    let (still, focus) = steppedFocus(empty, 0, 0, 1)
+    expect!(still == 0)
+    expect!(focus == 0)
+    let (outOfBounds, zero) = steppedFocus(empty, 5, 0, -1)
+    expect!(outOfBounds == 0)
+    expect!(zero == 0)
+}
+
+@Test
+function verticalArrowsCrossScreensAndKeepTheirColumn() {
+    let screens = [
+        HomeScreenPage { page: 0, first: 0, count: 6 },
+        HomeScreenPage { page: 1, first: 0, count: 0 },
+        HomeScreenPage { page: 2, first: 0, count: 4 }
+    ]
+    let (downPage, downIndex) = steppedFocus(screens, 0, 4, 3)
+    expect!(downPage == 2)
+    expect!(downIndex == 1)
+    let (upPage, upIndex) = steppedFocus(screens, 2, 1, -3)
+    expect!(upPage == 0)
+    expect!(upIndex == 4)
+    let (lastPage, lastIndex) = steppedFocus(screens, 2, 3, 3)
+    expect!(lastPage == 2)
+    expect!(lastIndex == 3)
+}
+
+@Test
+function zeroCapacityViewportStillLeavesEveryAppReachable() {
+    let unresolved = HomeSpace { perPage: 0, columns: 0 }
+    var home = withInstalled(HomeArrangement {}, ["A", "B", "C"], false, unresolved)
+    expect!(home.pages.count == 3)
+    let screens = home.screenPages(unresolved)
+    expect!(screens.count == 3)
+    for screen in screens { expect!(screen.count == 1) }
+    // Reflowing an already populated page must terminate even at zero cells.
+    home.moveItem(HomeSlot { page: 0, index: 0 }, HomeSlot { page: 1, index: 0 }, unresolved)
+    // Reflow keeps the empty source page until Home ends the edit.
+    expect!(home.pages.count == 4)
+    expect!(home.settled().pages.count == 3)
+}
+
+@Test
+function aWidgetPageWithZeroCellsUsesFiniteOverflowScreens() {
+    let home = HomeArrangement {
+        pages: [HomePage { items: [.App("A"), .App("B")], widgets: [HomeWidget { kind: "Clock" }] }]
+    }
+    let screens = home.screenPages(HomeSpace { perPage: 0, columns: 0 })
+    expect!(screens.count == 3)
+    expect!(screens[0].count == 0)
+    expect!(screens[1].count == 1)
+    expect!(screens[2].count == 1)
+}

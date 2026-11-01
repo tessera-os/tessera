@@ -1,0 +1,93 @@
+import Foundation
+import LibTessera
+import PlatformUI
+
+@Test
+function selectedSearchResultKeepsItsIdentityAfterReordering() {
+    let notes = SearchResult {
+        title: "Notes",
+        detail: "Application",
+        group: .Applications,
+        target: .Application(Application { name: "Notes", place: .System, category: .None })
+    }
+    let display = SearchResult {
+        title: "Display & Brightness",
+        detail: "Settings",
+        group: .Settings,
+        target: .Pane(.Display)
+    }
+    let identity = searchResultIdentity(notes)
+    expect!(searchSelectedIndex([notes, display], identity) == 0)
+    expect!(searchSelectedIndex([display, notes], identity) == 1)
+    expect!(searchSelectedIndex([display], identity) == 0)
+}
+
+@Test
+function identicalTitlesFromDifferentSourcesHaveDifferentSelectionKeys() {
+    let system = SearchResult {
+        title: "Notes",
+        detail: "Application",
+        group: .Applications,
+        target: .Application(Application { name: "Notes", place: .System, category: .None })
+    }
+    let installed = SearchResult {
+        title: "Notes",
+        detail: "Application",
+        group: .Applications,
+        target: .Application(Application { name: "Notes", place: .Applications, category: .None })
+    }
+    expect!(searchResultIdentity(system) != searchResultIdentity(installed))
+    expect!(searchSelectedIndex([installed, system], searchResultIdentity(system)) == 1)
+}
+
+@Test
+function documentKeysPreserveThePathAndEmptyResultsAreSafe() {
+    let doc = SearchResult {
+        title: "Plan.txt",
+        detail: "Documents",
+        group: .Documents,
+        target: .Document("/Documents/Plan.txt")
+    }
+    let other = SearchResult {
+        title: "Plan.txt",
+        detail: "Downloads",
+        group: .Documents,
+        target: .Document("/Downloads/Plan.txt")
+    }
+    expect!(searchResultIdentity(doc) != searchResultIdentity(other))
+    expect!(searchSelectedIndex([other, doc], searchResultIdentity(doc)) == 1)
+    expect!(searchSelectedIndex([], searchResultIdentity(doc)) == 0)
+}
+
+@Test
+function searchDoesNotDescendIntoSymbolicLinkAliases() {
+    let folder = ".tessera-search-link-regression"
+    match makeDirectory(folder) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    let real = folder + "/real"
+    let alias = folder + "/alias"
+    match makeDirectory(real) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    match makeSymbolicLink("real", alias) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    expect!(directSearchFolder(real))
+    expect!(!directSearchFolder(alias))
+    match removePath(alias) { Ok -> {} Error(failure) -> absorb failure }
+    match removePath(real) { Ok -> {} Error(failure) -> absorb failure }
+    match removePath(folder) { Ok -> {} Error(failure) -> absorb failure }
+}

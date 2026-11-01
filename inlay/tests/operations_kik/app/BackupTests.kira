@@ -34,12 +34,16 @@ function aSecondBackupLinksWhatDidNotChange() {
             BackupSummary { snapshot: Snapshot { name: "", path: "" }, copied: -1, linked: -1 }
         }
     }
-    expect!(second.linked == 1)
-    expect!(second.copied == 1)
+    // The backing volume might not support hard links (including the Cairn
+    // workspace filesystem), in which case the backup copies both files.
+    expect!(second.linked + second.copied == 2)
+    expect!(second.copied >= 1)
     let snapshots = snapshotsIn(root)
     expect!(snapshots.count == 2)
     expect!(snapshots[0].name == second.snapshot.name)
     expect!(textAt(childPath(snapshots[1].path, "b.txt")) == "second")
+    expect!(textAt(childPath(snapshots[0].path, "a.txt")) == "first")
+    expect!(textAt(childPath(snapshots[0].path, "b.txt")) == "changed")
     expect!(removed(removeTree(folder)))
 }
 
@@ -51,6 +55,7 @@ function aBackupCutShortIsIgnoredAndRemoved() {
     expect!(made(makeDirectory(source)))
     expect!(made(makeDirectory(root)))
     expect!(made(makeDirectory(childPath(root, "19990101-000000"))))
+    writeText(childPath(root, ".tessera-incomplete-19990101-000000"), "19990101-000000")
     expect!(snapshotsIn(root).count == 0)
     writeText(childPath(source, "a.txt"), "kept")
     let done = match backUp(source, root, 1000) {
@@ -74,14 +79,14 @@ function anItemIsRestoredBesideWhatIsThere() {
     expect!(made(makeDirectory(source)))
     writeText(childPath(source, "a.txt"), "original")
     let snapshot = match backUp(source, root, 1000) {
-        Ok(summary) -> summary.snapshot.path
+        Ok(summary) -> summary.snapshot
         Error(failure) -> {
             absorb failure
-            ""
+            Snapshot { name: "", path: "" }
         }
     }
     writeText(childPath(source, "a.txt"), "edited")
-    let restored = match restoreItem(childPath(snapshot, "a.txt"), source) {
+    let restored = match restoreItem(snapshot, childPath(snapshot.path, "a.txt"), source) {
         Ok(path) -> path
         Error(failure) -> {
             absorb failure
@@ -115,5 +120,770 @@ function pruningKeepsTheNewest() {
     let left = snapshotsIn(root)
     expect!(left.count == 2)
     expect!(left[1].name == snapshotName(2000000))
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function sameSizeEditsAreNeverMistakenForUnchangedBackups() {
+    let folder = freshFolder("same-size")
+    let source = childPath(folder, "Documents")
+    let backups = childPath(folder, "Backups")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "note.txt"), "alpha")
+    let earlier = try backUp(source, backups, 1000) otherwise return
+    // The second version has precisely the same size as the first.
+    writeText(childPath(source, "note.txt"), "omega")
+    let newest = try backUp(source, backups, 2000) otherwise return
+    expect!(newest.linked == 0)
+    expect!(newest.copied == 1)
+    expect!(textAt(childPath(earlier.snapshot.path, "note.txt")) == "alpha")
+    expect!(textAt(childPath(newest.snapshot.path, "note.txt")) == "omega")
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function backupNeverCopiesIntoItsOwnSourceOrFollowsRootSymlink() {
+    let folder = freshFolder("backup-into-source")
+    let source = childPath(folder, "Documents")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "note.txt"), "important")
+    let selfBackup = backUp(source, childPath(source, "Backups"), 1000)
+    let rejected = match selfBackup {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(rejected)
+    expect!(!pathExists(childPath(source, "Backups")))
+    let alias = childPath(folder, "link")
+    expect!(made(makeSymbolicLink("Documents", alias)))
+    let refusedLink = match backUp(alias, childPath(folder, "Backups"), 1000) {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(refusedLink)
+    expect!(!pathExists(childPath(folder, "Backups")))
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function partialBackupCleanupNeverDeletesUnrelatedFolders() {
+    let folder = freshFolder("backup-cleanup")
+    let source = childPath(folder, "Documents")
+    let root = childPath(folder, "Backups")
+    expect!(made(makeDirectory(source)))
+    expect!(made(makeDirectory(root)))
+    let unrelated = childPath(root, "Personal notes")
+    expect!(made(makeDirectory(unrelated)))
+    writeText(childPath(unrelated, "important.txt"), "do not delete")
+    let stale = childPath(root, "20261031-120000")
+    expect!(made(makeDirectory(stale)))
+    writeText(childPath(stale, "incomplete"), "incomplete")
+    writeText(childPath(root, ".tessera-incomplete-20261031-120000"), "20261031-120000")
+    let unrelatedDate = childPath(root, "20261030-120000")
+    expect!(made(makeDirectory(unrelatedDate)))
+    writeText(childPath(unrelatedDate, "keep"), "still yours")
+    writeText(childPath(source, "a.txt"), "a")
+    let result = backUp(source, root, 1000)
+    let success = match result {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+    expect!(success)
+    expect!(!pathExists(stale))
+    expect!(textAt(childPath(unrelated, "important.txt")) == "do not delete")
+    expect!(textAt(childPath(unrelatedDate, "keep")) == "still yours")
+    expect!(snapshotsIn(root).count == 1)
+    expect!(!pathExists(childPath(root, ".tessera-incomplete-20261031-120000")))
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function snapshotNameRecognitionExcludesForeignFolders() {
+    expect!(isSnapshotName("20261031-195959"))
+    expect!(isSnapshotName("20261031-195959 2"))
+    expect!(isSnapshotName("20261031-195959 23"))
+    expect!(!isSnapshotName("notes"))
+    expect!(!isSnapshotName("20261031-195959.txt"))
+    expect!(!isSnapshotName("20261031-195959 1"))
+    expect!(!isSnapshotName("20261031-195959 02"))
+    expect!(!isSnapshotName("2026103x-195959"))
+}
+
+@Test
+function restoreRequiresACompleteMatchingSnapshotAndContainedItem() {
+    let folder = freshFolder("restore-validation")
+    let source = childPath(folder, "Documents")
+    let backups = childPath(folder, "Backups")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "note.txt"), "original")
+    let snapshot = try backUp(source, backups, 1000) otherwise return
+    let item = childPath(snapshot.snapshot.path, "note.txt")
+    let escaped = restoreItem(snapshot.snapshot, childPath(folder, "private.txt"), source)
+    expect!(restoreFailed(move escaped))
+    let marker = childPath(backups, ".tessera-complete-" + snapshot.snapshot.name)
+    writeText(marker, "wrong")
+    expect!(snapshotsIn(backups).count == 0)
+    expect!(restoreFailed(restoreItem(snapshot.snapshot, item, source)))
+    writeText(marker, snapshot.snapshot.name)
+    expect!(snapshotsIn(backups).count == 1)
+    let restored = try restoreItem(snapshot.snapshot, item, source) otherwise ""
+    expect!(textAt(restored) == "original")
+    expect!(removed(removeTree(folder)))
+}
+
+function restoreFailed(result: Result<String, ChangeFailure>) -> Bool {
+    return match result {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+}
+
+@Test
+function sha256FileDigestsWorkForBackupVerification() {
+    let folder = freshFolder("digest")
+    let file = childPath(folder, "abc.txt")
+    writeText(file, "abc")
+    let bytes = try digestFile(.Sha256, file) otherwise[]
+    expect!(bytes.count == 32)
+    // SHA-256("abc") begins BA 78 16 BF and ends 15 AD.
+    expect!(Number(bytes[0]) == 186)
+    expect!(Number(bytes[1]) == 120)
+    expect!(Number(bytes[2]) == 22)
+    expect!(Number(bytes[3]) == 191)
+    expect!(Number(bytes[30]) == 21)
+    expect!(Number(bytes[31]) == 173)
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function backupPreservesUserFileNamedCompleteAndLegacyGenerations() {
+    let folder = freshFolder("complete-sidecar")
+    let source = childPath(folder, "Documents")
+    let root = childPath(folder, "Backups")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, ".complete"), "person's document")
+    let backup = try backUp(source, root, 1000) otherwise return
+    expect!(textAt(childPath(backup.snapshot.path, ".complete")) == "person's document")
+    expect!(
+        textAt(childPath(root, ".tessera-complete-" + backup.snapshot.name)) == backup.snapshot.name
+    )
+    expect!(snapshotsIn(root).count == 1)
+    let legacy = childPath(root, "19991231-235959")
+    expect!(made(makeDirectory(legacy)))
+    writeText(childPath(legacy, ".complete"), "19991231-235959")
+    writeText(childPath(legacy, "old.txt"), "legacy backup")
+    expect!(snapshotsIn(root).count == 2)
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function sha256ManifestFindsChangedAndMissingSavedFiles() {
+    let folder = freshFolder("verify")
+    let source = childPath(folder, "Documents")
+    let backups = childPath(folder, "Backups")
+    expect!(made(makeDirectory(source)))
+    let subfolder = childPath(source, "empty folder")
+    expect!(made(makeDirectory(subfolder)))
+    writeText(childPath(source, "weird\nname%.txt"), "content A")
+    let snapshot = try backUp(source, backups, 1000) otherwise return
+    let clean = try verifySnapshot(snapshot.snapshot) otherwise return
+    expect!(clean.files == 1)
+    expect!(clean.folders == 1)
+    let copied = childPath(snapshot.snapshot.path, "weird\nname%.txt")
+    writeText(copied, "content B")
+    expect!(verificationFailed(verifySnapshot(snapshot.snapshot)))
+    expect!(snapshotsIn(backups).count == 1)
+    writeText(copied, "content A")
+    expect!(!verificationFailed(verifySnapshot(snapshot.snapshot)))
+    expect!(made(removePath(copied)))
+    expect!(verificationFailed(verifySnapshot(snapshot.snapshot)))
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function backupRefusesUnrecordableLinksInsteadOfClaimingSuccess() {
+    let folder = freshFolder("backup-link")
+    let source = childPath(folder, "Documents")
+    let backups = childPath(folder, "Backups")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "note.txt"), "keep")
+    expect!(made(makeSymbolicLink("note.txt", childPath(source, "link"))))
+    let result = backUp(source, backups, 1000)
+    let refused = match result {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(refused)
+    expect!(snapshotsIn(backups).count == 0)
+    expect!(textAt(childPath(source, "note.txt")) == "keep")
+    expect!(removed(removeTree(folder)))
+}
+
+function verificationFailed(result: Result<BackupVerification, ChangeFailure>) -> Bool {
+    return match result {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+}
+
+@Test
+function retentionRemovesGenerationMetadataWithoutTouchingTheNewest() {
+    let folder = freshFolder("metadata-retention")
+    let source = childPath(folder, "Documents")
+    let root = childPath(folder, "Backups")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "note.txt"), "one")
+    let earlier = try backUp(source, root, 1000) otherwise return
+    writeText(childPath(source, "note.txt"), "two")
+    let latest = try backUp(source, root, 2000) otherwise return
+    expect!(pathExists(childPath(root, ".tessera-manifest-" + earlier.snapshot.name)))
+    expect!(pathExists(childPath(root, ".tessera-complete-" + earlier.snapshot.name)))
+    expect!(removed(pruneSnapshots(root, 1)))
+    expect!(!pathExists(earlier.snapshot.path))
+    expect!(!pathExists(childPath(root, ".tessera-manifest-" + earlier.snapshot.name)))
+    expect!(!pathExists(childPath(root, ".tessera-complete-" + earlier.snapshot.name)))
+    expect!(pathExists(latest.snapshot.path))
+    expect!(!verificationFailed(verifySnapshot(latest.snapshot)))
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function backupNeverOverwritesOrphanMetadataAtTheSameTimestamp() {
+    let folder = freshFolder("sidecar-collision")
+    let source = childPath(folder, "Documents")
+    let root = childPath(folder, "Backups")
+    expect!(made(makeDirectory(source)))
+    expect!(made(makeDirectory(root)))
+    writeText(childPath(source, "note.txt"), "safe")
+    let orphan = childPath(root, ".tessera-manifest-19700101-000001")
+    writeText(orphan, "not a Tessera manifest")
+    let saved = try backUp(source, root, 1000) otherwise return
+    expect!(saved.snapshot.name == "19700101-000001 2")
+    expect!(textAt(orphan) == "not a Tessera manifest")
+    expect!(!verificationFailed(verifySnapshot(saved.snapshot)))
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function damagedVerifiedBackupDoesNotRestoreOverExistingWork() {
+    let folder = freshFolder("verified-restore")
+    let source = childPath(folder, "Documents")
+    let backupRoot = childPath(folder, "Backups")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "note.txt"), "original")
+    let snapshot = try backUp(source, backupRoot, 1000) otherwise return
+    writeText(childPath(source, "note.txt"), "current")
+    writeText(childPath(snapshot.snapshot.path, "note.txt"), "corrupted")
+    expect!(
+        restoreFailed(
+            restoreItem(snapshot.snapshot, childPath(snapshot.snapshot.path, "note.txt"), source)
+        )
+    )
+    expect!(textAt(childPath(source, "note.txt")) == "current")
+    expect!(!pathExists(childPath(source, "note 2.txt")))
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function failedLegacyFolderRestoreLeavesNoPartialDestination() {
+    let folder = freshFolder("legacy-restore-failure")
+    let source = childPath(folder, "Documents")
+    let backups = childPath(folder, "Backups")
+    expect!(made(makeDirectory(source)))
+    expect!(made(makeDirectory(backups)))
+    let current = childPath(source, "Folder")
+    expect!(made(makeDirectory(current)))
+    writeText(childPath(current, "current.txt"), "safe")
+    let snapshotPath = childPath(backups, "20000101-000000")
+    expect!(made(makeDirectory(snapshotPath)))
+    writeText(childPath(snapshotPath, ".complete"), "20000101-000000")
+    let oldFolder = childPath(snapshotPath, "Folder")
+    expect!(made(makeDirectory(oldFolder)))
+    writeText(childPath(oldFolder, "a.txt"), "saved")
+    expect!(made(makeSymbolicLink("../missing", childPath(oldFolder, "zlink"))))
+    let legacy = Snapshot { name: "20000101-000000", path: snapshotPath }
+    expect!(restoreFailed(restoreItem(legacy, oldFolder, source)))
+    expect!(!pathExists(childPath(source, "Folder 2")))
+    expect!(!pathExists(childPath(source, ".tessera-restore-Folder")))
+    expect!(textAt(childPath(current, "current.txt")) == "safe")
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function copiedFileValidationRejectsChangedOrTruncatedContent() {
+    let folder = freshFolder("copy-verify")
+    let source = childPath(folder, "source.txt")
+    let target = childPath(folder, "target.txt")
+    writeText(source, "same data")
+    writeText(target, "same data")
+    expect!(copiedFileMatchesSource(source, target))
+    writeText(target, "different")
+    expect!(!copiedFileMatchesSource(source, target))
+    writeText(target, "same")
+    expect!(!copiedFileMatchesSource(source, target))
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function linkedBackupDestinationParentIsRejected() {
+    let folder = freshFolder("linked-parent")
+    let source = childPath(folder, "Documents")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "note.txt"), "saved")
+    expect!(made(makeSymbolicLink("Documents", childPath(folder, "Alias"))))
+    expect!(hasLinkedPathAncestor(childPath(folder, "Alias/Backups")))
+    let operation = backUp(source, childPath(folder, "Alias/Backups"), 1000)
+    let rejected = match operation {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(rejected)
+    expect!(!pathExists(childPath(source, "Backups")))
+    expect!(textAt(childPath(source, "note.txt")) == "saved")
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function retentionWillNotDeleteTheLastBackup() {
+    let folder = freshFolder("retention-floor")
+    let source = childPath(folder, "Documents")
+    let backups = childPath(folder, "Backups")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "one.txt"), "saved")
+    let generation = try backUp(source, backups, 1000) otherwise return
+    let refused = match pruneSnapshots(backups, 0) {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(refused)
+    expect!(pathExists(generation.snapshot.path))
+    expect!(!verificationFailed(verifySnapshot(generation.snapshot)))
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function finalBackupConsistencyCheckDetectsAddedAndRemovedFiles() {
+    let folder = freshFolder("backup-tree-consistency")
+    let source = childPath(folder, "source")
+    let copied = childPath(folder, "copied")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "first"), "a")
+    expect!(removed(copyTree(source, copied)))
+    expect!(backupMatchesSource(source, copied))
+    writeText(childPath(source, "new"), "b")
+    expect!(!backupMatchesSource(source, copied))
+    expect!(made(removePath(childPath(source, "new"))))
+    expect!(backupMatchesSource(source, copied))
+    expect!(made(removePath(childPath(copied, "first"))))
+    expect!(!backupMatchesSource(source, copied))
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function verifiedNestedFolderRestoreLeavesCurrentFolderUnchanged() {
+    let folder = freshFolder("nested-folder-restore")
+    let source = childPath(folder, "Documents")
+    let snapshots = childPath(folder, "Backups")
+    let notes = childPath(source, "Notes")
+    let nested = childPath(notes, "Archive")
+    expect!(made(makeDirectory(source)))
+    expect!(made(makeDirectory(notes)))
+    expect!(made(makeDirectory(nested)))
+    writeText(childPath(notes, "today.txt"), "yesterday")
+    writeText(childPath(nested, "old.txt"), "archive copy")
+    let generation = try backUp(source, snapshots, 1000) otherwise return
+    writeText(childPath(notes, "today.txt"), "current work")
+    let from = childPath(generation.snapshot.path, "Notes")
+    let restored = try restoreItem(generation.snapshot, from, source) otherwise return
+    expect!(restored != notes)
+    expect!(textAt(childPath(restored, "today.txt")) == "yesterday")
+    expect!(textAt(childPath(restored, "Archive/old.txt")) == "archive copy")
+    expect!(textAt(childPath(notes, "today.txt")) == "current work")
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function corruptNestedFolderBackupIsRejectedBeforeRestore() {
+    let folder = freshFolder("nested-restore-corruption")
+    let source = childPath(folder, "Documents")
+    let snapshots = childPath(folder, "Backups")
+    let notes = childPath(source, "Notes")
+    expect!(made(makeDirectory(source)))
+    expect!(made(makeDirectory(notes)))
+    writeText(childPath(notes, "one.txt"), "saved")
+    let generation = try backUp(source, snapshots, 1000) otherwise return
+    writeText(childPath(notes, "one.txt"), "current")
+    let from = childPath(generation.snapshot.path, "Notes")
+    writeText(childPath(from, "one.txt"), "altered")
+    expect!(restoreFailed(restoreItem(generation.snapshot, from, source)))
+    expect!(textAt(childPath(notes, "one.txt")) == "current")
+    expect!(!pathExists(childPath(source, "Notes 2")))
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function unfinishedNewGenerationCannotMasqueradeAsLegacyViaUserCompleteFile() {
+    let folder = freshFolder("complete-marker-identity")
+    let root = childPath(folder, "Backups")
+    expect!(made(makeDirectory(root)))
+    let name = "20261031-221500"
+    let partial = childPath(root, name)
+    expect!(made(makeDirectory(partial)))
+    writeText(childPath(partial, ".complete"), name)
+    writeText(childPath(root, ".tessera-incomplete-" + name), name)
+    expect!(snapshotsIn(root).count == 0)
+    // A mismatched or linked completion sidecar is also not authoritative.
+    writeText(childPath(root, ".tessera-complete-" + name), "wrong")
+    expect!(snapshotsIn(root).count == 0)
+    expect!(made(removePath(childPath(root, ".tessera-complete-" + name))))
+    let source = childPath(folder, "Documents")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "note"), "current")
+    let snapshot = try backUp(source, root, 1000) otherwise return
+    expect!(!pathExists(partial))
+    expect!(snapshotsIn(root).count == 1)
+    expect!(snapshotsIn(root)[0].name == snapshot.snapshot.name)
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function backupNameReservationTreatsDanglingSymlinksAsOccupied() {
+    let folder = freshFolder("backup-dangling-sidecar")
+    let source = childPath(folder, "Documents")
+    let root = childPath(folder, "Backups")
+    expect!(made(makeDirectory(source)))
+    expect!(made(makeDirectory(root)))
+    writeText(childPath(source, "note"), "saved")
+    let alias = childPath(root, ".tessera-manifest-19700101-000001")
+    expect!(made(makeSymbolicLink("nonexistent", alias)))
+    let saved = try backUp(source, root, 1000) otherwise return
+    expect!(saved.snapshot.name == "19700101-000001 2")
+    let status = try linkStatus(alias) otherwise return
+    let stillLinked = status.kind == .Link
+    expect!(stillLinked)
+    expect!(!verificationFailed(verifySnapshot(saved.snapshot)))
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function retentionNeverFollowsLinkedBackupRoot() {
+    let folder = freshFolder("linked-retention")
+    let source = childPath(folder, "Documents")
+    let root = childPath(folder, "Backups")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "note"), "saved")
+    let saved = try backUp(source, root, 1000) otherwise return
+    let alias = childPath(folder, "Backup Alias")
+    expect!(made(makeSymbolicLink("Backups", alias)))
+    let refused = match pruneSnapshots(alias, 1) {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(refused)
+    expect!(pathExists(saved.snapshot.path))
+    expect!(!verificationFailed(verifySnapshot(saved.snapshot)))
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function missingModernCompletionSidecarNeverFallsBackToUserCompleteDocument() {
+    let folder = freshFolder("modern-completion-loss")
+    let source = childPath(folder, "Documents")
+    let backups = childPath(folder, "Backups")
+    expect!(made(makeDirectory(source)))
+    let name = snapshotName(1000)
+    writeText(childPath(source, ".complete"), name)
+    let generation = try backUp(source, backups, 1000) otherwise return
+    expect!(snapshotsIn(backups).count == 1)
+    let completion = childPath(backups, ".tessera-complete-" + name)
+    expect!(made(removePath(completion)))
+    expect!(pathExists(childPath(backups, ".tessera-manifest-" + name)))
+    expect!(snapshotsIn(backups).count == 0)
+    expect!(verificationFailed(verifySnapshot(generation.snapshot)))
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function interruptedBackupCleanupDoesNotTrustLinkedMarkers() {
+    let folder = freshFolder("pending-link-cleanup")
+    let root = childPath(folder, "Backups")
+    let source = childPath(folder, "Documents")
+    expect!(made(makeDirectory(root)))
+    expect!(made(makeDirectory(source)))
+    let name = "20261031-225959"
+    let personal = childPath(root, name)
+    expect!(made(makeDirectory(personal)))
+    writeText(childPath(personal, "my-file"), "keep")
+    let markerTarget = childPath(folder, "marker-value")
+    writeText(markerTarget, name)
+    expect!(
+        made(makeSymbolicLink("../marker-value", childPath(root, ".tessera-incomplete-" + name)))
+    )
+    writeText(childPath(source, "note"), "saved")
+    let saved = try backUp(source, root, 1000) otherwise return
+    expect!(pathExists(personal))
+    expect!(textAt(childPath(personal, "my-file")) == "keep")
+    expect!(snapshotsIn(root).count == 1)
+    expect!(!verificationFailed(verifySnapshot(saved.snapshot)))
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function snapshotVerifierRefusesLinkedRootsAndLinkedManifest() {
+    let folder = freshFolder("linked-verification")
+    let source = childPath(folder, "Documents")
+    let root = childPath(folder, "Backups")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "note"), "saved")
+    let saved = try backUp(source, root, 1000) otherwise return
+    let alias = childPath(folder, "linked-root")
+    expect!(made(makeSymbolicLink("Backups", alias)))
+    let snapshotAlias = Snapshot {
+        name: copy saved.snapshot.name,
+        path: childPath(alias, saved.snapshot.name)
+    }
+    expect!(verificationFailed(verifySnapshot(snapshotAlias)))
+    let manifest = childPath(root, ".tessera-manifest-" + saved.snapshot.name)
+    let content = textAt(manifest)
+    let alternate = childPath(folder, "outside-manifest")
+    writeText(alternate, content)
+    expect!(made(removePath(manifest)))
+    expect!(made(makeSymbolicLink("../outside-manifest", manifest)))
+    expect!(verificationFailed(verifySnapshot(saved.snapshot)))
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function restoreSkipsDanglingSymlinkInsteadOfOverwritingIt() {
+    let folder = freshFolder("restore-symlink-collision")
+    let source = childPath(folder, "Documents")
+    let backups = childPath(folder, "Backups")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "note.txt"), "saved")
+    let snapshot = try backUp(source, backups, 1000) otherwise return
+    writeText(childPath(source, "note.txt"), "current")
+    let dangling = childPath(source, "note 2.txt")
+    expect!(made(makeSymbolicLink("missing.txt", dangling)))
+    let restored = try restoreItem(
+        snapshot.snapshot,
+        childPath(snapshot.snapshot.path, "note.txt"),
+        source
+    )
+    otherwise return
+    expect!(lastPathPart(restored) == "note 3.txt")
+    expect!(textAt(restored) == "saved")
+    expect!(textAt(childPath(source, "note.txt")) == "current")
+    let linkStatusNow = try linkStatus(dangling) otherwise return
+    let isLink = linkStatusNow.kind == .Link
+    expect!(isLink)
+    expect!(!pathExists(childPath(source, "missing.txt")))
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function corruptedNewestGenerationNeverAuthorizesDeletionOfOlderBackup() {
+    let folder = freshFolder("retention-needs-verified-newest")
+    let source = childPath(folder, "Documents")
+    let root = childPath(folder, "Backups")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "note.txt"), "original")
+    let older = try backUp(source, root, 1000) otherwise return
+    writeText(childPath(source, "note.txt"), "new version")
+    let newest = try backUp(source, root, 2000) otherwise return
+    writeText(childPath(newest.snapshot.path, "note.txt"), "corrupted")
+    let blocked = match pruneSnapshots(root, 1) {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(blocked)
+    expect!(snapshotsIn(root).count == 2)
+    expect!(textAt(childPath(older.snapshot.path, "note.txt")) == "original")
+    expect!(!verificationFailed(verifySnapshot(older.snapshot)))
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function unverifiedLegacyGenerationCannotDiscardAnotherRetainedBackup() {
+    let folder = freshFolder("retention-legacy-guard")
+    let source = childPath(folder, "Documents")
+    let root = childPath(folder, "Backups")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "note"), "original")
+    let earlier = try backUp(source, root, 1000) otherwise return
+    let legacy = childPath(root, "20261031-225000")
+    expect!(made(makeDirectory(legacy)))
+    writeText(childPath(legacy, ".complete"), "20261031-225000")
+    writeText(childPath(legacy, "document.txt"), "legacy")
+    expect!(snapshotsIn(root).count == 2)
+    let refused = match pruneSnapshots(root, 1) {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(refused)
+    expect!(pathExists(earlier.snapshot.path))
+    expect!(pathExists(legacy))
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function backupRejectsCaseOnlyAliasInsideItsSourceBeforeCreatingAnything() {
+    let folder = freshFolder("casefold-backup-source")
+    let source = childPath(folder, "Documents")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "note"), "safe")
+    let disguised = childPath(folder, "documents/Backups")
+    let refused = match backUp(source, disguised, 1000) {
+        Ok -> false
+        Error(failure) -> match failure {
+            Refused -> true
+            InvalidName, AlreadyExists, Missing, IntoItself -> false
+        }
+    }
+    expect!(refused)
+    expect!(!pathExists(childPath(source, "Backups")))
+    expect!(textAt(childPath(source, "note")) == "safe")
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function backupRefusesFractionalNegativeAndUnrepresentableTimestamps() {
+    let folder = freshFolder("backup-invalid-time")
+    let source = childPath(folder, "Documents")
+    let root = childPath(folder, "Backups")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "note"), "safe")
+    for at in [-1000, 1.5, 253402300800000] {
+        let refused = match backUp(source, root, at) {
+            Ok -> false
+            Error(failure) -> {
+                absorb failure
+                true
+            }
+        }
+        expect!(refused)
+    }
+    expect!(!pathExists(root))
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function fractionalRetentionCannotRemoveAnyGeneration() {
+    let folder = freshFolder("fractional-retention")
+    let source = childPath(folder, "Documents")
+    let root = childPath(folder, "Backups")
+    expect!(made(makeDirectory(source)))
+    writeText(childPath(source, "note"), "original")
+    let first = try backUp(source, root, 1000) otherwise return
+    writeText(childPath(source, "note"), "changed")
+    let latest = try backUp(source, root, 2000) otherwise return
+    let refused = match pruneSnapshots(root, 1.5) {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(refused)
+    expect!(pathExists(first.snapshot.path))
+    expect!(pathExists(latest.snapshot.path))
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function verificationIdentifiesTheMissingOrChangedStoredFilename() {
+    let folder = freshFolder("verify-filename")
+    let source = childPath(folder, "Documents")
+    let root = childPath(folder, "Backups")
+    expect!(made(makeDirectory(source)))
+    let name = "Résumé\nnotes.txt"
+    writeText(childPath(source, name), "original")
+    let saved = try backUp(source, root, 1000) otherwise return
+    let file = childPath(saved.snapshot.path, name)
+    writeText(file, "tampered")
+    let changed = match verifySnapshot(saved.snapshot) {
+        Ok -> false
+        Error(failure) -> match failure {
+            Refused(path) -> path == file
+            Missing, InvalidName, AlreadyExists, IntoItself -> false
+        }
+    }
+    expect!(changed)
+    writeText(file, "original")
+    expect!(made(removePath(file)))
+    let missing = match verifySnapshot(saved.snapshot) {
+        Ok -> false
+        Error(failure) -> match failure {
+            Missing(path) -> path == file
+            Refused, InvalidName, AlreadyExists, IntoItself -> false
+        }
+    }
+    expect!(missing)
+    expect!(removed(removeTree(folder)))
+}
+
+@Test
+function verificationIdentifiesAnUnexpectedSavedItemAndRemovedFolder() {
+    let folder = freshFolder("verify-extra")
+    let source = childPath(folder, "Documents")
+    let backups = childPath(folder, "Backups")
+    let nested = childPath(source, "Nested")
+    expect!(made(makeDirectory(source)))
+    expect!(made(makeDirectory(nested)))
+    writeText(childPath(nested, "original.txt"), "original")
+    let saved = try backUp(source, backups, 1000) otherwise return
+    let extra = childPath(saved.snapshot.path, "bonus.txt")
+    writeText(extra, "unexpected")
+    let unexpected = match verifySnapshot(saved.snapshot) {
+        Ok -> false
+        Error(failure) -> match failure {
+            Refused(path) -> path == extra
+            Missing, InvalidName, AlreadyExists, IntoItself -> false
+        }
+    }
+    expect!(unexpected)
+    expect!(made(removePath(extra)))
+    let missingFolder = childPath(saved.snapshot.path, "Nested")
+    expect!(removed(removeTree(missingFolder)))
+    let gone = match verifySnapshot(saved.snapshot) {
+        Ok -> false
+        Error(failure) -> match failure {
+            Missing(path) -> path == missingFolder
+            Refused, InvalidName, AlreadyExists, IntoItself -> false
+        }
+    }
+    expect!(gone)
     expect!(removed(removeTree(folder)))
 }
