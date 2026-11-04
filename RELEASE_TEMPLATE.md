@@ -1,6 +1,6 @@
 # {{VERSION}}
 
-**Project:** libtessera  
+**Project:** {{PROJECT}}  
 **Release week:** {{WEEK_START}} – {{WEEK_END}}
 
 ## Highlights

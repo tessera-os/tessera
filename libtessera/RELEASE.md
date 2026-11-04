@@ -1,20 +1,23 @@
-# 26.10.4
+# 26.11.1
 
 **Project:** libtessera  
-**Release week:** 2026-10-26 – 2026-11-01
+**Release week:** 2026-11-02 – 2026-11-08
 
 ## Highlights
 
-Made libtessera’s native Linux process, channel and memory interfaces explicit about unchecked operations.
+Expanded Linux system interfaces for partitions, remote processors, kernel logging, and developer touch dead zones.
+
+## Added
+
+- `volumePartitionBytes` and `volumePartitionLabelled` to inspect partition size and find a GPT-named partition.
+- `machineStartRemoteProcessors` / `RemoteProcessorStart` for starting supported offline remote processors after the system volume is available.
+- `standardStreamsToKernelLog` and `kernelLogText` for writing to and reading from the kernel log.
+- Developer dead-zone settings and live-area calculations for avoiding a damaged screen edge.
 
 ## Changed
 
-- Added `volumePartitionBytes` and `volumePartitionLabelled`: a partition's size, and the partition with a given GPT name on any disk.
-- Added `machineStartRemoteProcessors` and `RemoteProcessorStart`: starts the remote processors the kernel holds offline, such as a phone's ADSP, once the system volume with their firmware is the root.
-- Added `standardStreamsToKernelLog`: standard output and error point at the kernel's log, so a program's console lines are kept with the kernel's own.
-- Added `kernelLogText`: the newest text of the kernel's log, read without taking it out, for system services that show the machine's log.
-- Scoped raw-pointer and native-state operations in Linux backend process/thread, debug, memory mapping, sampling, and channel paths.
+- Expanded explicit unsafe scopes across Linux process, memory, channels, debugging, and other native implementation paths.
 
-## Breaking changes
+## Known limitations
 
-- Callers crossing unchecked native memory boundaries must use Kira unsafe contexts or safe validated wrappers.
+- Hardware-specific remote-processor startup and partition behavior have not been validated across device profiles for these notes.
