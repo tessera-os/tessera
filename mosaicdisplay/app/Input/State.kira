@@ -172,8 +172,11 @@ struct Server {
     // The keymap keys are typed through, the modifier keys held down and the
     // modifiers they make (Keymap.kira).
     var keymap: Keymap = Keymaps.us
-    // The System channel, on which a change to the keyboard layout arrives.
+    // The System channel, on which a change to the keyboard layout or to the
+    // dead zone arrives.
     var settings: SettingsWatch = settingsWatch()
+    // The dead zone the output keeps, if any (DeadZone.kira).
+    var deadZone: DeadZone? = .None
     var modifiersDown: [UNumber] = []
     var modifiers: DisplayModifiers = DisplayModifiers {}
     // The key repeating, and the timer it repeats from (Repeat.kira).
@@ -210,4 +213,6 @@ struct Server {
     var backdropComposed: Number = 0
     var backdropOwed: Bool = false
     var backdropTimer: Handle? = .None
+    // The boot log drawn over the splash, while it is (BootLog.kira).
+    var bootLog: BootLog? = .None
 }

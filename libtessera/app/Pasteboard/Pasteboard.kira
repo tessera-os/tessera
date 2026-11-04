@@ -68,14 +68,7 @@ public function pasteboardWrite(text: borrow String) -> Result<Void, TesseraErro
     if text.count > Pasteboard.maximumBytes {
         return .Error(failureIn(.InvalidArgument, .Pasteboard))
     }
-    let reply = try pasteboardRequest(
-        .Write,
-        U64(0),
-        U64(0),
-        U64(0),
-        text.data,
-        U64(text.count)
-    )
+    let reply = try pasteboardRequest(.Write, U64(0), U64(0), U64(0), text.data, U64(text.count))
     deviceMessageRelease(reply)
     return .Ok
 }

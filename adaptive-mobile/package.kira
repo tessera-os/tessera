@@ -6,7 +6,7 @@ construct AdaptiveMobile extends Package {
     let moduleRoot: String = "AdaptiveMobile"
     let dependencies: [Dependency] = [Dependency {
         name: "ArgumentParser",
-        path: "../argument-parser"
+        path: "../../kira-packages/argument-parser"
     },
         Dependency { name: "AppKit", path: "../appkit" },
         Dependency { name: "KiraUI", path: "../kira-ui" },

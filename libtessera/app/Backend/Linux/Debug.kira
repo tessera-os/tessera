@@ -151,15 +151,21 @@ function kernelDebugWaitBlocking(pid: U64) -> Result<DebugEvent, TesseraError> {
 }
 
 function kernelDebugWaitOn(pid: U64, options: WaitHow) -> Result<DebugEvent?, TesseraError> {
-    let statusBytes = zeroedBlock(count: 8, alignment: 8)
-    while true {
-        let answer = wideAnswer(wait4(pid, statusBytes.pointer(), U64(options.raw), nullPointer()))
-        if !answerFailed(answer) {
-            if answer == 0 { return .Ok(.None) }
-            return .Ok(.Some(debugEventOf(answer, Number(heapLoad<U32>(statusBytes.pointer(), 0)))))
-        }
-        if answerErrno(answer) != code(Errno.Interrupted) {
-            return .Error(errnoFailure(answerErrno(answer)))
+    unsafe {
+        let statusBytes = zeroedBlock(count: 8, alignment: 8)
+        while true {
+            let answer = wideAnswer(
+                wait4(pid, statusBytes.pointer(), U64(options.raw), nullPointer())
+            )
+            if !answerFailed(answer) {
+                if answer == 0 { return .Ok(.None) }
+                return .Ok(
+                    .Some(debugEventOf(answer, Number(heapLoad<U32>(statusBytes.pointer(), 0))))
+                )
+            }
+            if answerErrno(answer) != code(Errno.Interrupted) {
+                return .Error(errnoFailure(answerErrno(answer)))
+            }
         }
     }
 }
@@ -228,22 +234,26 @@ function kernelDebugSignal(thread: Number) -> Result<DebugSignal, TesseraError> 
 }
 
 function openDebugMemory(pid: Number, flags: Number) -> Result<Number, TesseraError> {
-    let path = "/proc/" + stringFromUnsigned(U64(pid)) + "/mem"
-    let fd = openat(AtDirectory.current, cStringFrom(path), flags | LinuxOpen.closeOnExec, 0)
-    if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
-    return .Ok(fd)
+    unsafe {
+        let path = "/proc/" + stringFromUnsigned(U64(pid)) + "/mem"
+        let fd = openat(AtDirectory.current, cStringFrom(path), flags | LinuxOpen.closeOnExec, 0)
+        if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
+        return .Ok(fd)
+    }
 }
 
 // Up to `count` bytes at `address`; fewer where the mapping ends.
 function kernelDebugRead(pid: Number, address: U64, count: Number) -> Result<[UN8], TesseraError> {
-    let fd = try openDebugMemory(pid, LinuxOpen.readOnly)
-    let block = zeroedBlock(count: count + 1, alignment: 16)
-    let got = pread(fd, block.pointer(), U64(count), address)
-    closeBacking(fd)
-    if answerFailed(got) { return .Error(errnoFailure(answerErrno(got))) }
-    var bytes: [UN8] = []
-    for index in 0..got { bytes.append(UN8(heapLoad<U8>(block.pointer(), index))) }
-    return .Ok(bytes)
+    unsafe {
+        let fd = try openDebugMemory(pid, LinuxOpen.readOnly)
+        let block = zeroedBlock(count: count + 1, alignment: 16)
+        let got = pread(fd, block.pointer(), U64(count), address)
+        closeBacking(fd)
+        if answerFailed(got) { return .Error(errnoFailure(answerErrno(got))) }
+        var bytes: [UN8] = []
+        for index in 0..got { bytes.append(UN8(heapLoad<U8>(block.pointer(), index))) }
+        return .Ok(bytes)
+    }
 }
 
 function kernelDebugWrite(
@@ -251,15 +261,17 @@ function kernelDebugWrite(
     address: U64,
     bytes: borrow [UN8]
 ) -> Result<Void, TesseraError> {
-    let fd = try openDebugMemory(pid, LinuxOpen.readWrite)
-    let block = zeroedBlock(count: bytes.count + 1, alignment: 16)
-    for (index, byte) in bytes.enumerated() { heapStore<U8>(block.pointer(), index, U8(byte)) }
-    let put = pwrite(fd, block.pointer(), U64(bytes.count), address)
-    closeBacking(fd)
-    if answerFailed(put) { return .Error(errnoFailure(answerErrno(put))) }
-    // A short write is a mapping that ended inside the range.
-    if put != bytes.count { return .Error(failure(.InvalidArgument)) }
-    return .Ok
+    unsafe {
+        let fd = try openDebugMemory(pid, LinuxOpen.readWrite)
+        let block = zeroedBlock(count: bytes.count + 1, alignment: 16)
+        for (index, byte) in bytes.enumerated() { heapStore<U8>(block.pointer(), index, U8(byte)) }
+        let put = pwrite(fd, block.pointer(), U64(bytes.count), address)
+        closeBacking(fd)
+        if answerFailed(put) { return .Error(errnoFailure(answerErrno(put))) }
+        // A short write is a mapping that ended inside the range.
+        if put != bytes.count { return .Error(failure(.InvalidArgument)) }
+        return .Ok
+    }
 }
 
 function kernelDebugRegions(pid: Number) -> Result<[CrashedRegion], TesseraError> {

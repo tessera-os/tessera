@@ -31,6 +31,13 @@ struct SampleSymbol {
     let name: String
 }
 
+// Where the machine left the sample files: a QEMU image or a mounted USB
+// exchange volume.
+enum SampleVolume {
+    Image(String)
+    Directory(String)
+}
+
 // One ELF's functions, by address, and how its addresses relate to where
 // it was mapped.
 struct SampledImage {
@@ -63,18 +70,18 @@ struct SampleTally {
 
 function reportSamples(
     host: borrow Host,
-    image: borrow String,
+    source: borrow SampleVolume,
     symbols: borrow SampleRoots,
     report: borrow String
 ) -> Result<Void, String> {
     let raw = report + ".raw"
-    try dumpSampleFile(host, image, SampleReport.file, raw)
+    try dumpSampleFile(host, source, SampleReport.file, raw)
     let text = match readFile(raw) {
         Ok(contents) -> contents.text
         Error(failure) -> return .Error("the machine wrote no samples: \(traceText(failure))")
     }
     let stackFile = report + ".stacks"
-    try dumpSampleFile(host, image, SampleReport.stackFile, stackFile)
+    try dumpSampleFile(host, source, SampleReport.stackFile, stackFile)
     var processes: Map<Number, SampledProcessFacts> = Map {}
     var kernel: [SampleSymbol] = []
     var lost: Number = 0
@@ -111,7 +118,7 @@ function reportSamples(
             Error(failure) -> return .Error("\(stackFile) cannot be read: \(traceText(failure))")
         }
     }
-    let mapsText = try dumpedText(host, image, SampleReport.mapsFile, report + ".maps")
+    let mapsText = try dumpedText(host, source, SampleReport.mapsFile, report + ".maps")
     var mapped = 0
     for line in mapsText.split("\n") {
         if line.startsWith("pid ") {
@@ -130,7 +137,7 @@ function reportSamples(
             None -> {}
         }
     }
-    let kernelText = try dumpedText(host, image, SampleReport.kernelFile, report + ".kernel")
+    let kernelText = try dumpedText(host, source, SampleReport.kernelFile, report + ".kernel")
     for line in kernelText.split("\n") {
         let words = line.split(" ")
         if words.count >= 2 {
@@ -157,8 +164,8 @@ function reportSamples(
     written.append(countersReportText(counts, processes))
     let resumeFile = report + ".resumes"
     let blockFile = report + ".blocks"
-    try dumpSampleFile(host, image, SampleReport.resumeFile, resumeFile)
-    try dumpSampleFile(host, image, SampleReport.blockFile, blockFile)
+    try dumpSampleFile(host, source, SampleReport.resumeFile, resumeFile)
+    try dumpSampleFile(host, source, SampleReport.blockFile, blockFile)
     if fileExists(blockFile) && fileExists(resumeFile) {
         let blocked = match readFileBytes(blockFile) {
             Ok(bytes) -> bytes
@@ -202,11 +209,11 @@ function reportSamples(
 // A text file of the request's volume, copied to `out` and read.
 function dumpedText(
     host: borrow Host,
-    image: borrow String,
+    source: borrow SampleVolume,
     name: borrow String,
     out: borrow String
 ) -> Result<String, String> {
-    try dumpSampleFile(host, image, name, out)
+    try dumpSampleFile(host, source, name, out)
     return match readFile(out) {
         Ok(contents) -> .Ok(contents.text)
         Error(failure) -> .Error("\(out) cannot be read: \(traceText(failure))")
@@ -215,7 +222,7 @@ function dumpedText(
 
 function dumpSampleFile(
     host: borrow Host,
-    image: borrow String,
+    source: borrow SampleVolume,
     name: borrow String,
     out: borrow String
 ) -> Result<Void, String> {
@@ -225,23 +232,40 @@ function dumpSampleFile(
             Error(failure) -> absorb failure
         }
     }
-    let command = ProcessCommand {
-        program: host.find("debugfs"),
-        arguments: ["-R", "dump /\(name) \(out)", copy image],
-        input: .Null
-    }
-    let child = match command.start() {
-        Ok(started) -> started
-        Error(failure) -> return .Error("debugfs did not start: \(traceText(failure))")
-    }
-    let ended = child.wait()
-    match child.release() {
-        Ok -> {}
-        Error(failure) -> absorb failure
-    }
-    match ended {
-        Ok(exit) -> if exitStatus(exit) != 0 { return .Error("debugfs could not read \(image)") }
-        Error(failure) -> return .Error("debugfs could not be waited for: \(traceText(failure))")
+    match source {
+        Image(image) -> {
+            let command = ProcessCommand {
+                program: host.find("debugfs"),
+                arguments: ["-R", "dump /\(name) \(out)", copy image],
+                input: .Null
+            }
+            let child = match command.start() {
+                Ok(started) -> started
+                Error(failure) -> return .Error("debugfs did not start: \(traceText(failure))")
+            }
+            let ended = child.wait()
+            match child.release() {
+                Ok -> {}
+                Error(failure) -> absorb failure
+            }
+            match ended {
+                Ok(exit) -> if exitStatus(exit) != 0 {
+                    return .Error("debugfs could not read \(image)")
+                }
+                Error(failure) -> return .Error(
+                    "debugfs could not be waited for: \(traceText(failure))"
+                )
+            }
+        }
+        Directory(directory) -> match copyFile(
+            "\(directory)/\(name)",
+            out
+        ) {
+            Ok -> {}
+            Error(failure) -> return .Error(
+                "\(directory)/\(name) cannot be copied: \(traceText(failure))"
+            )
+        }
     }
     return .Ok
 }

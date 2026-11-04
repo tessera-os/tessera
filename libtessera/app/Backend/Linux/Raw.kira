@@ -28,9 +28,11 @@ function answerStatus(answer: Number) -> Result<Void, TesseraError> {
 // Closes a descriptor this library owns. Linux releases the descriptor
 // whatever `close` answers, so there is nothing a failure would change.
 function closeBacking(fd: Number) {
-    match answerStatus(close(fd)) {
-        Ok -> {}
-        Error(failed) -> absorb failed
+    unsafe {
+        match answerStatus(close(fd)) {
+            Ok -> {}
+            Error(failed) -> absorb failed
+        }
     }
 }
 
@@ -42,22 +44,24 @@ struct SmallFile {
 }
 
 function readSmallBytes(directory: Number, path: borrow String) -> Result<SmallFile, TesseraError> {
-    let fd = openat(directory, cStringFrom(path), LinuxOpen.readOnly | LinuxOpen.closeOnExec, 0)
-    if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
-    let blockBytes = zeroedBlock(count: 4097, alignment: 16)
-    let block = blockBytes.pointer()
-    var total = U64(0)
-    while total < U64(4096) {
-        let got = read(fd, heapOffset(block, total), U64(4096) - total)
-        if answerFailed(got) {
-            closeBacking(fd)
-            return .Error(errnoFailure(answerErrno(got)))
+    unsafe {
+        let fd = openat(directory, cStringFrom(path), LinuxOpen.readOnly | LinuxOpen.closeOnExec, 0)
+        if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
+        let blockBytes = zeroedBlock(count: 4097, alignment: 16)
+        let block = blockBytes.pointer()
+        var total = U64(0)
+        while total < U64(4096) {
+            let got = read(fd, heapOffset(block, total), U64(4096) - total)
+            if answerFailed(got) {
+                closeBacking(fd)
+                return .Error(errnoFailure(answerErrno(got)))
+            }
+            if got == 0 { break }
+            total = total + U64(got)
         }
-        if got == 0 { break }
-        total = total + U64(got)
+        closeBacking(fd)
+        return .Ok(SmallFile { bytes: move blockBytes, count: total })
     }
-    closeBacking(fd)
-    return .Ok(SmallFile { bytes: move blockBytes, count: total })
 }
 
 // A string read from a short file such as one under `/sys`, without its
@@ -113,13 +117,20 @@ function writeSmallFile(
     path: borrow String,
     text: borrow String
 ) -> Result<Void, TesseraError> {
-    let fd = openat(directory, cStringFrom(path), LinuxOpen.writeOnly | LinuxOpen.closeOnExec, 0)
-    if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
-    let bytesBytes = bytesOfText(text)
-    let bytes = bytesBytes.pointer()
-    let wrote = write(fd, bytes, U64(text.count))
-    closeBacking(fd)
-    return answerStatus(wrote)
+    unsafe {
+        let fd = openat(
+            directory,
+            cStringFrom(path),
+            LinuxOpen.writeOnly | LinuxOpen.closeOnExec,
+            0
+        )
+        if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
+        let bytesBytes = bytesOfText(text)
+        let bytes = bytesBytes.pointer()
+        let wrote = write(fd, bytes, U64(text.count))
+        closeBacking(fd)
+        return answerStatus(wrote)
+    }
 }
 
 // `struct timespec`, from nanoseconds.
@@ -155,16 +166,18 @@ namespace LinuxOpen {
 // the open flags differ between the architectures Tessera runs on.
 
 function isArm() -> Bool {
-    if !library.machineKnown {
-        let blockBytes = zeroedBlock(count: 390, alignment: 16)
-        let block = blockBytes.pointer()
-        if !answerFailed(uname(block)) {
-            let machine = stringFromCBytes(heapOffset(block, 260), 65)
-            library.machineIsArm = machine.startsWith("aarch64") || machine.startsWith("arm64")
+    unsafe {
+        if !library.machineKnown {
+            let blockBytes = zeroedBlock(count: 390, alignment: 16)
+            let block = blockBytes.pointer()
+            if !answerFailed(uname(block)) {
+                let machine = stringFromCBytes(heapOffset(block, 260), 65)
+                library.machineIsArm = machine.startsWith("aarch64") || machine.startsWith("arm64")
+            }
+            library.machineKnown = true
         }
-        library.machineKnown = true
+        return library.machineIsArm
     }
-    return library.machineIsArm
 }
 
 // `O_DIRECTORY`, `O_NOFOLLOW` and `O_DIRECT`: the three open flags whose

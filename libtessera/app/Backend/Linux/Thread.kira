@@ -4,25 +4,39 @@ import Heap
 // Threads and address waits on Linux: thread and process ids, the
 // scheduler (`sched_setattr`) and `futex`.
 
-function kernelThreadId() -> U64 { return U64(gettid()) }
+function kernelThreadId() -> U64 {
+    unsafe {
+        return U64(gettid())
+    }
+}
 
-function kernelProcessId() -> U64 { return U64(getpid()) }
+function kernelProcessId() -> U64 {
+    unsafe {
+        return U64(getpid())
+    }
+}
 
 // Ends the calling thread; the last thread's exit ends the process.
 function kernelThreadExit(code: Number) {
-    exitThread(code)
+    unsafe {
+        exitThread(code)
+    }
 }
 
 // Ends the whole process at once.
 function kernelProcessExit(code: Number) {
-    exitGroup(code)
+    unsafe {
+        exitGroup(code)
+    }
 }
 
 // `sched_yield` always succeeds on Linux.
 function kernelYield() {
-    match answerStatus(schedYield()) {
-        Ok -> {}
-        Error(failed) -> absorb failed
+    unsafe {
+        match answerStatus(schedYield()) {
+            Ok -> {}
+            Error(failed) -> absorb failed
+        }
     }
 }
 
@@ -36,16 +50,18 @@ function setScheduler(
     deadline: U64,
     period: U64
 ) -> Result<Void, TesseraError> {
-    let blockBytes = zeroedBlock(count: 48, alignment: 16)
-    let block = blockBytes.pointer()
-    heapStore<U32>(block, 0, U32(48))
-    heapStore<U32>(block, 4, policy)
-    heapStore<U32>(block, 16, U32(nice & 0xFFFFFFFF))
-    heapStore<U32>(block, 20, priority)
-    heapStore<U64>(block, 24, runtime)
-    heapStore<U64>(block, 32, deadline)
-    heapStore<U64>(block, 40, period)
-    return answerStatus(schedSetattr(tid, block, U32(0)))
+    unsafe {
+        let blockBytes = zeroedBlock(count: 48, alignment: 16)
+        let block = blockBytes.pointer()
+        heapStore<U32>(block, 0, U32(48))
+        heapStore<U32>(block, 4, policy)
+        heapStore<U32>(block, 16, U32(nice & 0xFFFFFFFF))
+        heapStore<U32>(block, 20, priority)
+        heapStore<U64>(block, 24, runtime)
+        heapStore<U64>(block, 32, deadline)
+        heapStore<U64>(block, 40, period)
+        return answerStatus(schedSetattr(tid, block, U32(0)))
+    }
 }
 
 // QoS as Linux scheduling: `SCHED_IDLE` for background, nice levels for the
@@ -80,32 +96,36 @@ function kernelAddressWait(
     expected: U32,
     deadline: U64
 ) -> Result<Void, TesseraError> {
-    var timeout = nullPointer()
-    let blockBytes = zeroedBlock(count: 16, alignment: 16)
-    let block = blockBytes.pointer()
-    if deadline != Deadline.infinite {
-        storeTimespec(block, U64(0), deadline)
-        timeout = block
+    unsafe {
+        var timeout = nullPointer()
+        let blockBytes = zeroedBlock(count: 16, alignment: 16)
+        let block = blockBytes.pointer()
+        if deadline != Deadline.infinite {
+            storeTimespec(block, U64(0), deadline)
+            timeout = block
+        }
+        let answer = futex(
+            address,
+            FutexOp.waitBitset,
+            expected,
+            timeout,
+            nullPointer(),
+            FutexOp.anyBit
+        )
+        if !answerFailed(answer) { return .Ok }
+        if failedWith(answer, .Again) { return .Error(failure(.BadState)) }
+        if failedWith(answer, .TimedOut) { return .Error(failure(.Timeout)) }
+        if failedWith(answer, .Interrupted) { return .Ok }
+        return .Error(errnoFailure(answerErrno(answer)))
     }
-    let answer = futex(
-        address,
-        FutexOp.waitBitset,
-        expected,
-        timeout,
-        nullPointer(),
-        FutexOp.anyBit
-    )
-    if !answerFailed(answer) { return .Ok }
-    if failedWith(answer, .Again) { return .Error(failure(.BadState)) }
-    if failedWith(answer, .TimedOut) { return .Error(failure(.Timeout)) }
-    if failedWith(answer, .Interrupted) { return .Ok }
-    return .Error(errnoFailure(answerErrno(answer)))
 }
 
 function kernelAddressWake(address: RawPtr, count: U32) -> Result<U32, TesseraError> {
-    let answer = futex(address, FutexOp.wake, count, nullPointer(), nullPointer(), U32(0))
-    if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
-    return .Ok(U32(answer))
+    unsafe {
+        let answer = futex(address, FutexOp.wake, count, nullPointer(), nullPointer(), U32(0))
+        if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
+        return .Ok(U32(answer))
+    }
 }
 
 function kernelAddressRequeue(
@@ -115,7 +135,14 @@ function kernelAddressRequeue(
     requeueCount: U32
 ) -> Result<U32, TesseraError> {
     unsafe {
-        let answer = futex(address, FutexOp.requeue, wakeCount, RawPtr(requeueCount), target, U32(0))
+        let answer = futex(
+            address,
+            FutexOp.requeue,
+            wakeCount,
+            RawPtr(requeueCount),
+            target,
+            U32(0)
+        )
         if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
         return .Ok(U32(answer))
     }

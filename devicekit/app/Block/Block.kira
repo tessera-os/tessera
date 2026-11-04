@@ -81,6 +81,14 @@ function queuePath(directory: borrow String) -> Result<String, TesseraError> {
     return .Ok(directory + "/../queue")
 }
 
+// Whether the medium can be taken out: the disk's own `removable`, or for a
+// partition, which has none, its parent's.
+function removableDisk(directory: borrow String) -> Result<Bool, TesseraError> {
+    let own = directory + "/removable"
+    let present = try pathPresent(own)
+    return .Ok(attributeIs(present ? own : directory + "/../removable", "1"))
+}
+
 function attributeIs(path: borrow String, value: borrow String) -> Bool {
     return attribute(path).or("") == value
 }
@@ -98,7 +106,8 @@ public function blockInfo(block: Ref) -> Result<BlockInfo, TesseraError> {
     var flags = BlockFlags.none
     if readOnly != 0 { flags = flags | BlockFlags.readOnly }
     if attributeIs(queue + "/rotational", "1") { flags = flags | BlockFlags.rotational }
-    if attributeIs(directory + "/removable", "1") { flags = flags | BlockFlags.removable }
+    let removable = try removableDisk(directory)
+    if removable { flags = flags | BlockFlags.removable }
     if numberAttribute(queue + "/discard_max_bytes").or(0) > 0 {
         flags = flags | BlockFlags.discard
     }

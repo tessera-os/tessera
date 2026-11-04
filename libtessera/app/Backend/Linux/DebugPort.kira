@@ -25,67 +25,77 @@ function kernelDebugPortDevice(name: borrow String) -> Result<String, TesseraErr
 }
 
 function kernelDebugPortOpen(name: borrow String) -> Result<Number, TesseraError> {
-    let path = try kernelDebugPortDevice(name)
-    let flags = LinuxOpen.readWrite | LinuxOpen.nonBlock | LinuxOpen.closeOnExec
-    let fd = openat(AtDirectory.current, cStringFrom(path), flags, 0)
-    if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
-    return .Ok(fd)
+    unsafe {
+        let path = try kernelDebugPortDevice(name)
+        let flags = LinuxOpen.readWrite | LinuxOpen.nonBlock | LinuxOpen.closeOnExec
+        let fd = openat(AtDirectory.current, cStringFrom(path), flags, 0)
+        if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
+        return .Ok(fd)
+    }
 }
 
 // Keeps `fd` open across exec, with reads that wait.
 function kernelDebugPortKeptAcrossExec(fd: Number) -> Result<Void, TesseraError> {
-    try answerStatus(fcntl(fd, Fcntl.setDescriptorFlags, RawPtr.null))
-    return answerStatus(fcntl(fd, Fcntl.setFlags, RawPtr.null))
+    unsafe {
+        try answerStatus(fcntl(fd, Fcntl.setDescriptorFlags, RawPtr.null))
+        return answerStatus(fcntl(fd, Fcntl.setFlags, RawPtr.null))
+    }
 }
 
 // Whether the host side of the port is connected: a port with none reports
 // a hang-up at once, and reads as its end.
 function kernelDebugPortHostAttached(fd: Number) -> Bool {
-    let blockBytes = zeroedBlock(count: 24, alignment: 16)
-    let block = blockBytes.pointer()
-    heapStore<U32>(block, 16, U32(fd))
-    heapStore<U16>(block, 20, U16(Poll.input))
-    // A zero timeout: the answer is the port's state now.
-    var answer = ppoll(heapOffset(block, 16), U64(1), block, nullPointer())
-    while failedWith(answer, .Interrupted) {
-        answer = ppoll(heapOffset(block, 16), U64(1), block, nullPointer())
+    unsafe {
+        let blockBytes = zeroedBlock(count: 24, alignment: 16)
+        let block = blockBytes.pointer()
+        heapStore<U32>(block, 16, U32(fd))
+        heapStore<U16>(block, 20, U16(Poll.input))
+        // A zero timeout: the answer is the port's state now.
+        var answer = ppoll(heapOffset(block, 16), U64(1), block, nullPointer())
+        while failedWith(answer, .Interrupted) {
+            answer = ppoll(heapOffset(block, 16), U64(1), block, nullPointer())
+        }
+        if answerFailed(answer) { return false }
+        return (U64(heapLoad<U16>(block, 22)) & U64(Poll.hangUp)) == U64(0)
     }
-    if answerFailed(answer) { return false }
-    return (U64(heapLoad<U16>(block, 22)) & U64(Poll.hangUp)) == U64(0)
 }
 
 // What has arrived, after waiting up to `wait` nanoseconds for anything;
 // empty when nothing came. With no host side connected the port reads as its
 // end at once, and there is nothing.
 function kernelDebugPortRead(fd: Number, wait: U64) -> Result<[UN8]?, TesseraError> {
-    kernelWaitOn(fd, Ready.readable, wait)
-    let block = zeroedBlock(count: DebugPortLayout.chunk, alignment: 16)
-    let got = read(fd, block.pointer(), U64(DebugPortLayout.chunk))
-    var bytes: [UN8] = []
-    if answerFailed(got) {
-        // `EAGAIN`: the wait ended with nothing to read.
-        if answerErrno(got) == code(Errno.Again) { return .Ok(.Some(bytes)) }
-        return .Error(errnoFailure(answerErrno(got)))
+    unsafe {
+        kernelWaitOn(fd, Ready.readable, wait)
+        let block = zeroedBlock(count: DebugPortLayout.chunk, alignment: 16)
+        let got = read(fd, block.pointer(), U64(DebugPortLayout.chunk))
+        var bytes: [UN8] = []
+        if answerFailed(got) {
+            // `EAGAIN`: the wait ended with nothing to read.
+            if answerErrno(got) == code(Errno.Again) { return .Ok(.Some(bytes)) }
+            return .Error(errnoFailure(answerErrno(got)))
+        }
+        if got == 0 { return .Ok(.None) }
+        for index in 0..got { bytes.append(UN8(heapLoad<U8>(block.pointer(), index))) }
+        return .Ok(.Some(bytes))
     }
-    if got == 0 { return .Ok(.None) }
-    for index in 0..got { bytes.append(UN8(heapLoad<U8>(block.pointer(), index))) }
-    return .Ok(.Some(bytes))
 }
 
 // Writes all of `bytes`, waiting while the host is slow to take them.
 function kernelDebugPortWrite(fd: Number, bytes: borrow [UN8]) -> Result<Void, TesseraError> {
-    let block = zeroedBlock(count: bytes.count + 1, alignment: 16)
-    for (index, byte) in bytes.enumerated() { heapStore<U8>(block.pointer(), index, U8(byte)) }
-    var done = 0
-    while done < bytes.count {
-        let wrote = write(fd, heapOffset(block.pointer(), done), U64(bytes.count - done))
-        if !answerFailed(wrote) {
-            done += wrote
-        } else if answerErrno(wrote) == code(Errno.Again) {
-            kernelWaitOn(fd, Ready.writable, Deadline.infinite)
-        } else if answerErrno(wrote) != code(Errno.Interrupted) {
-            return .Error(errnoFailure(answerErrno(wrote)))
+    unsafe {
+        let block = zeroedBlock(count: bytes.count + 1, alignment: 16)
+        for (index, byte) in bytes.enumerated() { heapStore<U8>(block.pointer(), index, U8(byte)) }
+        var done = 0
+        while done < bytes.count {
+            let wrote = write(fd, heapOffset(block.pointer(), done), U64(bytes.count - done))
+            if !answerFailed(wrote) {
+                done += wrote
+            } else if answerErrno(wrote) == code(Errno.Again) {
+                kernelWaitOn(fd, Ready.writable, Deadline.infinite)
+            } else if answerErrno(wrote) != code(Errno.Interrupted) {
+                return .Error(errnoFailure(answerErrno(wrote)))
+            }
         }
+        return .Ok
     }
-    return .Ok
 }

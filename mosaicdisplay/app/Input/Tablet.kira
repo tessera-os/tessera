@@ -90,7 +90,9 @@ function placedOnAxis(value: Number, minimum: Number, maximum: Number, extent: N
 }
 
 // Takes an absolute record: the pointer is put where it says, as motion from
-// where it was, so the motion the frame delivers is what it moved.
+// where it was, so the motion the frame delivers is what it moved. The axes
+// span the whole panel; a place in the dead zone puts the pointer nowhere and
+// marks the frame, whose presses are then dropped (Pointer.kira).
 function takeAbsolute(
     server: borrow mut Server,
     axes: borrow PointerAxes,
@@ -99,19 +101,42 @@ function takeAbsolute(
 ) {
     let scanout = server.display.scanout
     match fromCode<PointerAxis>(UN32(usage)) {
-        X -> match placedOnAxis(value, axes.xMinimum, axes.xMaximum, scanout.pointWidth()) {
-            Some(x) -> server.pointing.x = .Some(x)
+        X -> match placedOnAxis(
+            value,
+            axes.xMinimum,
+            axes.xMaximum,
+            trunc(scanout.panelWidth / scanout.scale)
+        ) {
+            Some(x) -> match onOutput(x - scanout.originX / scanout.scale, scanout.pointWidth()) {
+                Some(placed) -> server.pointing.x = .Some(placed)
+                None -> server.pointing.dead = true
+            }
             // Outside the axis's range it places nothing.
             None -> {}
         }
-        Y -> match placedOnAxis(value, axes.yMinimum, axes.yMaximum, scanout.pointHeight()) {
-            Some(y) -> server.pointing.y = .Some(y)
+        Y -> match placedOnAxis(
+            value,
+            axes.yMinimum,
+            axes.yMaximum,
+            trunc(scanout.panelHeight / scanout.scale)
+        ) {
+            Some(y) -> match onOutput(y - scanout.originY / scanout.scale, scanout.pointHeight()) {
+                Some(placed) -> server.pointing.y = .Some(placed)
+                None -> server.pointing.dead = true
+            }
             // Outside the axis's range it places nothing.
             None -> {}
         }
         // Any other axis places nothing.
         else -> {}
     }
+}
+
+// `along` on an output `extent` points along the axis, or none where it falls
+// in the dead zone, off the output.
+function onOutput(along: Number, extent: Number) -> Number? {
+    if along < 0 || along >= extent { return .None }
+    return .Some(along)
 }
 
 // Turns where the pointer was put into motion from where it is.

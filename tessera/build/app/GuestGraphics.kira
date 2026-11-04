@@ -3,11 +3,12 @@ import Build
 import Kten
 
 // The guest half of Tessera's GPU stack: the Vulkan a program inside the
-// machine calls, and the driver that forwards it out. Mesa's venus driver
-// turns Vulkan calls into the venus protocol the host renderer decodes;
+// machine calls, and the driver that forwards it out. QEMU uses Mesa's Venus
+// driver to forward Vulkan calls to the host renderer; dm2q uses Turnip on the
+// Adreno 740.
 // libdrm talks to the kernel's DRM device; zlib and expat are what Mesa's
-// shared code reaches for whatever driver is built; the Vulkan loader is the
-// one native library a Tessera program links.
+// shared code reaches for whatever driver is built. Turnip also needs the
+// target C++ runtime, which platformRuntime places beside the Vulkan loader.
 //
 // Each tarball is a download checked against its SHA-256. The build is one
 // command whose stages unpack each project, Mesa under its patches, and keep
@@ -71,6 +72,7 @@ struct CrossBuild {
     let linker: String
     let host: Host
     let architecture: Architecture
+    let kernelProfile: String
 }
 
 // Every library of the guest stack, installed under one prefix: lib/,
@@ -79,6 +81,7 @@ function guestGraphics(
     graph: borrow mut Graph,
     host: borrow Host,
     architecture: Architecture,
+    kernelProfile: borrow String,
     sysroot: borrow Artifact
 ) -> Artifact {
     let name = architecture.name()
@@ -91,7 +94,8 @@ function guestGraphics(
         sysrootFlag: .Joined([.Text("--sysroot="), .Input(copy sysroot)]),
         linker: "-fuse-ld=\(llvm)/ld.lld",
         host: copy host,
-        architecture: architecture
+        architecture: architecture,
+        kernelProfile: copy kernelProfile
     }
     var stages = guestSourceStages(graph)
     stages.appendAll(guestBuildStages(build))
@@ -178,6 +182,8 @@ function guestCrossFile(
 
 // Each project configured, built and installed in turn.
 function guestBuildStages(build: borrow CrossBuild) -> [CommandStage] {
+    let freedreno = build.kernelProfile == "dm2q" ? "enabled" : "disabled"
+    let vulkan = build.kernelProfile == "dm2q" ? "freedreno" : "virtio"
     var stages = zlibStages(build)
     stages.appendAll(
         cmakeStages(
@@ -189,28 +195,31 @@ function guestBuildStages(build: borrow CrossBuild) -> [CommandStage] {
             ]
         )
     )
-    // Every vendor driver off: the guest's only device is virtio-gpu.
+    // Enable only the DRM client Tessera's hardware profile needs.
     stages.appendAll(
         mesonStages(
             "libdrm",
             build,
             [
                 "-Dintel=disabled", "-Dradeon=disabled", "-Damdgpu=disabled", "-Dnouveau=disabled",
-                "-Dvmwgfx=disabled", "-Dfreedreno=disabled", "-Dvc4=disabled", "-Detnaviv=disabled",
+                "-Dvmwgfx=disabled", "-Dfreedreno=\(freedreno)",
+                "-Dvc4=disabled", "-Detnaviv=disabled",
                 "-Dman-pages=disabled", "-Dtests=false"
             ]
         )
     )
-    // `virtio` is venus: Mesa names the driver after the transport. No
-    // gallium, GL, window system or LLVM, since the guest has no display and
-    // no other GPU, and no shader cache, a file on a disk the guest lacks,
-    // nor the zstd that only compresses it.
+    // QEMU uses Venus over virtio-gpu. dm2q uses Turnip over DRM/MSM on the
+    // Adreno 740. Both are Vulkan-only: no Gallium/OpenGL, window system or
+    // LLVM, and no shader cache on a disk the guest lacks.
     stages.appendAll(
         mesonStages(
             "mesa",
             build,
             [
-                "-Dvulkan-drivers=virtio", "-Dgallium-drivers=", "-Dplatforms=",
+                "-Dvulkan-drivers=\(vulkan)",
+                "-Dgallium-drivers=", "-Dplatforms=",
+                "-Dopengl=false", "-Dgles1=disabled", "-Dgles2=disabled",
+                "-Dshared-glapi=disabled",
                 "-Dglx=disabled", "-Degl=disabled", "-Dgbm=disabled", "-Dllvm=disabled",
                 "-Dvideo-codecs=", "-Dtools=", "-Dvulkan-layers=",
                 "-Dzstd=disabled", "-Dshader-cache=disabled"

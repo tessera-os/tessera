@@ -124,12 +124,17 @@ function paddedField(record: RawPtr, offset: Number) -> String {
 }
 
 // Ejects the dev root volume. One already gone has nothing to eject.
-function ejectRequestVolume() {
-    let found = match volumeMountedAt(RequestVolume.path) {
+function ejectRequestVolume() { ejectVolumeAt(RequestVolume.path) }
+
+// Ejects the volume mounted at `mountPoint`. One already gone has nothing to
+// eject.
+function ejectVolumeAt(mountPoint: borrow String) {
+    let found = match volumeMountedAt(mountPoint) {
         Ok(value) -> value
         Error(failed) -> {
             log warn(
-                "cannot ask the Volume service for the dev root volume",
+                "cannot ask the Volume service for a volume",
+                mountPoint,
                 error: errorName(failed)
             )
             return
@@ -137,8 +142,8 @@ function ejectRequestVolume() {
     }
     match found {
         Some(entry) -> match askVolume(EjectWire.eject, entry) {
-            Ok -> log info("ejected the dev root volume")
-            Error(failed) -> log warn("cannot eject the dev root volume", error: errorName(failed))
+            Ok -> log info("ejected a volume", mountPoint)
+            Error(failed) -> log warn("cannot eject a volume", mountPoint, error: errorName(failed))
         }
         None -> {}
     }

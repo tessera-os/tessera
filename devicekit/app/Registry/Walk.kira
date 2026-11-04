@@ -22,7 +22,10 @@ function linkName(link: borrow String) -> Result<String?, TesseraError> {
 }
 
 // The physical device behind a class device: its bus, driver and ids.
-function busProperties(path: borrow String) -> Result<[Property], TesseraError> {
+function busProperties(
+    path: borrow String,
+    entryClass: EntryClass
+) -> Result<[Property], TesseraError> {
     var found: [Property] = []
     // A class device's `device` link names the physical device; one without
     // the link is its own.
@@ -40,20 +43,22 @@ function busProperties(path: borrow String) -> Result<[Property], TesseraError> 
         Some(driver) -> found.append(textProperty("driver", driver))
         None -> {}
     }
-    match attribute(device + "/vendor") {
-        Some(vendor) -> appendHex(found, "vendorId", vendor)
-        None -> {}
-    }
     // A PCI device's id; on other buses `device` is a link to the parent,
     // with nothing to read.
     if bus == "pci" {
+        match attribute(device + "/vendor") {
+            Some(vendor) -> appendHex(found, "vendorId", vendor)
+            None -> {}
+        }
         match attribute(device + "/device") {
             Some(product) -> appendHex(found, "productId", product)
             None -> {}
         }
     }
     found.append(textProperty("location", "\(bus)-\(lastComponent(device))"))
-    found.append(flagProperty("removable", attribute(device + "/removable") == .Some("removable")))
+    if entryClass == .BlockDevice {
+        found.append(flagProperty("removable", attribute(path + "/removable") == .Some("1")))
+    }
     found.append(textProperty("seat", "seat0"))
     return .Ok(found)
 }
@@ -76,7 +81,7 @@ struct Found {
 }
 
 function makeEntry(found: borrow Found) -> Result<Entry, TesseraError> {
-    var properties = try busProperties(found.path)
+    var properties = try busProperties(found.path, found.entryClass)
     properties.append(textProperty("name", found.name))
     properties.append(textProperty("subsystem", found.subsystem))
     var flags = EntryFlags.none
@@ -86,17 +91,19 @@ function makeEntry(found: borrow Found) -> Result<Entry, TesseraError> {
             flags = flags | EntryFlags.removable
         }
     }
-    return .Ok(Entry {
-        id: entryIdOf(found.path),
-        entryClass: found.entryClass,
-        family: found.family,
-        parent: .None,
-        flags: flags,
-        path: found.path,
-        node: found.node,
-        name: found.name,
-        properties: properties,
-    })
+    return .Ok(
+        Entry {
+            id: entryIdOf(found.path),
+            entryClass: found.entryClass,
+            family: found.family,
+            parent: .None,
+            flags: flags,
+            path: found.path,
+            node: found.node,
+            name: found.name,
+            properties: properties,
+        }
+    )
 }
 
 // What an input device can do, as `InputKind` bits, from its capability
@@ -198,7 +205,10 @@ struct ClassScan {
     var nodePrefix: String?
 }
 
-function scanClass(entries: borrow mut [Entry], scan: borrow ClassScan) -> Result<Void, TesseraError> {
+function scanClass(
+    entries: borrow mut [Entry],
+    scan: borrow ClassScan
+) -> Result<Void, TesseraError> {
     for name in listedEntries(scan.root) {
         if !name.startsWith(scan.prefix) { continue }
         let path = try canonicalPath("\(scan.root)/\(name)")

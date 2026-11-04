@@ -124,6 +124,16 @@ construct FocusRoute() extends NavigationRoute {
     }
 }
 
+construct DeveloperRoute() extends NavigationRoute {
+    function routeKey() -> String {
+        return "developer"
+    }
+
+    function destination() -> Any Widget {
+        return DeveloperPane()
+    }
+}
+
 construct NotificationsRoute() extends NavigationRoute {
     function routeKey() -> String {
         return "notifications"

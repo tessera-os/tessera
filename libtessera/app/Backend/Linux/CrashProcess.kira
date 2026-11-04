@@ -24,13 +24,15 @@ namespace CrashTrap {
 // first files it opened would take their numbers and its output would go
 // into them. Standard output and error go to the kernel's log.
 function kernelCrashStreams() {
-    for stream in [1, 2] {
-        if !answerFailed(fcntl(stream, Fcntl.getFlags, RawPtr.null)) { continue }
-        let fd = openat(AtDirectory.current, cStringFrom("/dev/kmsg"), LinuxOpen.writeOnly, 0)
-        if answerFailed(fd) { return }
-        if fd != stream {
-            dup3(fd, stream, 0)
-            closeBacking(fd)
+    unsafe {
+        for stream in [1, 2] {
+            if !answerFailed(fcntl(stream, Fcntl.getFlags, RawPtr.null)) { continue }
+            let fd = openat(AtDirectory.current, cStringFrom("/dev/kmsg"), LinuxOpen.writeOnly, 0)
+            if answerFailed(fd) { return }
+            if fd != stream {
+                dup3(fd, stream, 0)
+                closeBacking(fd)
+            }
         }
     }
 }
@@ -39,26 +41,28 @@ function kernelCrashStreams() {
 // the trap's number as the signal's value, which the core's signal note
 // keeps. PID 1 is not ended by a signal it sends itself, and goes on to exit.
 function kernelCrashOnTrap(code: Number) {
-    match writeText(2, "runtime trap KLF-RT-\(zeroPadded(code, 4))\n") {
-        Ok -> {}
-        // The report says what the core says either way.
-        Error(failed) -> absorb failed
-    }
-    let maskBytes = zeroedBlock(count: 8, alignment: 8)
-    heapStore<U64>(maskBytes.pointer(), 0, U64(1) << U64(Signal.trap - 1))
-    sigprocmask(SignalMaskHow.unblock, maskBytes.pointer(), nullPointer(), U64(8))
-    // `siginfo_t` as `rt_sigqueueinfo` takes it: the signal, `SI_QUEUE`, the
-    // sender and its user, then the value.
-    let info = zeroedBlock(count: 128, alignment: 8)
-    heapStore<I32>(info.pointer(), 0, I32(Signal.trap))
-    heapStore<I32>(info.pointer(), 8, I32(CrashTrap.queued))
-    heapStore<I32>(info.pointer(), 16, I32(getpid()))
-    heapStore<I32>(info.pointer(), 24, I32(code))
-    let sent = wideAnswer(
-        tgsigqueueinfo(U64(getpid()), U64(gettid()), U64(Signal.trap), info.pointer())
-    )
-    if answerFailed(sent) {
-        tgkill(getpid(), gettid(), Signal.trap)
+    unsafe {
+        match writeText(2, "runtime trap KLF-RT-\(zeroPadded(code, 4))\n") {
+            Ok -> {}
+            // The report says what the core says either way.
+            Error(failed) -> absorb failed
+        }
+        let maskBytes = zeroedBlock(count: 8, alignment: 8)
+        heapStore<U64>(maskBytes.pointer(), 0, U64(1) << U64(Signal.trap - 1))
+        sigprocmask(SignalMaskHow.unblock, maskBytes.pointer(), nullPointer(), U64(8))
+        // `siginfo_t` as `rt_sigqueueinfo` takes it: the signal, `SI_QUEUE`, the
+        // sender and its user, then the value.
+        let info = zeroedBlock(count: 128, alignment: 8)
+        heapStore<I32>(info.pointer(), 0, I32(Signal.trap))
+        heapStore<I32>(info.pointer(), 8, I32(CrashTrap.queued))
+        heapStore<I32>(info.pointer(), 16, I32(getpid()))
+        heapStore<I32>(info.pointer(), 24, I32(code))
+        let sent = wideAnswer(
+            tgsigqueueinfo(U64(getpid()), U64(gettid()), U64(Signal.trap), info.pointer())
+        )
+        if answerFailed(sent) {
+            tgkill(getpid(), gettid(), Signal.trap)
+        }
     }
 }
 
@@ -126,10 +130,10 @@ function threadNames(directory: borrow String) -> Result<Map<Number, String>, Te
     let listing = try listPath(directory + "/task")
     for entry in listing {
         match entry.name.toNumber() {
-            Some(id) -> names.set(id, try readSmallFile(
-                AtDirectory.current,
-                "\(directory)/task/\(entry.name)/comm"
-            ))
+            Some(id) -> names.set(
+                id,
+                try readSmallFile(AtDirectory.current, "\(directory)/task/\(entry.name)/comm")
+            )
             None -> {}
         }
     }
@@ -147,44 +151,46 @@ function readCrashedProcess(
     capture: borrow mut CrashCapture,
     directory: borrow String
 ) -> Result<Void, TesseraError> {
-    let linkBytes = zeroedBlock(count: 4097, alignment: 16)
-    let got = readlinkat(
-        AtDirectory.current,
-        cStringFrom(directory + "/exe"),
-        linkBytes.pointer(),
-        U64(4096)
-    )
-    if answerFailed(got) {
-        capture.problems.append(
-            "the process's program could not be read: errno \(answerErrno(got))"
+    unsafe {
+        let linkBytes = zeroedBlock(count: 4097, alignment: 16)
+        let got = readlinkat(
+            AtDirectory.current,
+            cStringFrom(directory + "/exe"),
+            linkBytes.pointer(),
+            U64(4096)
         )
-    } else {
-        capture.path = stringFromCBytes(linkBytes.pointer(), got)
-    }
-    capture.arguments = try readSmallStrings(AtDirectory.current, directory + "/cmdline")
-    if capture.name.isEmpty() {
-        capture.name = try readSmallFile(AtDirectory.current, directory + "/comm")
-    }
-    capture.status = try kernelReadText(directory + "/status")
-    let stat = try kernelReadText(directory + "/stat")
-    match stat.lastIndexOf(")") {
-        // Field 22, the start time, is the 20th after the name.
-        Some(closing) -> {
-            let fields = stat.substring(closing + 2, stat.count).split(" ")
-            if fields.count > 1 {
-                capture.parentPid = Number(decimalPrefix(fields[1]))
-                capture.parentName = try kernelProcessName(capture.parentPid)
-            }
-            if fields.count > 19 {
-                capture.startedAfterBoot = trunc(
-                    Number(decimalPrefix(fields[19])) / CrashWalk.ticksPerSecond
-                )
-            }
+        if answerFailed(got) {
+            capture.problems.append(
+                "the process's program could not be read: errno \(answerErrno(got))"
+            )
+        } else {
+            capture.path = stringFromCBytes(linkBytes.pointer(), got)
         }
-        None -> {}
+        capture.arguments = try readSmallStrings(AtDirectory.current, directory + "/cmdline")
+        if capture.name.isEmpty() {
+            capture.name = try readSmallFile(AtDirectory.current, directory + "/comm")
+        }
+        capture.status = try kernelReadText(directory + "/status")
+        let stat = try kernelReadText(directory + "/stat")
+        match stat.lastIndexOf(")") {
+            // Field 22, the start time, is the 20th after the name.
+            Some(closing) -> {
+                let fields = stat.substring(closing + 2, stat.count).split(" ")
+                if fields.count > 1 {
+                    capture.parentPid = Number(decimalPrefix(fields[1]))
+                    capture.parentName = try kernelProcessName(capture.parentPid)
+                }
+                if fields.count > 19 {
+                    capture.startedAfterBoot = trunc(
+                        Number(decimalPrefix(fields[19])) / CrashWalk.ticksPerSecond
+                    )
+                }
+            }
+            None -> {}
+        }
+        capture.uptime = Number(decimalPrefix(try kernelReadText("/proc/uptime")))
+        return .Ok
     }
-    capture.uptime = Number(decimalPrefix(try kernelReadText("/proc/uptime")))
-    return .Ok
 }
 
 // The digits `text` starts with, as a number.
@@ -208,12 +214,14 @@ function readMappings(
     match kernelReadText(directory + "/maps") {
         Ok(text) -> match processRegions(text) {
             Ok(regions) -> {
-            capture.regions = regions
-            if capture.regions.count == 0 {
-                capture.problems.append("\(directory)/maps listed no mappings")
+                capture.regions = regions
+                if capture.regions.count == 0 {
+                    capture.problems.append("\(directory)/maps listed no mappings")
+                }
             }
-            }
-            Error(failed) -> capture.problems.append("\(directory)/maps are invalid: \(traceText(failed))")
+            Error(failed) -> capture.problems.append(
+                "\(directory)/maps are invalid: \(traceText(failed))"
+            )
         }
         Error(failed) -> capture.problems.append(
             "\(directory)/maps could not be read: \(traceText(failed))"
@@ -278,30 +286,32 @@ function processRegions(maps: borrow String) -> Result<[CrashedRegion], TesseraE
 
 // The process's open file descriptors, each with what it names.
 function crashFiles(directory: borrow String) -> Result<[CrashedFile], TesseraError> {
-    let listing = try listPath(directory + "/fd")
-    var files: [CrashedFile] = []
-    let linkBytes = zeroedBlock(count: 4097, alignment: 16)
-    for entry in listing {
-        match entry.name.toNumber() {
-            Some(descriptor) -> {
-                let got = readlinkat(
-                    AtDirectory.current,
-                    cStringFrom("\(directory)/fd/\(entry.name)"),
-                    linkBytes.pointer(),
-                    U64(4096)
-                )
-                if answerFailed(got) { return .Error(errnoFailure(answerErrno(got))) }
-                files.append(
-                    CrashedFile {
-                        descriptor: descriptor,
-                        target: stringFromCBytes(linkBytes.pointer(), got)
-                    }
-                )
+    unsafe {
+        let listing = try listPath(directory + "/fd")
+        var files: [CrashedFile] = []
+        let linkBytes = zeroedBlock(count: 4097, alignment: 16)
+        for entry in listing {
+            match entry.name.toNumber() {
+                Some(descriptor) -> {
+                    let got = readlinkat(
+                        AtDirectory.current,
+                        cStringFrom("\(directory)/fd/\(entry.name)"),
+                        linkBytes.pointer(),
+                        U64(4096)
+                    )
+                    if answerFailed(got) { return .Error(errnoFailure(answerErrno(got))) }
+                    files.append(
+                        CrashedFile {
+                            descriptor: descriptor,
+                            target: stringFromCBytes(linkBytes.pointer(), got)
+                        }
+                    )
+                }
+                None -> {}
             }
-            None -> {}
         }
+        return .Ok(files.sorted({ left, right in return left.descriptor < right.descriptor }))
     }
-    return .Ok(files.sorted({ left, right in return left.descriptor < right.descriptor }))
 }
 
 // The GNU build ID note of the ELF file at `path`, as hex; empty when it has
@@ -310,27 +320,29 @@ function crashFiles(directory: borrow String) -> Result<[CrashedFile], TesseraEr
 // process maps devices and memory files too: a GPU's render node, whose read
 // waits for its events, held the reporter, and the dying process with it.
 function openImage(path: borrow String) -> Number? {
-    let fd = openat(
-        AtDirectory.current,
-        cStringFrom(path),
-        LinuxOpen.readOnly | LinuxOpen.closeOnExec | LinuxOpen.nonBlock,
-        0
-    )
-    if answerFailed(fd) { return .None }
-    let regular = match statAt(fd, "") {
-        Ok(stat) -> stat.kind == .File
-        Error(failed) -> {
-            // A file that cannot be told a regular one is not read: the
-            // report names its frames by address instead.
-            absorb failed
-            false
+    unsafe {
+        let fd = openat(
+            AtDirectory.current,
+            cStringFrom(path),
+            LinuxOpen.readOnly | LinuxOpen.closeOnExec | LinuxOpen.nonBlock,
+            0
+        )
+        if answerFailed(fd) { return .None }
+        let regular = match statAt(fd, "") {
+            Ok(stat) -> stat.kind == .File
+            Error(failed) -> {
+                // A file that cannot be told a regular one is not read: the
+                // report names its frames by address instead.
+                absorb failed
+                false
+            }
         }
+        if !regular {
+            closeBacking(fd)
+            return .None
+        }
+        return .Some(fd)
     }
-    if !regular {
-        closeBacking(fd)
-        return .None
-    }
-    return .Some(fd)
 }
 
 // What names an image's functions: its debug information on a dev machine,
@@ -356,30 +368,34 @@ function buildIdentifier(path: borrow String) -> String? {
 }
 
 function buildIdentifierOf(fd: Number) -> String? {
-    let headerBytes = zeroedBlock(count: 64, alignment: 16)
-    let header = headerBytes.pointer()
-    if pread(fd, header, U64(64), U64(0)) != 64 || heapLoad<U32>(header, 0) != U32(0x464C457F) {
+    unsafe {
+        let headerBytes = zeroedBlock(count: 64, alignment: 16)
+        let header = headerBytes.pointer()
+        if pread(fd, header, U64(64), U64(0)) != 64 || heapLoad<U32>(header, 0) != U32(0x464C457F) {
+            return .None
+        }
+        let offset = heapLoad<U64>(header, 32)
+        let count = U64(heapLoad<U16>(header, 56))
+        let entryBytes = U64(heapLoad<U16>(header, 54))
+        if count == U64(0) || count > U64(256) || entryBytes < U64(56) { return .None }
+        let headersBytes = zeroedBlock(count: Number(count * entryBytes), alignment: 16)
+        let headers = headersBytes.pointer()
+        if pread(fd, headers, count * entryBytes, offset) != Number(count * entryBytes) {
+            return .None
+        }
+        for index in 0..Number(count) {
+            let entry = heapOffset(headers, U64(index) * entryBytes)
+            if fromCode<ElfSegment>(heapLoad<U32>(entry, 0)) != .Note { continue }
+            let size = heapLoad<U64>(entry, 32)
+            if size == U64(0) || size > U64(65536) { continue }
+            let notesBytes = zeroedBlock(count: Number(size), alignment: 16)
+            let notes = notesBytes.pointer()
+            if pread(fd, notes, size, heapLoad<U64>(entry, 8)) != Number(size) { continue }
+            let found = noteBuildIdentifier(notes, size)
+            if found.isSome() { return found }
+        }
         return .None
     }
-    let offset = heapLoad<U64>(header, 32)
-    let count = U64(heapLoad<U16>(header, 56))
-    let entryBytes = U64(heapLoad<U16>(header, 54))
-    if count == U64(0) || count > U64(256) || entryBytes < U64(56) { return .None }
-    let headersBytes = zeroedBlock(count: Number(count * entryBytes), alignment: 16)
-    let headers = headersBytes.pointer()
-    if pread(fd, headers, count * entryBytes, offset) != Number(count * entryBytes) { return .None }
-    for index in 0..Number(count) {
-        let entry = heapOffset(headers, U64(index) * entryBytes)
-        if fromCode<ElfSegment>(heapLoad<U32>(entry, 0)) != .Note { continue }
-        let size = heapLoad<U64>(entry, 32)
-        if size == U64(0) || size > U64(65536) { continue }
-        let notesBytes = zeroedBlock(count: Number(size), alignment: 16)
-        let notes = notesBytes.pointer()
-        if pread(fd, notes, size, heapLoad<U64>(entry, 8)) != Number(size) { continue }
-        let found = noteBuildIdentifier(notes, size)
-        if found.isSome() { return found }
-    }
-    return .None
 }
 
 // NT_GNU_BUILD_ID, type 3 under the name "GNU".

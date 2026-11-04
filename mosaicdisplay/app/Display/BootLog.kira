@@ -1,0 +1,220 @@
+import Foundation
+import LibTessera
+import DeviceKit
+import KCoreAnimation
+
+// The boot log over the splash, on a machine booted with `tessera.bootlog`:
+// PID 1 starts this program with `--boot-log`, and for as long as the splash
+// is held the newest lines of the kernel's log, where every Tessera program's
+// log lines land, are drawn over it, each on a darkened band so it reads over
+// the tile. A machine that stops on its splash then says why on its own
+// screen. The splash is painted again for each picture rather than kept, so
+// the log costs nothing once the platform has drawn and the splash is gone.
+
+namespace BootLogView {
+    // The flag PID 1 passes on a `tessera.bootlog` boot.
+    let flag: String = "--boot-log"
+    // How often the log is looked at, in milliseconds.
+    let interval: Number = 500
+    // How much of the log is read: more than a screen of lines holds.
+    let bytes: Number = 32768
+    // The text's size and weight, in pixels.
+    let size: Number = 26
+    let weight: Number = 500
+    // The space around the lines, in pixels.
+    let margin: Number = 24
+    // How light the text is, and how much of the splash shows behind a line.
+    let ink: Number = 235
+    let shade: Number = 0.35
+}
+
+// What the boot log has drawn: the timer it looks again from, the log as it
+// was last drawn, and each line drawn then, rasterized, so a line still on
+// the screen is not drawn from the face again.
+struct BootLog {
+    var timer: Handle
+    var drawn: String = ""
+    var lines: Map<String, TextImage> = Map()
+}
+
+// Whether PID 1 asked for the boot log.
+function bootLogAsked() -> Bool {
+    match processArguments() {
+        Ok(given) -> return given.contains(BootLogView.flag)
+        Error(failed) -> {
+            log warn("the arguments cannot be read; no boot log", error: errorName(failed))
+            return false
+        }
+    }
+}
+
+// Starts drawing the boot log over the splash, when PID 1 asked for it and
+// the splash is held.
+function startBootLog(server: borrow mut Server) {
+    if !bootLogAsked() { return }
+    if !server.display.splashShowing {
+        log info("the boot log is not drawn: the splash is not on the screen")
+        return
+    }
+    match timerCreate(.Monotonic) {
+        Ok(timer) -> {
+            server.bootLog = .Some(BootLog { timer: timer })
+            log info("the boot log is drawn over the splash")
+            armBootLog(server, 0)
+        }
+        Error(failed) -> log warn("the boot log has no timer", error: errorName(failed))
+    }
+}
+
+function armBootLog(server: borrow Server, after: Number) {
+    let view = try server.bootLog otherwise return
+    let armed = match monotonic() {
+        Ok(now) -> timerSet(
+            view.timer,
+            UNumber(now + after * KeyRepeat.nanosecondsPerMillisecond),
+            0,
+            TimerOptions.none,
+            server.port,
+            PortKey.bootLog
+        )
+        Error(failed) -> .Error(failed)
+    }
+    match armed {
+        Ok -> {}
+        Error(failed) -> log warn(
+            "the boot log's timer could not be armed",
+            error: errorName(failed)
+        )
+    }
+}
+
+// The boot log's timer fired: the log is drawn again when it changed, and
+// the boot log ends once the splash has given way.
+function bootLogTick(server: borrow mut Server) {
+    var view = try server.bootLog otherwise return
+    if !server.display.splashShowing {
+        closeHandle(view.timer)
+        server.bootLog = .None
+        log info("the splash gave way; the boot log ends")
+        return
+    }
+    // One picture at a time: the last is still on its way to the screen.
+    if server.display.flipping.isSome() {
+        armBootLog(server, BootLogView.interval)
+        return
+    }
+    let text = match kernelLogText(BootLogView.bytes) {
+        Ok(read) -> read
+        Error(failed) -> {
+            log warn("the kernel's log cannot be read; the boot log ends", error: errorName(failed))
+            closeHandle(view.timer)
+            server.bootLog = .None
+            return
+        }
+    }
+    if text != view.drawn {
+        match showBootLog(server, view, text) {
+            Ok -> view.drawn = text
+            Error(failed) -> log warn("the boot log could not be shown", error: errorName(failed))
+        }
+    }
+    server.bootLog = .Some(move view)
+    armBootLog(server, BootLogView.interval)
+}
+
+// Paints the splash and the log's last lines on a new surface and flips to
+// it; the picture before goes once the flip lands (`flipLanded`).
+function showBootLog(
+    server: borrow mut Server,
+    view: borrow mut BootLog,
+    text: borrow String
+) -> Result<Void, TesseraError> {
+    let width = server.display.scanout.panelWidth
+    let height = server.display.scanout.panelHeight
+    let painted = try paintableSurface(width, height)
+    drawSplash(painted.pixels, painted.pitch, width, height)
+    drawLogLines(painted, view, text, width, height)
+    unmap(painted)
+    let framebuffer = match displayFramebuffer(server.display.device, painted.surface) {
+        Ok(made) -> made
+        Error(failed) -> {
+            closeRef(painted.surface)
+            return .Error(failed)
+        }
+    }
+    return flipTo(server.display, framebuffer, .Some(painted.surface), false, server.port)
+}
+
+// The log's last lines that fit, the newest at the bottom.
+function drawLogLines(
+    painted: borrow Paintable,
+    view: borrow mut BootLog,
+    text: borrow String,
+    width: Number,
+    height: Number
+) {
+    let lines = logLines(text)
+    var kept: Map<String, TextImage> = Map()
+    var bottom = height - BootLogView.margin
+    var index = lines.count - 1
+    while index >= 0 {
+        let line = lines[index]
+        let image = match kept.value(line) {
+            Some(known) -> known
+            None -> match view.lines.value(line) {
+                Some(known) -> known
+                None -> textImage(line, BootLogView.size, BootLogView.weight)
+            }
+        }
+        kept.set(copy line, copy image)
+        let top = bottom - max(image.rows, 1)
+        if top < BootLogView.margin { break }
+        drawLogLine(painted, image, top, width)
+        bottom = top
+        index -= 1
+    }
+    view.lines = kept
+}
+
+// The log's lines as they are drawn: the level each starts with left off,
+// and the empty ones dropped.
+function logLines(text: borrow String) -> [String] {
+    var lines: [String] = []
+    for line in text.split("\n") {
+        var shown = line
+        if shown.startsWith("<") {
+            match shown.indexOf(">") {
+                Some(close) -> shown = shown.substring(close + 1, shown.count)
+                None -> {}
+            }
+        }
+        if shown.count > 0 { lines.append(shown) }
+    }
+    return lines
+}
+
+// One line at `top`: the band it sits on darkened across the screen, then
+// the text in light grey over it, cut off at the right edge.
+function drawLogLine(
+    painted: borrow Paintable,
+    image: borrow TextImage,
+    top: Number,
+    width: Number
+) {
+    let bytes = PixelFormat.bytesPerPixel
+    let left = BootLogView.margin
+    for row in 0..image.rows {
+        let start = (top + row) * painted.pitch
+        for x in 0..width {
+            let at = start + x * bytes
+            let under = Number(heapLoad<UN32>(painted.pixels, at) & UN32(255))
+            var level = round(under * BootLogView.shade)
+            let column = x - left
+            if column >= 0 && column < image.width {
+                let cover = Number(image.levels[row * image.width + column])
+                level = round(level + (BootLogView.ink - level) * cover / 255)
+            }
+            heapStore<UN32>(painted.pixels, at, grey(level))
+        }
+    }
+}

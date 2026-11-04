@@ -219,7 +219,9 @@ public function cameraAttach(
     memory: borrow Buffer
 ) -> Result<Void, TesseraError> {
     let index = try resolveCamera(camera, RefRights.write)
-    if slot < 0 || slot >= deviceLibrary.cameras[index].slotCount { return .Error(failure(.OutOfRange)) }
+    if slot < 0 || slot >= deviceLibrary.cameras[index].slotCount {
+        return .Error(failure(.OutOfRange))
+    }
     if isNull(memory.address) || memory.length == 0 { return .Error(failure(.InvalidArgument)) }
     match slotOf(index, slot) {
         Some(at) -> deviceLibrary.cameras[index].slots[at].memory = memory

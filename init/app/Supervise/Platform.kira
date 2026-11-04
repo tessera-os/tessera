@@ -20,9 +20,10 @@ namespace PlatformChoice {
     let tablets: [String] = ["30", "31", "32"]
 }
 
-// The platform program to start: `platform.dynamic`'s value, then the boot
-// words', then the chassis's.
+// An explicit boot profile wins, then `platform.dynamic`, remaining boot
+// words, and finally the chassis.
 function chosenPlatform(calls: Handle, bootArguments: borrow [String]) -> String {
+    if bootFlag(bootArguments, "tessera.adaptive-mobile") { return PlatformSetting.adaptiveMobile }
     match settingOnDisk(calls, PlatformSetting.key) {
         Some(value) -> {
             if platformSettingValid(value) { return value }
@@ -32,7 +33,6 @@ function chosenPlatform(calls: Handle, bootArguments: borrow [String]) -> String
         None -> {}
     }
     if bootFlag(bootArguments, "tessera.media") { return PlatformSetting.media }
-    if bootFlag(bootArguments, "tessera.adaptive-mobile") { return PlatformSetting.adaptiveMobile }
     match nodeExists(calls, PlatformChoice.chassisPath) {
         Ok(exists) -> if exists {
             match readWholeFile(calls, PlatformChoice.chassisPath) {

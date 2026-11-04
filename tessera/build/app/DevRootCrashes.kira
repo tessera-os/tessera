@@ -19,7 +19,7 @@ struct CrashImageLine {
 
 function reportCrashes(
     host: borrow Host,
-    image: borrow String,
+    source: borrow SampleVolume,
     roots: borrow SampleRoots,
     directory: borrow String
 ) -> Result<Void, String> {
@@ -27,7 +27,7 @@ function reportCrashes(
         Ok -> {}
         Error(failure) -> return .Error("\(directory) cannot be made: \(traceText(failure))")
     }
-    let text = try dumpedText(host, image, CrashReports.file, "\(directory)/.copied")
+    let text = try dumpedText(host, source, CrashReports.file, "\(directory)/.copied")
     var images: Map<String, SampledImage?> = Map {}
     var name = ""
     var lines: [String] = []

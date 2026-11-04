@@ -170,3 +170,35 @@ public function debugBreak() {
     if !debugIsAttached() { return }
     kernelBreakpoint()
 }
+
+/// The newest text of the kernel's log, at most `limit` bytes of it, ending
+/// with its last line: what `dmesg` prints, each line `<level>[seconds] text`.
+///
+/// Reading leaves the log as it is, so any number of readers see the same.
+///
+/// # Errors
+///
+/// `InvalidArgument` when `limit` is not a positive whole number, and the
+/// kernel's own refusal, `PermissionDenied`, where the log is kept from
+/// unprivileged readers.
+public function kernelLogText(limit: Number) -> Result<String, TesseraError> {
+    if limit <= 0 || limit != trunc(limit) { return .Error(failure(.InvalidArgument)) }
+    return kernelLogTail(limit)
+}
+
+/// Points standard output and error at the kernel's log, so every line the
+/// program writes from then on is a record of it.
+///
+/// The kernel still prints each record on its consoles, so nothing written
+/// to a console is lost; what changes is that the lines are kept in the
+/// kernel's ring with its own, where [`kernelLogText`] reads them. A record is
+/// at most 1024 bytes, so a write longer than that is refused: write a line
+/// at a time.
+///
+/// # Errors
+///
+/// The kernel's refusal when `/dev/kmsg` cannot be opened, as
+/// `PermissionDenied` for a program without the right to write it.
+public function standardStreamsToKernelLog() -> Result<Void, TesseraError> {
+    return kernelLogStreams()
+}

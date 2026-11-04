@@ -1,0 +1,237 @@
+Subject: soc: qcom: add a console in Samsung's sec_log_buf ring
+
+Samsung's SM8550 bootloader keeps a 2 MiB ring, sec_log_buf, in reserved
+memory across warm resets, and Samsung's kernels (stock Android, stock and
+custom recoveries) show its previous contents as /proc/last_kmsg. This
+console writes the kernel log into that ring in the same layout, so a
+mainline kernel that dies before any other output works can be read from a
+recovery after its own warm reboot (panic=N).
+
+With "earlycon=seclog,<address>" (and keep_bootcon) the ring starts in
+setup_arch(), before initcalls, through an early_ioremap() window; the
+early_initcall then maps the whole region and takes over at the same index.
+Without earlycon, the console registers at early_initcall with
+CON_PRINTBUFFER, so the ring holds the whole log from the first line. The
+ring is mapped uncached or write-combined, so every line is in DRAM before
+a reset. The region must be
+no-map for that mapping. Layout after the Galaxy Tab S9 Ultra postmarketOS
+port (agcarbajo/postmarketos-galaxy-tab-s9-ultra).
+
+The firmware's power-off and restart are cold resets, which lose the ring.
+samsung_sec_log.hold=1 makes both write a last line and hang instead, so a
+kernel or init that powers the phone off can still be read after a warm
+reset.
+
+--- a/drivers/soc/qcom/Kconfig
++++ b/drivers/soc/qcom/Kconfig
+@@ -295,6 +295,15 @@ config QCOM_PBS
+ 	  This module provides the APIs to the client drivers that wants to send the
+ 	  PBS trigger event to the PBS RAM.
+ 
++config SAMSUNG_SEC_LOG_CONSOLE
++	bool "Console in Samsung's sec_log_buf ring"
++	depends on ARCH_QCOM && OF
++	help
++	  Write the kernel console into the reserved-memory region compatible
++	  with "samsung,sec-log-buf", in the layout Samsung's bootloader and
++	  kernels use. After a warm reset, a Samsung recovery shows it as
++	  /proc/last_kmsg. A bring-up aid for Samsung Qualcomm phones.
++
+ endmenu
+ 
+ config QCOM_UBWC_CONFIG
+--- a/drivers/soc/qcom/Makefile
++++ b/drivers/soc/qcom/Makefile
+@@ -41,2 +41,3 @@ obj-$(CONFIG_QCOM_INLINE_CRYPTO_ENGINE)	+= qcom_ice.o
+ obj-$(CONFIG_QCOM_PBS) +=	qcom-pbs.o
+ obj-$(CONFIG_QCOM_UBWC_CONFIG) += ubwc_config.o
++obj-$(CONFIG_SAMSUNG_SEC_LOG_CONSOLE) += samsung-sec-log.o
+--- /dev/null
++++ b/drivers/soc/qcom/samsung-sec-log.c
+@@ -0,0 +1,186 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Console in Samsung's sec_log_buf ring.
++ *
++ * The ring is a 16-byte header followed by text. index counts every byte
++ * ever written in this boot; the text wraps at the end of the region.
++ * Samsung's kernels read previous_index bytes as /proc/last_kmsg, so both
++ * indices move together: the log is readable whether or not the bootloader
++ * snapshots it on the way through a reset.
++ *
++ * "earlycon=seclog,<address>" starts the ring from setup_arch(), long
++ * before initcalls, through an early_ioremap() window over the first
++ * SEC_LOG_EARLY_SIZE bytes. The early_initcall then maps the whole region,
++ * keeps the index, and replaces the boot console with a regular one.
++ *
++ * Only a warm reset keeps the ring, and the firmware's power-off and restart
++ * are cold. With samsung_sec_log.hold=1, both write a last line and hang
++ * instead, so the ring stays in DRAM until a warm reset (on the phones,
++ * holding Volume Down and Power).
++ */
++
++#include <linux/console.h>
++#include <linux/init.h>
++#include <linux/io.h>
++#include <linux/minmax.h>
++#include <linux/of.h>
++#include <linux/of_address.h>
++#include <linux/moduleparam.h>
++#include <linux/printk.h>
++#include <linux/reboot.h>
++#include <linux/serial_core.h>
++#include <linux/sizes.h>
++
++#define SEC_LOG_MAGIC		0x4d474f4c	/* "LOGM" */
++#define SEC_LOG_EARLY_SIZE	SZ_256K
++
++struct sec_log_header {
++	u32 boot_count;
++	u32 magic;
++	u32 index;
++	u32 previous_index;
++	u8 data[];
++};
++
++static struct sec_log_header *sec_log;
++static u32 sec_log_size;
++static struct console *sec_log_bootcon;
++static bool hold;
++module_param(hold, bool, 0444);
++MODULE_PARM_DESC(hold, "Hang instead of a cold power-off or restart");
++
++static void notrace sec_log_write(struct console *console, const char *text,
++				  unsigned int count)
++{
++	u32 index, offset, first;
++
++	if (!sec_log || !count)
++		return;
++	if (count > sec_log_size) {
++		text += count - sec_log_size;
++		count = sec_log_size;
++	}
++
++	index = READ_ONCE(sec_log->index);
++	offset = index % sec_log_size;
++	first = min(count, sec_log_size - offset);
++	memcpy_toio((void __iomem *)&sec_log->data[offset], text, first);
++	if (first != count)
++		memcpy_toio((void __iomem *)sec_log->data, text + first,
++			    count - first);
++
++	index += count;
++	WRITE_ONCE(sec_log->index, index);
++	WRITE_ONCE(sec_log->previous_index, index);
++	wmb();
++}
++
++static void sec_log_start(void)
++{
++	if (READ_ONCE(sec_log->magic) != SEC_LOG_MAGIC) {
++		WRITE_ONCE(sec_log->boot_count, 0);
++		WRITE_ONCE(sec_log->magic, SEC_LOG_MAGIC);
++	}
++	WRITE_ONCE(sec_log->boot_count, READ_ONCE(sec_log->boot_count) + 1);
++	WRITE_ONCE(sec_log->index, 0);
++	WRITE_ONCE(sec_log->previous_index, 0);
++	wmb();
++}
++
++static int __init sec_log_early_setup(struct earlycon_device *device,
++				      const char *options)
++{
++	void __iomem *base;
++
++	if (!device->port.mapbase)
++		return -ENODEV;
++	base = early_ioremap(device->port.mapbase, SEC_LOG_EARLY_SIZE);
++	if (!base)
++		return -ENOMEM;
++
++	sec_log = (__force struct sec_log_header *)base;
++	sec_log_size = SEC_LOG_EARLY_SIZE - sizeof(*sec_log);
++	sec_log_start();
++	sec_log_bootcon = device->con;
++	device->con->write = sec_log_write;
++	return 0;
++}
++EARLYCON_DECLARE(seclog, sec_log_early_setup);
++
++static int sec_log_hold(struct sys_off_data *data)
++{
++	static const char line[] =
++		"sec_log: holding instead of a cold reset; warm-reset to read this log\n";
++
++	pr_emerg("sec_log: %s held\n",
++		 data->mode == SYS_OFF_MODE_POWER_OFF ? "power-off" : "restart");
++	sec_log_write(NULL, line, sizeof(line) - 1);
++	for (;;)
++		cpu_relax();
++	return NOTIFY_DONE;
++}
++
++static struct console sec_log_console = {
++	.name	= "sec_log",
++	.write	= sec_log_write,
++	.flags	= CON_ENABLED | CON_ANYTIME | CON_PRINTBUFFER,
++	.index	= -1,
++};
++
++static int __init sec_log_init(void)
++{
++	struct device_node *node;
++	struct resource res;
++	void *memory;
++	int ret;
++
++	node = of_find_compatible_node(NULL, NULL, "samsung,sec-log-buf");
++	if (!node)
++		return 0;
++	ret = of_address_to_resource(node, 0, &res);
++	of_node_put(node);
++	if (ret || resource_size(&res) <= sizeof(*sec_log)) {
++		pr_err("sec_log: invalid sec_log_buf region\n");
++		return 0;
++	}
++
++	memory = memremap(res.start, resource_size(&res), MEMREMAP_WC);
++	if (!memory) {
++		pr_err("sec_log: cannot map %pR\n", &res);
++		return 0;
++	}
++
++	if (sec_log_bootcon) {
++		/*
++		 * The boot console already wrote this boot's log through the
++		 * early window: continue at its index in the full mapping and
++		 * print only what comes after it.
++		 */
++		console_lock();
++		sec_log = memory;
++		sec_log_size = resource_size(&res) - sizeof(*sec_log);
++		console_unlock();
++		unregister_console(sec_log_bootcon);
++		sec_log_console.flags &= ~CON_PRINTBUFFER;
++	} else {
++		sec_log = memory;
++		sec_log_size = resource_size(&res) - sizeof(*sec_log);
++		sec_log_start();
++	}
++
++	register_console(&sec_log_console);
++	pr_info("sec_log: console in %pR\n", &res);
++
++	if (hold) {
++		/* Ahead of PSCI, which registers at SYS_OFF_PRIO_FIRMWARE. */
++		register_sys_off_handler(SYS_OFF_MODE_POWER_OFF,
++					 SYS_OFF_PRIO_FIRMWARE + 1,
++					 sec_log_hold, NULL);
++		register_sys_off_handler(SYS_OFF_MODE_RESTART,
++					 SYS_OFF_PRIO_FIRMWARE + 1,
++					 sec_log_hold, NULL);
++		pr_info("sec_log: power-off and restart hang\n");
++	}
++	return 0;
++}
++early_initcall(sec_log_init);

@@ -1,0 +1,157 @@
+import Foundation
+import LibTessera
+
+// The kernel's log kept on a raw partition (`tessera.logpart=PARTLABEL:name`),
+// for a machine whose log is otherwise lost: a phone that resets hard keeps
+// nothing in memory, and its recovery cannot read the system's btrfs. Every
+// Tessera program's log lines land in the kernel's log, so a copy of it is the
+// whole machine's log.
+//
+// Once a second PID 1 writes the log's newest text into the last 16 MiB of
+// the partition, where an install image at its start never reaches: a 4 KiB
+// header, then the text. The header is text too:
+//
+//     TESSERA-KERNEL-LOG
+//     copy <how many copies this boot has made>
+//     bytes <how long the text after the header is>
+//     uptime <milliseconds of the monotonic clock>
+//
+// and the rest of its 4 KiB is newlines, so `dd` and `head` read it.
+
+namespace KernelLogCopy {
+    // The boot argument naming the partition.
+    let flag: String = "tessera.logpart="
+    let partitionLabel: String = "PARTLABEL:"
+    // The region at the partition's end, and the header at its start.
+    let region: Number = 16777216
+    let header: Number = 4096
+    // The most of the log copied: the kernel's whole ring on any machine, and
+    // well inside the region after its header.
+    let text: Number = 4194304
+    let magic: String = "TESSERA-KERNEL-LOG"
+    let millisecond: Number = 1000000
+}
+
+// Where the log is copied to and when it is copied next.
+struct KernelLogKeeper {
+    let device: String
+    let offset: Number
+    let file: FileHandle
+    // The monotonic time, in nanoseconds, the next copy is due.
+    var due: Number
+    var copies: Number = 0
+}
+
+// The keeper `tessera.logpart` asks for, or none when it is not asked for or
+// the partition cannot be written, which is said.
+function startKernelLogKeeper(arguments: borrow [String]) -> KernelLogKeeper? {
+    let asked = try logPartitionLabel(arguments) otherwise return .None
+    let partition = match volumePartitionLabelled(asked) {
+        Ok(found) -> match found {
+            Some(name) -> name
+            None -> {
+                log warn("no partition has the label tessera.logpart names", label: asked)
+                return .None
+            }
+        }
+        Error(failed) -> {
+            log warn("the partitions could not be searched", label: asked, error: errorName(failed))
+            return .None
+        }
+    }
+    let bytes = match volumePartitionBytes(partition) {
+        Ok(size) -> size
+        Error(failed) -> {
+            log warn("the log partition's size cannot be read", partition, error: errorName(failed))
+            return .None
+        }
+    }
+    if bytes < KernelLogCopy.region * 2 {
+        log warn("the log partition is too small to share", partition, bytes)
+        return .None
+    }
+    let device = "/dev/" + partition
+    let file = match openFileHandle(device, .ReadWrite) {
+        Ok(opened) -> opened
+        Error(failed) -> {
+            log warn("the log partition cannot be opened", device, failure: traceText(failed))
+            return .None
+        }
+    }
+    let offset = bytes - KernelLogCopy.region
+    log info("the kernel's log is copied to the end of a partition", device, offset)
+    return .Some(KernelLogKeeper { device: device, offset: offset, file: file, due: 0 })
+}
+
+// The GPT name `tessera.logpart=PARTLABEL:<name>` gives, if it was passed.
+function logPartitionLabel(arguments: borrow [String]) -> String? {
+    for argument in arguments {
+        if !argument.startsWith(KernelLogCopy.flag) { continue }
+        let value = argument.substring(KernelLogCopy.flag.count, argument.count)
+        if !value.startsWith(KernelLogCopy.partitionLabel) || value.count
+            == KernelLogCopy.partitionLabel.count {
+            log warn("tessera.logpart must be PARTLABEL:<name>", value)
+            return .None
+        }
+        return .Some(value.substring(KernelLogCopy.partitionLabel.count, value.count))
+    }
+    return .None
+}
+
+// When `keeper` next wants to copy, as a deadline for PID 1's wait.
+function kernelLogDeadline(keeper: borrow KernelLogKeeper?, deadline: Number) -> Number {
+    let held = try keeper otherwise return deadline
+    return min(deadline, held.due)
+}
+
+// Copies the log when a copy is due, and sets when the next one is.
+function keepKernelLog(keeper: borrow mut KernelLogKeeper?) {
+    var held = try keeper otherwise return
+    let at = match now() {
+        Ok(value) -> value
+        Error(failed) -> {
+            log warn(
+                "the clock cannot be read; the kernel's log is no longer copied",
+                error: errorName(failed)
+            )
+            keeper = .None
+            return
+        }
+    }
+    if at < held.due { return }
+    match copyKernelLog(held, at) {
+        Ok -> held.copies += 1
+        Error(reason) -> {
+            log warn("the kernel's log is no longer copied", device: held.device, reason)
+            keeper = .None
+            return
+        }
+    }
+    held.due = at + seconds(1)
+    keeper = .Some(move held)
+}
+
+function copyKernelLog(keeper: borrow KernelLogKeeper, at: Number) -> Result<Void, String> {
+    let text = match kernelLogText(KernelLogCopy.text) {
+        Ok(read) -> read
+        Error(failed) -> return .Error("the log cannot be read: \(errorName(failed))")
+    }
+    // At most `KernelLogCopy.text` bytes, which the region holds after its header.
+    let body = text.utf8()
+    let lines = "\(KernelLogCopy.magic)\ncopy \(keeper.copies + 1)\nbytes \(body.count)\nuptime \(trunc(at / KernelLogCopy.millisecond))\n"
+    var head = lines.utf8()
+    while head.count < KernelLogCopy.header { head.append(UN8(10)) }
+    match keeper.file.write(keeper.offset + KernelLogCopy.header, body) {
+        Ok -> {}
+        Error(failed) -> return .Error("the text cannot be written: \(traceText(failed))")
+    }
+    // The header last, so a header always describes text that is there.
+    match keeper.file.write(keeper.offset, head) {
+        Ok -> {}
+        Error(failed) -> return .Error("the header cannot be written: \(traceText(failed))")
+    }
+    match keeper.file.sync() {
+        Ok -> return .Ok
+        Error(failed) -> return .Error("the partition cannot be synced: \(traceText(failed))")
+    }
+}

@@ -1,0 +1,178 @@
+import Foundation
+import Build
+
+// The Mac sees the phone's LUN as a removable disk. It writes the request
+// and archives, ejects the disk, then waits for devroot to return its answer.
+namespace UsbDevRoot {
+    let mountPoint: String = "/Volumes/devroot"
+    let response: String = "response"
+    let imageBytes: Number = 536870912
+    let reserveBytes: Number = 8388608
+    let pollMillis: Number = 100
+}
+
+function carryOutUsbDevRoot(
+    host: borrow Host,
+    architecture: Architecture,
+    action: borrow String,
+    known: borrow [String],
+    components: borrow [String],
+    tree: borrow String,
+    id: borrow String,
+    request: borrow String,
+    payloadBytes: Number,
+    run: borrow StepRun,
+    logs: borrow String
+) -> Result<Void, String> {
+    if !host.darwin { return .Error("the USB dev root transport requires macOS") }
+    if payloadBytes + request.count + UsbDevRoot.reserveBytes > UsbDevRoot.imageBytes {
+        return .Error("the request needs more space than the 512 MiB USB devroot volume can hold")
+    }
+    try awaitUsbMountOnHost(UsbDevRoot.mountPoint, 3000)
+    try clearUsbExchange(UsbDevRoot.mountPoint, known)
+    if action == "install" {
+        for component in components {
+            let source = "\(tree)/\(component).root"
+            let target = "\(UsbDevRoot.mountPoint)/\(component).root"
+            match copyFile(source, target) {
+                Ok -> {}
+                Error(failed) -> return .Error(
+                    "\(source) cannot be copied to the USB volume: \(traceText(failed))"
+                )
+            }
+        }
+    }
+    match writeFile("\(UsbDevRoot.mountPoint)/request", request) {
+        Ok -> {}
+        Error(failed) -> return .Error("the USB request cannot be written: \(traceText(failed))")
+    }
+    try runUsbHostCommand(host, ["eject", UsbDevRoot.mountPoint])
+    try awaitUsbUnmountOnHost(UsbDevRoot.mountPoint, 300)
+    let expected = "dev root request done: id \(id) with 0 failures"
+    let response = try awaitUsbResponse(UsbDevRoot.mountPoint, expected, 3000)
+    if !response.contains(expected) {
+        return .Error("the phone refused part of request \(id): \(response.trim())")
+    }
+    log info("the USB dev root request is done", request: id)
+    if action == "logs" {
+        let contents = match readFile("\(UsbDevRoot.mountPoint)/kernel") {
+            Ok(value) -> value.text
+            Error(failed) -> return .Error(
+                "the kernel log could not be read from the USB volume: \(traceText(failed))"
+            )
+        }
+        match writeFile("\(logs)/kernel-\(id).log", contents) {
+            Ok -> {}
+            Error(failed) -> return .Error(
+                "the kernel log could not be saved: \(traceText(failed))"
+            )
+        }
+        log info("saved the kernel log", path: "\(logs)/kernel-\(id).log")
+    }
+    if action == "sample" {
+        let roots = SampleRoots {
+            symbols: run.paths.count > 0 ? copy run.paths[0] : "",
+            system: run.paths.count > 1 ? copy run.paths[1] : ""
+        }
+        return reportSamples(
+            host,
+            SampleVolume.Directory(copy UsbDevRoot.mountPoint),
+            roots,
+            "\(logs)/sample-\(id).txt"
+        )
+    }
+    if action == "crashes" {
+        let roots = SampleRoots {
+            symbols: run.paths.count > 0 ? copy run.paths[0] : "",
+            system: run.paths.count > 1 ? copy run.paths[1] : ""
+        }
+        return reportCrashes(
+            host,
+            SampleVolume.Directory(copy UsbDevRoot.mountPoint),
+            roots,
+            "\(logs)/crashes"
+        )
+    }
+    return .Ok
+}
+
+function awaitUsbMountOnHost(path: borrow String, polls: Number) -> Result<Void, String> {
+    for poll in 0..polls {
+        if pathExists(path) { return .Ok }
+        processSleep(UsbDevRoot.pollMillis)
+    }
+    return .Error("the USB volume did not mount at \(path)")
+}
+
+function awaitUsbUnmountOnHost(path: borrow String, polls: Number) -> Result<Void, String> {
+    for poll in 0..polls {
+        if !pathExists(path) { return .Ok }
+        processSleep(UsbDevRoot.pollMillis)
+    }
+    return .Error("diskutil did not unmount \(path)")
+}
+
+function awaitUsbResponse(
+    mountPoint: borrow String,
+    expected: borrow String,
+    polls: Number
+) -> Result<String, String> {
+    let path = "\(mountPoint)/\(UsbDevRoot.response)"
+    for poll in 0..polls {
+        if fileExists(path) {
+            return match readFile(path) {
+                Ok(contents) -> .Ok(contents.text)
+                Error(failed) -> .Error("\(path) cannot be read: \(traceText(failed))")
+            }
+        }
+        processSleep(UsbDevRoot.pollMillis)
+    }
+    return .Error("the phone did not return response for \(expected)")
+}
+
+function clearUsbExchange(
+    mountPoint: borrow String,
+    known: borrow [String]
+) -> Result<Void, String> {
+    for component in known {
+        try removeUsbFile("\(mountPoint)/\(component).root")
+    }
+    for name in [
+        "request", "response", "samples", "maps", "kernel", "stacks", "blocks", "resumes", "crashes"
+    ] {
+        try removeUsbFile("\(mountPoint)/\(name)")
+    }
+    return .Ok
+}
+
+function removeUsbFile(path: borrow String) -> Result<Void, String> {
+    if !fileExists(path) { return .Ok }
+    return match removePath(path) {
+        Ok -> .Ok
+        Error(failed) -> .Error("\(path) cannot be removed: \(traceText(failed))")
+    }
+}
+
+function runUsbHostCommand(host: borrow Host, arguments: borrow [String]) -> Result<Void, String> {
+    let command = ProcessCommand {
+        program: host.find("diskutil"),
+        arguments: copy arguments,
+        input: .Null
+    }
+    let child = match command.start() {
+        Ok(started) -> started
+        Error(failed) -> return .Error("diskutil did not start: \(traceText(failed))")
+    }
+    let ended = child.wait()
+    match child.release() {
+        Ok -> {}
+        Error(failed) -> absorb failed
+    }
+    match ended {
+        Ok(exit) -> {
+            if exitStatus(exit) == 0 { return .Ok }
+            return .Error("diskutil eject failed with status \(exitStatus(exit))")
+        }
+        Error(failed) -> return .Error("diskutil could not be waited for: \(traceText(failed))")
+    }
+}

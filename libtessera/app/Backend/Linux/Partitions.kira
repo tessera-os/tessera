@@ -63,6 +63,12 @@ function kernelDiskBytes(disk: borrow String) -> Result<Number, TesseraError> {
     return .Ok(Number(parseUnsigned(sectors.trim())) * 512)
 }
 
+// `/sys/class/block/<partition>/size` counts 512-byte sectors, as a disk's does.
+function kernelPartitionBytes(partition: borrow String) -> Result<Number, TesseraError> {
+    let sectors = try readSmallFile(AtDirectory.current, "/sys/class/block/" + partition + "/size")
+    return .Ok(Number(parseUnsigned(sectors.trim())) * 512)
+}
+
 function kernelDiskBlockBytes(disk: borrow String) -> Result<Number, TesseraError> {
     let text = try readSmallFile(
         AtDirectory.current,
@@ -102,89 +108,106 @@ function kernelPartitionNames(disk: borrow String) -> Result<[String], TesseraEr
     return .Ok(names)
 }
 
+// The GPT name the kernel read for a partition, its uevent's `PARTNAME`, or
+// none for a partition whose table names none. A sysfs file's size is a page
+// whatever it holds, so it is read as the kernel makes it up, never by its size.
+function kernelPartitionLabel(partition: borrow String) -> Result<String?, TesseraError> {
+    let uevent = try readSmallFile(AtDirectory.current, "/sys/class/block/" + partition + "/uevent")
+    let prefix = "PARTNAME="
+    for line in uevent.split("\n") {
+        if line.startsWith(prefix) { return .Ok(.Some(line.substring(prefix.count, line.count))) }
+    }
+    return .Ok(.None)
+}
+
 function kernelWritePartitions(
     disk: borrow String,
     partitions: borrow [VolumePartition]
 ) -> Result<Void, TesseraError> {
-    let blockBytes = try kernelDiskBlockBytes(disk)
-    let blocks = trunc(try kernelDiskBytes(disk) / blockBytes)
-    let tableBlocks = trunc(PartitionTable.entries * PartitionTable.entryBytes / blockBytes)
-    let lastBlock = blocks - 1
-    let firstUsable = 2 + tableBlocks
-    let lastUsable = lastBlock - 1 - tableBlocks
-    let step = trunc(PartitionTable.alignment / blockBytes)
-    let entries = zeroedBlock(
-        count: PartitionTable.entries * PartitionTable.entryBytes,
-        alignment: 16
-    )
-    var start = step
-    for index in 0..partitions.count {
-        let partition = partitions[index]
-        var end = 0
-        if partition.bytes == 0 {
-            end = trunc((lastUsable + 1) / step) * step - 1
-        } else {
-            end = start + trunc(
-                (partition.bytes + PartitionTable.alignment - 1) / PartitionTable.alignment
-            ) * step - 1
+    unsafe {
+        let blockBytes = try kernelDiskBlockBytes(disk)
+        let blocks = trunc(try kernelDiskBytes(disk) / blockBytes)
+        let tableBlocks = trunc(PartitionTable.entries * PartitionTable.entryBytes / blockBytes)
+        let lastBlock = blocks - 1
+        let firstUsable = 2 + tableBlocks
+        let lastUsable = lastBlock - 1 - tableBlocks
+        let step = trunc(PartitionTable.alignment / blockBytes)
+        let entries = zeroedBlock(
+            count: PartitionTable.entries * PartitionTable.entryBytes,
+            alignment: 16
+        )
+        var start = step
+        for index in 0..partitions.count {
+            let partition = partitions[index]
+            var end = 0
+            if partition.bytes == 0 {
+                end = trunc((lastUsable + 1) / step) * step - 1
+            } else {
+                end = start + trunc(
+                    (partition.bytes + PartitionTable.alignment - 1) / PartitionTable.alignment
+                ) * step - 1
+            }
+            if end > lastUsable || end < start { return .Error(failure(.InvalidArgument)) }
+            let at = heapOffset(entries.pointer(), index * PartitionTable.entryBytes)
+            storeGuid(at, TableEntry.type, guidBytes(kindGuid(partition.kind)))
+            storeGuid(at, TableEntry.unique, try randomGuid())
+            heapStore<U64>(at, TableEntry.firstBlock, U64(start))
+            heapStore<U64>(at, TableEntry.lastBlock, U64(end))
+            for character in 0..partition.name.count {
+                heapStore<U16>(
+                    at,
+                    TableEntry.name + character * 2,
+                    U16(partition.name.charAt(character))
+                )
+            }
+            start = end + 1
         }
-        if end > lastUsable || end < start { return .Error(failure(.InvalidArgument)) }
-        let at = heapOffset(entries.pointer(), index * PartitionTable.entryBytes)
-        storeGuid(at, TableEntry.type, guidBytes(kindGuid(partition.kind)))
-        storeGuid(at, TableEntry.unique, try randomGuid())
-        heapStore<U64>(at, TableEntry.firstBlock, U64(start))
-        heapStore<U64>(at, TableEntry.lastBlock, U64(end))
-        for character in 0..partition.name.count {
-            heapStore<U16>(
-                at,
-                TableEntry.name + character * 2,
-                U16(partition.name.charAt(character))
-            )
-        }
-        start = end + 1
+        let entriesSum = checksum(
+            entries.pointer(),
+            PartitionTable.entries * PartitionTable.entryBytes
+        )
+        let diskGuid = try randomGuid()
+        let primary = tableHeader(
+            blockBytes,
+            1,
+            lastBlock,
+            firstUsable,
+            lastUsable,
+            2,
+            diskGuid,
+            entriesSum
+        )
+        let backup = tableHeader(
+            blockBytes,
+            lastBlock,
+            1,
+            firstUsable,
+            lastUsable,
+            lastUsable + 1,
+            diskGuid,
+            entriesSum
+        )
+        let record = protectiveRecord(blockBytes, blocks)
+        let fd = openat(
+            AtDirectory.current,
+            cStringFrom("/dev/" + disk),
+            LinuxOpen.readWrite | LinuxOpen.exclusive | LinuxOpen.closeOnExec,
+            0
+        )
+        if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
+        let written = writeTable(
+            fd,
+            blockBytes,
+            lastBlock,
+            lastUsable,
+            record,
+            primary,
+            entries,
+            backup
+        )
+        closeBacking(fd)
+        return written
     }
-    let entriesSum = checksum(entries.pointer(), PartitionTable.entries * PartitionTable.entryBytes)
-    let diskGuid = try randomGuid()
-    let primary = tableHeader(
-        blockBytes,
-        1,
-        lastBlock,
-        firstUsable,
-        lastUsable,
-        2,
-        diskGuid,
-        entriesSum
-    )
-    let backup = tableHeader(
-        blockBytes,
-        lastBlock,
-        1,
-        firstUsable,
-        lastUsable,
-        lastUsable + 1,
-        diskGuid,
-        entriesSum
-    )
-    let record = protectiveRecord(blockBytes, blocks)
-    let fd = openat(
-        AtDirectory.current,
-        cStringFrom("/dev/" + disk),
-        LinuxOpen.readWrite | LinuxOpen.exclusive | LinuxOpen.closeOnExec,
-        0
-    )
-    if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
-    let written = writeTable(
-        fd,
-        blockBytes,
-        lastBlock,
-        lastUsable,
-        record,
-        primary,
-        entries,
-        backup
-    )
-    closeBacking(fd)
-    return written
 }
 
 // The table's blocks, the backup's last so a table cut short has no header
@@ -199,14 +222,16 @@ function writeTable(
     entries: borrow ByteBlock,
     backup: borrow ByteBlock
 ) -> Result<Void, TesseraError> {
-    let tableLength = PartitionTable.entries * PartitionTable.entryBytes
-    try writeAll(fd, record.pointer(), blockBytes, 0)
-    try writeAll(fd, primary.pointer(), blockBytes, blockBytes)
-    try writeAll(fd, entries.pointer(), tableLength, 2 * blockBytes)
-    try writeAll(fd, entries.pointer(), tableLength, (lastUsable + 1) * blockBytes)
-    try writeAll(fd, backup.pointer(), blockBytes, lastBlock * blockBytes)
-    try answerStatus(fsync(fd))
-    return answerStatus(ioctlValue(fd, PartitionTable.rereadPartitions, 0))
+    unsafe {
+        let tableLength = PartitionTable.entries * PartitionTable.entryBytes
+        try writeAll(fd, record.pointer(), blockBytes, 0)
+        try writeAll(fd, primary.pointer(), blockBytes, blockBytes)
+        try writeAll(fd, entries.pointer(), tableLength, 2 * blockBytes)
+        try writeAll(fd, entries.pointer(), tableLength, (lastUsable + 1) * blockBytes)
+        try writeAll(fd, backup.pointer(), blockBytes, lastBlock * blockBytes)
+        try answerStatus(fsync(fd))
+        return answerStatus(ioctlValue(fd, PartitionTable.rereadPartitions, 0))
+    }
 }
 
 // One header block: the header's 92 bytes, with its own checksum, and zeros.
@@ -264,18 +289,20 @@ function writeAll(
     length: Number,
     offset: Number
 ) -> Result<Void, TesseraError> {
-    var done = 0
-    while done < length {
-        let wrote = pwrite(fd, heapOffset(from, done), U64(length - done), U64(offset + done))
-        if answerFailed(wrote) {
-            if answerErrno(wrote) != code(Errno.Interrupted) {
-                return .Error(errnoFailure(answerErrno(wrote)))
+    unsafe {
+        var done = 0
+        while done < length {
+            let wrote = pwrite(fd, heapOffset(from, done), U64(length - done), U64(offset + done))
+            if answerFailed(wrote) {
+                if answerErrno(wrote) != code(Errno.Interrupted) {
+                    return .Error(errnoFailure(answerErrno(wrote)))
+                }
+            } else {
+                done += wrote
             }
-        } else {
-            done += wrote
         }
+        return .Ok
     }
-    return .Ok
 }
 
 function kindGuid(kind: VolumePartitionKind) -> String {

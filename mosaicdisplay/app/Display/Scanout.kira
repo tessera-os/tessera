@@ -78,7 +78,10 @@ function paintableSurfaceIn(
     }
 }
 
-function closeUnpaintable(surface: Ref, reason: borrow TesseraError) -> Result<Paintable, TesseraError> {
+function closeUnpaintable(
+    surface: Ref,
+    reason: borrow TesseraError
+) -> Result<Paintable, TesseraError> {
     closeRef(surface)
     return .Error(reason)
 }
@@ -168,12 +171,12 @@ function commitPicture(
             framebuffer: framebuffer.raw,
             srcX: UN32(0),
             srcY: UN32(0),
-            srcW: UN32(scanout.width) << CommitRecord.fixedShift,
-            srcH: UN32(scanout.height) << CommitRecord.fixedShift,
+            srcW: UN32(scanout.panelWidth) << CommitRecord.fixedShift,
+            srcH: UN32(scanout.panelHeight) << CommitRecord.fixedShift,
             dstX: N32(0),
             dstY: N32(0),
-            dstW: UN32(scanout.width),
-            dstH: UN32(scanout.height),
+            dstW: UN32(scanout.panelWidth),
+            dstH: UN32(scanout.panelHeight),
             zpos: UN16(0),
             alpha: CommitRecord.opaque,
             rotation: UN32(0),
@@ -229,11 +232,32 @@ function show(
     return .Ok(serial)
 }
 
-// Takes the display: opens it, sets the mode on a cleared surface, then flips
-// to the splash on a second one. None when there is no display to drive.
+// Takes the first display controller with a connected output. A machine can
+// list several: a phone has simpledrm for the panel beside a render-only GPU
+// card, in no fixed order. None when no controller has an output to drive.
 function driveDisplay() -> Result<Display?, TesseraError> {
+    let entries = try entriesOf(.DisplayController)
+    if entries.count == 0 { return .Error(failure(.NotFound)) }
+    for entry in entries {
+        match driveController(entry) {
+            Ok(found) -> match found {
+                Some(display) -> return .Ok(.Some(display))
+                None -> log info("a display controller has no connected output")
+            }
+            Error(reason) -> log warn(
+                "a display controller could not be driven",
+                error: errorName(reason)
+            )
+        }
+    }
+    return .Ok(.None)
+}
+
+// Takes the display `entry`: opens it, sets the mode on a cleared surface, then
+// flips to the splash on a second one. None when it has no output to drive.
+function driveController(entry: EntryId) -> Result<Display?, TesseraError> {
     let flips = try portCreate(.None)
-    let device = match openDisplay(flips) {
+    let device = match openDisplay(entry, flips) {
         Ok(value) -> value
         Error(reason) -> return closeDisplayPort(flips, reason)
     }
@@ -243,12 +267,19 @@ function driveDisplay() -> Result<Display?, TesseraError> {
     }
 }
 
-function closeDisplayPort(flips: Handle, reason: borrow TesseraError) -> Result<Display?, TesseraError> {
+function closeDisplayPort(
+    flips: Handle,
+    reason: borrow TesseraError
+) -> Result<Display?, TesseraError> {
     closeHandle(flips)
     return .Error(reason)
 }
 
-function closeUndrivenDisplay(device: Ref, flips: Handle, reason: borrow TesseraError) -> Result<Display?, TesseraError> {
+function closeUndrivenDisplay(
+    device: Ref,
+    flips: Handle,
+    reason: borrow TesseraError
+) -> Result<Display?, TesseraError> {
     closeRef(device)
     return closeDisplayPort(flips, reason)
 }
@@ -264,8 +295,8 @@ function driveOpenedDisplay(device: Ref, flips: Handle) -> Result<Display?, Tess
         }
     }
     var display = Display { device: device, flips: flips, scanout: scanout, shown: .None }
-    let width = scanout.width
-    let height = scanout.height
+    let width = scanout.panelWidth
+    let height = scanout.panelHeight
 
     // Two surfaces: the mode is set on a cleared one, so the console's last
     // screen is gone before the splash arrives, and the splash is flipped to
@@ -282,13 +313,19 @@ function driveOpenedDisplay(device: Ref, flips: Handle) -> Result<Display?, Tess
     log info("the mode is set; the display is Tessera's")
     drawSplash(splash.pixels, splash.pitch, width, height)
     match show(display, splash, false) {
-        Ok(serial) -> log info("the splash is on the screen", commit: serial)
+        Ok(serial) -> {
+            display.splashShowing = true
+            log info("the splash is on the screen", commit: serial)
+        }
         Error(failed) -> log warn("the splash could not be shown", error: errorName(failed))
     }
     return .Ok(.Some(display))
 }
 
-function closeClearedSurface(cleared: borrow Paintable, reason: borrow TesseraError) -> Result<Display?, TesseraError> {
+function closeClearedSurface(
+    cleared: borrow Paintable,
+    reason: borrow TesseraError
+) -> Result<Display?, TesseraError> {
     unmap(cleared)
     closeRef(cleared.surface)
     return .Error(reason)

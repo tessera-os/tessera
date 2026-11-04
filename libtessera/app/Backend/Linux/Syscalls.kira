@@ -274,6 +274,9 @@ function getrandom(buffer: RawPtr, count: U64, flags: U32) -> Int
 @FFI.Syscall { name: uname }
 function uname(out: RawPtr) -> Int
 
+@FFI.Syscall { name: syslog }
+function syslog(action: Int, buffer: RawPtr, length: Int) -> Int
+
 @FFI.Syscall { name: sysinfo }
 function sysinfo(out: RawPtr) -> Int
 

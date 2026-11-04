@@ -26,12 +26,14 @@ namespace Packet {
 
 // `SO_SNDBUF`: how much one end may have queued before a send waits.
 function kernelPacketBuffer(backing: Number, bytes: U64) -> Result<Void, TesseraError> {
-    let blockBytes = zeroedBlock(count: 8, alignment: 16)
-    let block = blockBytes.pointer()
-    heapStore<U32>(block, 0, U32(bytes))
-    return answerStatus(
-        setsockopt(backing, SocketLevel.socket, SocketOption.sendBuffer, block, U32(4))
-    )
+    unsafe {
+        let blockBytes = zeroedBlock(count: 8, alignment: 16)
+        let block = blockBytes.pointer()
+        heapStore<U32>(block, 0, U32(bytes))
+        return answerStatus(
+            setsockopt(backing, SocketLevel.socket, SocketOption.sendBuffer, block, U32(4))
+        )
+    }
 }
 
 function sizePair(ends: borrow KernelPair, bytes: U64) -> Result<Void, TesseraError> {
@@ -42,27 +44,29 @@ function sizePair(ends: borrow KernelPair, bytes: U64) -> Result<Void, TesseraEr
 // A connected pair of packet ends, nonblocking, each able to queue
 // `bufferBytes` (0 for the kernel's default).
 function kernelPacketPair(bufferBytes: U64) -> Result<KernelPair, TesseraError> {
-    let pairBytes = zeroedBlock(count: 8, alignment: 16)
-    let pair = pairBytes.pointer()
-    let made = socketpair(
-        SocketDomain.unix,
-        SocketKind.seqPacket | SocketKind.closeOnExec | SocketKind.nonBlock,
-        0,
-        pair
-    )
-    if answerFailed(made) { return .Error(errnoFailure(answerErrno(made))) }
-    let ends = KernelPair { first: heapLoad<U32>(pair, 0), second: heapLoad<U32>(pair, 4) }
-    if bufferBytes != U64(0) {
-        match sizePair(ends, bufferBytes) {
-            Ok -> {}
-            Error(failed) -> {
-                closeBacking(ends.first)
-                closeBacking(ends.second)
-                return .Error(failed)
+    unsafe {
+        let pairBytes = zeroedBlock(count: 8, alignment: 16)
+        let pair = pairBytes.pointer()
+        let made = socketpair(
+            SocketDomain.unix,
+            SocketKind.seqPacket | SocketKind.closeOnExec | SocketKind.nonBlock,
+            0,
+            pair
+        )
+        if answerFailed(made) { return .Error(errnoFailure(answerErrno(made))) }
+        let ends = KernelPair { first: heapLoad<U32>(pair, 0), second: heapLoad<U32>(pair, 4) }
+        if bufferBytes != U64(0) {
+            match sizePair(ends, bufferBytes) {
+                Ok -> {}
+                Error(failed) -> {
+                    closeBacking(ends.first)
+                    closeBacking(ends.second)
+                    return .Error(failed)
+                }
             }
         }
+        return .Ok(ends)
     }
-    return .Ok(ends)
 }
 
 // Makes a backing's reads and writes answer `ShouldWait` instead of waiting.
@@ -84,53 +88,60 @@ function kernelPacketSend(
     attached: borrow [Number],
     wait: Bool
 ) -> Result<Void, TesseraError> {
-    if attached.count > Packet.maxAttached { return .Error(failure(.OutOfRange)) }
-    let blockBytes = zeroedBlock(count: 56 + 32 + 16 + 4 * Packet.maxAttached + 8, alignment: 16)
-    let message = blockBytes.pointer()
-    let vectors = heapOffset(message, 56)
-    let control = heapOffset(message, 88)
-    heapStore<RawPtr>(vectors, 0, first)
-    heapStore<U64>(vectors, 8, firstLength)
-    heapStore<RawPtr>(vectors, 16, second)
-    heapStore<U64>(vectors, 24, secondLength)
-    heapStore<RawPtr>(message, 16, vectors)
-    heapStore<U64>(message, 24, secondLength > U64(0) ? U64(2) : U64(1))
-    if attached.count > 0 {
-        let data = U64(attached.count * 4)
-        heapStore<U64>(control, 0, U64(16) + data)
-        heapStore<U32>(control, 8, U32(1))
-        heapStore<U32>(control, 12, U32(1))
-        for index in 0..attached.count {
-            heapStore<U32>(control, 16 + index * 4, U32(attached[index]))
+    unsafe {
+        if attached.count > Packet.maxAttached { return .Error(failure(.OutOfRange)) }
+        let blockBytes = zeroedBlock(
+            count: 56 + 32 + 16 + 4 * Packet.maxAttached + 8,
+            alignment: 16
+        )
+        let message = blockBytes.pointer()
+        let vectors = heapOffset(message, 56)
+        let control = heapOffset(message, 88)
+        heapStore<RawPtr>(vectors, 0, first)
+        heapStore<U64>(vectors, 8, firstLength)
+        heapStore<RawPtr>(vectors, 16, second)
+        heapStore<U64>(vectors, 24, secondLength)
+        heapStore<RawPtr>(message, 16, vectors)
+        heapStore<U64>(message, 24, secondLength > U64(0) ? U64(2) : U64(1))
+        if attached.count > 0 {
+            let data = U64(attached.count * 4)
+            heapStore<U64>(control, 0, U64(16) + data)
+            heapStore<U32>(control, 8, U32(1))
+            heapStore<U32>(control, 12, U32(1))
+            for index in 0..attached.count {
+                heapStore<U32>(control, 16 + index * 4, U32(attached[index]))
+            }
+            heapStore<RawPtr>(message, 32, control)
+            heapStore<U64>(message, 40, (U64(16) + data + U64(7)) & ~U64(7))
         }
-        heapStore<RawPtr>(message, 32, control)
-        heapStore<U64>(message, 40, (U64(16) + data + U64(7)) & ~U64(7))
+        var flags = MessageFlag.noSignal
+        if !wait { flags = flags | MessageFlag.dontWait }
+        let sent = sendmsg(backing, message, flags)
+        if answerFailed(sent) { return .Error(channelFailure(answerErrno(sent))) }
+        return .Ok
     }
-    var flags = MessageFlag.noSignal
-    if !wait { flags = flags | MessageFlag.dontWait }
-    let sent = sendmsg(backing, message, flags)
-    if answerFailed(sent) { return .Error(channelFailure(answerErrno(sent))) }
-    return .Ok
 }
 
 // The size of the next packet, without taking it: `MSG_PEEK | MSG_TRUNC`
 // with no control buffer, so no backing is installed. 0 when the peer has
 // gone and nothing is queued.
 function kernelPacketNextLength(backing: Number) -> Result<U64, TesseraError> {
-    let blockBytes = zeroedBlock(count: 56 + 16 + 8, alignment: 16)
-    let block = blockBytes.pointer()
-    let vectors = heapOffset(block, 56)
-    heapStore<RawPtr>(vectors, 0, heapOffset(block, 72))
-    heapStore<U64>(vectors, 8, U64(8))
-    heapStore<RawPtr>(block, 16, vectors)
-    heapStore<U64>(block, 24, U64(1))
-    let got = recvmsg(
-        backing,
-        block,
-        MessageFlag.peek | MessageFlag.truncated | MessageFlag.dontWait
-    )
-    if answerFailed(got) { return .Error(channelFailure(answerErrno(got))) }
-    return .Ok(U64(got))
+    unsafe {
+        let blockBytes = zeroedBlock(count: 56 + 16 + 8, alignment: 16)
+        let block = blockBytes.pointer()
+        let vectors = heapOffset(block, 56)
+        heapStore<RawPtr>(vectors, 0, heapOffset(block, 72))
+        heapStore<U64>(vectors, 8, U64(8))
+        heapStore<RawPtr>(block, 16, vectors)
+        heapStore<U64>(block, 24, U64(1))
+        let got = recvmsg(
+            backing,
+            block,
+            MessageFlag.peek | MessageFlag.truncated | MessageFlag.dontWait
+        )
+        if answerFailed(got) { return .Error(channelFailure(answerErrno(got))) }
+        return .Ok(U64(got))
+    }
 }
 
 // Takes the next packet into the `capacity` bytes at `target`, with its
@@ -142,109 +153,127 @@ function kernelPacketReceive(
     capacity: U64,
     wait: Bool
 ) -> Result<KernelPacket, TesseraError> {
-    let frameBytes = zeroedBlock(count: 56 + 16 + 16 + 4 * Packet.maxAttached + 8, alignment: 16)
-    let frame = frameBytes.pointer()
-    let vectors = heapOffset(frame, 56)
-    let control = heapOffset(frame, 72)
-    heapStore<RawPtr>(vectors, 0, target)
-    heapStore<U64>(vectors, 8, capacity)
-    heapStore<RawPtr>(frame, 16, vectors)
-    heapStore<U64>(frame, 24, U64(1))
-    heapStore<RawPtr>(frame, 32, control)
-    heapStore<U64>(frame, 40, U64(16 + 4 * Packet.maxAttached + 8))
-    var flags = MessageFlag.closeOnExecRights
-    if !wait { flags = flags | MessageFlag.dontWait }
-    let got = recvmsg(backing, frame, flags)
-    if answerFailed(got) { return .Error(channelFailure(answerErrno(got))) }
-    var attached: [Number] = []
-    let controlLength = heapLoad<U64>(frame, 40)
-    if controlLength >= U64(16) && heapLoad<U32>(control, 8) == U32(1) && heapLoad<U32>(
-        control,
-        12
-    ) == U32(1) {
-        let count = (heapLoad<U64>(control, 0) - U64(16)) / U64(4)
-        for index in 0..Number(count) {
-            attached.append(heapLoad<U32>(control, 16 + index * 4))
+    unsafe {
+        let frameBytes = zeroedBlock(
+            count: 56 + 16 + 16 + 4 * Packet.maxAttached + 8,
+            alignment: 16
+        )
+        let frame = frameBytes.pointer()
+        let vectors = heapOffset(frame, 56)
+        let control = heapOffset(frame, 72)
+        heapStore<RawPtr>(vectors, 0, target)
+        heapStore<U64>(vectors, 8, capacity)
+        heapStore<RawPtr>(frame, 16, vectors)
+        heapStore<U64>(frame, 24, U64(1))
+        heapStore<RawPtr>(frame, 32, control)
+        heapStore<U64>(frame, 40, U64(16 + 4 * Packet.maxAttached + 8))
+        var flags = MessageFlag.closeOnExecRights
+        if !wait { flags = flags | MessageFlag.dontWait }
+        let got = recvmsg(backing, frame, flags)
+        if answerFailed(got) { return .Error(channelFailure(answerErrno(got))) }
+        var attached: [Number] = []
+        let controlLength = heapLoad<U64>(frame, 40)
+        if controlLength >= U64(16) && heapLoad<U32>(control, 8) == U32(1) && heapLoad<U32>(
+            control,
+            12
+        ) == U32(1) {
+            let count = (heapLoad<U64>(control, 0) - U64(16)) / U64(4)
+            for index in 0..Number(count) {
+                attached.append(heapLoad<U32>(control, 16 + index * 4))
+            }
         }
+        return .Ok(KernelPacket { bytes: U64(got), attached: attached })
     }
-    return .Ok(KernelPacket { bytes: U64(got), attached: attached })
 }
 
 // A connection to the broker, blocking, on the abstract unix socket
 // `tessera.system`; `NotFound` while nothing listens there.
 function kernelBrokerConnect() -> Result<Number, TesseraError> {
-    let fd = socket(SocketDomain.unix, SocketKind.seqPacket | SocketKind.closeOnExec, 0)
-    if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
-    let blockBytes = zeroedBlock(count: 112, alignment: 16)
-    let block = blockBytes.pointer()
-    let path = "tessera.system"
-    heapStore<U16>(block, 0, U16(1))
-    copyBytes(heapOffset(block, 3), path.data, path.count)
-    let connected = connect(fd, block, U32(3 + path.count))
-    if answerFailed(connected) {
-        closeBacking(fd)
-        if failedWith(connected, .ConnectionRefused) || failedWith(connected, .NoEntry) {
-            return .Error(failure(.NotFound))
+    unsafe {
+        let fd = socket(SocketDomain.unix, SocketKind.seqPacket | SocketKind.closeOnExec, 0)
+        if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
+        let blockBytes = zeroedBlock(count: 112, alignment: 16)
+        let block = blockBytes.pointer()
+        let path = "tessera.system"
+        heapStore<U16>(block, 0, U16(1))
+        copyBytes(heapOffset(block, 3), path.data, path.count)
+        let connected = connect(fd, block, U32(3 + path.count))
+        if answerFailed(connected) {
+            closeBacking(fd)
+            if failedWith(connected, .ConnectionRefused) || failedWith(connected, .NoEntry) {
+                return .Error(failure(.NotFound))
+            }
+            return .Error(errnoFailure(answerErrno(connected)))
         }
-        return .Error(errnoFailure(answerErrno(connected)))
+        return .Ok(fd)
     }
-    return .Ok(fd)
 }
 
 // The program at the other end of a packet connection, as the path it was
 // started from: `SO_PEERCRED`, then `/proc/<pid>/exe`.
 function kernelPeerProgram(backing: Number) -> Result<String, TesseraError> {
-    let blockBytes = zeroedBlock(count: 272, alignment: 16)
-    let block = blockBytes.pointer()
-    heapStore<U32>(block, 16, U32(12))
-    let asked = getsockopt(
-        backing,
-        SocketLevel.socket,
-        SocketOption.peerCredentials,
-        block,
-        heapOffset(block, 16)
-    )
-    let pid = heapLoad<U32>(block, 0)
-    if answerFailed(asked) || pid == U32(0) {
-        return .Error(failure(.NotFound))
+    unsafe {
+        let blockBytes = zeroedBlock(count: 272, alignment: 16)
+        let block = blockBytes.pointer()
+        heapStore<U32>(block, 16, U32(12))
+        let asked = getsockopt(
+            backing,
+            SocketLevel.socket,
+            SocketOption.peerCredentials,
+            block,
+            heapOffset(block, 16)
+        )
+        let pid = heapLoad<U32>(block, 0)
+        if answerFailed(asked) || pid == U32(0) {
+            return .Error(failure(.NotFound))
+        }
+        let link = "/proc/" + stringFromUnsigned(U64(pid)) + "/exe"
+        let read = readlinkat(
+            AtDirectory.current,
+            cStringFrom(link),
+            heapOffset(block, 16),
+            U64(255)
+        )
+        if answerFailed(read) {
+            return .Error(errnoFailure(answerErrno(read)))
+        }
+        return .Ok(stringFromCBytes(heapOffset(block, 16), read))
     }
-    let link = "/proc/" + stringFromUnsigned(U64(pid)) + "/exe"
-    let read = readlinkat(AtDirectory.current, cStringFrom(link), heapOffset(block, 16), U64(255))
-    if answerFailed(read) {
-        return .Error(errnoFailure(answerErrno(read)))
-    }
-    return .Ok(stringFromCBytes(heapOffset(block, 16), read))
 }
 
 // Whether `backing` is a packet end, as the startup channel is. A
 // descriptor that is not open, or not a socket, is not one.
 function kernelIsPacketEnd(backing: Number) -> Result<Bool, TesseraError> {
-    let blockBytes = zeroedBlock(count: 16, alignment: 16)
-    let block = blockBytes.pointer()
-    heapStore<U32>(block, 8, U32(4))
-    let asked = getsockopt(
-        backing,
-        SocketLevel.socket,
-        SocketOption.kind,
-        block,
-        heapOffset(block, 8)
-    )
-    if answerFailed(asked) {
-        let errno = answerErrno(asked)
-        if errno == code(Errno.BadDescriptor) || errno == code(Errno.NotSocket) {
-            return .Ok(false)
+    unsafe {
+        let blockBytes = zeroedBlock(count: 16, alignment: 16)
+        let block = blockBytes.pointer()
+        heapStore<U32>(block, 8, U32(4))
+        let asked = getsockopt(
+            backing,
+            SocketLevel.socket,
+            SocketOption.kind,
+            block,
+            heapOffset(block, 8)
+        )
+        if answerFailed(asked) {
+            let errno = answerErrno(asked)
+            if errno == code(Errno.BadDescriptor) || errno == code(Errno.NotSocket) {
+                return .Ok(false)
+            }
+            return .Error(errnoFailure(errno))
         }
-        return .Error(errnoFailure(errno))
+        return .Ok(heapLoad<U32>(block, 0) == SocketKind.seqPacket)
     }
-    return .Ok(heapLoad<U32>(block, 0) == SocketKind.seqPacket)
 }
 
 // Up to `length` bytes from `backing` now; 0 when there are none or it has
 // ended.
 function kernelReadSome(backing: Number, target: RawPtr, length: U64) -> Result<U64, TesseraError> {
-    let got = read(backing, target, length)
-    if answerFailed(got) { return .Error(channelFailure(answerErrno(got))) }
-    return .Ok(U64(got))
+    unsafe {
+        let got = read(backing, target, length)
+        if answerFailed(got) { return .Error(channelFailure(answerErrno(got))) }
+        return .Ok(U64(got))
+    }
 }
 
 // Writes `length` bytes to `backing` in one piece.
@@ -253,64 +282,72 @@ function kernelWriteSome(
     source: RawPtr,
     length: U64
 ) -> Result<U64, TesseraError> {
-    let wrote = write(backing, source, length)
-    if answerFailed(wrote) { return .Error(channelFailure(answerErrno(wrote))) }
-    return .Ok(U64(wrote))
+    unsafe {
+        let wrote = write(backing, source, length)
+        if answerFailed(wrote) { return .Error(channelFailure(answerErrno(wrote))) }
+        return .Ok(U64(wrote))
+    }
 }
 
 // The broker's listening end: the abstract unix socket `tessera.system`,
 // nonblocking, so it reads when a connection waits to be accepted.
 function kernelBrokerListen() -> Result<Number, TesseraError> {
-    let fd = socket(
-        SocketDomain.unix,
-        SocketKind.seqPacket | SocketKind.closeOnExec | SocketKind.nonBlock,
-        0
-    )
-    if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
-    let blockBytes = zeroedBlock(count: 112, alignment: 16)
-    let block = blockBytes.pointer()
-    let path = "tessera.system"
-    heapStore<U16>(block, 0, U16(1))
-    copyBytes(heapOffset(block, 3), path.data, path.count)
-    let bound = bind(fd, block, U32(3 + path.count))
-    if answerFailed(bound) {
-        closeBacking(fd)
-        if failedWith(bound, .AddressInUse) { return .Error(failure(.AlreadyExists)) }
-        return .Error(errnoFailure(answerErrno(bound)))
+    unsafe {
+        let fd = socket(
+            SocketDomain.unix,
+            SocketKind.seqPacket | SocketKind.closeOnExec | SocketKind.nonBlock,
+            0
+        )
+        if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
+        let blockBytes = zeroedBlock(count: 112, alignment: 16)
+        let block = blockBytes.pointer()
+        let path = "tessera.system"
+        heapStore<U16>(block, 0, U16(1))
+        copyBytes(heapOffset(block, 3), path.data, path.count)
+        let bound = bind(fd, block, U32(3 + path.count))
+        if answerFailed(bound) {
+            closeBacking(fd)
+            if failedWith(bound, .AddressInUse) { return .Error(failure(.AlreadyExists)) }
+            return .Error(errnoFailure(answerErrno(bound)))
+        }
+        let listening = listen(fd, 64)
+        if answerFailed(listening) {
+            closeBacking(fd)
+            return .Error(errnoFailure(answerErrno(listening)))
+        }
+        return .Ok(fd)
     }
-    let listening = listen(fd, 64)
-    if answerFailed(listening) {
-        closeBacking(fd)
-        return .Error(errnoFailure(answerErrno(listening)))
-    }
-    return .Ok(fd)
 }
 
 // The next connection on the broker's listening end, nonblocking;
 // `ShouldWait` when none waits.
 function kernelBrokerAccept(listener: Number) -> Result<Number, TesseraError> {
-    let fd = accept4(
-        listener,
-        nullPointer(),
-        nullPointer(),
-        LinuxOpen.closeOnExec | LinuxOpen.nonBlock
-    )
-    if answerFailed(fd) { return .Error(channelFailure(answerErrno(fd))) }
-    return .Ok(fd)
+    unsafe {
+        let fd = accept4(
+            listener,
+            nullPointer(),
+            nullPointer(),
+            LinuxOpen.closeOnExec | LinuxOpen.nonBlock
+        )
+        if answerFailed(fd) { return .Error(channelFailure(answerErrno(fd))) }
+        return .Ok(fd)
+    }
 }
 
 // The process at the other end of a packet connection (`SO_PEERCRED`).
 function kernelPeerProcess(backing: Number) -> Result<U64, TesseraError> {
-    let blockBytes = zeroedBlock(count: 32, alignment: 16)
-    let block = blockBytes.pointer()
-    heapStore<U32>(block, 16, U32(12))
-    let asked = getsockopt(
-        backing,
-        SocketLevel.socket,
-        SocketOption.peerCredentials,
-        block,
-        heapOffset(block, 16)
-    )
-    if answerFailed(asked) { return .Error(errnoFailure(answerErrno(asked))) }
-    return .Ok(U64(heapLoad<U32>(block, 0)))
+    unsafe {
+        let blockBytes = zeroedBlock(count: 32, alignment: 16)
+        let block = blockBytes.pointer()
+        heapStore<U32>(block, 16, U32(12))
+        let asked = getsockopt(
+            backing,
+            SocketLevel.socket,
+            SocketOption.peerCredentials,
+            block,
+            heapOffset(block, 16)
+        )
+        if answerFailed(asked) { return .Error(errnoFailure(answerErrno(asked))) }
+        return .Ok(U64(heapLoad<U32>(block, 0)))
+    }
 }

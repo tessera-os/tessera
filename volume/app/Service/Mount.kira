@@ -111,6 +111,14 @@ function mount(
     let volume = service.volumes[index]
     let format = try formatOf(volume.content) otherwise return .Ok
     if volume.node.count == 0 { return .Ok }
+    // A partition of a fixed disk belongs to whatever owns that disk: a
+    // phone's firmware, modem and calibration partitions are ext4 and FAT
+    // too, and mounting one read-write can replay its journal or mark it
+    // dirty. Only a removable disk's partitions, and whole disks, are mounted.
+    if volume.partition && !volume.flags.has(BlockFlags.removable) {
+        log info("a fixed disk's partition is not mounted", disk: volume.name)
+        return .Ok
+    }
     match mountedAt(table, volume.node) {
         Some(target) -> {
             service.volumes[index].mountPoint = .Some(target)
@@ -156,7 +164,11 @@ function announceMounted(
         )
         Error(failed) -> {
             log info("mounted a volume", disk, mountPoint: path, filesystem, readOnly)
-            log warn("a volume's root could not be read", mountPoint: path, error: errorName(failed))
+            log warn(
+                "a volume's root could not be read",
+                mountPoint: path,
+                error: errorName(failed)
+            )
         }
     }
 }

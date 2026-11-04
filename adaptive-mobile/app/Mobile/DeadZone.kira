@@ -1,0 +1,58 @@
+import Foundation
+import LibTessera
+import AppKit
+import PlatformUI
+import KiraUI
+
+// The touch dead zone at boot (LibTessera's DeadZone.kira): when the screen
+// keeps one, a banner says so, and a tap on it sets the dead zone to none, so
+// a zone set on the wrong edge never leaves the screen without a way back.
+// The banner is the platform's own; no application posted it.
+
+namespace DeadZoneNotice {
+    // The client number the banner carries, which no display client has.
+    let client: Number = -1
+    // How long the banner stays, in seconds: long enough to be read and reached.
+    let seconds: Number = 60
+}
+
+// On the first frame, a banner for the dead zone the screen keeps, if any.
+function noticeDeadZone(mobile: borrow mut Mobile, now: Number) {
+    if mobile.deadZoneNoticed { return }
+    mobile.deadZoneNoticed = true
+    let zone = match deadZoneSetting() {
+        Some(value) -> value
+        None -> return
+    }
+    log info(
+        "the screen keeps a dead zone",
+        edge: deadZoneEdgeName(zone.edge),
+        percent: zone.percent
+    )
+    mobile.banners.append(
+        ShownNotification {
+            notification: BridgeNotification {
+                client: DeadZoneNotice.client,
+                application: "Developer",
+                title: "Touch dead zone is on",
+                body: "The \(deadZoneEdgeName(zone.edge)) \(zone.percent)% of the screen ignores touch. Tap to turn it off."
+            },
+            since: now,
+            until: now + DeadZoneNotice.seconds * 1000
+        }
+    )
+    redrawAfter(0)
+}
+
+// Whether `client` is the dead zone's banner; a tap on it sets the dead zone
+// to none, locked or not, and the banner goes.
+function deadZoneNoticeChosen(mobile: borrow mut Mobile, client: Number) -> Bool {
+    if client != DeadZoneNotice.client { return false }
+    mobile.banners = bannersAfterChoosing(mobile.banners, client)
+    match storeSetting(DeveloperSetting.deadZoneEdge, .Some("none")) {
+        Ok -> log info("the dead zone was turned off from its banner")
+        Error(failed) -> log warn("the dead zone could not be turned off", error: errorName(failed))
+    }
+    redrawAfter(0)
+    return true
+}

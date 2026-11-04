@@ -8,6 +8,7 @@ import Kten
 //     kira build devroot sample [seconds] [hz]
 //     kira build devroot crashes
 //     kira build devroot wait
+//     add -usb to any command to exchange requests with a phone over its USB LUN
 //
 // The step builds the install root of each component it names, and of each
 // component linking a library it names, and packs each

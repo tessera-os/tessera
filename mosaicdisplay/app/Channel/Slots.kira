@@ -87,7 +87,8 @@ function redrawnContent(
         && drawnWidth <= held.textureWidth && drawnHeight <= held.textureHeight
     content.width = drawn ? drawnWidth : held.textureWidth
     content.height = drawn ? drawnHeight : held.textureHeight
-    content.scanable = content.width == display.scanout.width
+    content.scanable = display.scanout.whole()
+        && content.width == display.scanout.width
         && content.height == display.scanout.height
         && content.width == held.textureWidth && content.height == held.textureHeight
         && held.rowsFit

@@ -47,7 +47,10 @@ function infoWord(topic: InfoTopic) -> Result<UN32, TesseraError> {
 function reportKernel() {
     match readKernel() {
         Ok -> {}
-        Error(reason) -> log warn("the kernel information could not be read", error: errorName(reason))
+        Error(reason) -> log warn(
+            "the kernel information could not be read",
+            error: errorName(reason)
+        )
     }
 }
 

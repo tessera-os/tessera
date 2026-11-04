@@ -134,6 +134,9 @@ function bundleCategory(bundle: borrow String) -> String? {
 function applicationsIn(directory: borrow String, place: ApplicationPlace) -> [Application] {
     var found: [Application] = []
     for name in bundleNames(directory) {
+        if directory == "/" + SystemDirectory.systemApplications && name == "Desktop" {
+            continue
+        }
         if isBundle(directory, name) {
             let category = bundleCategory(directory + "/" + name + ".app")
             found.append(Application { name: name, place: copy place, category: category })

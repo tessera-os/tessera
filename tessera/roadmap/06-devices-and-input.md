@@ -103,8 +103,19 @@ before relying on it; the fallback is not expensive.
 
 ### Touch, and everything else
 
-`EV_ABS` with the multitouch protocol. Not needed for a desktop and not worth
-building until there is a machine with a touchscreen.
+`EV_ABS` with the multitouch protocol. The S23+ (dm2q) is the first machine
+with a touchscreen. MosaicDisplay holds a touchscreen as an absolute pointer:
+the reported touch position places it, and the contact (`BTN_TOUCH`)
+is the primary button. Further fingers and gestures are not delivered yet.
+
+A screen with a broken digitizer keeps a dead zone. Settings > Developer turns
+on developer mode (`developer.mode`) and picks an edge
+(`developer.dead-zone.edge`) and a share of the screen
+(`developer.dead-zone.percent`, 50 when unset). LibTessera's `DeadZone.kira`
+reads them. MosaicDisplay lays the output out in what the zone leaves, draws
+the composition there through Ember's pass draw area, and drops presses whose
+touch lands in the zone. At boot Adaptive Mobile shows a banner while a zone is
+kept; tapping it sets the edge to `none`.
 
 ## Hotplug
 

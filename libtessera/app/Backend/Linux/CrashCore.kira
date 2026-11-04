@@ -70,17 +70,19 @@ struct CoreSegment {
 
 // Reads `count` bytes into `target`, or as many as come before the end.
 function coreRead(stream: borrow mut CoreStream, target: RawPtr, count: U64) -> U64 {
-    var total = U64(0)
-    while total < count && !stream.ended {
-        let got = read(0, heapOffset(target, total), count - total)
-        if answerFailed(got) || got == 0 {
-            stream.ended = true
-            break
+    unsafe {
+        var total = U64(0)
+        while total < count && !stream.ended {
+            let got = read(0, heapOffset(target, total), count - total)
+            if answerFailed(got) || got == 0 {
+                stream.ended = true
+                break
+            }
+            total = total + U64(got)
         }
-        total = total + U64(got)
+        stream.at = stream.at + total
+        return total
     }
-    stream.at = stream.at + total
-    return total
 }
 
 // Reads past everything before `offset`; whether the stream reached it.
@@ -285,36 +287,40 @@ function readStacks(
     directory: borrow String,
     segments: borrow [CoreSegment]
 ) -> [CoreStack] {
-    let memory = openat(
-        AtDirectory.current,
-        cStringFrom(directory + "/mem"),
-        LinuxOpen.readOnly | LinuxOpen.closeOnExec,
-        0
-    )
-    if answerFailed(memory) {
-        capture.problems.append("\(directory)/mem could not be opened")
-        return []
-    }
-    var stacks: [CoreStack] = []
-    for thread in capture.threads {
-        let pointer = threadStackPointer(capture.architecture, thread.registers)
-        for segment in segments {
-            if segment.kind != .Load || segment.size == U64(0) { continue }
-            if pointer < segment.address || pointer >= segment.address + segment.size { continue }
-            let low = pointer - segment.address > CoreLayout.stackBelow ? pointer - CoreLayout.stackBelow : segment.address
-            let rest = segment.address + segment.size - low
-            let size = rest < CoreLayout.stackAbove ? rest : CoreLayout.stackAbove
-            let bytes = zeroedBlock(count: Number(size) + 1, alignment: 16)
-            let got = pread(memory, bytes.pointer(), size, low)
-            if answerFailed(got) || got <= 0 {
-                capture.problems.append("a thread's stack could not be read")
-                continue
-            }
-            stacks.append(CoreStack { address: low, bytes: move bytes, count: U64(got) })
+    unsafe {
+        let memory = openat(
+            AtDirectory.current,
+            cStringFrom(directory + "/mem"),
+            LinuxOpen.readOnly | LinuxOpen.closeOnExec,
+            0
+        )
+        if answerFailed(memory) {
+            capture.problems.append("\(directory)/mem could not be opened")
+            return []
         }
+        var stacks: [CoreStack] = []
+        for thread in capture.threads {
+            let pointer = threadStackPointer(capture.architecture, thread.registers)
+            for segment in segments {
+                if segment.kind != .Load || segment.size == U64(0) { continue }
+                if pointer < segment.address || pointer >= segment.address + segment.size {
+                    continue
+                }
+                let low = pointer - segment.address > CoreLayout.stackBelow ? pointer - CoreLayout.stackBelow : segment.address
+                let rest = segment.address + segment.size - low
+                let size = rest < CoreLayout.stackAbove ? rest : CoreLayout.stackAbove
+                let bytes = zeroedBlock(count: Number(size) + 1, alignment: 16)
+                let got = pread(memory, bytes.pointer(), size, low)
+                if answerFailed(got) || got <= 0 {
+                    capture.problems.append("a thread's stack could not be read")
+                    continue
+                }
+                stacks.append(CoreStack { address: low, bytes: move bytes, count: U64(got) })
+            }
+        }
+        closeBacking(memory)
+        return stacks
     }
-    closeBacking(memory)
-    return stacks
 }
 
 function threadStackPointer(architecture: Architecture, registers: borrow [U64]) -> U64 {

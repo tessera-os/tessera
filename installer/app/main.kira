@@ -24,6 +24,10 @@ namespace InstallerFlag {
     let serve: String = "--serve"
     // Install the system as an update to try before it is trusted.
     let update: String = "tessera.update"
+    // Physical install targets can be named by GPT partition label. The
+    // QEMU installer keeps its vda/vdb defaults when these are absent.
+    let target: String = "tessera.target="
+    let image: String = "tessera.image="
 }
 
 /// Runs the installer: serves requests when init starts it with `--serve`, else installs the version asked for.
@@ -37,12 +41,18 @@ function main() -> UN8 {
     let version = try requestedVersion() otherwise return stop(
         "no tessera.version= on the kernel command line"
     )
-    // The machine's disk, with the volume's top mounted at /volume, and the
-    // system image at /image.
+    let target = try requestedDevice(InstallerFlag.target, "vda") otherwise return stop(
+        "the requested install target could not be resolved"
+    )
+    let image = try requestedDevice(InstallerFlag.image, "vdb") otherwise return stop(
+        "the requested system image could not be resolved"
+    )
+    // The machine's install target, with the volume's top mounted at
+    // /volume, and the system image at /image.
     let installation = Installation {
-        disk: "vda",
+        disk: target,
         volume: "/volume",
-        image: .Disk("vdb"),
+        image: .Disk(image),
         imageAt: "/image"
     }
     var progress = CopyProgress { channel: .None, done: 0, total: 0 }
@@ -99,6 +109,49 @@ function requestedVersion() -> String? {
         }
     }
     return .None
+}
+
+/// The requested block device, or the QEMU default. `PARTLABEL:name` resolves
+/// a GPT partition through its sysfs uevent instead of assuming a device name.
+function requestedDevice(prefix: borrow String, fallback: borrow String) -> Result<String, String> {
+    let arguments = match processArguments() {
+        Ok(given) -> given
+        Error(failed) -> return .Error(
+            "the kernel's arguments could not be read: \(errorName(failed))"
+        )
+    }
+    for argument in arguments {
+        if !argument.startsWith(prefix) { continue }
+        let value = argument.substring(prefix.count, argument.count)
+        if value.count == 0 || value.contains("/") {
+            return .Error("\(prefix) must name a block device or PARTLABEL")
+        }
+        if value.startsWith("PARTLABEL:") {
+            let label = value.substring("PARTLABEL:".count, value.count)
+            if label.count == 0 { return .Error("the partition label is empty") }
+            match partitionDevice(label) {
+                Some(device) -> return .Ok(device)
+                None -> return .Error("no partition has GPT label \(label)")
+            }
+        }
+        return .Ok(copy value)
+    }
+    return .Ok(copy fallback)
+}
+
+/// Finds the Linux block-device name for a GPT partition label.
+function partitionDevice(label: borrow String) -> String? {
+    match volumePartitionLabelled(label) {
+        Ok(found) -> return found
+        Error(failed) -> {
+            log warn(
+                "the machine's partitions could not be searched",
+                label,
+                error: errorName(failed)
+            )
+            return .None
+        }
+    }
 }
 
 /// Installs the version asked for onto the volume, reporting its progress, and returns the exit status.

@@ -40,53 +40,57 @@ namespace SealedMount {
 // Turns fs-verity on for the file at `path`. A file that already has it on
 // is left as it is.
 function kernelEnableVerity(path: borrow String) -> Result<Void, TesseraError> {
-    let fd = openat(
-        AtDirectory.current,
-        cStringFrom(path),
-        LinuxOpen.readOnly | LinuxOpen.closeOnExec,
-        0
-    )
-    if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
-    let argumentBytes = zeroedBlock(count: VerityIoctl.enableBytes, alignment: 16)
-    let argument = argumentBytes.pointer()
-    heapStore<U32>(argument, 0, VerityIoctl.version)
-    heapStore<U32>(argument, 4, VerityIoctl.sha256)
-    heapStore<U32>(argument, 8, VerityIoctl.blockSize)
-    let answer = ioctl(fd, VerityIoctl.enable, argument)
-    closeBacking(fd)
-    if failedWith(answer, .Exists) { return .Ok }
-    return answerStatus(answer)
+    unsafe {
+        let fd = openat(
+            AtDirectory.current,
+            cStringFrom(path),
+            LinuxOpen.readOnly | LinuxOpen.closeOnExec,
+            0
+        )
+        if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
+        let argumentBytes = zeroedBlock(count: VerityIoctl.enableBytes, alignment: 16)
+        let argument = argumentBytes.pointer()
+        heapStore<U32>(argument, 0, VerityIoctl.version)
+        heapStore<U32>(argument, 4, VerityIoctl.sha256)
+        heapStore<U32>(argument, 8, VerityIoctl.blockSize)
+        let answer = ioctl(fd, VerityIoctl.enable, argument)
+        closeBacking(fd)
+        if failedWith(answer, .Exists) { return .Ok }
+        return answerStatus(answer)
+    }
 }
 
 // The fs-verity digest of the file at `path`, in lowercase hexadecimal.
 function kernelVerityDigest(path: borrow String) -> Result<String, TesseraError> {
-    let fd = openat(
-        AtDirectory.current,
-        cStringFrom(path),
-        LinuxOpen.readOnly | LinuxOpen.closeOnExec,
-        0
-    )
-    if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
-    let digestBytes = zeroedBlock(
-        count: VerityIoctl.digestAt + Number(VerityIoctl.digestRoom),
-        alignment: 16
-    )
-    let digest = digestBytes.pointer()
-    heapStore<U16>(digest, 2, VerityIoctl.digestRoom)
-    let answer = ioctl(fd, VerityIoctl.measure, digest)
-    closeBacking(fd)
-    if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
-    let size = Number(heapLoad<U16>(digest, 2))
-    let digits = "0123456789abcdef"
-    var text = ""
-    for index in 0..size {
-        let byte = Number(heapLoad<U8>(digest, VerityIoctl.digestAt + index))
-        let high = floor(byte / 16)
-        let low = byte % 16
-        text.append(digits.substring(high, high + 1))
-        text.append(digits.substring(low, low + 1))
+    unsafe {
+        let fd = openat(
+            AtDirectory.current,
+            cStringFrom(path),
+            LinuxOpen.readOnly | LinuxOpen.closeOnExec,
+            0
+        )
+        if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
+        let digestBytes = zeroedBlock(
+            count: VerityIoctl.digestAt + Number(VerityIoctl.digestRoom),
+            alignment: 16
+        )
+        let digest = digestBytes.pointer()
+        heapStore<U16>(digest, 2, VerityIoctl.digestRoom)
+        let answer = ioctl(fd, VerityIoctl.measure, digest)
+        closeBacking(fd)
+        if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
+        let size = Number(heapLoad<U16>(digest, 2))
+        let digits = "0123456789abcdef"
+        var text = ""
+        for index in 0..size {
+            let byte = Number(heapLoad<U8>(digest, VerityIoctl.digestAt + index))
+            let high = floor(byte / 16)
+            let low = byte % 16
+            text.append(digits.substring(high, high + 1))
+            text.append(digits.substring(low, low + 1))
+        }
+        return .Ok(text)
     }
-    return .Ok(text)
 }
 
 // Mounts at `target`, read-only, the tree the EROFS image mounted at
@@ -97,14 +101,16 @@ function kernelVolumeMountSealed(
     target: borrow String,
     options: VolumeOptions
 ) -> Result<Void, TesseraError> {
-    let layers = cStringFrom(SealedMount.options + metadata + SealedMount.dataLayer + data)
-    return answerStatus(
-        mount(
-            cStringFrom("overlay"),
-            cStringFrom(target),
-            cStringFrom("overlay"),
-            mountFlags(options | VolumeOptions.readOnly),
-            layers.address
+    unsafe {
+        let layers = cStringFrom(SealedMount.options + metadata + SealedMount.dataLayer + data)
+        return answerStatus(
+            mount(
+                cStringFrom("overlay"),
+                cStringFrom(target),
+                cStringFrom("overlay"),
+                mountFlags(options | VolumeOptions.readOnly),
+                layers.address
+            )
         )
-    )
+    }
 }

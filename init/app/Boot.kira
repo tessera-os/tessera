@@ -13,6 +13,12 @@ namespace BootFlag {
     // A development machine: boot `system/dev`, unsealed, and run the dev
     // root service (roadmap/18-components.md).
     let dev: String = "tessera.dev"
+    // The development machine has named host debug ports.
+    let debugPorts: String = "tessera.debug-ports"
+    // Draw the kernel's log over the splash while it is held, so a machine
+    // that stops on its splash says why on its own screen (MosaicDisplay's
+    // `Display/BootLog.kira`).
+    let bootLog: String = "tessera.bootlog"
 }
 
 // Whether `flag` was passed to this program by the kernel.

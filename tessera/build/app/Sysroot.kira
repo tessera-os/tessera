@@ -61,7 +61,8 @@ struct SysrootPin {
 function debianSysroot(
     graph: borrow mut Graph,
     host: borrow Host,
-    architecture: Architecture
+    architecture: Architecture,
+    kernelProfile: borrow String
 ) -> Result<Sysroot, String> {
     let name = architecture.name()
     var trees = [sysrootLinks(graph, architecture)]
@@ -70,7 +71,7 @@ function debianSysroot(
         Error(problem) -> return .Error(problem)
     }
     let tree = graph.union("\(name)/sysroot/tree", trees)
-    let graphics = guestGraphics(graph, host, architecture, tree)
+    let graphics = guestGraphics(graph, host, architecture, kernelProfile, tree)
     // The guest GPU stack's Vulkan loader where a link finds it, beside the C
     // library: the one native library a Tessera program links.
     let loader = librariesFrom(

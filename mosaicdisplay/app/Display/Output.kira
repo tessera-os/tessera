@@ -21,15 +21,29 @@ struct Scanout {
     var plane: UN32
     // The CRTC's cursor plane, on a display that has one.
     var cursorPlane: UN32? = .None
+    // The part of the panel the output is laid out in, in pixels: the whole
+    // panel, or what a dead zone leaves of it (DeadZone.kira).
     var width: Number
     var height: Number
     // Millihertz.
     var refresh: Number
     // Pixels a point, along each side (OutputScale).
     var scale: Number
+    // The panel's mode, in pixels: what is set, scanned out and composed into.
+    var panelWidth: Number
+    var panelHeight: Number
+    // Where the laid-out part starts on the panel, in pixels.
+    var originX: Number = 0
+    var originY: Number = 0
 }
 
 extend Scanout {
+    // Whether the output is the whole panel, so a client's buffer the output's
+    // size can be scanned out as it is.
+    function whole(borrow self) -> Bool {
+        return width == panelWidth && height == panelHeight
+    }
+
     // The output's size in points, which is what every surface is placed,
     // configured and hit-tested in.
     function pointWidth(borrow self) -> Number {
@@ -51,6 +65,10 @@ struct Display {
     var scanout: Scanout
     // What is on the screen now, kept until a later flip replaces it.
     var shown: Shown?
+    // Whether the screen still shows the splash: from boot until a client's
+    // picture first replaces it, which on a machine where no client draws is
+    // never.
+    var splashShowing: Bool = false
     // The cursor, once it is drawn on the cursor plane.
     var cursor: Cursor? = .None
     // The serial of the flip committed and not yet on the screen, one at a
@@ -117,11 +135,9 @@ function openEntry(
     return .Ok(Ref(opened.result0))
 }
 
-// Opens the first display controller the registry names, as master.
-function openDisplay(port: Handle) -> Result<Ref, TesseraError> {
-    let entries = try entriesOf(.DisplayController)
-    if entries.count == 0 { return .Error(failure(.NotFound)) }
-    return openEntry(entries[0], .Display, OpenOptions.master, port, OpenKey.display)
+// Opens the display controller `entry`, as master.
+function openDisplay(entry: EntryId, port: Handle) -> Result<Ref, TesseraError> {
+    return openEntry(entry, .Display, OpenOptions.master, port, OpenKey.display)
 }
 
 // Reads the display's resources and picks what would drive it.
@@ -136,8 +152,14 @@ function findScanout(device: Ref) -> Result<Scanout?, TesseraError> {
     }
 }
 
-function resizedResources(device: Ref, bytes: borrow mut ByteBlock, reason: borrow TesseraError) -> Result<Scanout?, TesseraError> {
-    if reason.code != .BufferTooSmall || reason.detail <= UNumber(bytes.count) { return .Error(reason) }
+function resizedResources(
+    device: Ref,
+    bytes: borrow mut ByteBlock,
+    reason: borrow TesseraError
+) -> Result<Scanout?, TesseraError> {
+    if reason.code != .BufferTooSmall || reason.detail <= UNumber(bytes.count) {
+        return .Error(reason)
+    }
     bytes.resize(Number(reason.detail))
     try displayResources(device, Buffer { address: bytes.pointer(), length: Number(bytes.count) })
     return .Ok(chooseScanout(bytes))
@@ -210,19 +232,29 @@ struct Output {
 }
 
 // How many pixels a point is on an output, as a Mac draws a Retina display at
-// two. A boot names the scale its window is drawn at in TESSERA_OUTPUT_SCALE,
-// since a virtual display has no size to measure it from. Otherwise it is two
-// once the panel holds 192 pixels an inch or more, twice the 96 a point stands
-// for, and one for a display that does not say its size.
+// two. dm2q uses its known 3x panel scale. Elsewhere a boot can name the scale
+// in TESSERA_OUTPUT_SCALE, since a virtual display has no size to measure it
+// from. Otherwise it is two once the panel holds 192 pixels an inch or more,
+// twice the 96 a point stands for, and one when the display does not say its size.
 namespace OutputScale {
     let denseInch: Number = 192
     let millimetresAnInch: Number = 25.4
     let variable: String = "TESSERA_OUTPUT_SCALE"
+    // dm2q's internal 1080x2340 panel does not report its physical size
+    // through DRM. Its 3x point scale gives it a 360-point portrait width.
+    let dm2qWidth: Number = 1080
+    let dm2qHeight: Number = 2340
+    let dm2qScale: Number = 3
 }
 
 function outputScale(output: borrow Output) -> Number {
+    if (output.width == OutputScale.dm2qWidth && output.height == OutputScale.dm2qHeight)
+        || (output.width == OutputScale.dm2qHeight && output.height == OutputScale.dm2qWidth) {
+        return OutputScale.dm2qScale
+    }
     if environmentIsSet(OutputScale.variable) {
         let named = try environmentValue(OutputScale.variable).toNumber() otherwise return 1
+        if named >= 3 { return 3 }
         return named >= 2 ? 2 : 1
     }
     if output.widthMm > 0 {
@@ -379,7 +411,9 @@ function chooseScanout(block: borrow ByteBlock) -> Scanout? {
             width: output.width,
             height: output.height,
             refresh: output.refresh,
-            scale: outputScale(output)
+            scale: outputScale(output),
+            panelWidth: output.width,
+            panelHeight: output.height
         }
     )
 }

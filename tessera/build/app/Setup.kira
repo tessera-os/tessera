@@ -16,7 +16,7 @@ namespace SetupPackages {
     // meson, ninja and cmake, which the guest and host GPU stacks are built
     // with. e2fsprogs makes the boot's ext4 disks.
     let darwin: [String] = [
-        "make", "coreutils", "findutils", "gnu-sed", "bc", "xz", "lz4", "pkgconf", "openssl@3",
+        "make", "bison", "coreutils", "findutils", "gnu-sed", "bc", "xz", "lz4", "pkgconf", "openssl@3",
         "qemu", "meson", "ninja", "cmake", "e2fsprogs",
         // KosmicKrisp compiles its shaders' CL with LLVM to SPIR-V.
         "llvm", "libclc", "spirv-llvm-translator"
@@ -64,6 +64,7 @@ namespace SetupPackages {
     // to be: Host.kira's PATH puts them there.
     let darwinTools: [String] = [
         "/opt/homebrew/opt/make/libexec/gnubin/make",
+        "/opt/homebrew/opt/bison/bin/bison",
         "/opt/homebrew/opt/coreutils/libexec/gnubin/nproc",
         "/opt/homebrew/opt/findutils/libexec/gnubin/find",
         "/opt/homebrew/opt/gnu-sed/libexec/gnubin/sed",

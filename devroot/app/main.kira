@@ -13,6 +13,8 @@ import LibTessera
 //     uninstall <name> [force]
 //     reset                        drop every root at the next boot
 //     sample <seconds> <hz>        sample every CPU into `samples` on the volume
+//     crashes                      copy crash reports into `crashes`
+//     kernel                       copy the kernel ring buffer into `kernel`
 //
 // Each line is carried out in order, the paths every one changed are sent to
 // PID 1 to restart what loads them, and the log says how it went. A request
@@ -45,6 +47,7 @@ enum RequestAction {
     Reset
     Sample
     Crashes
+    KernelLog
 }
 
 struct RequestLine {
@@ -61,9 +64,10 @@ function requestLine(line: borrow String) -> Result<RequestLine, RootFailure> {
         "reset" -> .Reset
         "sample" -> .Sample
         "crashes" -> .Crashes
+        "kernel" -> .KernelLog
         else -> return .Error(.UnknownAction(copy words[0]))
     }
-    if action == .Reset || action == .Crashes {
+    if action == .Reset || action == .Crashes || action == .KernelLog {
         return .Ok(RequestLine { action: action, root: "", force: false })
     }
     if words.count < 2 { return .Error(.NoRoot) }
@@ -95,6 +99,20 @@ function carryOut(
         Reset -> return askForReset(files)
         Sample -> return writeSamples(files, line)
         Crashes -> return writeCrashes(files)
+        KernelLog -> return writeKernelLog(files)
+    }
+}
+
+// Copies the kernel ring buffer to the exchange volume so it can be read
+// even when the USB serial console is unavailable.
+function writeKernelLog(files: borrow Files) -> Result<Void, RootFailure> {
+    let text = match kernelLogText(524288) {
+        Ok(value) -> value
+        Error(failed) -> return .Error(.Storage(failed))
+    }
+    match files.writeText(RequestVolume.path + "/kernel", text) {
+        Ok -> return .Ok
+        Error(failed) -> return .Error(.Storage(failed))
     }
 }
 
@@ -113,7 +131,10 @@ function askForReset(files: borrow Files) -> Result<Void, RootFailure> {
 
 // The request on the volume, carried out unless its id is `handled`; the id
 // of the request on the volume, or `handled` when there is none.
-function serveRequest(files: borrow Files, handled: borrow String?) -> Result<String?, TesseraError> {
+function serveRequest(
+    files: borrow Files,
+    handled: borrow String?
+) -> Result<String?, TesseraError> {
     let text = try files.readTextIfPresent(RequestVolume.request)
     let request = try text otherwise return .Ok(copy handled)
     let lines = request.split("\n")
@@ -142,6 +163,14 @@ function serveRequest(files: borrow Files, handled: borrow String?) -> Result<St
     }
     if changed.count > 0 { requestRestart(changed) }
     log info("carried out a dev root request", request: first, failures, changed: changed.count)
+    let response = "dev root request done: \(first) with \(failures) failures\n"
+    match files.writeText(RequestVolume.path + "/response", response) {
+        Ok -> {}
+        Error(failed) -> log warn(
+            "the dev root response could not be written",
+            error: errorName(failed)
+        )
+    }
     // Let go of the stick before saying so: the host pulls it on that line.
     ejectRequestVolume()
     print("dev root request done: \(first) with \(failures) failures")
@@ -166,7 +195,11 @@ function loadsAny(paths: borrow [String]) -> Result<Bool, TesseraError> {
         match processLoadsOwn(path) {
             Ok(loads) -> { if loads { return .Ok(true) } }
             Error(failed) -> {
-                log warn("cannot tell what the dev root loads", path: path, error: errorName(failed))
+                log warn(
+                    "cannot tell what the dev root loads",
+                    path: path,
+                    error: errorName(failed)
+                )
                 failure = .Some(failed)
             }
         }
@@ -225,7 +258,10 @@ function pause(nanoseconds: Number) -> Result<Void, TesseraError> {
 
 // Looks for a new request on the volume for a while; the id of the last one
 // carried out.
-function awaitRequest(files: borrow Files, handled: borrow String?) -> Result<String?, TesseraError> {
+function awaitRequest(
+    files: borrow Files,
+    handled: borrow String?
+) -> Result<String?, TesseraError> {
     for look in 0..RequestPolling.attempts {
         let found = try serveRequest(files, handled)
         if found != handled { return .Ok(found) }
@@ -288,6 +324,13 @@ function main() {
             return
         }
     }
+    match startUsbExchange(files, handled) {
+        Ok(available) -> if available { return }
+        Error(failed) -> {
+            log fault("the USB dev root exchange failed", error: errorName(failed))
+            return
+        }
+    }
     let eventsBytes = zeroedBlock(count: VolumeWatch.eventBytes, alignment: 16)
     let events = Buffer { address: eventsBytes.pointer(), length: VolumeWatch.eventBytes }
     while true {
@@ -303,7 +346,10 @@ function main() {
         drainWatch(watch, events)
         match awaitRequest(files, handled) {
             Ok(value) -> handled = value
-            Error(failed) -> log warn("cannot wait for a dev root request", error: errorName(failed))
+            Error(failed) -> log warn(
+                "cannot wait for a dev root request",
+                error: errorName(failed)
+            )
         }
     }
 }

@@ -13,7 +13,8 @@ Usage: scripts/boot-with-local-lock.sh --self-test
 
 --self-test: prove that the local advisory-lock workaround works, then verify
              the original lock was restored. Never starts a Tessera build.
---build:     check free space (at least 10 GiB on local build/cache volumes)
+       --build:     check free space (at least 10 GiB for boot, 5 GiB for kernel
+                    on local build/cache volumes)
              and run `kira build boot -arch aarch64 -test` by default.
              Extra arguments replace the default boot arguments.
 USAGE
@@ -33,13 +34,20 @@ lock="$work/lock"
 wrapper_guard="$work/.local-lock-wrapper"
 local_root=${TMPDIR:-/private/tmp}
 min_free_gib=10
+if [[ "$mode" == --build && "${1:-boot}" == "kernel" ]]; then
+  # The standalone kernel step uses the incremental tree in TESSERA_BUILD_ROOT;
+  # the larger reserve is for a cold end-to-end boot build and its images.
+  min_free_gib=5
+fi
+TESSERA_BUILD_ROOT="$HOME/.tessera-build"
+export TESSERA_BUILD_ROOT
 
 command -v python3 >/dev/null 2>&1 || { echo 'python3 is required for the local lock probe' >&2; exit 1; }
 if [[ "$mode" == --build ]]; then
   command -v kira >/dev/null 2>&1 || { echo 'kira is required on PATH' >&2; exit 1; }
   # The compiler's local cache and the temporary lock use local disk; check
   # both locations. Mac host disk space may differ greatly from remote Cairn.
-  python3 - "$min_free_gib" "$local_root" "${KLF_HOME:-$HOME/.klf}" "$HOME/.cache/klf" <<'PY'
+  python3 - "$min_free_gib" "$local_root" "$TESSERA_BUILD_ROOT" "${KLF_HOME:-$HOME/.klf}" "$HOME/.cache/klf" <<'PY'
 import os, sys
 threshold = int(sys.argv[1]) * 1024**3
 # Inspect each local build/cache filesystem without creating directories or

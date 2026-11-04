@@ -1,0 +1,100 @@
+import Foundation
+import KiraUI
+import LibTessera
+import PlatformUI
+
+// Developer: developer mode, and while it is on, the touch dead zone, a band
+// along one edge of the screen that the display keeps clear and ignores
+// touches in, for a screen whose digitizer is broken there
+// (LibTessera's DeadZone.kira).
+
+construct DeveloperPane() extends Widget {
+    // The percentage the slider shows, which is kept when it is applied.
+    @State var percent: Number = deadZonePercentKept()
+
+    body {
+        let on = storedSetting(DeveloperSetting.mode, "") == DeveloperSetting.on
+        let edge = storedSetting(DeveloperSetting.deadZoneEdge, "")
+        let kept = deadZonePercentKept()
+        var sections: [Any Widget] = [
+            Section(
+                children: [
+                    Toggle(
+                        title = "Developer Mode",
+                        isOn = on,
+                        onChange = { turned in
+                            let value: String? = turned ? .Some(DeveloperSetting.on) : .None
+                            changeSetting(DeveloperSetting.mode, move value)
+                            return
+                        }
+                    )
+                ],
+                footer: Text(
+                    "Turns on the settings below. Turning it off sets the screen back to whole."
+                )
+            )
+        ]
+        if on {
+            var edges: [Any Widget] = [checkedRow(
+                "None",
+                deadZoneEdgeNamed(edge).isNone(),
+                DeveloperSetting.deadZoneEdge,
+                "none"
+            )]
+            for choice in [DeadZoneEdge.Top, DeadZoneEdge.Bottom, DeadZoneEdge.Left, DeadZoneEdge.Right] {
+                let name = deadZoneEdgeName(choice)
+                edges.append(
+                    checkedRow(edgeTitle(choice), edge == name, DeveloperSetting.deadZoneEdge, copy name)
+                )
+            }
+            sections.append(
+                Section(
+                    children: edges,
+                    header: Text("Touch Dead Zone"),
+                    footer: Text(
+                        "The screen is laid out in what the dead zone leaves, and touches in it are ignored."
+                    )
+                )
+            )
+            sections.append(
+                Section(
+                    children: [
+                        LabeledContent(label = "Size") {
+                            Text("\(percent)%")
+                        },
+                        Slider(
+                            value = (percent - 1) / (DeveloperSetting.largestPercent - 1),
+                            width = 240,
+                            onChange = { share in
+                                percent = 1 + round(share * (DeveloperSetting.largestPercent - 1))
+                                return
+                            }
+                        ),
+                        Button(
+                            title = percent == kept ? "Applied" : "Apply \(percent)%",
+                            action = { in
+                                changeSetting(
+                                    DeveloperSetting.deadZonePercent,
+                                    .Some(String(percent))
+                                )
+                                return
+                            }
+                        )
+                    ],
+                    footer: Text("How much of the screen the dead zone takes, from its edge.")
+                )
+            )
+        }
+        Form(children: sections).navigationTitle("Developer")
+    }
+}
+
+// What the pane calls `edge`.
+function edgeTitle(edge: DeadZoneEdge) -> String {
+    return match edge {
+        Top -> "Top"
+        Bottom -> "Bottom"
+        Left -> "Left"
+        Right -> "Right"
+    }
+}

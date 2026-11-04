@@ -268,6 +268,10 @@ function superviseForever(
     }
     watchSystem(port)
 
+    // The kernel's log, kept on a partition when the boot asks
+    // (Storage/KernelLogCopy.kira); its copies wake the wait below.
+    var logKeeper = startKernelLogKeeper(bootArguments)
+    keepKernelLog(logKeeper)
     var fleet = startFleet(calls, services(calls, bootArguments), move systemLog)
     connectDisplayClients(fleet.channels, fleet.services)
     connectPlatformLinks(fleet)
@@ -286,6 +290,8 @@ function superviseForever(
     var injected = false
     let broker = serviceSlot(fleet.services, "bootstrap")
     var brokerInjected = false
+    // When the broker is killed, once the eight quiet seconds are counted.
+    var brokerDue: Number = 0
     while true {
         match displayServerSlot(fleet.services) {
             Some(display) -> {
@@ -300,7 +306,10 @@ function superviseForever(
         var deadline = Deadline.infinite
         if brokerPending {
             match now() {
-                Ok(value) -> deadline = value + seconds(8)
+                Ok(value) -> {
+                    if brokerDue == 0 { brokerDue = value + seconds(8) }
+                    deadline = brokerDue
+                }
                 Error(failed) -> {
                     log fault(
                         "the restart test cannot time the broker check-in",
@@ -311,11 +320,13 @@ function superviseForever(
             }
         }
 
-        match portWait(port, 1, deadline) {
+        let waited = portWait(port, 1, kernelLogDeadline(logKeeper, deadline))
+        keepKernelLog(logKeeper)
+        match waited {
             Error(failed) -> {
                 if failed.code != .Timeout {
                     log fault("PID 1's port failed", error: errorName(failed))
-                } else if brokerPending {
+                } else if brokerPending && brokerDue > 0 && quietSince(brokerDue) {
                     match broker {
                         Some(slot) -> killForTest(fleet, slot)
                         None -> {}
@@ -324,6 +335,8 @@ function superviseForever(
                 }
             }
             Ok(done) -> {
+                // Anything that arrives ends the quiet the broker test counts.
+                brokerDue = 0
                 let key = Number(done[0].key)
                 match keyKind(key) {
                     System -> {
@@ -372,6 +385,18 @@ function superviseForever(
                     Unknown -> log warn("PID 1's port answered a key it never made", key)
                 }
             }
+        }
+    }
+}
+
+// Whether the monotonic clock has reached `due`; a clock that cannot be read
+// has not, so nothing timed from it happens early.
+function quietSince(due: Number) -> Bool {
+    match now() {
+        Ok(value) -> return value >= due
+        Error(failed) -> {
+            log warn("the clock cannot be read", error: errorName(failed))
+            return false
         }
     }
 }

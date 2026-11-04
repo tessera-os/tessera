@@ -61,59 +61,61 @@ struct PerfRing {
 
 // Samples every CPU for `seconds` at `hz`.
 function kernelSampleMachine(seconds: Number, hz: Number) -> Result<MachineSamples, TesseraError> {
-    let cpus = Number(try kernelCpuCount())
-    let page = kernelPageSize()
-    var rings: [PerfRing] = []
-    for cpu in 0..cpus {
-        for kind in [PerfRingKind.Clock, PerfRingKind.Switches] {
-            match openPerfRing(cpu, hz, page, kind) {
-                Ok(ring) -> rings.append(ring)
-                Error(failed) -> {
-                    closePerfRings(rings)
-                    return .Error(failed)
+    unsafe {
+        let cpus = Number(try kernelCpuCount())
+        let page = kernelPageSize()
+        var rings: [PerfRing] = []
+        for cpu in 0..cpus {
+            for kind in [PerfRingKind.Clock, PerfRingKind.Switches] {
+                match openPerfRing(cpu, hz, page, kind) {
+                    Ok(ring) -> rings.append(ring)
+                    Error(failed) -> {
+                        closePerfRings(rings)
+                        return .Error(failed)
+                    }
                 }
             }
         }
-    }
-    var samples = MachineSamples {}
-    var tracer = traceStart()
-    for ring in rings { ioctlValue(ring.fd, U64(PerfEvent.enable), 0) }
-    let began = try kernelClockRead(.Monotonic)
-    samples.began = began
-    let length = U64(trunc(seconds * 1000000000))
-    var now = began
-    var described: Map<Number, SampledMaps> = Map {}
-    var checked = 0
-    while now - began < length {
-        kernelSleep(U64(PerfEvent.drainInterval))
-        for ring in rings { drainPerfRing(ring, samples) }
-        traceDrain(tracer)
-        checked = try describeNewProcesses(samples, described, checked)
-        now = match kernelClockRead(.Monotonic) {
-            Ok(value) -> value
-            Error(failed) -> {
-                absorb failed
-                began + length
+        var samples = MachineSamples {}
+        var tracer = traceStart()
+        for ring in rings { ioctlValue(ring.fd, U64(PerfEvent.enable), 0) }
+        let began = try kernelClockRead(.Monotonic)
+        samples.began = began
+        let length = U64(trunc(seconds * 1000000000))
+        var now = began
+        var described: Map<Number, SampledMaps> = Map {}
+        var checked = 0
+        while now - began < length {
+            kernelSleep(U64(PerfEvent.drainInterval))
+            for ring in rings { drainPerfRing(ring, samples) }
+            traceDrain(tracer)
+            checked = try describeNewProcesses(samples, described, checked)
+            now = match kernelClockRead(.Monotonic) {
+                Ok(value) -> value
+                Error(failed) -> {
+                    absorb failed
+                    began + length
+                }
             }
         }
+        samples.ended = now
+        log info(
+            "sampled; draining",
+            stacks: samples.stacks.count,
+            blocks: samples.blocks.count,
+            resumes: samples.resumes.count
+        )
+        for ring in rings { ioctlValue(ring.fd, U64(PerfEvent.disable), 0) }
+        for ring in rings { drainPerfRing(ring, samples) }
+        closePerfRings(rings)
+        samples.counters = traceStop(tracer)
+        log info("sampled; naming", counters: samples.counters.count)
+        checked = try describeNewProcesses(samples, described, checked)
+        try rereadAllMaps(samples, described, checked + 1)
+        samples.kernelSymbols = try kernelTextSymbols()
+        log info("sampled; named", symbols: samples.kernelSymbols.count)
+        return .Ok(samples)
     }
-    samples.ended = now
-    log info(
-        "sampled; draining",
-        stacks: samples.stacks.count,
-        blocks: samples.blocks.count,
-        resumes: samples.resumes.count
-    )
-    for ring in rings { ioctlValue(ring.fd, U64(PerfEvent.disable), 0) }
-    for ring in rings { drainPerfRing(ring, samples) }
-    closePerfRings(rings)
-    samples.counters = traceStop(tracer)
-    log info("sampled; naming", counters: samples.counters.count)
-    checked = try describeNewProcesses(samples, described, checked)
-    try rereadAllMaps(samples, described, checked + 1)
-    samples.kernelSymbols = try kernelTextSymbols()
-    log info("sampled; named", symbols: samples.kernelSymbols.count)
-    return .Ok(samples)
 }
 
 function openPerfRing(
@@ -167,15 +169,23 @@ function openPerfRing(
             return .Error(errnoFailure(answerErrno(mapped)))
         }
         return .Ok(
-            PerfRing { fd: fd, base: RawPtr(mapped), length: length, dataBytes: dataBytes, kind: kind }
+            PerfRing {
+                fd: fd,
+                base: RawPtr(mapped),
+                length: length,
+                dataBytes: dataBytes,
+                kind: kind
+            }
         )
     }
 }
 
 function closePerfRings(rings: borrow [PerfRing]) {
-    for ring in rings {
-        munmap(ring.base, ring.length)
-        closeBacking(ring.fd)
+    unsafe {
+        for ring in rings {
+            munmap(ring.base, ring.length)
+            closeBacking(ring.fd)
+        }
     }
 }
 
@@ -272,26 +282,28 @@ function kernelTextSymbols() -> Result<String, TesseraError> {
 // The whole of a file the kernel makes up as it is read, such as one under
 // /proc, whatever its length.
 function kernelReadText(path: borrow String) -> Result<String, TesseraError> {
-    let fd = openat(
-        AtDirectory.current,
-        cStringFrom(path),
-        LinuxOpen.readOnly | LinuxOpen.closeOnExec,
-        0
-    )
-    if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
-    let chunk = 65536
-    let blockBytes = zeroedBlock(count: chunk + 1, alignment: 16)
-    let block = blockBytes.pointer()
-    var text = ""
-    while true {
-        let got = read(fd, block, U64(chunk))
-        if answerFailed(got) {
-            closeBacking(fd)
-            return .Error(errnoFailure(answerErrno(got)))
+    unsafe {
+        let fd = openat(
+            AtDirectory.current,
+            cStringFrom(path),
+            LinuxOpen.readOnly | LinuxOpen.closeOnExec,
+            0
+        )
+        if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
+        let chunk = 65536
+        let blockBytes = zeroedBlock(count: chunk + 1, alignment: 16)
+        let block = blockBytes.pointer()
+        var text = ""
+        while true {
+            let got = read(fd, block, U64(chunk))
+            if answerFailed(got) {
+                closeBacking(fd)
+                return .Error(errnoFailure(answerErrno(got)))
+            }
+            if got == 0 { break }
+            text.append(stringFromCBytes(block, got))
         }
-        if got == 0 { break }
-        text.append(stringFromCBytes(block, got))
+        closeBacking(fd)
+        return .Ok(text)
     }
-    closeBacking(fd)
-    return .Ok(text)
 }

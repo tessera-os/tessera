@@ -186,7 +186,9 @@ struct Descriptor {
         request: U64,
         argument: Number
     ) -> Result<Number, TesseraError> {
-        return self.control(request, pointerAt(argument))
+        unsafe {
+            return self.control(request, pointerAt(argument))
+        }
     }
 
     // An `ioctl` whose argument is one `u32`.
@@ -241,7 +243,9 @@ struct Descriptor {
         let address = try kernelNumber(
             backendMap(nullPointer(), length, protection, flags, self.number, offset)
         )
-        return .Ok(pointerAt(address))
+        unsafe {
+            return .Ok(pointerAt(address))
+        }
     }
 
     function seek(borrow self, offset: Number, whence: U64) -> Result<Number, TesseraError> {

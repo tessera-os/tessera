@@ -78,6 +78,12 @@ construct SettingsSidebar(release: Release, choices: SettingsChoices) extends Wi
                     PaneLabel(title = "Apps", symbol = .SquareGrid2x2Fill, tint = .Purple)
                 }
             }
+
+            Section {
+                NavigationLink(value = DeveloperRoute()) {
+                    PaneLabel(title = "Developer", symbol = .Hammer, tint = .Gray)
+                }
+            }
         }
         .navigationTitle("Settings")
     }

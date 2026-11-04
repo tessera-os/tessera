@@ -67,6 +67,69 @@ public function volumePartitionNames(disk: borrow String) -> Result<String, Tess
     return .Ok(text)
 }
 
+// The GPT name of the partition `partition`, a name from
+// `volumePartitionNames`: `SUPER`, `CACHE`. A partition its table leaves
+// unnamed has none. Anyone may ask.
+public function volumePartitionLabel(partition: borrow String) -> Result<String?, TesseraError> {
+    if !isDiskName(partition) { return .Error(failure(.InvalidArgument)) }
+    return kernelPartitionLabel(partition)
+}
+
+// How large the partition `partition`, a name from `volumePartitionNames`,
+// is, in bytes. Anyone may ask.
+public function volumePartitionBytes(partition: borrow String) -> Result<Number, TesseraError> {
+    if !isDiskName(partition) { return .Error(failure(.InvalidArgument)) }
+    return kernelPartitionBytes(partition)
+}
+
+// The partition whose GPT name is `label`, compared without regard to case,
+// on any of the machine's disks: `sda33` for `CACHE` on a phone. None when no
+// partition has it; the first in disk order when several do. A disk or a
+// partition that cannot be read is passed over. Needs `tessera.machine`.
+public function volumePartitionLabelled(label: borrow String) -> Result<String?, TesseraError> {
+    if label.count == 0 { return .Error(failure(.InvalidArgument)) }
+    let disks = try volumeDisks()
+    for disk in disks.split("\n") {
+        if disk.count == 0 { continue }
+        let partitions = match volumePartitionNames(disk) {
+            Ok(names) -> names
+            Error(failed) -> {
+                // A disk the kernel cannot list holds no partition to find.
+                absorb failed
+                continue
+            }
+        }
+        for partition in partitions.split("\n") {
+            if partition.count == 0 { continue }
+            match volumePartitionLabel(partition) {
+                Ok(named) -> match named {
+                    Some(found) -> if sameLabel(found, label) { return .Ok(.Some(copy partition)) }
+                    // An unnamed partition cannot be the one asked for.
+                    None -> {}
+                }
+                Error(failed) -> {
+                    // A partition whose name cannot be read is not the one asked for.
+                    absorb failed
+                }
+            }
+        }
+    }
+    return .Ok(.None)
+}
+
+// Whether two GPT names are the same, ASCII letters compared without case.
+function sameLabel(left: borrow String, right: borrow String) -> Bool {
+    if left.count != right.count { return false }
+    for index in 0..left.count {
+        if foldedLetter(left.charAt(index)) != foldedLetter(right.charAt(index)) { return false }
+    }
+    return true
+}
+
+function foldedLetter(value: Number) -> Number {
+    return value >= 65 && value <= 90 ? value + 32 : value
+}
+
 // A disk's name is one entry of `/sys/block`: no path, nothing hidden.
 function isDiskName(disk: borrow String) -> Bool {
     return disk.count > 0 && !disk.contains("/") && !disk.startsWith(".")

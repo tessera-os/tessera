@@ -14,19 +14,27 @@ function seamAnswer(answer: Number) -> Result<U64, TesseraError> {
 
 // `AT_FDCWD`: every path the seam is given is absolute.
 function kernelSeamOpen(path: borrow String, flags: U64, mode: U64) -> Result<U64, TesseraError> {
-    return seamAnswer(openat(AtDirectory.current, cStringFrom(path), flags, mode))
+    unsafe {
+        return seamAnswer(openat(AtDirectory.current, cStringFrom(path), flags, mode))
+    }
 }
 
 function kernelSeamClose(object: U64) -> Result<Void, TesseraError> {
-    return answerStatus(close(object))
+    unsafe {
+        return answerStatus(close(object))
+    }
 }
 
 function kernelSeamRead(object: U64, address: RawPtr, length: U64) -> Result<U64, TesseraError> {
-    return seamAnswer(read(object, address, length))
+    unsafe {
+        return seamAnswer(read(object, address, length))
+    }
 }
 
 function kernelSeamWrite(object: U64, address: RawPtr, length: U64) -> Result<U64, TesseraError> {
-    return seamAnswer(write(object, address, length))
+    unsafe {
+        return seamAnswer(write(object, address, length))
+    }
 }
 
 function kernelSeamReadAt(
@@ -35,7 +43,9 @@ function kernelSeamReadAt(
     length: U64,
     offset: U64
 ) -> Result<U64, TesseraError> {
-    return seamAnswer(pread(object, address, length, offset))
+    unsafe {
+        return seamAnswer(pread(object, address, length, offset))
+    }
 }
 
 function kernelSeamWriteAt(
@@ -44,7 +54,9 @@ function kernelSeamWriteAt(
     length: U64,
     offset: U64
 ) -> Result<U64, TesseraError> {
-    return seamAnswer(pwrite(object, address, length, offset))
+    unsafe {
+        return seamAnswer(pwrite(object, address, length, offset))
+    }
 }
 
 // `ioctl`.
@@ -53,7 +65,9 @@ function kernelSeamControl(
     request: U64,
     argument: RawPtr
 ) -> Result<U64, TesseraError> {
-    return seamAnswer(ioctl(object, request, argument))
+    unsafe {
+        return seamAnswer(ioctl(object, request, argument))
+    }
 }
 
 // `fcntl`.
@@ -62,7 +76,9 @@ function kernelSeamObjectControl(
     command: U64,
     argument: U64
 ) -> Result<U64, TesseraError> {
-    return seamAnswer(fcntl(object, command, pointerAt(argument)))
+    unsafe {
+        return seamAnswer(fcntl(object, command, pointerAt(argument)))
+    }
 }
 
 // `getdents64`.
@@ -71,7 +87,9 @@ function kernelSeamDirectoryRead(
     address: RawPtr,
     length: U64
 ) -> Result<U64, TesseraError> {
-    return seamAnswer(getdents64(object, address, length))
+    unsafe {
+        return seamAnswer(getdents64(object, address, length))
+    }
 }
 
 function kernelSeamReadLink(
@@ -79,7 +97,9 @@ function kernelSeamReadLink(
     address: RawPtr,
     length: U64
 ) -> Result<U64, TesseraError> {
-    return seamAnswer(readlinkat(AtDirectory.current, cStringFrom(path), address, length))
+    unsafe {
+        return seamAnswer(readlinkat(AtDirectory.current, cStringFrom(path), address, length))
+    }
 }
 
 function kernelSeamMap(
@@ -90,41 +110,57 @@ function kernelSeamMap(
     object: U64,
     offset: U64
 ) -> Result<U64, TesseraError> {
-    return seamAnswer(mmap(address, length, protection, flags, object, offset))
+    unsafe {
+        return seamAnswer(mmap(address, length, protection, flags, object, offset))
+    }
 }
 
 function kernelSeamUnmap(address: RawPtr, length: U64) -> Result<Void, TesseraError> {
-    return answerStatus(munmap(address, length))
+    unsafe {
+        return answerStatus(munmap(address, length))
+    }
 }
 
 // `lseek`.
 function kernelSeamSeek(object: U64, offset: U64, whence: U64) -> Result<U64, TesseraError> {
-    return seamAnswer(lseek(object, offset, whence))
+    unsafe {
+        return seamAnswer(lseek(object, offset, whence))
+    }
 }
 
 function kernelSeamSyncData(object: U64) -> Result<Void, TesseraError> {
-    return answerStatus(fdatasync(object))
+    unsafe {
+        return answerStatus(fdatasync(object))
+    }
 }
 
 // `ppoll` over `count` `struct pollfd` records, with a `struct timespec`
 // (or none) as the timeout.
 function kernelSeamPoll(records: RawPtr, count: U64, timeout: RawPtr) -> Result<U64, TesseraError> {
-    return seamAnswer(ppoll(records, count, timeout, nullPointer()))
+    unsafe {
+        return seamAnswer(ppoll(records, count, timeout, nullPointer()))
+    }
 }
 
 // `eventfd2`.
 function kernelSeamEventObject(initial: U64, flags: U64) -> Result<U64, TesseraError> {
-    return seamAnswer(eventfd2(U32(initial), flags))
+    unsafe {
+        return seamAnswer(eventfd2(U32(initial), flags))
+    }
 }
 
 // `memfd_create`.
 function kernelSeamMemoryObject(name: borrow String, flags: U64) -> Result<U64, TesseraError> {
-    return seamAnswer(memfdCreate(cStringFrom(name), U32(flags)))
+    unsafe {
+        return seamAnswer(memfdCreate(cStringFrom(name), U32(flags)))
+    }
 }
 
 // `timerfd_create` and `timerfd_settime`.
 function kernelSeamTimerObject(clock: U64, flags: U64) -> Result<U64, TesseraError> {
-    return seamAnswer(timerfdCreate(clock, flags))
+    unsafe {
+        return seamAnswer(timerfdCreate(clock, flags))
+    }
 }
 
 function kernelSeamTimerSet(
@@ -133,24 +169,34 @@ function kernelSeamTimerSet(
     value: RawPtr,
     old: RawPtr
 ) -> Result<Void, TesseraError> {
-    return answerStatus(timerfdSettime(object, flags, value, old))
+    unsafe {
+        return answerStatus(timerfdSettime(object, flags, value, old))
+    }
 }
 
 function kernelSeamSocket(family: U64, kind: U64, protocol: U64) -> Result<U64, TesseraError> {
-    return seamAnswer(socket(family, kind, protocol))
+    unsafe {
+        return seamAnswer(socket(family, kind, protocol))
+    }
 }
 
 function kernelSeamBind(object: U64, address: RawPtr, length: U64) -> Result<Void, TesseraError> {
-    return answerStatus(bind(object, address, U32(length)))
+    unsafe {
+        return answerStatus(bind(object, address, U32(length)))
+    }
 }
 
 function kernelSeamListen(object: U64, backlog: U64) -> Result<Void, TesseraError> {
-    return answerStatus(listen(object, backlog))
+    unsafe {
+        return answerStatus(listen(object, backlog))
+    }
 }
 
 // `accept4`, without the peer's address.
 function kernelSeamAccept(object: U64, flags: U64) -> Result<U64, TesseraError> {
-    return seamAnswer(accept4(object, nullPointer(), nullPointer(), flags))
+    unsafe {
+        return seamAnswer(accept4(object, nullPointer(), nullPointer(), flags))
+    }
 }
 
 function kernelSeamConnect(
@@ -158,7 +204,9 @@ function kernelSeamConnect(
     address: RawPtr,
     length: U64
 ) -> Result<Void, TesseraError> {
-    return answerStatus(connect(object, address, U32(length)))
+    unsafe {
+        return answerStatus(connect(object, address, U32(length)))
+    }
 }
 
 // `sendmsg` and `recvmsg` on a `struct msghdr`.
@@ -167,7 +215,9 @@ function kernelSeamSendMessage(
     message: RawPtr,
     flags: U64
 ) -> Result<U64, TesseraError> {
-    return seamAnswer(sendmsg(object, message, flags))
+    unsafe {
+        return seamAnswer(sendmsg(object, message, flags))
+    }
 }
 
 function kernelSeamReceiveMessage(
@@ -175,7 +225,9 @@ function kernelSeamReceiveMessage(
     message: RawPtr,
     flags: U64
 ) -> Result<U64, TesseraError> {
-    return seamAnswer(recvmsg(object, message, flags))
+    unsafe {
+        return seamAnswer(recvmsg(object, message, flags))
+    }
 }
 
 // `getsockopt`.
@@ -186,5 +238,7 @@ function kernelSeamGetOption(
     value: RawPtr,
     length: RawPtr
 ) -> Result<Void, TesseraError> {
-    return answerStatus(getsockopt(object, level, name, value, length))
+    unsafe {
+        return answerStatus(getsockopt(object, level, name, value, length))
+    }
 }

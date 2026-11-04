@@ -159,7 +159,10 @@ function rootListing(
 }
 
 // What the root of the volume mounted at `path` holds, by name, for the log.
-function rootNames(service: borrow mut Service, path: borrow String) -> Result<String, TesseraError> {
+function rootNames(
+    service: borrow mut Service,
+    path: borrow String
+) -> Result<String, TesseraError> {
     let names = try rootListing(service, path)
     if names.count == 0 { return .Ok("nothing") }
     return .Ok(joined(names, ", "))

@@ -89,7 +89,9 @@ function takeAside(
             SurfaceDestroyed, GrantFocus, InstallGrab, GrabFired, ChannelChanged, PresentSystem, Verify,
             VerifyResult, InjectInput, Notification, ActivateRequested, SetBar, PointerMotion,
             PointerButton, PointerAxis, PointerEnter, PointerLeave, SetDock, SurfacePressed,
-            WindowRequested, GrantMove, GrantResize, HoldInput, SetOverlay, SetIdle, IdleChanged, BarBackdrop, PlaceSurface, SurfacePlaced, SetHidden, Insets, Output -> return .Ok(false)
+            WindowRequested, GrantMove, GrantResize, HoldInput, SetOverlay, SetIdle, IdleChanged, BarBackdrop, PlaceSurface, SurfacePlaced, SetHidden, Insets, Output -> return .Ok(
+                false
+            )
     }
     match server.platform {
         Some(channel) -> tell(channel, forwarded)
@@ -122,7 +124,10 @@ function importSurface(display: borrow Display, token: borrow Token) -> Result<R
 // surface, taken aside, or a step of its frame exchange. False when the
 // client has gone, sent something that is not a message, or broke the
 // exchange.
-function serveApplication(server: borrow mut Server, index: Number) -> Result<Void, SessionFailure> {
+function serveApplication(
+    server: borrow mut Server,
+    index: Number
+) -> Result<Void, SessionFailure> {
     let message = try nextMessage(server.clients[index].channel)
     let aside = try takeAside(server, index, message)
     if aside { return .Ok }
@@ -137,7 +142,11 @@ namespace OutputId {
 // A client's hello, answered with its welcome, which hands it `surface`, the
 // one surface number it may name, and the output it is on
 // (roadmap/08-display-server.md, "Connection").
-function beginClient(channel: Handle, surface: UNumber, scanout: borrow Scanout) -> Result<Void, SessionFailure> {
+function beginClient(
+    channel: Handle,
+    surface: UNumber,
+    scanout: borrow Scanout
+) -> Result<Void, SessionFailure> {
     let hello = try nextMessage(channel)
     match hello {
         Hello -> {}

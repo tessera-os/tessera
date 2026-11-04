@@ -160,8 +160,8 @@ function makeTarget(
 ) -> Target? {
     let descriptor = ExportedTextureDescriptor {
         label: label,
-        width: UN32(display.scanout.width),
-        height: UN32(display.scanout.height)
+        width: UN32(display.scanout.panelWidth),
+        height: UN32(display.scanout.panelHeight)
     }
     let exported = match device.graphics().createExportedTexture(descriptor) {
         Ok(value) -> value
@@ -182,13 +182,22 @@ function makeTarget(
     return .Some(Target { exported: exported, surface: surface, framebuffer: framebuffer })
 }
 
-function noTargetSurface(device: borrow GraphicsHeadless, exported: ExportedTexture, reason: borrow TesseraError) -> Target? {
+function noTargetSurface(
+    device: borrow GraphicsHeadless,
+    exported: ExportedTexture,
+    reason: borrow TesseraError
+) -> Target? {
     log warn("the composition's image would not become a surface", error: errorName(reason))
     device.graphics().destroyExportedTexture(exported)
     return .None
 }
 
-function noTargetFramebuffer(device: borrow GraphicsHeadless, exported: ExportedTexture, surface: Ref, reason: borrow TesseraError) -> Target? {
+function noTargetFramebuffer(
+    device: borrow GraphicsHeadless,
+    exported: ExportedTexture,
+    surface: Ref,
+    reason: borrow TesseraError
+) -> Target? {
     log warn("the composition's image would not become a framebuffer", error: errorName(reason))
     closeRef(surface)
     device.graphics().destroyExportedTexture(exported)
@@ -239,7 +248,8 @@ function contentOf(
     let drawn = drawnWidth > 0 && drawnHeight > 0 && drawnWidth <= textureWidth && drawnHeight <= textureHeight
     let width = drawn ? drawnWidth : textureWidth
     let height = drawn ? drawnHeight : textureHeight
-    let scanable = width == display.scanout.width
+    let scanable = display.scanout.whole()
+        && width == display.scanout.width
         && height == display.scanout.height
         && width == textureWidth && height == textureHeight
         && Number(info.plane0.stride) >= width * PixelFormat.bytesPerPixel
@@ -427,10 +437,16 @@ function showClients(server: borrow mut Server) -> Result<Void, TesseraError> {
     }
     // A blanked output is composed black once, and not again until it wakes.
     if server.idleState == .Blanked && server.blankShown { return .Ok }
-    return match routeFor(server) {
-        Direct(index) -> showDirect(server, index)
-        Composed -> showComposed(server)
-        Unchanged -> .Ok
+    match routeFor(server) {
+        Direct(index) -> {
+            server.display.splashShowing = false
+            return showDirect(server, index)
+        }
+        Composed -> {
+            server.display.splashShowing = false
+            return showComposed(server)
+        }
+        Unchanged -> return .Ok
     }
 }
 
@@ -517,6 +533,8 @@ function drawComposition(
         scanout.width,
         scanout.height
     )
+    // The output is drawn where the dead zone leaves it on the panel.
+    composer.batch.setTargetOrigin(scanout.originX, scanout.originY)
     composer.batch.beginFrameSlots(composer.device.graphics())
     let blanked = server.idleState == .Blanked
     let drawn: [Number] = blanked ? [] : copy order

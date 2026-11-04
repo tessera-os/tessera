@@ -180,7 +180,10 @@ function objectDestroy(object: Number) {
     if !library.objects[object].live { return }
     match objectTeardown(object) {
         Ok -> {}
-        Error(failed) -> log warn("an object could not be fully torn down", error: errorName(failed))
+        Error(failed) -> log warn(
+            "an object could not be fully torn down",
+            error: errorName(failed)
+        )
     }
     objectRelease(object)
     library.objects[object].live = false

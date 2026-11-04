@@ -18,30 +18,36 @@ function clockId(clock: borrow ClockSource) -> Number {
 }
 
 function kernelClockRead(clock: borrow ClockSource) -> Result<U64, TesseraError> {
-    let blockBytes = zeroedBlock(count: 16, alignment: 16)
-    let block = blockBytes.pointer()
-    // The alarm clock reads as the boot-time clock it follows.
-    var linux = clockId(clock)
-    if clock == .BoottimeAlarm { linux = clockId(.Boottime) }
-    let answer = clockGettime(linux, block)
-    if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
-    return .Ok(readTimespec(block, U64(0)))
+    unsafe {
+        let blockBytes = zeroedBlock(count: 16, alignment: 16)
+        let block = blockBytes.pointer()
+        // The alarm clock reads as the boot-time clock it follows.
+        var linux = clockId(clock)
+        if clock == .BoottimeAlarm { linux = clockId(.Boottime) }
+        let answer = clockGettime(linux, block)
+        if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
+        return .Ok(readTimespec(block, U64(0)))
+    }
 }
 
 function kernelClockResolution(clock: borrow ClockSource) -> Result<U64, TesseraError> {
-    let blockBytes = zeroedBlock(count: 16, alignment: 16)
-    let block = blockBytes.pointer()
-    let answer = clockGetres(clockId(clock), block)
-    if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
-    return .Ok(readTimespec(block, U64(0)))
+    unsafe {
+        let blockBytes = zeroedBlock(count: 16, alignment: 16)
+        let block = blockBytes.pointer()
+        let answer = clockGetres(clockId(clock), block)
+        if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
+        return .Ok(readTimespec(block, U64(0)))
+    }
 }
 
 // Sets the real-time clock to `nanoseconds` since the epoch.
 function kernelClockSet(nanoseconds: U64) -> Result<Void, TesseraError> {
-    let blockBytes = zeroedBlock(count: 16, alignment: 16)
-    let block = blockBytes.pointer()
-    storeTimespec(block, U64(0), nanoseconds)
-    return answerStatus(clockSettime(0, block))
+    unsafe {
+        let blockBytes = zeroedBlock(count: 16, alignment: 16)
+        let block = blockBytes.pointer()
+        storeTimespec(block, U64(0), nanoseconds)
+        return answerStatus(clockSettime(0, block))
+    }
 }
 
 // The real-time clock's synchronisation: whether it is synchronised, and
@@ -53,20 +59,27 @@ struct KernelSync {
 }
 
 function kernelRealtimeSync() -> Result<KernelSync, TesseraError> {
-    let blockBytes = zeroedBlock(count: 256, alignment: 16)
-    let block = blockBytes.pointer()
-    let state = clockAdjtime(0, block)
-    if answerFailed(state) { return .Error(errnoFailure(answerErrno(state))) }
-    return .Ok(
-        KernelSync { synchronised: state != 5, errorBound: heapLoad<U64>(block, 32) * U64(1000) }
-    )
+    unsafe {
+        let blockBytes = zeroedBlock(count: 256, alignment: 16)
+        let block = blockBytes.pointer()
+        let state = clockAdjtime(0, block)
+        if answerFailed(state) { return .Error(errnoFailure(answerErrno(state))) }
+        return .Ok(
+            KernelSync {
+                synchronised: state != 5,
+                errorBound: heapLoad<U64>(block, 32) * U64(1000)
+            }
+        )
+    }
 }
 
 // A disarmed timer on `clock`, nonblocking.
 function kernelTimerCreate(clock: borrow ClockSource) -> Result<Number, TesseraError> {
-    let fd = timerfdCreate(clockId(clock), LinuxOpen.nonBlock | LinuxOpen.closeOnExec)
-    if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
-    return .Ok(fd)
+    unsafe {
+        let fd = timerfdCreate(clockId(clock), LinuxOpen.nonBlock | LinuxOpen.closeOnExec)
+        if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
+        return .Ok(fd)
+    }
 }
 
 // Arms the timer for the absolute instant `first` on its clock, then every
@@ -76,61 +89,71 @@ function kernelTimerProgram(
     first: U64,
     period: U64
 ) -> Result<Void, TesseraError> {
-    let blockBytes = zeroedBlock(count: 32, alignment: 16)
-    let block = blockBytes.pointer()
-    storeTimespec(block, U64(0), period)
-    storeTimespec(block, U64(16), first)
-    return answerStatus(timerfdSettime(backing, TimerFlag.absolute, block, nullPointer()))
+    unsafe {
+        let blockBytes = zeroedBlock(count: 32, alignment: 16)
+        let block = blockBytes.pointer()
+        storeTimespec(block, U64(0), period)
+        storeTimespec(block, U64(16), first)
+        return answerStatus(timerfdSettime(backing, TimerFlag.absolute, block, nullPointer()))
+    }
 }
 
 function kernelTimerDisarm(backing: Number) -> Result<Void, TesseraError> {
-    let blockBytes = zeroedBlock(count: 32, alignment: 16)
-    let block = blockBytes.pointer()
-    return answerStatus(timerfdSettime(backing, TimerFlag.relative, block, nullPointer()))
+    unsafe {
+        let blockBytes = zeroedBlock(count: 32, alignment: 16)
+        let block = blockBytes.pointer()
+        return answerStatus(timerfdSettime(backing, TimerFlag.relative, block, nullPointer()))
+    }
 }
 
 // The expirations the timer has counted since this was last asked.
 function kernelTimerExpirations(backing: Number) -> Result<U64, TesseraError> {
-    let blockBytes = zeroedBlock(count: 8, alignment: 16)
-    let block = blockBytes.pointer()
-    let got = read(backing, block, U64(8))
-    if answerFailed(got) {
-        // A timer that has not expired since has nothing to read.
-        if answerErrno(got) == code(Errno.Again) { return .Ok(0) }
-        return .Error(errnoFailure(answerErrno(got)))
+    unsafe {
+        let blockBytes = zeroedBlock(count: 8, alignment: 16)
+        let block = blockBytes.pointer()
+        let got = read(backing, block, U64(8))
+        if answerFailed(got) {
+            // A timer that has not expired since has nothing to read.
+            if answerErrno(got) == code(Errno.Again) { return .Ok(0) }
+            return .Error(errnoFailure(answerErrno(got)))
+        }
+        return .Ok(heapLoad<U64>(block, 0))
     }
-    return .Ok(heapLoad<U64>(block, 0))
 }
 
 // Sleeps `nanoseconds` on the monotonic clock; a signal ends it early.
 function kernelSleep(nanoseconds: U64) {
-    let requestBytes = zeroedBlock(count: 16, alignment: 16)
-    let request = requestBytes.pointer()
-    storeTimespec(request, U64(0), nanoseconds)
-    // `EINTR` is that signal, which the caller has said it accepts.
-    match answerStatus(
-        clockNanosleep(LinuxClock.monotonic, TimerFlag.relative, request, nullPointer())
-    ) {
-        Ok -> {}
-        Error(failed) -> absorb failed
+    unsafe {
+        let requestBytes = zeroedBlock(count: 16, alignment: 16)
+        let request = requestBytes.pointer()
+        storeTimespec(request, U64(0), nanoseconds)
+        // `EINTR` is that signal, which the caller has said it accepts.
+        match answerStatus(
+            clockNanosleep(LinuxClock.monotonic, TimerFlag.relative, request, nullPointer())
+        ) {
+            Ok -> {}
+            Error(failed) -> absorb failed
+        }
     }
 }
 
 // Sleeps until the monotonic clock reads `deadline`, through signals.
 function kernelSleepUntil(deadline: U64) -> Result<Void, TesseraError> {
-    let requestBytes = zeroedBlock(count: 16, alignment: 16)
-    let request = requestBytes.pointer()
-    var target = deadline
-    if target == Deadline.infinite { target = U64(0x7FFFFFFFFFFFFFFF) }
-    storeTimespec(request, U64(0), target)
-    while true {
-        let answer = clockNanosleep(
-            LinuxClock.monotonic,
-            TimerFlag.absolute,
-            request,
-            nullPointer()
-        )
-        if !failedWith(answer, .Interrupted) { return answerStatus(answer) }
+    unsafe {
+        let requestBytes = zeroedBlock(count: 16, alignment: 16)
+        let request = requestBytes.pointer()
+        var target = deadline
+        if target == Deadline.infinite { target = U64(0x7FFFFFFFFFFFFFFF) }
+        storeTimespec(request, U64(0), target)
+        while true {
+            let answer = clockNanosleep(
+                LinuxClock.monotonic,
+                TimerFlag.absolute,
+                request,
+                nullPointer()
+            )
+            if !failedWith(answer, .Interrupted) { return answerStatus(answer) }
+        }
+        return .Ok
     }
-    return .Ok
 }

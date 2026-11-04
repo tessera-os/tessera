@@ -60,11 +60,7 @@ function paintShape(pixels: RawPtr, pitch: Number, shape: borrow CursorShape, sc
     for row in 0..side {
         for column in 0..side {
             let (black, white) = shapeCoverage(painter, row, column)
-            heapStore<U32>(
-                pixels,
-                row * stride + column * bytes,
-                cursorPixel(black, white)
-            )
+            heapStore<U32>(pixels, row * stride + column * bytes, cursorPixel(black, white))
         }
     }
 }
@@ -154,6 +150,7 @@ function cursorPlaneCount(display: borrow Display) -> Number {
 function storeCursorPlane(display: borrow Display, planes: borrow ByteBlock, at: Number) {
     let cursor = try display.cursor otherwise return
     let side = UN32(CursorImage.side)
+    let hotSpot = shapeHotSpot(cursor.shape)
     heapStore(
         heapOffset(planes.pointer(), at),
         PlaneStateRecord {
@@ -166,8 +163,8 @@ function storeCursorPlane(display: borrow Display, planes: borrow ByteBlock, at:
             srcH: side << CommitRecord.fixedShift,
             // The pointer is in points and the plane in pixels; the image
             // is painted at the output's scale, its hot spot in pixels.
-            dstX: N32(cursor.x * display.scanout.scale - shapeHotSpot(cursor.shape)),
-            dstY: N32(cursor.y * display.scanout.scale - shapeHotSpot(cursor.shape)),
+            dstX: N32(display.scanout.originX + cursor.x * display.scanout.scale - hotSpot),
+            dstY: N32(display.scanout.originY + cursor.y * display.scanout.scale - hotSpot),
             dstW: side,
             dstH: side,
             zpos: UN16(0),

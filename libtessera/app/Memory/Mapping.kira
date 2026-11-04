@@ -160,7 +160,9 @@ public function memoryMap(
 ) -> Result<RawPtr, TesseraError> {
     unsafe {
         try protectionAllowed(protection)
-        if options.raw > U32(31) || length == U64(0) || !pageAligned(length) || !pageAligned(offset) {
+        if options.raw > U32(31) || length == U64(0) || !pageAligned(length) || !pageAligned(
+            offset
+        ) {
             return .Error(failure(.InvalidArgument))
         }
         let slot = try resolve(source, .None, protectionRights(protection, options))
@@ -197,7 +199,15 @@ public function memoryMap(
             start = at - below
             let placement: Place = mappingsReserved(start, total) ? .Over : .Free
             let objectBacking = try backingOf(object)
-            try kernelMapBacking(at, length, protection, shared, placement, objectBacking, fileOffset)
+            try kernelMapBacking(
+                at,
+                length,
+                protection,
+                shared,
+                placement,
+                objectBacking,
+                fileOffset
+            )
             if below > U64(0) {
                 try kernelReserve(start, below, placement)
             }

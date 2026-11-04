@@ -65,6 +65,104 @@ public function machineQuietConsole() -> Result<Void, TesseraError> {
     return kernelQuietConsole()
 }
 
+/// A remote processor [`machineStartRemoteProcessors`] asked to start.
+public struct RemoteProcessorStart {
+    /// The kernel's name for it, such as `adsp` or `cdsp`.
+    let name: String
+    /// Why it did not start, or none when it did.
+    let failure: TesseraError?
+}
+
+/// Starts each remote processor the kernel holds offline: the DSPs of a
+/// phone's SoC, whose firmware the kernel could not load while only the
+/// initramfs was mounted. PID 1 calls it once the system volume is the root,
+/// where `/lib/firmware` holds their images.
+///
+/// Each one tried is answered, with why it did not start if it did not; a
+/// machine with no remote processors answers none.
+///
+/// # Errors
+///
+/// `NotEntitled` without `tessera.machine`, and the kernel's refusal when the
+/// remote processors cannot be listed or read.
+public function machineStartRemoteProcessors() -> Result<[RemoteProcessorStart], TesseraError> {
+    if !machineEntitled() { return .Error(failure(.NotEntitled)) }
+    return kernelStartRemoteProcessors()
+}
+
+/// The image in the machine's USB drive: the mass-storage LUN its USB device
+/// controller shows a host, such as a phone's port shows a Mac.
+///
+/// It is none when the host ejected the medium or none was put in.
+///
+/// # Errors
+///
+/// `NotEntitled` without `tessera.machine`; `NotFound` when the machine has
+/// no USB drive; the kernel's refusal when the drive cannot be read.
+public function machineUsbDriveMedium() -> Result<String?, TesseraError> {
+    if !machineEntitled() { return .Error(failure(.NotEntitled)) }
+    return kernelUsbDriveMedium()
+}
+
+/// Puts the disk image in the file `image` in the machine's USB drive, which
+/// the host then sees as a medium put in. The kernel reads and writes the
+/// file for the host until the host ejects it or
+/// [`machineUsbDriveTakeOut`] takes it out.
+///
+/// # Errors
+///
+/// `InvalidArgument` for an empty path; `NotEntitled` without
+/// `tessera.machine`; `NotFound` when the machine has no USB drive; `Busy`
+/// when the host holds the medium in; the kernel's refusal when the file
+/// cannot be opened.
+public function machineUsbDrivePutIn(image: borrow String) -> Result<Void, TesseraError> {
+    if image.count == 0 || image.contains("\n") { return .Error(failure(.InvalidArgument)) }
+    if !machineEntitled() { return .Error(failure(.NotEntitled)) }
+    return kernelUsbDriveLoad(image)
+}
+
+/// Takes the medium out of the machine's USB drive, as if the host ejected
+/// it.
+///
+/// # Errors
+///
+/// `NotEntitled` without `tessera.machine`; `NotFound` when the machine has
+/// no USB drive; `Busy` when the host holds the medium in.
+public function machineUsbDriveTakeOut() -> Result<Void, TesseraError> {
+    if !machineEntitled() { return .Error(failure(.NotEntitled)) }
+    return kernelUsbDriveLoad("")
+}
+
+/// A disk image attached to a loop device by [`machineAttachImage`].
+public struct AttachedImage {
+    /// The loop device's path, such as `/dev/loop1`.
+    let device: String
+    /// The open device, which keeps it attached; [`machineDetachImage`]
+    /// closes it.
+    let descriptor: Number
+}
+
+/// Attaches the disk image in the file `image`, writable, to a free loop
+/// device, which then appears to the machine as a disk: the Volume service
+/// mounts what it holds. It stays attached until
+/// [`machineDetachImage`] and whatever mounted it let it go.
+///
+/// # Errors
+///
+/// `InvalidArgument` for an empty path; `NotEntitled` without
+/// `tessera.machine`; the kernel's refusal when no loop device is free or
+/// the file cannot be opened.
+public function machineAttachImage(image: borrow String) -> Result<AttachedImage, TesseraError> {
+    if image.count == 0 { return .Error(failure(.InvalidArgument)) }
+    if !machineEntitled() { return .Error(failure(.NotEntitled)) }
+    let loop = try kernelAttachImage(image)
+    return .Ok(AttachedImage { device: copy loop.device, descriptor: loop.descriptor })
+}
+
+/// Lets go of an image [`machineAttachImage`] attached: the loop device lets
+/// go of the file once nothing mounts it.
+public function machineDetachImage(image: AttachedImage) { kernelDetachImage(image.descriptor) }
+
 // Has the kernel start `program` with the core of each process that dies of
 // a signal, the process's pid its argument, and keep the process until the
 // program exits: the crash reporter (§20.2).

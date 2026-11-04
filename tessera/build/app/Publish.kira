@@ -1,0 +1,154 @@
+import Foundation
+import Build
+
+// What the build hands everything outside it: a step's outputs, copied from
+// the project's `.kira-build/out/<step>/`, where the build keeps its own
+// intermediates, to `<build root>/out/<step>/` (Host.buildRoot), where
+// packaging, flashing and the rest read them. Each output is copied again
+// only when its digest changed: a file `<output>.digest` beside it holds the
+// digest it was copied at.
+
+// Why a step's outputs could not be published.
+enum PublishFailure {
+    // The directory could not be made.
+    Directory(String)
+    // The old copy could not be removed.
+    Remove(String)
+    // The output could not be copied.
+    Copy(String)
+    // The digest beside the copy could not be written.
+    Digest(String)
+}
+
+// A step's run that publishes what the step `step` produces under
+// `buildRoot`'s `out/<step>/`.
+function publishedRun(buildRoot: borrow String, step: borrow String) -> ((StepRun) -> Number)? {
+    let directory = "\(buildRoot)/out/\(step)"
+    return .Some({ run in return publishStep(directory, run) })
+}
+
+function publishStep(directory: borrow String, run: borrow StepRun) -> Number {
+    return match publishOutputs(directory, run) {
+        Ok -> 0
+        Error(failure) -> {
+            log fault(
+                "the step's outputs cannot be published",
+                directory,
+                failure: traceText(failure)
+            )
+            1
+        }
+    }
+}
+
+function publishOutputs(
+    directory: borrow String,
+    run: borrow StepRun
+) -> Result<Void, PublishFailure> {
+    try madeDirectories(directory)
+    for (index, output) in run.paths.enumerated() {
+        let target = "\(directory)/\(lastNameOf(output))"
+        let stamp = "\(target).digest"
+        let digest = copy run.digests[index]
+        if isPublished(stamp, digest) { continue }
+        try removedEntry(target)
+        try copiedEntry(output, target)
+        match writeFile(stamp, digest) {
+            Ok -> {}
+            Error(failure) -> return .Error(.Digest(traceText(failure)))
+        }
+    }
+    return .Ok
+}
+
+// Whether the copy beside `stamp` was made at `digest`.
+function isPublished(stamp: borrow String, digest: borrow String) -> Bool {
+    match publishedDigest(stamp) {
+        Some(made) -> return made == digest
+        None -> return false
+    }
+}
+
+// The digest a published copy was made at, or none when there is no copy.
+function publishedDigest(stamp: borrow String) -> String? {
+    match readFile(stamp) {
+        Ok(contents) -> return .Some(contents.text)
+        Error(failure) -> {
+            // No stamp is no copy, and an unreadable one is copied again.
+            absorb failure
+            return .None
+        }
+    }
+}
+
+// `path` as a directory, with every directory above it.
+function madeDirectories(path: borrow String) -> Result<Void, PublishFailure> {
+    if path.count == 0 || isDirectory(path) { return .Ok }
+    try madeDirectories(parentOf(path))
+    return match makeDirectory(path) {
+        Ok -> .Ok
+        Error(failure) -> .Error(.Directory(traceText(failure)))
+    }
+}
+
+// Removes `path` and, for a directory, everything in it. A link is removed,
+// never followed.
+function removedEntry(path: borrow String) -> Result<Void, PublishFailure> {
+    let status = match linkStatus(path) {
+        Ok(found) -> found
+        Error(failure) -> {
+            // Nothing there is nothing to remove.
+            absorb failure
+            return .Ok
+        }
+    }
+    if status.kind == .Directory {
+        let listing = match listDirectory(path) {
+            Ok(listing) -> listing
+            Error(failure) -> return .Error(.Remove(traceText(failure)))
+        }
+        for entry in listing.entries { try removedEntry("\(path)/\(entry)") }
+    }
+    return match removePath(path) {
+        Ok -> .Ok
+        Error(failure) -> .Error(.Remove(traceText(failure)))
+    }
+}
+
+// Copies `from` to `to`: a file with its permission bits, a link as the
+// same link, a directory with everything in it.
+function copiedEntry(from: borrow String, to: borrow String) -> Result<Void, PublishFailure> {
+    let status = match linkStatus(from) {
+        Ok(found) -> found
+        Error(failure) -> return .Error(.Copy(traceText(failure)))
+    }
+    return match status.kind {
+        Directory -> copiedDirectory(from, to)
+        Link -> match readSymbolicLink(from) {
+            Ok(target) -> match makeSymbolicLink(target, to) {
+                Ok -> .Ok
+                Error(failure) -> .Error(.Copy(traceText(failure)))
+            }
+            Error(failure) -> .Error(.Copy(traceText(failure)))
+        }
+        else -> copiedFile(from, to)
+    }
+}
+
+function copiedFile(from: borrow String, to: borrow String) -> Result<Void, PublishFailure> {
+    match copyFile(from, to) {
+        // The count copied is the file's length, which its digest vouches for.
+        Ok -> return .Ok
+        Error(failure) -> return .Error(.Copy(traceText(failure)))
+    }
+}
+
+function copiedDirectory(from: borrow String, to: borrow String) -> Result<Void, PublishFailure> {
+    try madeDirectories(to)
+    let listing = match listDirectory(from) {
+        Ok(listing) -> listing
+        Error(failure) -> return .Error(.Copy(traceText(failure)))
+    }
+    for entry in listing.entries { try copiedEntry("\(from)/\(entry)", "\(to)/\(entry)") }
+    return .Ok
+}

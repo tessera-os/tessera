@@ -3,7 +3,7 @@ construct AdaptiveDesktop extends Package {
     let kind: PackageKind = .App
     let moduleRoot: String = "AdaptiveDesktop"
     let dependencies: [Dependency] = [
-        Dependency { name: "ArgumentParser", path: "../argument-parser" },
+        Dependency { name: "ArgumentParser", path: "../../kira-packages/argument-parser" },
         Dependency { name: "LibTessera", path: "../libtessera" },
         Dependency { name: "TesseraDisplayClient", path: "../display-client" },
         Dependency { name: "KiraUI", path: "../kira-ui" },

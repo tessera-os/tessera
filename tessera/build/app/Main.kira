@@ -28,6 +28,22 @@ function main() -> Number {
             }
         )
     )
+    let kernelProfile = graph.option(
+        Choice {
+            name: "kernel-profile",
+            summary: "the kernel's hardware profile: QEMU virt, or the experimental Galaxy S23+ SM8550 profile",
+            values: ["qemu", "dm2q"],
+            fallback: "qemu"
+        }
+    )
+    if kernelProfile == "dm2q" && architecture != .Aarch64 {
+        log fault("the Galaxy S23+ kernel profile requires -arch aarch64")
+        return 2
+    }
+    if kernelProfile == "dm2q" && graph.requested("boot") {
+        log fault("the Galaxy S23+ kernel profile cannot be booted by the QEMU boot step")
+        return 2
+    }
     let valgrind = graph.option(
         Choice {
             name: "valgrind",
@@ -52,6 +68,14 @@ function main() -> Number {
             fallback: "on"
         }
     )
+    let icons = graph.option(
+        Choice {
+            name: "icons",
+            summary: "whether applications' icons are drawn into the system, or skipped for a faster build that shows none",
+            values: ["render", "skip"],
+            fallback: "render"
+        }
+    )
     let profile = graph.option(
         Choice {
             name: "profile",
@@ -60,7 +84,7 @@ function main() -> Number {
             fallback: "release"
         }
     )
-    let sysroot = match debianSysroot(graph, host, architecture) {
+    let sysroot = match debianSysroot(graph, host, architecture, kernelProfile) {
         Ok(staged) -> staged
         Error(problem) -> {
             log fault("no sysroot", problem)
@@ -80,13 +104,15 @@ function main() -> Number {
     let context = BuildContext {
         host: copy host,
         architecture: architecture,
+        kernelProfile: copy kernelProfile,
         sysroot: sysroot,
         kira: graph.kira(),
         sealKey: graph.signingKey(sealKeyPath(host), true),
         valgrind: valgrind,
         release: profile == "release",
         symbols: symbolPlacementOf(symbols),
-        lldb: lldb == "on"
+        lldb: lldb == "on",
+        icons: iconRenderingOf(icons)
     }
     let release = match describeRelease(graph, context) {
         Ok(described) -> described
@@ -106,7 +132,8 @@ function main() -> Number {
         Step {
             name: "initramfs",
             summary: "the initramfs image",
-            produces: [image, initramfsLoaders]
+            produces: [image, initramfsLoaders],
+            run: publishedRun(host.buildRoot, "initramfs")
         }
     )
     let volume = systemImage(graph, context, "system", copy release.systemRoot)
@@ -122,7 +149,8 @@ function main() -> Number {
         Step {
             name: "system-volume",
             summary: "the system volume image",
-            produces: [volume, volumeLoaders]
+            produces: [volume, volumeLoaders],
+            run: publishedRun(host.buildRoot, "system-volume")
         }
     )
     graph.step(
@@ -186,7 +214,8 @@ function main() -> Number {
                 Step {
                     name: "installer-image",
                     summary: "the installer image, which installs a system onto the volume",
-                    produces: [copy installer]
+                    produces: [copy installer],
+                    run: publishedRun(host.buildRoot, "installer-image")
                 }
             )
             booted.append(installer)
@@ -201,7 +230,8 @@ function main() -> Number {
                 Step {
                     name: "recovery-image",
                     summary: "the recovery media: the system with the installer and the system it installs",
-                    produces: [copy recovery]
+                    produces: [copy recovery],
+                    run: publishedRun(host.buildRoot, "recovery-image")
                 }
             )
             booted.append(recovery)
@@ -209,16 +239,29 @@ function main() -> Number {
         }
         Error(problem) -> log warn("the installer and the recovery media are left out", problem)
     }
-    match kernelBuild(graph, context) {
+    match kernelBuild(graph, context, kernelProfile) {
         Ok(kernel) -> {
             graph.step(
-                Step { name: "kernel", summary: "the kernel image", produces: [kernel.image] }
+                Step {
+                    name: "kernel",
+                    summary: "the kernel image",
+                    produces: [kernel.image],
+                    run: publishedRun(host.buildRoot, "kernel")
+                }
             )
             graph.step(
                 Step {
                     name: "uapi",
                     summary: "the kernel's uapi headers, as a userland includes them",
                     produces: [kernel.headers]
+                }
+            )
+            graph.step(
+                Step {
+                    name: "devicetrees",
+                    summary: "the kernel profile's device trees; empty for QEMU",
+                    produces: [kernel.devicetrees],
+                    run: publishedRun(host.buildRoot, "devicetrees")
                 }
             )
             booted.append(copy kernel.image)
@@ -283,10 +326,22 @@ function main() -> Number {
             summary: "the release booted in QEMU; `-test` and the other modes after it (Boot.kira)",
             produces: booted,
             materialize: baseTrain.count == 0,
-            run: .Some({ run in
-                if baseTrain.count > 0 { return bootTrain(host, architecture, baseTrain, options, bootRoles, overlay, run) }
-                return boot(host, architecture, options, bootRoles, run)
-            })
+            run: .Some(
+                { run in
+                    if baseTrain.count > 0 {
+                        return bootTrain(
+                            host,
+                            architecture,
+                            baseTrain,
+                            options,
+                            bootRoles,
+                            overlay,
+                            run
+                        )
+                    }
+                    return boot(host, architecture, options, bootRoles, run)
+                }
+            )
         }
     )
     return graph.run()

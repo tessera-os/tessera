@@ -28,6 +28,11 @@ construct Mobile() extends DisplayPlatform {
     var own: DisplaySurfaceId? = .None
     // The home screen's surface, once the compositor has said which it is.
     var home: DisplaySurfaceId? = .None
+    // When mobile asks PID 1 to open Desktop as its home, its first surface
+    // may arrive before PID 1 has named the application to the display link.
+    var homeCandidate: DisplaySurfaceId? = .None
+    var homeRequested: Bool = false
+    var homeAnswer: Handle? = .None
     // What is installed, which the Dock keeps and opens; the windows whose
     // application has not been named to the platform yet; and the band the
     // Dock takes along the bottom now.
@@ -40,6 +45,9 @@ construct Mobile() extends DisplayPlatform {
     var mode: CompositorMode = .Stack
     // The notification banner on screen, newest first.
     var banners: [ShownNotification] = []
+    // Whether the dead zone's banner was considered, which it is once, on the
+    // first frame (DeadZone.kira).
+    var deadZoneNoticed: Bool = false
     // The part of the output the banners took when the compositor was last
     // told, which a touch on goes to the platform.
     var overlay: SurfaceFrame = SurfaceFrame { x: 0, y: 0, width: 0, height: 0 }
@@ -147,9 +155,16 @@ function surfaceAppeared(mobile: borrow mut Mobile, announced: borrow DisplaySur
     let surface = announced.surface
     log info("an application surface appeared", surface: surface.raw)
     match announced.role {
-        Desktop -> mobile.home = .Some(surface)
+        Desktop -> {
+            mobile.home = .Some(surface)
+            mobile.homeCandidate = .None
+        }
+        Application -> if mobile.homeRequested {
+            mobile.homeCandidate = .Some(surface)
+            resolveHomeCandidate(mobile)
+        }
         // Any other role is an application like the rest.
-        None, Application, Platform, Presence -> {}
+        None, Platform, Presence -> {}
     }
     if !trackWindow(mobile.bridge, mobile.state, announced) { mobile.unnamed.append(surface) }
     if announced.role != .Desktop {
@@ -191,6 +206,26 @@ function surfaceWent(mobile: borrow mut Mobile, surface: DisplaySurfaceId) {
     if mobile.flying == .Some(surface) { mobile.flying = .None }
     mobile.barHidden = surfacesBut(mobile.barHidden, surface)
     keepDock(mobile)
+}
+
+// The init service starts Desktop as an application when Adaptive Mobile asks
+// for it at runtime. Use its process name to adopt that surface as mobile home.
+function resolveHomeCandidate(mobile: borrow mut Mobile) {
+    let candidate = match mobile.homeCandidate {
+        Some(surface) -> surface
+        None -> return
+    }
+    match applicationOf(copy mobile.bridge, candidate.raw) {
+        Some(name) -> {
+            mobile.homeCandidate = .None
+            if name == "Desktop" {
+                mobile.home = .Some(candidate)
+                mobile.homeRequested = false
+                log info("the Desktop application is the mobile home", surface: candidate.raw)
+            }
+        }
+        None -> {}
+    }
 }
 
 /// The applications of `names` that are still open.

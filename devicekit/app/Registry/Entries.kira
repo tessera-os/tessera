@@ -218,8 +218,9 @@ function writeListHeader(out: RawPtr, count: Number, size: Number) {
 // Two's-complement words, without a conversion that traps on a negative
 // value.
 function twosComplement(value: Number) -> U64 {
-    if value < 0 { return U64(0xFFFFFFFFFFFFFFFF) - U64(-(value + 1)) }
-    return U64(value)
+    let signed = Int(value)
+    if signed < 0 { return U64(0xFFFFFFFFFFFFFFFF) - U64(-(signed + 1)) }
+    return U64(signed)
 }
 
 function signedOf(word: U64) -> Number {
@@ -233,6 +234,7 @@ function signedOf32(word: U32) -> Number {
 }
 
 function word32Of(value: Number) -> U32 {
-    if value < 0 { return U32(4294967296 + value) }
-    return U32(value)
+    let signed = Int(I32(value))
+    if signed < 0 { return U32(signed + 4294967296) }
+    return U32(signed)
 }

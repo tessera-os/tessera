@@ -9,7 +9,11 @@ function trainVolume(
     images: borrow BootImages,
     options: borrow BootOptions
 ) -> Result<String, String> {
-    let reference = ArtifactReference { name: "system.img", digest: copy images.systemDigest, kind: .File }
+    let reference = ArtifactReference {
+        name: "system.img",
+        digest: copy images.systemDigest,
+        kind: .File
+    }
     let shared = match buildArtifactAuxiliaryDirectory(reference, "volume-" + architecture.name()) {
         Ok(path) -> path
         Error(failure) -> return .Error("cannot locate shared train volume: \(traceText(failure))")
@@ -43,8 +47,16 @@ function makeTrainVolume(
     let base = shared + "/base.img"
     if fileExists(base) { return .Ok(base) }
     let part = base + ".part"
-    try installSystem(host, architecture, images, images.system, images.systemDigest,
-        part, shared + "/installed", options)
+    try installSystem(
+        host,
+        architecture,
+        images,
+        images.system,
+        images.systemDigest,
+        part,
+        shared + "/installed",
+        options
+    )
     match setFileMode(part, 292) {
         Ok -> {}
         Error(failure) -> return .Error("cannot protect train volume: \(traceText(failure))")
@@ -67,19 +79,28 @@ function workspaceTrainDisk(
     if fileExists(disk) {
         let recorded = match readFile(record) {
             Ok(contents) -> contents.text.trim()
-            Error(failure) -> return .Error("workspace disk has no train record: \(traceText(failure))")
+            Error(failure) -> return .Error(
+                "workspace disk has no train record: \(traceText(failure))"
+            )
         }
-        if recorded != digest { return .Error("workspace disk belongs to another train; create a new workspace") }
+        if recorded != digest {
+            return .Error("workspace disk belongs to another train; create a new workspace")
+        }
         return .Ok(disk)
     }
     let part = disk + ".part"
     if fileExists(part) {
         match removePath(part) {
             Ok -> {}
-            Error(failure) -> return .Error("cannot remove incomplete workspace disk: \(traceText(failure))")
+            Error(failure) -> return .Error(
+                "cannot remove incomplete workspace disk: \(traceText(failure))"
+            )
         }
     }
-    try hostCommand(host.find("qemu-img"), ["create", "-f", "qcow2", "-F", "raw", "-b", copy base, part])
+    try hostCommand(
+        host.find("qemu-img"),
+        ["create", "-f", "qcow2", "-F", "raw", "-b", copy base, part]
+    )
     match renamePath(part, disk) {
         Ok -> {}
         Error(failure) -> return .Error("cannot publish workspace disk: \(traceText(failure))")

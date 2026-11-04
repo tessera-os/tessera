@@ -155,7 +155,9 @@ function matchingNow(spec: borrow Match) -> Result<[Matched], TesseraError> {
 
 // Moves what changed since the last look into the watch's queue.
 function refreshWatch(watch: Number) -> Result<Void, TesseraError> {
-    let socket = try deviceLibrary.objects[deviceLibrary.registry.watches[watch].object].device otherwise return .Error(failure(.InvalidHandle))
+    let socket = try deviceLibrary.objects[deviceLibrary.registry.watches[watch].object].device otherwise return .Error(
+        failure(.InvalidHandle)
+    )
     let notices = drainUevents(socket)
     if deviceLibrary.registry.watches[watch].started && notices.count == 0 { return .Ok }
     let now = try matchingNow(deviceLibrary.registry.watches[watch].spec)

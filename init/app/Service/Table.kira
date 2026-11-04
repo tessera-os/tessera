@@ -187,7 +187,10 @@ function services(calls: Handle, bootArguments: borrow [String]) -> [Service] {
         Service {
             name: "mosaicdisplay",
             path: "/" + SystemDirectory.programs + "/mosaicdisplay",
-            arguments: [],
+            arguments: bootFlag(
+                bootArguments,
+                BootFlag.bootLog
+            ) ? ["mosaicdisplay", "--boot-log"] : [],
             restart: true,
             displayRole: DisplayRole.None,
         }
@@ -239,7 +242,7 @@ function services(calls: Handle, bootArguments: borrow [String]) -> [Service] {
         services.append(
             Service {
                 name: "desktop",
-                path: "/" + SystemDirectory.coreServices + "/Desktop.app/Contents/MacOS/Desktop",
+                path: "/" + SystemDirectory.systemApplications + "/Desktop.app/Contents/MacOS/Desktop",
                 arguments: [],
                 restart: true,
                 displayRole: DisplayRole.Desktop,
@@ -269,19 +272,9 @@ function services(calls: Handle, bootArguments: borrow [String]) -> [Service] {
                 displayRole: DisplayRole.Application,
             }
         )
-    } else if !recovery {
-        services.append(
-            Service {
-                name: "display-check",
-                path: "/" + SystemDirectory.coreServices + "/Display Check.app/Contents/MacOS/Display Check",
-                arguments: [],
-                restart: false,
-                displayRole: DisplayRole.Application,
-            }
-        )
     }
     if bootFlag(bootArguments, BootFlag.dev) {
-        for service in developmentServices() { services.append(service) }
+        for service in developmentServices(bootArguments) { services.append(service) }
     }
     if bootFlag(bootArguments, "tessera.multi-client-test") {
         services.append(
@@ -446,7 +439,7 @@ function services(calls: Handle, bootArguments: borrow [String]) -> [Service] {
 // installs component builds over the system and asks PID 1 to restart
 // what loads the files they change (roadmap/18-components.md). A
 // machine that is not one never runs it.
-function developmentServices() -> [Service] {
+function developmentServices(bootArguments: borrow [String]) -> [Service] {
     var services: [Service] = []
     services.append(
         Service {
@@ -457,29 +450,29 @@ function developmentServices() -> [Service] {
             displayRole: DisplayRole.None,
         }
     )
-    // The debugger's stub on the machine's debug port
-    // (roadmap/14-tooling-and-ports.md).
-    services.append(
-        Service {
-            name: "debugserver",
-            path: "/" + SystemDirectory.programs + "/debugserver",
-            arguments: [],
-            restart: true,
-            displayRole: DisplayRole.None,
-        }
-    )
-    // LLVM's own lldb-server on the machine's LLDB port, behind
-    // debugserver's gate, which waits for a debugger to connect.
-    let gate = "/" + SystemDirectory.programs + "/debugserver"
-    services.append(
-        Service {
-            name: "lldb-server",
-            path: copy gate,
-            arguments: [gate, "--lldb"],
-            restart: true,
-            displayRole: DisplayRole.None,
-        }
-    )
+    // Physical DevRoot machines have no host debug ports. QEMU opts into
+    // these consumers only when it provides both named ports.
+    if bootFlag(bootArguments, BootFlag.debugPorts) {
+        services.append(
+            Service {
+                name: "debugserver",
+                path: "/" + SystemDirectory.programs + "/debugserver",
+                arguments: [],
+                restart: true,
+                displayRole: DisplayRole.None,
+            }
+        )
+        let gate = "/" + SystemDirectory.programs + "/debugserver"
+        services.append(
+            Service {
+                name: "lldb-server",
+                path: copy gate,
+                arguments: [gate, "--lldb"],
+                restart: true,
+                displayRole: DisplayRole.None,
+            }
+        )
+    }
     return services
 }
 

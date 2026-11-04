@@ -29,6 +29,7 @@ function surfacePressed(mobile: borrow mut Mobile, surface: DisplaySurfaceId) {
 /// A tap on a notification's banner opens the application that posted it,
 /// back from home if it was put away there, as on an iPhone.
 function bannerChose(mobile: borrow mut Mobile, client: Number) {
+    if deadZoneNoticeChosen(mobile, client) { return }
     if mobile.lock.locked { return }
     mobile.banners = bannersAfterChoosing(mobile.banners, client)
     bringForward(mobile, DisplaySurfaceId(client))

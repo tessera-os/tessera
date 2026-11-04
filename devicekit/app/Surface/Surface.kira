@@ -59,9 +59,9 @@ function bytesPerPixel(format: FourCc) -> U32? {
 }
 
 let noPlane: SurfacePlane = SurfacePlane {
-    offset: UNumber(0),
-    stride: UNumber(0),
-    size: UNumber(0)
+    offset: U64(0),
+    stride: U32(0),
+    size: U64(0)
 }
 
 // The planes the info uses.

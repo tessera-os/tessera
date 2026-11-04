@@ -49,16 +49,16 @@ function hostIsDarwin() -> Bool {
     return buildProgramIsDarwin!()
 }
 
-// Homebrew's GNU make, coreutils, findutils, sed and bc, ahead of Darwin's own,
-// and e2fsprogs, whose mkfs.ext4 makes the disks a boot attaches. They are
-// keg-only, so their bins are not on PATH by themselves. The kernel
+// Homebrew's GNU make, bison, coreutils, findutils, sed and bc, ahead of
+// Darwin's own, and e2fsprogs, whose mkfs.ext4 makes the disks a boot attaches.
+// They are keg-only, so their bins are not on PATH by themselves. The kernel
 // needs make 4 or newer, where Darwin ships 3.81; `nproc` and `sha256sum` are
 // coreutils; arch/arm64/kvm runs `find -printf`, which BSD find lacks; and
 // arch/arm64/tools/gen-kernel-hwcaps.sh uses a GNU sed pattern that BSD sed
 // matches nothing with, silently.
 function darwinToolPath() -> String {
     let brew = "/opt/homebrew/opt"
-    return "\(brew)/make/libexec/gnubin:\(brew)/coreutils/libexec/gnubin:"
+    return "\(brew)/make/libexec/gnubin:\(brew)/bison/bin:\(brew)/coreutils/libexec/gnubin:"
         + "\(brew)/findutils/libexec/gnubin:\(brew)/gnu-sed/libexec/gnubin:\(brew)/bc/bin:"
         + "\(brew)/e2fsprogs/sbin"
 }
@@ -72,11 +72,9 @@ function hostZoneInfo() -> String {
 // The host, or what it lacks.
 function readHost(root: borrow String) -> Result<Host, String> {
     let home = environmentValue("HOME")
-    let buildRoot = environmentIsSet("TESSERA_BUILD_ROOT")
-    ? environmentValue("TESSERA_BUILD_ROOT")
-    : fileExists(root + "/../workspace.kten")
-    ? parentOf(root) + "/.tessera-state"
-    : home + "/.tessera-build"
+    // Linux source, kbuild outputs, initramfs and system images always share
+    // this one home build root, even when the checkout is a Cairn workspace.
+    let buildRoot = home + "/.tessera-build"
     let llvm = match llvmBundle(home) {
         Ok(directory) -> directory
         Error(problem) -> return .Error(problem)
@@ -249,5 +247,18 @@ extend Host {
 
     function llvmTool(borrow self, name: borrow String) -> String {
         return "\(llvm)/bin/\(name)"
+    }
+
+    // The dm2q firmware that cannot be downloaded, taken from the stock
+    // firmware the phone runs, as retail SM8550 units reject Qualcomm's own:
+    // Samsung's signed A740 zap shader, a740_zap.mbn, from the vendor
+    // partition, and the ADSP's split images, adsp/adsp.mdt and its .bNN
+    // segments with adsp_dtb.mdt, from the apnhlos partition.
+    // TESSERA_DM2Q_FIRMWARE names another directory holding them.
+    function dm2qFirmware(borrow self) -> String {
+        if environmentIsSet("TESSERA_DM2Q_FIRMWARE") {
+            return environmentValue("TESSERA_DM2Q_FIRMWARE")
+        }
+        return "\(buildRoot)/device/dm2q/firmware"
     }
 }

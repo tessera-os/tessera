@@ -67,7 +67,7 @@ function platformRuntime(graph: borrow mut Graph, context: borrow BuildContext) 
     ]
     let directory = runtimeDirectory(context)
     let names = [
-        "libc.so.6", "libm.so.6", "libdl.so.2", "libpthread.so.0", "librt.so.1", "libgcc_s.so.1"
+        "libc.so.6", "libm.so.6", "libdl.so.2", "libpthread.so.0", "librt.so.1", "libgcc_s.so.1",
     ]
     for name in names {
         parts.append(
@@ -80,6 +80,17 @@ function platformRuntime(graph: borrow mut Graph, context: borrow BuildContext) 
             )
         )
     }
+    // The sysroot's libstdc++.so.6 is a symlink; stage its pinned target
+    // under the SONAME the Turnip ICD requests.
+    parts.append(
+        .Place(
+            TreePlace {
+                path: "\(directory)/libstdc++.so.6",
+                artifact: sysrootFile(graph, context, "\(libraries)/libstdc++.so.6.0.33"),
+                mode: FileMode.program
+            }
+        )
+    )
     return graph.tree("\(architecture.name())/runtime", parts)
 }
 
@@ -89,9 +100,9 @@ function runtimeDirectory(context: borrow BuildContext) -> String {
     return "lib/\(context.architecture.multiarch())"
 }
 
-// Vulkan, the venus driver and libdrm, from the guest GPU stack, beside the C
-// library where the loader finds them, with the Vulkan loader's ICD manifest
-// naming the driver.
+// Vulkan, the profile's GPU driver and libdrm, beside the C library where the
+// loader finds them, with an ICD manifest naming Venus for QEMU or Turnip for
+// the dm2q Adreno 740.
 // The time zones' rules, the host's tz database, where LibTessera's
 // `SystemDirectory.zoneInfo` reads them.
 function platformZoneInfo(graph: borrow mut Graph, context: borrow BuildContext) -> Artifact {
@@ -107,25 +118,30 @@ function platformZoneInfo(graph: borrow mut Graph, context: borrow BuildContext)
     )
 }
 
-function platformGraphics(graph: borrow mut Graph, context: borrow BuildContext) -> Artifact {
+function platformGraphics(
+    graph: borrow mut Graph,
+    context: borrow BuildContext,
+    dm2qFirmware: Artifact?
+) -> Artifact {
     let architecture = context.architecture.name()
     let directory = runtimeDirectory(context)
+    let driver = context.kernelProfile == "dm2q" ? "freedreno" : "virtio"
     let libraries = librariesFrom(
         graph,
         "\(architecture)/graphics/libraries",
         context.sysroot.graphics,
         directory,
-        ["libvulkan.so.1", "libvulkan_virtio.so", "libdrm.so.2"]
+        ["libvulkan.so.1", "libvulkan_\(driver).so", "libdrm.so.2"]
     )
-    let manifest = "usr/share/vulkan/icd.d/virtio_icd.\(architecture).json"
+    let manifest = "usr/share/vulkan/icd.d/\(driver)_icd.\(architecture).json"
     let icd = graph.write(
-        "\(architecture)/graphics/virtio_icd.json",
+        "\(architecture)/graphics/\(driver)_icd.json",
         textLines(
             [
                 "{",
                 "    \"ICD\": {",
                 "        \"api_version\": \"1.3.305\",",
-                "        \"library_path\": \"/\(directory)/libvulkan_virtio.so\"",
+                "        \"library_path\": \"/\(directory)/libvulkan_\(driver).so\"",
                 "    },",
                 "    \"file_format_version\": \"1.0.0\"",
                 "}"
@@ -137,5 +153,56 @@ function platformGraphics(graph: borrow mut Graph, context: borrow BuildContext)
         "\(architecture)/graphics/manifest",
         [.Place(TreePlace { path: manifest, artifact: icd, mode: FileMode.data })]
     )
-    return graph.union("\(architecture)/graphics", [libraries, placed])
+    var parts = [libraries, placed]
+    if context.kernelProfile == "dm2q" {
+        match dm2qFirmware {
+            Some(firmware) -> parts.append(firmware)
+            None -> {}
+        }
+    }
+    return graph.union("\(architecture)/graphics", parts)
+}
+
+// The A740 firmware Linux's DRM/MSM driver requests: the SQE and GMU images
+// from linux-firmware, and Samsung's signed zap image from the host, at the
+// path the dm2q device tree names.
+function dm2qGpuFirmware(graph: borrow mut Graph, context: borrow BuildContext) -> Artifact {
+    let architecture = context.architecture.name()
+    let sqe = graph.download(
+        "firmware/qcom/a740_sqe.fw",
+        "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/qcom/a740_sqe.fw?h=main",
+        "96fee336424b139100fc60b5b45a907360e4b3936d7e1d00406b9bd80ca48473"
+    )
+    let gmu = graph.download(
+        "firmware/qcom/gmu_gen70200.bin",
+        "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/qcom/gmu_gen70200.bin?h=main",
+        "1a2a419c39046d3141fc5fed5aa7f971de2db40cc7a1d89693c3e26fad64dd98"
+    )
+    let zap = graph.source(context.host.dm2qFirmware() + "/a740_zap.mbn")
+    return graph.tree(
+        "\(architecture)/graphics/dm2q-firmware",
+        [
+            .Place(TreePlace { path: "lib/firmware/qcom/a740_sqe.fw", artifact: sqe }),
+            .Place(TreePlace { path: "lib/firmware/qcom/gmu_gen70200.bin", artifact: gmu }),
+            .Place(
+                TreePlace {
+                    path: "lib/firmware/qcom/sm8550/samsung/dm2q/a740_zap.mbn",
+                    artifact: zap
+                }
+            )
+        ]
+    )
+}
+
+// The dm2q firmware Linux's remoteproc loads for the ADSP, which runs the
+// USB-C port's policy and the charger: Samsung's split images, placed whole
+// at the path the dm2q device tree names. The kernel reads them once the
+// system volume is the root.
+function dm2qDeviceFirmware(graph: borrow mut Graph, context: borrow BuildContext) -> Artifact {
+    let architecture = context.architecture.name()
+    let adsp = graph.sourceTree(context.host.dm2qFirmware() + "/adsp", [])
+    return graph.tree(
+        "\(architecture)/dm2q-firmware",
+        [.Place(TreePlace { path: "lib/firmware/qcom/sm8550/samsung/dm2q", artifact: adsp })]
+    )
 }

@@ -8,18 +8,20 @@ import Build
 // The tarball is downloaded from kernel.org and checked against
 // kernel/SHA256.
 //
-// The kernel is built incrementally: its unpacked tree, with kbuild's output
-// directory inside it, is kept in the command's workspace, which the Build
-// library never removes, so a change recompiles what it touches rather than
-// the whole kernel. kbuild's own dependency tracking keeps the kept output
-// correct. The output directory sits directly in the tree, so kbuild names the
-// tree `..` in every command it records and the workspace can move.
+// The kernel is built incrementally: its unpacked tree and kbuild output live
+// under the host's build root, never in the checkout's command workspace.
+// Keeping the large source tree on the host filesystem avoids slow per-file
+// operations on a Cairn-mounted checkout. kbuild's dependency tracking keeps
+// the output correct between runs.
 
 struct KernelBuild {
     // The image QEMU boots.
     let image: Artifact
     // The sanitised headers, as `headers_install` writes them.
     let headers: Artifact
+    // The profile's device trees, at their paths under arch/<arch>/boot/dts.
+    // Empty for QEMU, which builds its own.
+    let devicetrees: Artifact
 }
 
 namespace KernelLayout {
@@ -43,7 +45,8 @@ namespace KernelLayout {
 // The kernel for `context`'s architecture, or what is missing for it.
 function kernelBuild(
     graph: borrow mut Graph,
-    context: borrow BuildContext
+    context: borrow BuildContext,
+    profile: borrow String
 ) -> Result<KernelBuild, String> {
     let root = graph.root
     let version = match readFile(joinedPath(root, KernelLayout.version)) {
@@ -61,13 +64,27 @@ function kernelBuild(
         }
     }
     let series = version.split(".")[0]
+    let devicetree = profile == "dm2q" ? "qcom/sm8550-samsung-dm2q.dtb" : ""
+    let fragment = profile == "dm2q"
+    ? "kernel/config/tessera-dm2q.config"
+    : "\(KernelLayout.configs)/tessera-\(context.architecture.name()).config"
     let tarball = graph.download(
         "kernel/linux-\(version).tar.xz",
         "\(KernelLayout.mirror)/v\(series).x/linux-\(version).tar.xz",
         digest
     )
     let architecture = context.architecture
+    let workspace = profile == "qemu"
+    ? "kernel-\(architecture.name())"
+    : "kernel-\(architecture.name())-\(profile)"
+    let source = context.host.buildRoot + "/src/linux-\(version)"
+    let output = context.host.buildRoot + "/out/\(architecture.name())/kernel/\(profile)"
+    let label = profile == "qemu"
+    ? "kernel \(version) (\(architecture.name()))"
+    : "kernel \(version) (\(architecture.name()), \(profile))"
     let none: [String] = []
+    let kernelHostHeaders = hostHeaders(graph, context)
+    let persistentHostHeaders = context.host.buildRoot + "/host-include"
     let cross = architecture == context.host.architecture ? "" : architecture.multiarch() + "-"
     var environment = [
         EnvironmentEntry { name: "PATH", value: copy context.host.path },
@@ -88,7 +105,7 @@ function kernelBuild(
         variables.append(
             CommandVariable {
                 name: "HOSTCFLAGS",
-                value: .Joined([.Text("-I"), .Input(hostHeaders(graph, context))])
+                value: .Joined([.Text("-I"), .Text(persistentHostHeaders)])
             }
         )
         environment.append(
@@ -100,7 +117,7 @@ function kernelBuild(
     }
     let built = graph.command(
         CommandAction {
-            label: "kernel \(version) (\(architecture.name()))",
+            label: label,
             tool: "sh",
             arguments: [
                 .Text("-c"),
@@ -108,23 +125,31 @@ function kernelBuild(
                 .Input(tarball),
                 .Input(graph.sourceTree(KernelLayout.patches, none)),
                 .Input(graph.source("\(KernelLayout.configs)/tessera-common.config")),
-                .Input(
-                    graph.source("\(KernelLayout.configs)/tessera-\(architecture.name()).config")
-                ),
+                .Input(graph.source(fragment)),
                 .Output("image"),
                 .Output("uapi"),
                 .Text(architecture.kbuild()),
                 .Text(cross),
                 .Text(architecture.kernelImage()),
-                .Workspace
+                .Workspace,
+                .Text(source),
+                .Text(output),
+                .Input(kernelHostHeaders),
+                .Text(persistentHostHeaders),
+                .Output("devicetrees"),
+                .Text(devicetree)
             ],
             environment: environment,
             variables: variables,
-            outputs: [Output { name: "image" }, Output { name: "uapi", kind: .Tree }],
-            workspace: "kernel-\(architecture.name())"
+            outputs: [
+                Output { name: "image" },
+                Output { name: "uapi", kind: .Tree },
+                Output { name: "devicetrees", kind: .Tree }
+            ],
+            workspace: workspace
         }
     )
-    return .Ok(KernelBuild { image: built[0], headers: built[1] })
+    return .Ok(KernelBuild { image: built[0], headers: built[1], devicetrees: built[2] })
 }
 
 // The headers the kernel's host tools include and Darwin lacks. They are for
@@ -156,39 +181,76 @@ function hostHeaders(graph: borrow mut Graph, context: borrow BuildContext) -> A
 // The kernel's build, as one command: `sh -c` hands it the tarball, the patch
 // directory, the two fragments, the image and header outputs, `ARCH`,
 // `CROSS_COMPILE`, the image's path in the output directory and the kept
-// workspace, as $0 to $9. kbuild's output is the tree's `build` directory. The
+// workspace, as $0 to $9, then the source and output directories, the host
+// headers, the device-tree output and the profile's device tree, which may be
+// empty. kbuild's output is the tree's `build` directory. The
 // tree is unpacked and patched again only when the
 // tarball's name or a patch changed, and configured again only when that or a
-// fragment changed; make then rebuilds what changed.
+// fragment changed; make then rebuilds what changed. Only the selected kernel
+// vmlinux and the selected image are requested, leaving kbuild to decide which
+// objects it needs and ensuring link-only config changes reach vmlinux.
 function kernelScript() -> String {
     let lines = [
         "set -e",
         "tarball=$0 patches=$1 common=$2 fragment=$3 image=$4 headers=$5 arch=$6 cross=$7 built=$8 workspace=$9",
-        "source=\"$workspace/source\" output=\"$workspace/source/build\"",
+        "source=\"${10}\" output=\"${11}\" host_headers_input=\"${12}\" persistent_host_headers=\"${13}\"",
+        "devicetrees=\"${14}\" devicetree=\"${15}\"",
+        "image_target=${built##*/}",
+        "source_stamp=\"$source.stamp\"",
+        "config_stamp=\"$output/.tessera-config.stamp\"",
+        "link_config_stamp=\"$output/.tessera-link-config.stamp\"",
         "unpacked=$({ basename \"$tarball\"; cat \"$patches\"/*.patch 2> /dev/null || true; } | sha256sum | cut -d' ' -f1)",
-        "if [ \"$(cat \"$workspace/source.stamp\" 2> /dev/null)\" != \"$unpacked\" ]; then",
-        "    rm -rf \"$source\" \"$workspace/source.stamp\"",
+        "if [ \"$(cat \"$source_stamp\" 2> /dev/null)\" != \"$unpacked\" ]; then",
+        "    rm -rf \"$source\" \"$source_stamp\"",
         "    mkdir -p \"$source\"",
         "    tar -xf \"$tarball\" -C \"$source\" --strip-components=1",
         "    for patch in \"$patches\"/*.patch; do [ -e \"$patch\" ] && patch -s -p1 -d \"$source\" < \"$patch\"; done",
-        "    echo \"$unpacked\" > \"$workspace/source.stamp\"",
+        "    echo \"$unpacked\" > \"$source_stamp\"",
         "fi",
         "if [ \"$(uname -s)\" = Darwin ]; then",
         "    sdk=$(xcrun --show-sdk-path)",
         "    export HOSTCFLAGS=\"-isysroot $sdk -I$source/scripts/include $HOSTCFLAGS\" HOSTLDFLAGS=\"-isysroot $sdk\"",
         "fi",
-        "kernel() { make -s -C \"$source\" O=\"$output\" ARCH=\"$arch\" CROSS_COMPILE=\"$cross\" \"$@\"; }",
+        "mkdir -p \"$persistent_host_headers\"",
+        "for header in elf.h byteswap.h; do",
+        "    if ! cmp -s \"$host_headers_input/$header\" \"$persistent_host_headers/$header\"; then",
+        "        cp \"$host_headers_input/$header\" \"$persistent_host_headers/$header\"",
+        "    fi",
+        "done",
+        // arm64's Image rule has a phony vmlinux prerequisite, which if_changed
+        // filters from timestamp checks. Add a real link-config prerequisite so
+        // the raw Image follows the vmlinux just linked above.
+        "if [ \"$arch\" = arm64 ] && ! grep -q TESSERA_LINK_CONFIG_STAMP \"$source/arch/arm64/boot/Makefile\"; then",
+        "    printf '\\n# Tessera tracks link-only config changes for the raw Image.\\n$(obj)/Image: $(TESSERA_LINK_CONFIG_STAMP)\\n' >> \"$source/arch/arm64/boot/Makefile\"",
+        "fi",
+        "kernel() { TESSERA_LINK_CONFIG_STAMP=\"$output/.tessera-link-config.stamp\" make -s -C \"$source\" O=\"$output\" ARCH=\"$arch\" CROSS_COMPILE=\"$cross\" \"$@\"; }",
         "configured=$({ echo \"$unpacked $arch\"; cat \"$common\" \"$fragment\"; } | sha256sum | cut -d' ' -f1)",
-        "if [ ! -f \"$output/.config\" ] || [ \"$(cat \"$workspace/config.stamp\" 2> /dev/null)\" != \"$configured\" ]; then",
+        "if [ ! -f \"$output/.config\" ] || [ \"$(cat \"$config_stamp\" 2> /dev/null)\" != \"$configured\" ]; then",
         "    mkdir -p \"$output\"",
-        "    rm -f \"$workspace/config.stamp\"",
+        "    rm -f \"$config_stamp\"",
         "    kernel defconfig",
         "    \"$source/scripts/kconfig/merge_config.sh\" -m -O \"$output\" \"$output/.config\" \"$common\" \"$fragment\" > /dev/null",
         "    kernel olddefconfig",
-        "    echo \"$configured\" > \"$workspace/config.stamp\"",
+        "    echo \"$configured\" > \"$config_stamp\"",
         "fi",
-        "kernel -j\"$(nproc)\"",
+        // link-vmlinux.sh reads link-only CONFIG_* settings from auto.conf;
+        // Kbuild does not track that shell read as a prerequisite. Make the
+        // script newer when the effective config changes so Kbuild relinks
+        // vmlinux while retaining its normal per-object dependency checks.
+        "link_config=$({ printf '%s\\n' \"$unpacked $arch\"; cat \"$output/.config\"; } | sha256sum | cut -d' ' -f1)",
+        "if [ \"$(cat \"$link_config_stamp\" 2> /dev/null)\" != \"$link_config\" ]; then",
+        "    touch \"$source/scripts/link-vmlinux.sh\"",
+        "    echo \"$link_config\" > \"$link_config_stamp\"",
+        "fi",
+        "kernel -j\"$(nproc)\" vmlinux",
+        "kernel -j\"$(nproc)\" \"$image_target\"",
         "cp \"$output/$built\" \"$image\"",
+        "mkdir -p \"$devicetrees\"",
+        "if [ -n \"$devicetree\" ]; then",
+        "    kernel \"$devicetree\"",
+        "    mkdir -p \"$devicetrees/$(dirname \"$devicetree\")\"",
+        "    cp \"$output/arch/$arch/boot/dts/$devicetree\" \"$devicetrees/$devicetree\"",
+        "fi",
         "kernel INSTALL_HDR_PATH=\"$headers\" headers_install",
         "test -f \"$headers/include/linux/socket.h\""
     ]

@@ -6,6 +6,6 @@ construct TesseraDate extends Package {
     let moduleRoot: String = "TesseraDate"
     let dependencies: [Dependency] = [Dependency {
         name: "ArgumentParser",
-        path: "../argument-parser"
+        path: "../../kira-packages/argument-parser"
     }]
 }

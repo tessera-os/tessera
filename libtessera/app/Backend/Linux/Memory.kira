@@ -7,31 +7,33 @@ import Heap
 
 // The auxiliary vector's entry `wanted`, when the kernel gave one.
 function auxiliaryValue(wanted: Auxiliary) -> Result<U64?, TesseraError> {
-    let fd = openat(
-        AtDirectory.current,
-        cStringFrom("/proc/self/auxv"),
-        LinuxOpen.readOnly | LinuxOpen.closeOnExec,
-        0
-    )
-    if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
-    let blockBytes = zeroedBlock(count: 16, alignment: 16)
-    let block = blockBytes.pointer()
-    var value: U64? = .None
-    while true {
-        let got = read(fd, block, U64(16))
-        if answerFailed(got) {
-            closeBacking(fd)
-            return .Error(errnoFailure(answerErrno(got)))
+    unsafe {
+        let fd = openat(
+            AtDirectory.current,
+            cStringFrom("/proc/self/auxv"),
+            LinuxOpen.readOnly | LinuxOpen.closeOnExec,
+            0
+        )
+        if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
+        let blockBytes = zeroedBlock(count: 16, alignment: 16)
+        let block = blockBytes.pointer()
+        var value: U64? = .None
+        while true {
+            let got = read(fd, block, U64(16))
+            if answerFailed(got) {
+                closeBacking(fd)
+                return .Error(errnoFailure(answerErrno(got)))
+            }
+            // The vector ends with `AT_NULL`.
+            if got < 16 || heapLoad<U64>(block, 0) == U64(0) { break }
+            if heapLoad<U64>(block, 0) == code(wanted) {
+                value = .Some(heapLoad<U64>(block, 8))
+                break
+            }
         }
-        // The vector ends with `AT_NULL`.
-        if got < 16 || heapLoad<U64>(block, 0) == U64(0) { break }
-        if heapLoad<U64>(block, 0) == code(wanted) {
-            value = .Some(heapLoad<U64>(block, 8))
-            break
-        }
+        closeBacking(fd)
+        return .Ok(value)
     }
-    closeBacking(fd)
-    return .Ok(value)
 }
 
 // The page size, from `AT_PAGESZ` in the auxiliary vector.
@@ -39,7 +41,7 @@ function kernelPageSize() -> U64 {
     if library.pageSize != U64(0) { return library.pageSize }
     // The first process runs before `/proc` is mounted; both architectures'
     // smallest page is the safe bootstrap fallback.
-    let found = try auxiliaryValue(.PageSize) otherwise .None
+    let found = try auxiliaryValue(.PageSize) otherwise.None
     library.pageSize = found.or(U64(4096))
     return library.pageSize
 }
@@ -73,7 +75,9 @@ function kernelMemoryCreate(size: U64, resizable: Bool) -> Result<Number, Tesser
 }
 
 function kernelMemoryResize(backing: Number, size: U64) -> Result<Void, TesseraError> {
-    return answerStatus(ftruncate(backing, size))
+    unsafe {
+        return answerStatus(ftruncate(backing, size))
+    }
 }
 
 // A second backing for the same kernel object (`F_DUPFD_CLOEXEC`, 1030),
@@ -94,22 +98,24 @@ function kernelCopyRange(
     toOffset: U64,
     length: U64
 ) -> Result<Void, TesseraError> {
-    let chunk = U64(65536)
-    let blockBytes = zeroedBlock(count: chunk, alignment: 16)
-    let block = blockBytes.pointer()
-    var done = U64(0)
-    while done < length {
-        var step = length - done
-        if step > chunk { step = chunk }
-        let got = pread(from, block, step, fromOffset + done)
-        if answerFailed(got) || got == 0 {
-            if answerFailed(got) { return .Error(errnoFailure(answerErrno(got))) }
-            return .Error(failure(.OutOfRange))
+    unsafe {
+        let chunk = U64(65536)
+        let blockBytes = zeroedBlock(count: chunk, alignment: 16)
+        let block = blockBytes.pointer()
+        var done = U64(0)
+        while done < length {
+            var step = length - done
+            if step > chunk { step = chunk }
+            let got = pread(from, block, step, fromOffset + done)
+            if answerFailed(got) || got == 0 {
+                if answerFailed(got) { return .Error(errnoFailure(answerErrno(got))) }
+                return .Error(failure(.OutOfRange))
+            }
+            try kernelWriteAt(to, block, U64(got), toOffset + done)
+            done += U64(got)
         }
-        try kernelWriteAt(to, block, U64(got), toOffset + done)
-        done += U64(got)
+        return .Ok
     }
-    return .Ok
 }
 
 // `length` bytes written at `offset`, all of them or an error.
@@ -119,14 +125,16 @@ function kernelWriteAt(
     length: U64,
     offset: U64
 ) -> Result<Void, TesseraError> {
-    var done = U64(0)
-    while done < length {
-        let wrote = pwrite(backing, heapOffset(source, done), length - done, offset + done)
-        if answerFailed(wrote) { return .Error(errnoFailure(answerErrno(wrote))) }
-        if wrote == 0 { return .Error(failure(.NoSpace)) }
-        done += U64(wrote)
+    unsafe {
+        var done = U64(0)
+        while done < length {
+            let wrote = pwrite(backing, heapOffset(source, done), length - done, offset + done)
+            if answerFailed(wrote) { return .Error(errnoFailure(answerErrno(wrote))) }
+            if wrote == 0 { return .Error(failure(.NoSpace)) }
+            done += U64(wrote)
+        }
+        return .Ok
     }
-    return .Ok
 }
 
 // `length` bytes read from `offset`, all of them or an error.
@@ -136,23 +144,27 @@ function kernelReadAt(
     length: U64,
     offset: U64
 ) -> Result<Void, TesseraError> {
-    var done = U64(0)
-    while done < length {
-        let got = pread(backing, heapOffset(target, done), length - done, offset + done)
-        if answerFailed(got) { return .Error(errnoFailure(answerErrno(got))) }
-        if got == 0 { return .Error(failure(.OutOfRange)) }
-        done += U64(got)
+    unsafe {
+        var done = U64(0)
+        while done < length {
+            let got = pread(backing, heapOffset(target, done), length - done, offset + done)
+            if answerFailed(got) { return .Error(errnoFailure(answerErrno(got))) }
+            if got == 0 { return .Error(failure(.OutOfRange)) }
+            done += U64(got)
+        }
+        return .Ok
     }
-    return .Ok
 }
 
 // Bytes backed by storage: `stx_blocks` (offset 48) in 512-byte units.
 function kernelAllocatedBytes(backing: Number) -> Result<U64, TesseraError> {
-    let blockBytes = zeroedBlock(count: 256, alignment: 16)
-    let block = blockBytes.pointer()
-    let answer = statx(backing, cStringFrom(""), AtFlag.emptyPath, Statx.blocks, block)
-    if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
-    return .Ok(heapLoad<U64>(block, 48) * Statx.blockUnit)
+    unsafe {
+        let blockBytes = zeroedBlock(count: 256, alignment: 16)
+        let block = blockBytes.pointer()
+        let answer = statx(backing, cStringFrom(""), AtFlag.emptyPath, Statx.blocks, block)
+        if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
+        return .Ok(heapLoad<U64>(block, 48) * Statx.blockUnit)
+    }
 }
 
 // Where a new range goes: near the hint, wherever there is room; exactly at
@@ -308,9 +320,11 @@ function kernelDiscardBacking(
     offset: U64,
     length: U64
 ) -> Result<Void, TesseraError> {
-    return answerStatus(
-        fallocate(backing, FallocateMode.punchHole | FallocateMode.keepSize, offset, length)
-    )
+    unsafe {
+        return answerStatus(
+            fallocate(backing, FallocateMode.punchHole | FallocateMode.keepSize, offset, length)
+        )
+    }
 }
 
 // Resident bytes in the range, from `mincore`.
@@ -355,25 +369,34 @@ function kernelTransferAt(
     length: U64,
     offset: U64
 ) -> Result<U64, TesseraError> {
-    var answer = 0
-    if write {
-        answer = pwrite(backing, buffer, length, offset)
-    } else {
-        answer = pread(backing, buffer, length, offset)
-    }
-    if answerFailed(answer) {
-        if failedWith(answer, .Again) || failedWith(answer, .Interrupted) {
-            return .Error(failure(.ShouldWait))
+    unsafe {
+        var answer = 0
+        if write {
+            answer = pwrite(backing, buffer, length, offset)
+        } else {
+            answer = pread(backing, buffer, length, offset)
         }
-        return .Error(errnoFailure(answerErrno(answer)))
+        if answerFailed(answer) {
+            if failedWith(answer, .Again) || failedWith(answer, .Interrupted) {
+                return .Error(failure(.ShouldWait))
+            }
+            return .Error(errnoFailure(answerErrno(answer)))
+        }
+        return .Ok(U64(answer))
     }
-    return .Ok(U64(answer))
 }
 
 // `length` bytes of the backing mapped read-only and shared, anywhere.
 function kernelMapReadOnly(backing: Number, length: U64) -> Result<RawPtr, TesseraError> {
     unsafe {
-        let answer = mmap(nullPointer(), length, ProtectionFlag.read, MapFlag.shared, backing, U64(0))
+        let answer = mmap(
+            nullPointer(),
+            length,
+            ProtectionFlag.read,
+            MapFlag.shared,
+            backing,
+            U64(0)
+        )
         if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
         return .Ok(RawPtr(answer))
     }

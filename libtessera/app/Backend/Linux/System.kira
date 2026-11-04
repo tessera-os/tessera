@@ -11,11 +11,13 @@ import Heap
 
 // A field of `uname`.
 function unameField(field: UnameField) -> Result<String, TesseraError> {
-    let blockBytes = zeroedBlock(count: 390, alignment: 16)
-    let block = blockBytes.pointer()
-    let answer = uname(block)
-    if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
-    return .Ok(stringFromCBytes(heapOffset(block, code(field)), 65))
+    unsafe {
+        let blockBytes = zeroedBlock(count: 390, alignment: 16)
+        let block = blockBytes.pointer()
+        let answer = uname(block)
+        if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
+        return .Ok(stringFromCBytes(heapOffset(block, code(field)), 65))
+    }
 }
 
 // `BackendInfo.kind`.
@@ -84,12 +86,14 @@ function kernelPerformanceCpus(total: U32) -> Result<U32, TesseraError> {
 
 // `sysinfo`: `totalram` at 32, `mem_unit` at 104.
 function kernelMemoryTotal() -> Result<U64, TesseraError> {
-    let systemBytes = zeroedBlock(count: 128, alignment: 16)
-    let system = systemBytes.pointer()
-    try answerStatus(sysinfo(system))
-    var unit = U64(heapLoad<U32>(system, 104))
-    if unit == U64(0) { unit = U64(1) }
-    return .Ok(heapLoad<U64>(system, 32) * unit)
+    unsafe {
+        let systemBytes = zeroedBlock(count: 128, alignment: 16)
+        let system = systemBytes.pointer()
+        try answerStatus(sysinfo(system))
+        var unit = U64(heapLoad<U32>(system, 104))
+        if unit == U64(0) { unit = U64(1) }
+        return .Ok(heapLoad<U64>(system, 32) * unit)
+    }
 }
 
 function kernelCacheLine() -> Result<U32, TesseraError> {
@@ -188,18 +192,20 @@ function kernelAddressSpaceBytes() -> U64 {
 
 // Fills `length` bytes at `target` from the kernel's generator.
 function kernelRandomFill(target: RawPtr, length: U64) -> Result<Void, TesseraError> {
-    var done = U64(0)
-    while done < length {
-        let got = getrandom(heapOffset(target, done), length - done, U32(0))
-        if answerFailed(got) {
-            if answerErrno(got) != code(Errno.Interrupted) {
-                return .Error(errnoFailure(answerErrno(got)))
+    unsafe {
+        var done = U64(0)
+        while done < length {
+            let got = getrandom(heapOffset(target, done), length - done, U32(0))
+            if answerFailed(got) {
+                if answerErrno(got) != code(Errno.Interrupted) {
+                    return .Error(errnoFailure(answerErrno(got)))
+                }
+            } else {
+                done += U64(got)
             }
-        } else {
-            done += U64(got)
         }
+        return .Ok
     }
-    return .Ok
 }
 
 // The name the kernel knows the process by.
@@ -209,9 +215,11 @@ function kernelProgramName() -> Result<String, TesseraError> {
 }
 
 function writeText(fd: Number, text: borrow String) -> Result<Void, TesseraError> {
-    let bytesBytes = bytesOfText(text)
-    let wrote = write(fd, bytesBytes.pointer(), U64(text.count))
-    return answerStatus(wrote)
+    unsafe {
+        let bytesBytes = bytesOfText(text)
+        let wrote = write(fd, bytesBytes.pointer(), U64(text.count))
+        return answerStatus(wrote)
+    }
 }
 
 // The `syslog` priority of `level`.
@@ -236,15 +244,17 @@ enum LazyDescriptor {
 
 // `path` opened for writing, or `Unavailable`.
 function lazyOpen(path: borrow String) -> LazyDescriptor {
-    let fd = openat(
-        AtDirectory.current,
-        cStringFrom(path),
-        LinuxOpen.writeOnly | LinuxOpen.closeOnExec,
-        0
-    )
-    // Not there or not this process's to write: the caller has another way.
-    if answerFailed(fd) { return .Unavailable }
-    return .Open(fd)
+    unsafe {
+        let fd = openat(
+            AtDirectory.current,
+            cStringFrom(path),
+            LinuxOpen.writeOnly | LinuxOpen.closeOnExec,
+            0
+        )
+        // Not there or not this process's to write: the caller has another way.
+        if answerFailed(fd) { return .Unavailable }
+        return .Open(fd)
+    }
 }
 
 // One log line at `level` to the kernel's ring buffer, or to standard error
@@ -301,15 +311,19 @@ function kernelTraceWrite(line: borrow String) {
 }
 
 function kernelDebuggerAttached() -> Result<Bool, TesseraError> {
-    let tracer = try procStatusField(U64(getpid()), "TracerPid:")
-    return .Ok(tracer != U64(0))
+    unsafe {
+        let tracer = try procStatusField(U64(getpid()), "TracerPid:")
+        return .Ok(tracer != U64(0))
+    }
 }
 
 // `SIGTRAP` to the calling thread, which cannot be refused: a breakpoint
 // has no caller to answer.
 function kernelBreakpoint() {
-    match answerStatus(tgkill(getpid(), gettid(), Signal.trap)) {
-        Ok -> {}
-        Error(failed) -> absorb failed
+    unsafe {
+        match answerStatus(tgkill(getpid(), gettid(), Signal.trap)) {
+            Ok -> {}
+            Error(failed) -> absorb failed
+        }
     }
 }

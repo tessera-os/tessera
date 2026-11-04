@@ -1868,6 +1868,18 @@ Backend: Linux getrandom(0), XNU getentropy / SecRandomCopyBytes equivalent sysc
 Structured, ring-buffered by the system logger; subsystem / category ≤ 64 bytes, message ≤ 4 KiB. Privacy: messages are private by default in the persisted log (redacted for other apps and for non-debug images); Fault entries trigger a crash-report-style capture.
 
 ```
+ Log.kernelText(limit: u64) -> Result<Bytes, Error>
+```
+
+The newest `limit` bytes of the kernel's log, ending with its last line, each line `<level>[seconds] text` as dmesg prints it; reading leaves the log as it is. Until the system logger exists every Log.write lands there, so this is the whole machine's log: what the display server draws over the splash on a `tessera.bootlog` boot. System services only; it is never in an app's filter. InvalidArgument for a zero limit; PermissionDenied where the kernel keeps its log from the caller.
+
+```
+ Log.streamsToKernel() -> Result<Void, Error>
+```
+
+Points the caller's standard output and error at the kernel's log, so every line it writes from then on is a record there; the kernel still prints each record on its consoles. A record is at most 1024 bytes and a longer write is refused, so the caller writes a line at a time. PID 1 calls it on a `tessera.logpart` boot, so the console it relays every service's lines to lands in the copy kept on the partition and in the boot log drawn over the splash (with `printk.devkmsg=on`, which lifts the kernel's limit on how fast userspace may write). System services only. PermissionDenied where the caller may not write `/dev/kmsg`.
+
+```
  Trace.enabled(category: Buffer) -> Bool
  Trace.begin(category: Buffer, name: Buffer, args: Buffer) -> Void
  Trace.end(category: Buffer) -> Void
@@ -2066,6 +2078,11 @@ Object / call      Linux mechanism
 ```
  Log / Trace        shared rings to the logger/tracer services (no syscall on the hot
                     path)
+```
+
+```
+ Log.kernelText     syslog(SYSLOG_ACTION_READ_ALL), which leaves the ring as it is
+ Log.streamsToKernel  open("/dev/kmsg") then dup3 onto standard output and error
 ```
 
 ```
@@ -2413,8 +2430,8 @@ PID 1 and the system services need a few things no application does. They
 are calls of this implementation's own, not in §23, and each says what is
 wanted rather than how a kernel does it.
 
-- The machine. `machinePrepare` makes the machine ready for a userland; on Linux that mounts `/proc`, `/sys`, the cgroup v2 hierarchy, `/dev`, `/tmp` and `/run`, and an empty in-memory `/Volumes` when the root has one, since a sealed root cannot hold the mount points the Volume service makes there. `machineQuietConsole` keeps all but critical kernel messages off the console. `machineFlush` writes everything waiting to every volume, and `machineStop(PowerOff | Restart)` flushes and stops. `machineEnterRoot(path)` makes the volume mounted at `path` the root of the caller and of everything it starts after. All need `tessera.machine`.
-- Volumes. `volumeMount(source, target, format, options)` mounts a disk holding a `VolumeFormat` (Ext4, Btrfs, Fat, Erofs, Squashfs), or with `Bind` or `Move` a directory, with the options `ReadOnly`, `NoExecute`, `NoDevices` and `NoSetIdentity`. `volumeUnmount(target, Detach?)` undoes it. `volumeDisks` names the machine's disks and `volumeMounts` lists what is mounted. These need `tessera.machine` too, which the Volume service holds as a program under `/bin`. A btrfs volume's subvolumes ([05](05-storage-and-state.md)): `volumeMountSubvolume(source, target, subvolume, options)` mounts the subvolume at the path `subvolume` inside the btrfs on `source`; `volumeCreateSubvolume(path)` makes an empty subvolume at `path`; `volumeSnapshot(source, target, ReadOnly?)` makes the subvolume `target` a snapshot of the subvolume `source`, read-only when asked; `volumeDeleteSubvolume(path)` deletes the subvolume at `path` and everything in it. Each needs `tessera.machine`. `VolumeLayout` names the paths inside the volume: `boot/current`, `system/<version>`, `system/dev` and `data`.
+- The machine. `machinePrepare` makes the machine ready for a userland; on Linux that mounts `/proc`, `/sys`, the cgroup v2 hierarchy, `/dev`, `/tmp` and `/run`, and an empty in-memory `/Volumes` when the root has one, since a sealed root cannot hold the mount points the Volume service makes there. `machineQuietConsole` keeps all but critical kernel messages off the console. `machineFlush` writes everything waiting to every volume, and `machineStop(PowerOff | Restart)` flushes and stops. `machineEnterRoot(path)` makes the volume mounted at `path` the root of the caller and of everything it starts after. `machineStartRemoteProcessors` starts each remote processor the kernel holds offline (a phone SoC's DSPs, whose firmware lives on the system volume rather than in the initramfs) by writing `start` to `/sys/class/remoteproc/<n>/state`, and answers each one tried as a `RemoteProcessorStart` (its name, and its failure if it did not start); PID 1 calls it once the system volume is the root. All need `tessera.machine`.
+- Volumes. `volumeMount(source, target, format, options)` mounts a disk holding a `VolumeFormat` (Ext4, Btrfs, Fat, Erofs, Squashfs), or with `Bind` or `Move` a directory, with the options `ReadOnly`, `NoExecute`, `NoDevices` and `NoSetIdentity`. `volumeUnmount(target, Detach?)` undoes it. `volumeDisks` names the machine's disks and `volumeMounts` lists what is mounted. `volumeDiskBytes(disk)` is a disk's size; `volumePartitionNames(disk)` names its partitions in the order they lie on it; `volumePartitionLabel(partition)` is a partition's GPT name, `volumePartitionBytes(partition)` its size, and `volumePartitionLabelled(label)` the partition whose GPT name is `label`, compared without case, on any disk (`CACHE` → `sda33` on a phone); `volumeWritePartitions(disk, partitions)` writes a new table. These need `tessera.machine` too, which the Volume service holds as a program under `/bin`. A btrfs volume's subvolumes ([05](05-storage-and-state.md)): `volumeMountSubvolume(source, target, subvolume, options)` mounts the subvolume at the path `subvolume` inside the btrfs on `source`; `volumeCreateSubvolume(path)` makes an empty subvolume at `path`; `volumeSnapshot(source, target, ReadOnly?)` makes the subvolume `target` a snapshot of the subvolume `source`, read-only when asked; `volumeDeleteSubvolume(path)` deletes the subvolume at `path` and everything in it. Each needs `tessera.machine`. `VolumeLayout` names the paths inside the volume: `boot/current`, `system/<version>`, `system/dev` and `data`.
 - The first process. `processWatchSystem(port, key)` posts a completion when the machine is asked to stop, when someone asks for its attention (Ctrl-Alt-Del), or when a child ends, and `processSystemEvents` says which. `processReapOrphans` collects the processes the kernel gave PID 1. `processReplace(path, arguments)` replaces the caller with a program, taking its arguments as a `LaunchInfo` Memory handle like `Process.launch`. `processAskToStop` asks a process to stop, which the process hears through `processWatchTermination`. `timeSetRealtime` sets the wall clock, which `date` needs.
 - The backend seam. DeviceKit's backend and devicekitd are rewritten for each kernel ([17](17-devicekit.md) §20.4). They make no system call of their own: they ask the library's backend through the `backend*` calls, which take and answer the backend's own object numbers and layouts, as `Port.attachSource` takes the backend's number for an object. 17 §25 lists them.
 

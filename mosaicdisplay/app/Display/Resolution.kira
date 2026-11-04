@@ -41,15 +41,25 @@ function outputChanged(server: borrow mut Server) {
             Some(scanout) -> outputScanoutChanged(server, scanout)
             None -> {}
         }
-        Error(reason) -> log warn("the changed display resources could not be read", error: errorName(reason))
+        Error(reason) -> log warn(
+            "the changed display resources could not be read",
+            error: errorName(reason)
+        )
     }
 }
 
+// The output takes the panel `found` names, laid out in what the dead zone
+// leaves of it (DeadZone.kira); nothing changes when that is where it is.
 function outputScanoutChanged(server: borrow mut Server, found: borrow Scanout) {
     let old = server.display.scanout
-    if found.width == old.width && found.height == old.height { return }
     var scanout = found
     scanout.scale = old.scale
+    scanout = bandedScanout(scanout, server.deadZone)
+    if scanout.width == old.width && scanout.height == old.height
+        && scanout.originX == old.originX && scanout.originY == old.originY
+        && scanout.panelWidth == old.panelWidth && scanout.panelHeight == old.panelHeight {
+        return
+    }
     if scanout.pointWidth() < OutputMinimum.width || scanout.pointHeight() < OutputMinimum.height {
         log info("the output is too small to lay out", width: scanout.width, height: scanout.height)
         return

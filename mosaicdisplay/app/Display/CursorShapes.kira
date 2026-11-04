@@ -75,7 +75,10 @@ function shapeOutline(shape: borrow CursorShape) -> [(Number, Number)] {
 
 // `outline` turned by the angle whose cosine and sine are given, clockwise on
 // the screen, where y grows downwards.
-function turned(outline: borrow [(Number, Number)], cosine: Number, sine: Number) -> [(Number, Number)] {
+function turned(outline: borrow [(Number, Number)], cosine: Number, sine: Number) -> [(
+    Number,
+    Number
+)] {
     var points: [(Number, Number)] = []
     for point in outline {
         points.append((point.0 * cosine - point.1 * sine, point.0 * sine + point.1 * cosine))
@@ -154,7 +157,11 @@ function insideOutline(outline: borrow [(Number, Number)], x: Number, y: Number)
 }
 
 // The square of the distance from `x`, `y` to the nearest edge of `outline`.
-function outlineDistanceSquared(outline: borrow [(Number, Number)], x: Number, y: Number) -> Number {
+function outlineDistanceSquared(
+    outline: borrow [(Number, Number)],
+    x: Number,
+    y: Number
+) -> Number {
     // Every cursor outline is nonempty; a vertex is an initial upper bound.
     let first = outline[0]
     var nearest = (first.0 - x) * (first.0 - x) + (first.1 - y) * (first.1 - y)
@@ -197,7 +204,10 @@ function samplePoint(painter: borrow ShapePainter, x: Number, y: Number) -> Curs
 // white edge each cover, from 0 to 1. A pixel wholly inside, outside or under
 // the white band is decided by its centre; only a pixel an edge crosses is
 // split into samples.
-function shapeCoverage(painter: borrow ShapePainter, row: Number, column: Number) -> (Number, Number) {
+function shapeCoverage(painter: borrow ShapePainter, row: Number, column: Number) -> (
+    Number,
+    Number
+) {
     if row < painter.first || row >= painter.last || column < painter.first
         || column >= painter.last
     {

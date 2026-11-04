@@ -38,7 +38,10 @@ function webkitBrowserAvailable(graph: borrow Graph, architecture: Architecture)
                 payload: path
             )
         }
-        None -> log warn("the Browser is left out: no WebKit payload is staged", architecture: architecture.name())
+        None -> log info(
+            "the Browser is left out: no WebKit payload is staged",
+            architecture: architecture.name()
+        )
     }
     return false
 }

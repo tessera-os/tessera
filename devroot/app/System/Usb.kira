@@ -1,0 +1,360 @@
+import Foundation
+import Heap
+import LibTessera
+
+// A FAT16 image shared with the Mac through the phone's removable USB LUN.
+// The host writes a request, ejects the disk, and waits for the phone to
+// return the same image with a response file.
+namespace UsbExchange {
+    let directory: String = "/" + SystemDirectory.developerRoots
+    let image: String = "/" + SystemDirectory.developerRoots + "/exchange.img"
+    let temporary: String = ".exchange.img.devroot"
+    let mountPoint: String = "/" + SystemDirectory.volumes + "/devroot"
+    let imageBytes: UNumber = UNumber(536870912)
+    let totalSectors: U32 = U32(1048576)
+    let sectorsPerFat: U16 = U16(256)
+    let fatBytes: Number = 512
+    let pollNanos: UNumber = UNumber(250000000)
+    let mountPolls: Number = 120
+}
+
+// Starts the USB exchange loop when the kernel exposes a mass-storage LUN.
+// False means this machine has no USB storage gadget, as on QEMU.
+function startUsbExchange(
+    files: borrow Files,
+    initialHandled: borrow String?
+) -> Result<Bool, TesseraError> {
+    let initial = match machineUsbDriveMedium() {
+        Ok(medium) -> medium
+        Error(failed) -> {
+            if failed.code == .NotFound {
+                log warn("no USB mass-storage LUN; the dev root exchange is unavailable")
+                return .Ok(false)
+            }
+            return .Error(failed)
+        }
+    }
+    try ensureUsbImage(files)
+    try releaseStaleUsbMount(files)
+    match initial {
+        Some(path) -> if path != UsbExchange.image {
+            return .Error(storageFailure(.Busy))
+        } else {
+            log info("the dev root image is already in the USB mass-storage LUN")
+        }
+        None -> {
+            try machineUsbDrivePutIn(UsbExchange.image)
+            log info("put the dev root image in the USB mass-storage LUN")
+        }
+    }
+    var handled = copy initialHandled
+    while true {
+        let medium = try machineUsbDriveMedium()
+        match medium {
+            Some(path) -> {
+                if path != UsbExchange.image { return .Error(storageFailure(.Busy)) }
+                try pause(UsbExchange.pollNanos)
+            }
+            None -> {
+                try processUsbImage(files, handled)
+            }
+        }
+    }
+    return .Ok(true)
+}
+
+function ensureUsbImage(files: borrow Files) -> Result<Void, TesseraError> {
+    try files.ensureDirectories(UsbExchange.directory)
+    let kind = try files.kindAt(UsbExchange.image)
+    match kind {
+        Some(found) -> match found {
+            File -> return .Ok
+            else -> return .Error(storageFailure(.InvalidArgument))
+        }
+        None -> return createUsbImage(files)
+    }
+}
+
+// A restarted service may inherit a loop mount left by its previous process.
+// Release only a mount whose loop device still names this exact image.
+function releaseStaleUsbMount(files: borrow Files) -> Result<Void, TesseraError> {
+    let stale = try usbImageMountPoint(files)
+    match stale {
+        Some(mountPoint) -> {
+            log warn("releasing a leftover dev root image mount", mountPoint)
+            ejectVolumeAt(mountPoint)
+            try awaitUsbUnmount(mountPoint)
+        }
+        None -> {}
+    }
+    let occupied = try volumeMountedAt(UsbExchange.mountPoint)
+    if occupied.isSome() { return .Error(storageFailure(.Busy)) }
+    return .Ok
+}
+
+// The path where the exchange image is mounted, if any loop device holds it.
+function usbImageMountPoint(files: borrow Files) -> Result<String?, TesseraError> {
+    let mounts = try volumeMounts()
+    for line in mounts.split("\n") {
+        let fields = line.split(" ")
+        if fields.count < 2 || !fields[0].startsWith("/dev/loop") { continue }
+        let loopName = fields[0].substring(5, fields[0].count)
+        let backing = try files.readTextIfPresent("/sys/block/\(loopName)/loop/backing_file")
+        match backing {
+            Some(path) -> if path.trim() == UsbExchange.image {
+                return .Ok(.Some(copy fields[1]))
+            }
+            None -> {}
+        }
+    }
+    return .Ok(.None)
+}
+
+// Creates a sparse 512 MiB FAT16 image. The small cluster size leaves room
+// for component archives while keeping the FAT16 cluster count in range.
+function createUsbImage(files: borrow Files) -> Result<Void, TesseraError> {
+    let directory = try files.lookup(UsbExchange.directory, FileRights.directory)
+    match files.removeIn(directory, UsbExchange.temporary, DeleteOptions.permanent) {
+        Ok -> {}
+        Error(failed) -> {
+            release(directory)
+            return .Error(failed)
+        }
+    }
+    let node = match files.answeredHandle(
+        nodeCreate(
+            directory,
+            UsbExchange.temporary,
+            .File,
+            CreateOptions.exclusive,
+            FileRights.file,
+            files.port,
+            FileCall.key
+        )
+    ) {
+        Ok(value) -> value
+        Error(failed) -> {
+            release(directory)
+            return .Error(failed)
+        }
+    }
+    let file = match files.answeredHandle(
+        fileOpen(node, OpenMode.write | OpenMode.truncate, files.port, FileCall.key)
+    ) {
+        Ok(value) -> value
+        Error(failed) -> {
+            release(node)
+            release(directory)
+            return .Error(failed)
+        }
+    }
+    let resized = files.answered(fileResize(file, UsbExchange.imageBytes, files.port, FileCall.key))
+    var outcome: Result<Void, TesseraError> = match resized {
+        Ok -> writeUsbFatStructures(files, file)
+        Error(failed) -> .Error(failed)
+    }
+    match outcome {
+        Ok -> outcome = files.answered(fileSync(file, .All, files.port, FileCall.key))
+        Error(failed) -> {}
+    }
+    release(file)
+    release(node)
+    match outcome {
+        Error(failed) -> {
+            match files.removeIn(directory, UsbExchange.temporary, DeleteOptions.permanent) {
+                Ok -> {}
+                Error(left) -> absorb left
+            }
+            release(directory)
+            return .Error(failed)
+        }
+        Ok -> {}
+    }
+    let renamed = files.answered(
+        nodeRename(
+            directory,
+            UsbExchange.temporary,
+            directory,
+            "exchange.img",
+            RenameOptions.replace,
+            files.port,
+            FileCall.key
+        )
+    )
+    release(directory)
+    return renamed
+}
+
+function writeUsbFatStructures(files: borrow Files, file: Handle) -> Result<Void, TesseraError> {
+    let boot = usbFatBootSector()
+    try writeUsbBytes(files, file, 0, boot)
+    let fat = usbFatTableSector()
+    try writeUsbBytes(files, file, UsbExchange.fatBytes, fat)
+    try writeUsbBytes(files, file, 257 * UsbExchange.fatBytes, fat)
+    let root = usbFatRootSector()
+    return writeUsbBytes(files, file, 513 * UsbExchange.fatBytes, root)
+}
+
+function writeUsbBytes(
+    files: borrow Files,
+    file: Handle,
+    offset: Number,
+    block: borrow ByteBlock
+) -> Result<Void, TesseraError> {
+    let buffers = [Buffer { address: block.pointer(), length: block.count }]
+    let wrote = try files.answer(
+        fileWriteAt(file, UNumber(offset), buffers, files.port, FileCall.key)
+    )
+    if wrote.result0 != U64(block.count) { return .Error(storageFailure(.NoSpace)) }
+    return .Ok
+}
+
+function usbFatBootSector() -> ByteBlock {
+    let block = zeroedBlock(count: UsbExchange.fatBytes, alignment: 16)
+    heapStore<U8>(block.pointer(), 0, U8(0xEB))
+    heapStore<U8>(block.pointer(), 1, U8(0x3C))
+    heapStore<U8>(block.pointer(), 2, U8(0x90))
+    fatText(block.pointer(), 3, "TESSERA ")
+    heapStore<U16>(block.pointer(), 11, U16(512))
+    heapStore<U8>(block.pointer(), 13, U8(16))
+    heapStore<U16>(block.pointer(), 14, U16(1))
+    heapStore<U8>(block.pointer(), 16, U8(2))
+    heapStore<U16>(block.pointer(), 17, U16(512))
+    heapStore<U16>(block.pointer(), 19, U16(0))
+    heapStore<U8>(block.pointer(), 21, U8(0xF8))
+    heapStore<U16>(block.pointer(), 22, UsbExchange.sectorsPerFat)
+    heapStore<U16>(block.pointer(), 24, U16(63))
+    heapStore<U16>(block.pointer(), 26, U16(255))
+    heapStore<U32>(block.pointer(), 32, UsbExchange.totalSectors)
+    heapStore<U8>(block.pointer(), 36, U8(0x80))
+    heapStore<U8>(block.pointer(), 38, U8(0x29))
+    heapStore<U32>(block.pointer(), 39, U32(0x2D2F2026))
+    fatText(block.pointer(), 43, "devroot    ")
+    fatText(block.pointer(), 54, "FAT16   ")
+    heapStore<U16>(block.pointer(), 510, U16(0xAA55))
+    return move block
+}
+
+function usbFatTableSector() -> ByteBlock {
+    let block = zeroedBlock(count: UsbExchange.fatBytes, alignment: 16)
+    heapStore<U16>(block.pointer(), 0, U16(0xFFF8))
+    heapStore<U16>(block.pointer(), 2, U16(0xFFFF))
+    return move block
+}
+
+function usbFatRootSector() -> ByteBlock {
+    let block = zeroedBlock(count: UsbExchange.fatBytes, alignment: 16)
+    fatText(block.pointer(), 0, "devroot    ")
+    heapStore<U8>(block.pointer(), 11, U8(0x08))
+    return move block
+}
+
+function fatText(block: RawPtr, offset: Number, text: borrow String) {
+    for index in 0..text.count { heapStore<U8>(block, offset + index, text.charAt(index)) }
+}
+
+// Handles a host-ejected image through the Volume service, then lets the
+// host mount it again with the response file.
+function processUsbImage(
+    files: borrow Files,
+    handled: borrow mut String?
+) -> Result<Void, TesseraError> {
+    let attached = try machineAttachImage(UsbExchange.image)
+    let mountPoint = match awaitUsbMount(attached.device) {
+        Ok(path) -> path
+        Error(failed) -> {
+            machineDetachImage(move attached)
+            return .Error(failed)
+        }
+    }
+    if mountPoint != UsbExchange.mountPoint {
+        log warn("the exchange image mounted at an unexpected path", mountPoint)
+        match writeUsbFailureResponse(files, mountPoint) {
+            Ok -> {}
+            Error(failed) -> log warn(
+                "cannot write a response on the unexpected mount",
+                error: errorName(failed)
+            )
+        }
+        ejectVolumeAt(mountPoint)
+        match awaitUsbUnmount(mountPoint) {
+            Error(failed) -> {
+                machineDetachImage(move attached)
+                return .Error(failed)
+            }
+            Ok -> {}
+        }
+        machineDetachImage(move attached)
+        try machineUsbDrivePutIn(UsbExchange.image)
+        return .Error(storageFailure(.Busy))
+    }
+    let served = serveRequest(files, handled)
+    match served {
+        Ok(next) -> handled = next
+        Error(failed) -> {
+            log warn("the USB dev root request could not be served", error: errorName(failed))
+            match writeUsbFailureResponse(files, mountPoint) {
+                Ok -> {}
+                Error(left) -> log warn(
+                    "the USB dev root failure response could not be written",
+                    error: errorName(left)
+                )
+            }
+        }
+    }
+    ejectVolumeAt(mountPoint)
+    match awaitUsbUnmount(mountPoint) {
+        Error(failed) -> {
+            machineDetachImage(move attached)
+            return .Error(failed)
+        }
+        Ok -> {}
+    }
+    machineDetachImage(move attached)
+    try machineUsbDrivePutIn(UsbExchange.image)
+    return match served {
+        Ok -> .Ok
+        Error(failed) -> .Error(failed)
+    }
+}
+
+function writeUsbFailureResponse(
+    files: borrow Files,
+    mountPoint: borrow String
+) -> Result<Void, TesseraError> {
+    let request = try files.readTextIfPresent(mountPoint + "/request")
+    let text = match request {
+        Some(contents) -> contents
+        None -> return .Ok
+    }
+    let lines = text.split("\n")
+    let id = lines[0].trim()
+    if !id.startsWith(RequestVolume.idPrefix) { return .Ok }
+    return files.writeText(
+        mountPoint + "/response",
+        "dev root request done: \(id) with 1 failures\n"
+    )
+}
+
+function awaitUsbMount(device: borrow String) -> Result<String, TesseraError> {
+    for poll in 0..UsbExchange.mountPolls {
+        let mounts = try volumeMounts()
+        for line in mounts.split("\n") {
+            let fields = line.split(" ")
+            if fields.count >= 2 && fields[0] == device { return .Ok(copy fields[1]) }
+        }
+        try pause(UsbExchange.pollNanos)
+    }
+    return .Error(storageFailure(.Timeout))
+}
+
+function awaitUsbUnmount(mountPoint: borrow String) -> Result<Void, TesseraError> {
+    for poll in 0..UsbExchange.mountPolls {
+        let mounted = try volumeMountedAt(mountPoint)
+        match mounted {
+            Some(_) -> try pause(UsbExchange.pollNanos)
+            None -> return .Ok
+        }
+    }
+    return .Error(storageFailure(.Busy))
+}

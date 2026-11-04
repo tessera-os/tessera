@@ -82,8 +82,10 @@ function main() {
         }
     }
     match driven {
-        Some(display) -> {
+        Some(driven) -> {
+            var display = move driven
             reportDisplayMode(display.scanout)
+            startingDeadZone(display)
             if links.count > 0 {
                 let asked = runDisplayLoop(port, reader, links, move display)
                 // A display-client connection belongs to exactly one protocol
@@ -122,7 +124,9 @@ function loopPorts() -> Result<(Handle, Handle), TesseraError> {
     return .Ok((port, reader))
 }
 
-function closeLoopPort(port: Handle, reason: borrow TesseraError) -> Result<(Handle, Handle), TesseraError> {
+function closeLoopPort(port: Handle, reason: borrow TesseraError) -> Result<(
+    Handle, Handle
+), TesseraError> {
     closeHandle(port)
     return .Error(reason)
 }

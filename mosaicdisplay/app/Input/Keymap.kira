@@ -143,14 +143,19 @@ function characters(text: borrow String) -> [String] {
     return found
 }
 
-// The keyboard layout changed in Settings: keys are typed through the new one
-// from the next.
+// A setting changed in Settings: a new keyboard layout types the next key, and
+// a new dead zone lays the output out again (DeadZone.kira).
 function settingsChanged(server: borrow mut Server) {
     let changed = settingsWatchWoke(server.settings)
     if changed.contains(KeyboardSetting.layout) {
         server.keymap = keymapNamed(settingValue(KeyboardSetting.layout, KeyboardSetting.fallback))
         log info("keys are typed through a keymap", layout: server.keymap.name)
     }
+    var zoneChanged = false
+    for key in changed {
+        if deadZoneKey(key) { zoneChanged = true }
+    }
+    if zoneChanged { deadZoneChanged(server) }
     armSettingsWatch(server.settings, server.port, UNumber(PortKey.settings))
 }
 

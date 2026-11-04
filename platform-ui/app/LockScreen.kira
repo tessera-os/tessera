@@ -142,7 +142,8 @@ public construct LockScreen(
                 lift = max(-value.translation.height, 0.0)
             }.onEnded { value in
                 lifting = false
-                if -value.predictedEndTranslation.height > height * LockScreenLift.opens {
+                let lifted = max(-value.translation.height, -value.predictedEndTranslation.height)
+                if lifted > height * LockScreenLift.opens {
                     opens()
                 } else {
                     lift = 0.0

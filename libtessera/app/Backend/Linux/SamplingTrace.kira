@@ -30,73 +30,83 @@ struct TraceReader {
 // Switches the tracer on, emptied; a tracer that cannot be switched on gives
 // no counters, and the sampling goes on without them.
 function traceStart() -> TraceReader {
-    var reader = TraceReader {}
-    match writeSmallFile(
-        AtDirectory.current,
-        SamplingTrace.bufferSize,
-        SamplingTrace.bufferKilobytes
-    ) {
-        Ok -> {}
-        Error(failed) -> log warn("the tracer's buffers keep their size", error: errorName(failed))
-    }
-    let emptied = openat(
-        AtDirectory.current,
-        cStringFrom(SamplingTrace.trace),
-        LinuxOpen.writeOnly | LinuxOpen.truncate | LinuxOpen.closeOnExec,
-        0
-    )
-    if !answerFailed(emptied) { closeBacking(emptied) }
-    match writeSmallFile(AtDirectory.current, SamplingTrace.on, "1") {
-        Ok -> {}
-        Error(failed) -> {
-            log warn(
-                "the tracer could not be switched on; no counters are read",
+    unsafe {
+        var reader = TraceReader {}
+        match writeSmallFile(
+            AtDirectory.current,
+            SamplingTrace.bufferSize,
+            SamplingTrace.bufferKilobytes
+        ) {
+            Ok -> {}
+            Error(failed) -> log warn(
+                "the tracer's buffers keep their size",
                 error: errorName(failed)
+            )
+        }
+        let emptied = openat(
+            AtDirectory.current,
+            cStringFrom(SamplingTrace.trace),
+            LinuxOpen.writeOnly | LinuxOpen.truncate | LinuxOpen.closeOnExec,
+            0
+        )
+        if !answerFailed(emptied) { closeBacking(emptied) }
+        match writeSmallFile(AtDirectory.current, SamplingTrace.on, "1") {
+            Ok -> {}
+            Error(failed) -> {
+                log warn(
+                    "the tracer could not be switched on; no counters are read",
+                    error: errorName(failed)
+                )
+                return reader
+            }
+        }
+        let fd = openat(
+            AtDirectory.current,
+            cStringFrom(SamplingTrace.pipe),
+            LinuxOpen.readOnly | LinuxOpen.closeOnExec | SamplingTrace.nonBlocking,
+            0
+        )
+        if answerFailed(fd) {
+            log warn(
+                "the tracer's pipe could not be opened; no counters are read",
+                error: errorName(errnoFailure(answerErrno(fd)))
             )
             return reader
         }
-    }
-    let fd = openat(
-        AtDirectory.current,
-        cStringFrom(SamplingTrace.pipe),
-        LinuxOpen.readOnly | LinuxOpen.closeOnExec | SamplingTrace.nonBlocking,
-        0
-    )
-    if answerFailed(fd) {
-        log warn(
-            "the tracer's pipe could not be opened; no counters are read",
-            error: errorName(errnoFailure(answerErrno(fd)))
-        )
+        reader.fd = .Some(fd)
+        // A counter of its own, so the report shows the tracer was read even when
+        // nothing else counted.
+        match writeSmallFile(
+            AtDirectory.current,
+            SamplingTrace.marker,
+            "C|\(kernelProcessId())|sample:begun|1"
+        ) {
+            Ok -> {}
+            Error(failed) -> log warn(
+                "the tracer could not be written to",
+                error: errorName(failed)
+            )
+        }
         return reader
     }
-    reader.fd = .Some(fd)
-    // A counter of its own, so the report shows the tracer was read even when
-    // nothing else counted.
-    match writeSmallFile(
-        AtDirectory.current,
-        SamplingTrace.marker,
-        "C|\(kernelProcessId())|sample:begun|1"
-    ) {
-        Ok -> {}
-        Error(failed) -> log warn("the tracer could not be written to", error: errorName(failed))
-    }
-    return reader
 }
 
 // Takes every line the tracer holds; an empty pipe answers EAGAIN.
 function traceDrain(reader: borrow mut TraceReader) {
-    let fd = match reader.fd {
-        Some(value) -> value
-        None -> return
-    }
-    let block = zeroedBlock(count: SamplingTrace.chunk, alignment: 16)
-    for _ in 0..SamplingTrace.chunks {
-        let got = read(fd, block.pointer(), U64(SamplingTrace.chunk))
-        if answerFailed(got) || got == 0 { return }
-        let text = reader.partial + stringFromCBytes(block.pointer(), U64(got))
-        let lines = text.split("\n")
-        reader.partial = copy lines[lines.count - 1]
-        for index in 0..lines.count - 1 { traceCount(reader, lines[index]) }
+    unsafe {
+        let fd = match reader.fd {
+            Some(value) -> value
+            None -> return
+        }
+        let block = zeroedBlock(count: SamplingTrace.chunk, alignment: 16)
+        for _ in 0..SamplingTrace.chunks {
+            let got = read(fd, block.pointer(), U64(SamplingTrace.chunk))
+            if answerFailed(got) || got == 0 { return }
+            let text = reader.partial + stringFromCBytes(block.pointer(), U64(got))
+            let lines = text.split("\n")
+            reader.partial = copy lines[lines.count - 1]
+            for index in 0..lines.count - 1 { traceCount(reader, lines[index]) }
+        }
     }
 }
 

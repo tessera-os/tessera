@@ -48,9 +48,11 @@ function valgrindArguments(executable: Number, arguments: borrow [String]) -> [S
 
 // The path the descriptor `fd` was opened at.
 function openedPath(fd: Number) -> Result<String, TesseraError> {
-    let blockBytes = zeroedBlock(count: 256, alignment: 16)
-    let block = blockBytes.pointer()
-    let read = readlinkat(AtDirectory.current, cStringFrom(descriptorPath(fd)), block, U64(255))
-    if answerFailed(read) { return .Error(errnoFailure(answerErrno(read))) }
-    return .Ok(stringFromCBytes(block, read))
+    unsafe {
+        let blockBytes = zeroedBlock(count: 256, alignment: 16)
+        let block = blockBytes.pointer()
+        let read = readlinkat(AtDirectory.current, cStringFrom(descriptorPath(fd)), block, U64(255))
+        if answerFailed(read) { return .Error(errnoFailure(answerErrno(read))) }
+        return .Ok(stringFromCBytes(block, read))
+    }
 }

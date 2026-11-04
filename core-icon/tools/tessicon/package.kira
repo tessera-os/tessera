@@ -5,6 +5,6 @@ construct Tessicon extends Package {
     let kind: PackageKind = .App
     let dependencies: [Dependency] = [
         Dependency { name: "CoreIcon", path: "../.." },
-        Dependency { name: "ArgumentParser", path: "../../../argument-parser" }
+        Dependency { name: "ArgumentParser", path: "../../../../kira-packages/argument-parser" }
     ]
 }

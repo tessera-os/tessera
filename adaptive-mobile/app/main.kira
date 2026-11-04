@@ -537,6 +537,52 @@ function glassOf(mobile: borrow Mobile) -> [PlatformGlass] {
     return platformGlass(areas)
 }
 
+// Adaptive Mobile uses the system Desktop application as its home surface.
+// PID 1 is already up, so ask it to open that application before the platform
+// starts its first display session.
+function requestMobileHome(mobile: borrow mut Mobile) {
+    mobile.homeRequested = true
+    match askWorkspace(.Open("/System/Applications/Desktop.app/Contents/MacOS/Desktop")) {
+        Ok(answer) -> {
+            mobile.homeAnswer = .Some(answer)
+            log info("asked PID 1 to open the mobile home")
+        }
+        Error(failure) -> {
+            mobile.homeRequested = false
+            log warn("could not ask PID 1 to open the mobile home", failure)
+        }
+    }
+}
+
+// Keep PID 1's answer channel open until the launch has actually succeeded or
+// failed; closing it early made a refusal itself log PeerClosed.
+function pollMobileHomeAnswer(mobile: borrow mut Mobile) {
+    let answer = match mobile.homeAnswer {
+        Some(channel) -> channel
+        None -> return
+    }
+    match readWorkspaceAnswer(copy answer) {
+        Ok(NotYet) -> return
+        Ok(Silent) -> log info("PID 1 opened the mobile home")
+        Ok(Said(reason)) -> {
+            mobile.homeRequested = false
+            log warn("PID 1 refused the mobile home", reason)
+        }
+        Error(failure) -> {
+            mobile.homeRequested = false
+            log warn("PID 1's mobile home answer could not be read", failure)
+        }
+    }
+    mobile.homeAnswer = .None
+    match handleClose(copy answer) {
+        Ok -> {}
+        Error(failed) -> log warn(
+            "could not close the mobile home answer",
+            error: errorName(failed)
+        )
+    }
+}
+
 /// Starts Adaptive Mobile: reads the start-up settings and the time zone, then runs the platform until the person quits.
 @Main
 function main() {
@@ -544,6 +590,7 @@ function main() {
     let bridge = makeBridgeHandle()
     var mobile = Mobile(state: emptyPlatformState(.AdaptiveMobile))
     mobile.bridge = copy bridge
+    requestMobileHome(mobile)
     // Switched in by a person at the machine: they are past the lock screen.
     if startsUnlocked() { mobile.lock.locked = false }
     mobile.zone = currentTimeZone()
@@ -556,9 +603,11 @@ function main() {
     RunDynamicPlatform(
         "Adaptive Mobile",
         { in
+            pollMobileHomeAnswer(mobile)
             // A link PID 1 handed over marks the interface stale, so a window
             // named since the last frame is named before this one.
             mobile.unnamed = nameWindows(mobile.bridge, mobile.state, mobile.unnamed)
+            resolveHomeCandidate(mobile)
             keepTone(mobile)
             // An application installed or uninstalled joins or leaves the
             // Dock and the home screen as it happens.
@@ -575,7 +624,14 @@ function main() {
             let moment = focusMoment(mobile.zone, unixMillis())
             let focus = focusChoice()
             mobile.controls.focus = focus.active(moment)
-            mobile.banners = followFocusedNotifications(mobile.bridge, mobile.banners, unixMillis(), focus, moment)
+            mobile.banners = followFocusedNotifications(
+                mobile.bridge,
+                mobile.banners,
+                unixMillis(),
+                focus,
+                moment
+            )
+            noticeDeadZone(mobile, unixMillis())
             match mobile.channel {
                 Some(channel) -> {
                     claimOverlay(

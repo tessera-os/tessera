@@ -82,11 +82,17 @@ function startWatches(service: borrow mut Service) -> Result<Void, TesseraError>
     service.watches = .Some(Watches { disks: disks, partitions: partitions })
     match drainChanges(disks) {
         Ok -> {}
-        Error(failed) -> log warn("could not drain the initial disk changes", error: errorName(failed))
+        Error(failed) -> log warn(
+            "could not drain the initial disk changes",
+            error: errorName(failed)
+        )
     }
     match drainChanges(partitions) {
         Ok -> {}
-        Error(failed) -> log warn("could not drain the initial partition changes", error: errorName(failed))
+        Error(failed) -> log warn(
+            "could not drain the initial partition changes",
+            error: errorName(failed)
+        )
     }
     try armWatch(service, disks, PortKey.diskWatch)
     return armWatch(service, partitions, PortKey.partitionWatch)
@@ -180,6 +186,9 @@ function mediumChanged(service: borrow mut Service, entry: EntryId, kind: borrow
         Some(size) -> size > 0
         None -> false
     }
+    // A medium taken out takes its ejection with it: the next one put in, or
+    // the same loop device attached to a file again, is mounted.
+    if !holds { forgetEjected(service, entry) }
     let listed = volumeIndex(service, entry).isSome()
     if listed && !holds { entryDisappeared(service, entry) }
     if !listed && holds { entryAppeared(service, entry, kind) }

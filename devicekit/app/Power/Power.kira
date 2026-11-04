@@ -15,6 +15,17 @@ namespace PowerRecord {
     let tripBytes: Number = 16
 }
 
+function nonnegative(value: Number) -> Number {
+    if value < 0 { return 0 }
+    return value
+}
+
+function percentValue(value: Number) -> U32 {
+    let bounded = nonnegative(value)
+    if bounded > 100 { return U32(100) }
+    return U32(bounded)
+}
+
 // An attribute of the connection's sysfs directory; absent when the driver
 // does not offer it.
 function connectionAttribute(object: Number, name: borrow String) -> Result<String?, TesseraError> {
@@ -25,6 +36,24 @@ function connectionAttribute(object: Number, name: borrow String) -> Result<Stri
 function connectionNumber(object: Number, name: borrow String) -> Result<Number?, TesseraError> {
     let directory = try sysfsPath(object)
     return .Ok(numberAttribute(directory + "/" + name))
+}
+
+function sourceAttribute(
+    directory: borrow String,
+    attributes: borrow [String],
+    name: borrow String
+) -> String? {
+    if !attributes.contains(name) { return .None }
+    return attribute(directory + "/" + name)
+}
+
+function sourceNumber(
+    directory: borrow String,
+    attributes: borrow [String],
+    name: borrow String
+) -> Number? {
+    if !attributes.contains(name) { return .None }
+    return numberAttribute(directory + "/" + name)
 }
 
 // A connection whose entry has gone: its `type` is no longer there.
@@ -57,31 +86,42 @@ function chargeState(text: borrow String?) -> ChargeState {
 // converted at its present voltage.
 public function powerSourceRead(source: Ref) -> Result<PowerSourceInfo, TesseraError> {
     let object = try resolveConnection(source, .PowerSource, RefRights.read)
-    let kindAttribute = try connectionAttribute(object, "type")
+    let directory = try sysfsPath(object)
+    let attributes = try directoryEntries(directory)
+    let kindAttribute = sourceAttribute(directory, attributes, "type")
     let kindText = try kindAttribute otherwise return .Error(lostConnection(object))
     let kind = powerSourceKind(kindText)
-    let status = try connectionAttribute(object, "status")
-    let voltage = (try connectionNumber(object, "voltage_now")).or(0)
-    let chargeNow = (try connectionNumber(object, "charge_now")).or(0)
-    let chargeFull = (try connectionNumber(object, "charge_full")).or(0)
-    let currentNow = (try connectionNumber(object, "current_now")).or(0)
-    let energyNow = (try connectionNumber(object, "energy_now")).or(
-        floor(chargeNow * voltage / PowerRecord.microPerUnit)
+    let status = sourceAttribute(directory, attributes, "status")
+    let voltage = nonnegative(sourceNumber(directory, attributes, "voltage_now").or(0))
+    let chargeNow = nonnegative(sourceNumber(directory, attributes, "charge_now").or(0))
+    let chargeFull = nonnegative(sourceNumber(directory, attributes, "charge_full").or(0))
+    let currentNow = sourceNumber(directory, attributes, "current_now").or(0)
+    let energyNow = nonnegative(
+        sourceNumber(directory, attributes, "energy_now").or(
+            floor(chargeNow * voltage / PowerRecord.microPerUnit)
+        )
     )
-    let energyFull = (try connectionNumber(object, "energy_full")).or(
-        floor(chargeFull * voltage / PowerRecord.microPerUnit)
+    let energyFull = nonnegative(
+        sourceNumber(directory, attributes, "energy_full").or(
+            floor(chargeFull * voltage / PowerRecord.microPerUnit)
+        )
     )
-    let powerNow = (try connectionNumber(object, "power_now")).or(
+    var powerNow = sourceNumber(directory, attributes, "power_now").or(
         floor(currentNow * voltage / PowerRecord.microPerUnit)
     )
-    let percent = match try connectionNumber(object, "capacity") {
-        Some(value) -> U32(value)
+    // Power-supply drivers may report discharging current as negative. The
+    // public power reading is an unsigned draw magnitude.
+    if powerNow < 0 { powerNow = -powerNow }
+    let percent = match sourceNumber(directory, attributes, "capacity") {
+        Some(value) -> percentValue(value)
         None -> PowerRecord.percentUnknown
     }
-    var online = (try connectionNumber(object, "online")).or(0) != 0
-    if kind == .Battery { online = (try connectionAttribute(object, "present")).or("1") != "0" }
-    let toEmpty = (try connectionNumber(object, "time_to_empty_now")).or(0)
-    let toFull = (try connectionNumber(object, "time_to_full_now")).or(0)
+    var online = sourceNumber(directory, attributes, "online").or(0) != 0
+    if kind == .Battery {
+        online = sourceAttribute(directory, attributes, "present").or("1") != "0"
+    }
+    let toEmpty = nonnegative(sourceNumber(directory, attributes, "time_to_empty_now").or(0))
+    let toFull = nonnegative(sourceNumber(directory, attributes, "time_to_full_now").or(0))
     return .Ok(
         PowerSourceInfo {
             kind: kind,

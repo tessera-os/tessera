@@ -47,7 +47,7 @@ public struct DebugSignal {
 function debugAllowed() -> Result<Void, TesseraError> {
     // The system's own programs hold the entitlement, as they do
     // `tessera.driver`, and an application is never given it; init starts
-    // the debug server among them only when the boot line has `tessera.dev`.
+    // debug services only with `tessera.dev` and `tessera.debug-ports`.
     if !entitlementHeld("tessera.debug.attach") { return .Error(failure(.NotEntitled)) }
     return .Ok
 }

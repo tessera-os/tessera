@@ -1,0 +1,486 @@
+Subject: arm64: dts: qcom: add the Samsung Galaxy S23+ (dm2q)
+
+Board description for Tessera on the SM-S916B, built on the Galaxy Z Fold5
+(q5q) tree, which shares the PMICs, UFS supplies, keys and console. Adds
+the S2DOS05 display PMIC, the FTS2BA61Y touchscreen, the Adreno 740 with
+Samsung's zap shader, and the bootloader IDs from the stock dtbo.
+
+--- a/arch/arm64/boot/dts/qcom/Makefile
++++ b/arch/arm64/boot/dts/qcom/Makefile
+@@ -384,6 +384,8 @@
+ dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-hdk.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-mtp.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-qrd.dtb
++dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-samsung-dm2q.dtb
++DTC_FLAGS_sm8550-samsung-dm2q := -@
+ dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-samsung-q5q.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-sony-xperia-yodo-pdx234.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= sm8650-ayaneo-pocket-s2.dtb
+--- /dev/null
++++ b/arch/arm64/boot/dts/qcom/sm8550-samsung-dm2q.dts
+@@ -0,0 +1,465 @@
++// SPDX-License-Identifier: BSD-3-Clause
++/*
++ * Samsung Galaxy S23+ (SM-S916B, dm2q).
++ *
++ * The board shares its SM8550 PMIC layout, UFS supplies, volume keys and
++ * console with the Galaxy Z Fold5 (q5q), so it reuses that description and
++ * overrides what differs on dm2q. Board values come from the stock S916B
++ * dtbo (board-id 0x10008).
++ *
++ * The S6E3FAC panel has no mainline driver: the display stays as the
++ * bootloader left it and Linux uses it through simple-framebuffer. The
++ * Adreno 740 runs as a GPU-only DRM device (msm.separate_gpu_kms=1).
++ */
++
++#include <dt-bindings/interrupt-controller/irq.h>
++#include <dt-bindings/usb/pd.h>
++#include "sm8550-samsung-q5q.dts"
++
++/ {
++	model = "Samsung Galaxy S23+";
++	compatible = "samsung,dm2q", "qcom,kalama-mtp", "qcom,kalama", "qcom,mtp", "qcom,sm8550";
++
++	/*
++	 * Samsung's ABL matches the device tree by these legacy Qualcomm
++	 * compatibles, the msm-id and the board-id, as the stock dm2q dtbo
++	 * overlays carry them. Without them ABL finds no device tree and falls
++	 * into Odin mode. The image is booted as a DTB appended to the kernel
++	 * with an invalid dtbo, because ABL's overlay code rejects a mainline
++	 * base tree (scripts/package-dm2q-odin.py).
++	 */
++	qcom,msm-id = <0x218 0x20000>, <0x207 0x20000>, <0x207 0x10000>, <0x218 0x10000>;
++	qcom,board-id = <0x10008 0x00>, <0x10008 0x01>, <0x10008 0x02>,
++			<0x10008 0x03>, <0x10008 0x05>, <0x10008 0x06>,
++			<0x10008 0x08>, <0x10008 0x09>, <0x10008 0x0d>;
++
++	/* The display PMIC sits on a bit-banged bus, as on the stock kernel. */
++	i2c-display-pmic {
++		compatible = "i2c-gpio";
++		/* Enables the display PMIC and the touch controller's supply rails. */
++		status = "okay";
++		sda-gpios = <&tlmm 20 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
++		scl-gpios = <&tlmm 21 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
++		i2c-gpio,delay-us = <2>;
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		pmic@60 {
++			compatible = "samsung,s2dos05";
++			reg = <0x60>;
++
++			regulators {
++				/* Panel rails: kept on, the bootloader-initialised panel needs them. */
++				s2dos05_buck: buck {
++					regulator-name = "panel_vddr";
++					regulator-min-microvolt = <850000>;
++					regulator-max-microvolt = <2100000>;
++					regulator-always-on;
++					regulator-boot-on;
++				};
++
++				s2dos05_ldo1: ldo1 {
++					regulator-name = "panel_vdd3";
++					regulator-min-microvolt = <1500000>;
++					regulator-max-microvolt = <2000000>;
++					regulator-always-on;
++					regulator-boot-on;
++				};
++
++				s2dos05_ldo2: ldo2 {
++					regulator-name = "tsp_io";
++					regulator-min-microvolt = <1800000>;
++					regulator-max-microvolt = <1800000>;
++					regulator-boot-on;
++				};
++
++				s2dos05_ldo3: ldo3 {
++					regulator-name = "tsp_avdd";
++					regulator-min-microvolt = <3000000>;
++					regulator-max-microvolt = <3000000>;
++					regulator-boot-on;
++				};
++
++				s2dos05_ldo4: ldo4 {
++					regulator-name = "panel_ldo4";
++					regulator-min-microvolt = <2700000>;
++					regulator-max-microvolt = <3775000>;
++					regulator-always-on;
++					regulator-boot-on;
++				};
++			};
++		};
++	};
++
++	/*
++	 * The touch controller is wired to QUP1 SE4, which the stock firmware
++	 * reserves for trusted touch; drive the same pins as a GPIO SPI bus.
++	 */
++	spi-touch {
++		compatible = "spi-gpio";
++		/* Drive the panel digitizer over the stock GPIO SPI wiring. */
++		status = "okay";
++		sck-gpios = <&tlmm 46 GPIO_ACTIVE_HIGH>;
++		mosi-gpios = <&tlmm 45 GPIO_ACTIVE_HIGH>;
++		miso-gpios = <&tlmm 44 GPIO_ACTIVE_HIGH>;
++		cs-gpios = <&tlmm 47 GPIO_ACTIVE_LOW>;
++		num-chipselects = <1>;
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		touchscreen@0 {
++			compatible = "st,fts2ba61y";
++			reg = <0>;
++			spi-max-frequency = <5000000>;
++			interrupt-parent = <&tlmm>;
++			interrupts = <25 IRQ_TYPE_LEVEL_LOW>;
++			pinctrl-0 = <&touch_int_default>;
++			pinctrl-names = "default";
++			vdd-supply = <&s2dos05_ldo2>;
++			avdd-supply = <&s2dos05_ldo3>;
++		};
++	};
++};
++
++/*
++ * Regions the stock S23+ firmware reserves that the q5q description leaves
++ * to Linux. The modem region starts lower than on q5q, and llcc_lpi sits at
++ * the top of the 32-bit range, where the kernel's first DMA allocations go.
++ * The OEM VM region belongs to a Gunyah guest; a stage-2 fault on it resets
++ * the SoC. The regions above 0x880000000 are Samsung's bootloader and debug
++ * buffers, sec_log_buf among them, which the bootloader keeps across resets.
++ */
++&mpss_mem {
++	reg = <0x0 0x8a800000 0x0 0x10800000>;
++};
++
++&reserved_memory {
++	/*
++	 * The dm2q bootloader keeps the panel and display controller on only
++	 * when it finds a node named exactly splash_region, as in the stock
++	 * tree; under q5q's splash-region@b8000000 it powers them down
++	 * ("Splash region not found in device tree") and the screen stays black.
++	 */
++	/delete-node/ splash-region@b8000000;
++
++	splash_region {
++		reg = <0x0 0xb8000000 0x0 0x2b00000>;
++		label = "cont_splash_region";
++		no-map;
++	};
++
++	chipinfo-region@81cf4000 {
++		reg = <0x0 0x81cf4000 0x0 0x1000>;
++		no-map;
++	};
++
++	hwfence-shmem@e6440000 {
++		reg = <0x0 0xe6440000 0x0 0x2dd000>;
++		no-map;
++	};
++
++	llcc-lpi-region@ff800000 {
++		reg = <0x0 0xff800000 0x0 0x600000>;
++		no-map;
++	};
++
++	sec-xbl-ramdump@a7d00000 {
++		reg = <0x0 0xa7d00000 0x0 0x300000>;
++		no-map;
++	};
++
++	oem-vm-region@f7a00000 {
++		reg = <0x0 0xf7a00000 0x0 0x2800000>;
++		no-map;
++	};
++
++	sec-debug-region-pool@880100000 {
++		reg = <0x8 0x80100000 0x0 0xff000>;
++	};
++
++	sec-rst-ex-info-region@8801ff000 {
++		reg = <0x8 0x801ff000 0x0 0x1000>;
++		no-map;
++	};
++
++	/*
++	 * Samsung's log ring, kept by the bootloader across warm resets and
++	 * shown by Samsung kernels as /proc/last_kmsg. Linux writes its console
++	 * here (CONFIG_SAMSUNG_SEC_LOG_CONSOLE); no-map so it can be mapped
++	 * write-combined and reach DRAM before a reset.
++	 */
++	sec-log-buf-region@880200000 {
++		compatible = "samsung,sec-log-buf";
++		reg = <0x8 0x80200000 0x0 0x200000>;
++		no-map;
++	};
++
++	sec-debug-bl-region@880400000 {
++		reg = <0x8 0x80400000 0x0 0x500000>;
++		no-map;
++	};
++
++	/*
++	 * Stock places its ramoops here. Linux keeps its console and panic
++	 * records in it, readable from /sys/fs/pstore after a warm reset.
++	 */
++	sec-pmsg-region@880900000 {
++		compatible = "ramoops";
++		reg = <0x8 0x80900000 0x0 0x200000>;
++		console-size = <0x100000>;
++		record-size = <0x40000>;
++		pmsg-size = <0x40000>;
++	};
++
++	google-debug-kinfo-region@880b00000 {
++		reg = <0x8 0x80b00000 0x0 0x1000>;
++		no-map;
++	};
++
++	hdm-region@880b01000 {
++		reg = <0x8 0x80b01000 0x0 0x1000>;
++		no-map;
++	};
++
++	sec-qcom-rdx-bootdev-region@880c00000 {
++		reg = <0x8 0x80c00000 0x0 0xad00000>;
++	};
++};
++
++/*
++ * Off while the first boot is bisected: q5q enables it, nothing needs it to
++ * boot, and on SM8550 Samsung boards PCIe0/WCN have hung or reset the SoC.
++ */
++
++&pcie0 {
++	status = "disabled";
++};
++
++&pcie0_phy {
++	status = "disabled";
++};
++
++/*
++ * The ADSP: audio, sensors and the charger's side of pmic_glink. Samsung's
++ * own signed images, split as the stock firmware partition keeps
++ * them; they are read from the system volume, so the ADSP is started once
++ * that is mounted.
++ */
++&remoteproc_adsp {
++	firmware-name = "qcom/sm8550/samsung/dm2q/adsp.mdt",
++			"qcom/sm8550/samsung/dm2q/adsp_dtb.mdt";
++	status = "okay";
++};
++
++&remoteproc_cdsp {
++	status = "disabled";
++};
++
++&remoteproc_mpss {
++	status = "disabled";
++};
++
++&framebuffer {
++	width = <1080>;
++	height = <2340>;
++	stride = <(1080 * 4)>;
++};
++
++&gpu {
++	/* The Samsung-signed zap shader is authenticated by TrustZone. */
++	status = "okay";
++};
++
++/* Samsung-signed; the Qualcomm reference zap image is rejected on retail units. */
++&gpu_zap_shader {
++	firmware-name = "qcom/sm8550/samsung/dm2q/a740_zap.mbn";
++};
++
++/*
++ * The USB-C port as a high-speed peripheral. The kernel console runs over
++ * it as a CDC ACM serial gadget (console=ttyGS0), which is how boot logs
++ * reach a host while the panel shows nothing. The eUSB2 PHY reaches the
++ * connector through an NXP PTN3222 repeater on QUP SE6, as on the stock
++ * kernel; its reset line is GPIO 4 of the PM8550VS at SID 3.
++ */
++&i2c6 {
++	clock-frequency = <400000>;
++	status = "okay";
++
++	usb_repeater: redriver@4f {
++		compatible = "nxp,ptn3222";
++		reg = <0x4f>;
++		reset-gpios = <&pm8550vs_d_gpios 4 GPIO_ACTIVE_LOW>;
++		vdd1v8-supply = <&vreg_l15b_1p8>;
++		vdd3v3-supply = <&vreg_l5b_3p1>;
++		/* The stock kernel's tuning, as value, register pairs (0007). */
++		qcom,param-override-seq = <0x40 0x06 0x20 0x07 0x62 0x08 0x03 0x09 0x00 0x0a>;
++		pinctrl-0 = <&usb_repeater_reset_default>;
++		pinctrl-names = "default";
++		#phy-cells = <0>;
++	};
++};
++
++&pm8550vs_d_gpios {
++	usb_repeater_reset_default: usb-repeater-reset-default-state {
++		pins = "gpio4";
++		function = "normal";
++		power-source = <1>;
++		bias-disable;
++	};
++};
++
++/*
++ * Dual-role, its role set by the MAX77705's Type-C driver (below): a
++ * peripheral until a partner attaches. High speed only for now, with no
++ * SuperSpeed PHY: the core is clocked from UTMI rather than the PIPE clock.
++ */
++&usb_1 {
++	/delete-property/ usb-role-switch;
++	dr_mode = "peripheral";
++	maximum-speed = "high-speed";
++	phys = <&usb_1_hsphy>;
++	phy-names = "usb2-phy";
++	qcom,select-utmi-as-pipe-clk;
++	status = "okay";
++};
++
++/*
++ * The battery as the MAX77705 charger programs it. voltage-max-design is
++ * stock's battery,chg_float_voltage (4450 mV) and the capacity stock's
++ * battery,battery_full_capacity (4700 mAh). Stock lowers the float voltage
++ * when hot and stops charging below 0 C and above 50 C; mainline does none
++ * of that, so the charge voltage and current stay below stock's (4.35 V and
++ * 1.5 A, against 4.45 V and 3.15 A) until a thermal guard exists.
++ */
++/ {
++	battery: battery {
++		compatible = "simple-battery";
++		voltage-max-design-microvolt = <4450000>;
++		constant-charge-voltage-max-microvolt = <4350000>;
++		constant-charge-current-max-microamp = <1500000>;
++		charge-full-design-microamp-hours = <4700000>;
++		voltage-min-design-microvolt = <3400000>;
++	};
++};
++
++/*
++ * The MAX77705 companion PMIC owns the USB-C port: its CCIC (0x25) runs the
++ * Type-C and PD policy in its own firmware, its charger (0x69) sources VBUS
++ * through an OTG boost, and its fuel gauge (0x36) measures the battery. It
++ * is on the AP side of the I2C hub, bus 8, as on the stock kernel
++ * (qupv3_hub_i2c8, max77705@66), its one interrupt on TLMM GPIO 133, active
++ * low. The CCIC driver sets dwc3's role through the connector's graph: host
++ * with VBUS for a sink partner, device for a source such as a computer, none
++ * when detached, and it closes the MUIC switch that routes D+/D- to USB.
++ * The ADSP's pmic_glink is not tied to the port: its UCSI sees no partner
++ * on this phone.
++ */
++&i2c_master_hub_0 {
++	status = "okay";
++};
++
++&i2c_hub_8 {
++	clock-frequency = <400000>;
++	status = "okay";
++
++	max77705: pmic@66 {
++		compatible = "maxim,max77705";
++		reg = <0x66>;
++		interrupts-extended = <&tlmm 133 IRQ_TYPE_LEVEL_LOW>;
++		interrupt-controller;
++		#interrupt-cells = <1>;
++		pinctrl-0 = <&max77705_irq_default>;
++		pinctrl-names = "default";
++	};
++
++	max77705_charger: charger@69 {
++		compatible = "maxim,max77705-charger";
++		reg = <0x69>;
++		monitored-battery = <&battery>;
++		interrupt-parent = <&max77705>;
++		interrupts = <0>;
++
++		max77705_otg_vbus: usb-otg-vbus {
++			regulator-name = "usb_otg_vbus";
++		};
++	};
++
++	typec@25 {
++		compatible = "maxim,max77705-usbc";
++		reg = <0x25>;
++		interrupt-parent = <&max77705>;
++		interrupts = <3>;
++		vbus-supply = <&max77705_otg_vbus>;
++		maxim,charger = <&max77705_charger>;
++
++		connector {
++			compatible = "usb-c-connector";
++			label = "USB-C";
++			power-role = "dual";
++			data-role = "dual";
++			try-power-role = "sink";
++			sink-pdos = <PDO_FIXED(5000, 3000, PDO_FIXED_DUAL_ROLE |
++						PDO_FIXED_HIGHER_CAP |
++						PDO_FIXED_USB_COMM |
++						PDO_FIXED_DATA_SWAP)
++				     PDO_FIXED(9000, 2000, 0)>;
++			op-sink-microwatt = <15000000>;
++
++			ports {
++				#address-cells = <1>;
++				#size-cells = <0>;
++
++				port@0 {
++					reg = <0>;
++
++					max77705_typec_hs: endpoint {
++						remote-endpoint = <&usb_1_dwc3_hs>;
++					};
++				};
++			};
++		};
++	};
++
++	/* The fuel gauge: stock's fuelgauge,fg_resistor 5 is a 2 mOhm shunt. */
++	fuel-gauge@36 {
++		compatible = "maxim,max77705-battery";
++		reg = <0x36>;
++		shunt-resistor-micro-ohms = <2000>;
++		interrupt-parent = <&max77705>;
++		interrupts = <2>;
++		power-supplies = <&max77705_charger>;
++	};
++};
++
++&tlmm {
++	max77705_irq_default: max77705-irq-default-state {
++		pins = "gpio133";
++		function = "gpio";
++		drive-strength = <2>;
++		bias-disable;
++	};
++};
++
++&usb_1_dwc3_hs {
++	remote-endpoint = <&max77705_typec_hs>;
++};
++
++&usb_1_hsphy {
++	vdd-supply = <&vreg_l1e_0p88>;
++	vdda12-supply = <&vreg_l3e_1p2>;
++	phys = <&usb_repeater>;
++	status = "okay";
++};
++
++&tlmm {
++	gpio-reserved-ranges = <36 4>, <50 2>, <64 2>;
++
++	touch_int_default: touch-int-default-state {
++		pins = "gpio25";
++		function = "gpio";
++		drive-strength = <2>;
++		bias-disable;
++		input-enable;
++	};
++};

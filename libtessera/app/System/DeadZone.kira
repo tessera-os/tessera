@@ -1,0 +1,150 @@
+//! The touch dead zone: a band along one edge of the screen that the system
+//! keeps clear and ignores touches in, for a screen whose digitizer is broken
+//! there.
+//!
+//! It is a developer setting. It holds only while developer mode is on, and
+//! MosaicDisplay lays the output out in what the band leaves of the screen.
+import Foundation
+
+/// The settings that say whether developer mode is on and which dead zone it keeps.
+public namespace DeveloperSetting {
+    /// Developer mode: on when the value is [`DeveloperSetting.on`], off otherwise.
+    let mode: String = "developer.mode"
+    /// The value [`DeveloperSetting.mode`] holds when developer mode is on.
+    let on: String = "on"
+    /// The edge the dead zone runs along: `top`, `bottom`, `left` or `right`.
+    /// Any other value, or none, keeps no dead zone.
+    let deadZoneEdge: String = "developer.dead-zone.edge"
+    /// How much of the screen the dead zone takes, in whole percent of the side
+    /// it runs across, from 1 to [`DeveloperSetting.largestPercent`].
+    let deadZonePercent: String = "developer.dead-zone.percent"
+    /// The largest dead zone: the screen keeps at least a tenth of itself.
+    let largestPercent: Number = 90
+    /// The share a dead zone takes when an edge is set and no percentage is.
+    let fallbackPercent: Number = 50
+}
+
+/// The edge of the screen a dead zone runs along.
+@Derive(Copy)
+public enum DeadZoneEdge {
+    /// Along the top edge, taking rows from the top down.
+    Top
+    /// Along the bottom edge, taking rows from the bottom up.
+    Bottom
+    /// Along the left edge, taking columns from the left.
+    Left
+    /// Along the right edge, taking columns from the right.
+    Right
+}
+
+/// A dead zone: the edge it runs along and how much of the screen it takes.
+public struct DeadZone {
+    /// The edge the dead zone runs along.
+    let edge: DeadZoneEdge
+    /// The share of the screen it takes, in whole percent.
+    let percent: Number
+}
+
+/// The part of a screen a dead zone leaves, in pixels from its top-left corner.
+public struct LiveArea {
+    /// The column the live area starts at.
+    let x: Number
+    /// The row the live area starts at.
+    let y: Number
+    /// The live area's width.
+    let width: Number
+    /// The live area's height.
+    let height: Number
+}
+
+/// The edge named `name` as the setting writes it, or `.None` for any other text.
+public function deadZoneEdgeNamed(name: borrow String) -> DeadZoneEdge? {
+    return match name {
+        "top" -> .Some(.Top)
+        "bottom" -> .Some(.Bottom)
+        "left" -> .Some(.Left)
+        "right" -> .Some(.Right)
+        else -> .None
+    }
+}
+
+/// The name the setting writes for `edge`.
+public function deadZoneEdgeName(edge: DeadZoneEdge) -> String {
+    return match edge {
+        Top -> "top"
+        Bottom -> "bottom"
+        Left -> "left"
+        Right -> "right"
+    }
+}
+
+/// The percentage `text` writes, when it is a whole number from 1 to
+/// [`DeveloperSetting.largestPercent`] in decimal digits.
+public function deadZonePercentIn(text: borrow String) -> Number? {
+    if text.count == 0 || text.count > 2 { return .None }
+    var value = 0
+    for index in 0..text.count {
+        let byte = text.charAt(index)
+        if byte < 48 || byte > 57 { return .None }
+        value = value * 10 + (byte - 48)
+    }
+    if value < 1 || value > DeveloperSetting.largestPercent { return .None }
+    return .Some(value)
+}
+
+/// The dead zone the settings keep: none unless developer mode is on and an
+/// edge is set. With no valid percentage it takes
+/// [`DeveloperSetting.fallbackPercent`].
+public function deadZoneSetting() -> DeadZone? {
+    if settingValue(DeveloperSetting.mode, "") != DeveloperSetting.on { return .None }
+    let edge = match deadZoneEdgeNamed(settingValue(DeveloperSetting.deadZoneEdge, "")) {
+        Some(value) -> value
+        None -> return .None
+    }
+    return .Some(DeadZone { edge: edge, percent: deadZonePercentKept() })
+}
+
+/// The percentage the settings keep, or [`DeveloperSetting.fallbackPercent`]
+/// when none valid is kept.
+public function deadZonePercentKept() -> Number {
+    return match deadZonePercentIn(settingValue(DeveloperSetting.deadZonePercent, "")) {
+        Some(percent) -> percent
+        None -> DeveloperSetting.fallbackPercent
+    }
+}
+
+/// Whether a change to `key` can change the dead zone.
+public function deadZoneKey(key: borrow String) -> Bool {
+    return key == DeveloperSetting.mode || key == DeveloperSetting.deadZoneEdge
+        || key == DeveloperSetting.deadZonePercent
+}
+
+/// What `zone` leaves of a `width` by `height` screen, kept a whole number of
+/// `step` pixels along the side it shortens, so the area is a whole number of
+/// points at that scale. The whole screen when there is no zone.
+public function liveArea(
+    zone: borrow DeadZone?,
+    width: Number,
+    height: Number,
+    step: Number
+) -> LiveArea {
+    let whole = LiveArea { x: 0, y: 0, width: width, height: height }
+    let held = match zone {
+        Some(value) -> value
+        None -> return whole
+    }
+    let unit = max(step, 1)
+    let across = match held.edge {
+        Top, Bottom -> height
+        Left, Right -> width
+    }
+    let kept = floor(across * (100 - held.percent) / 100 / unit) * unit
+    if kept <= 0 { return whole }
+    let dead = across - kept
+    return match held.edge {
+        Top -> LiveArea { x: 0, y: dead, width: width, height: kept }
+        Bottom -> LiveArea { x: 0, y: 0, width: width, height: kept }
+        Left -> LiveArea { x: dead, y: 0, width: kept, height: height }
+        Right -> LiveArea { x: 0, y: 0, width: kept, height: height }
+    }
+}

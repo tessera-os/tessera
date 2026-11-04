@@ -6,7 +6,9 @@ import Build
 construct WorkspaceTrainDisksShareBacking() extends Test {
     test {
         let temporary = environmentValue("TMPDIR")
-        let root = (temporary.count > 0 ? temporary : "/tmp") + "/tessera-train-disk-" + String(unixMillis())
+        let root = (temporary.count > 0 ? temporary : "/tmp") + "/tessera-train-disk-" + String(
+            unixMillis()
+        )
         let result = trainDiskProbe(root)
         match removePath(root) {
             Ok -> {}
@@ -18,19 +20,29 @@ construct WorkspaceTrainDisksShareBacking() extends Test {
         }
     }
     expect {
-        let e: Result<Any, TestFailure> = .Ok("shared base, isolated writes, stable reopen, base mismatch rejected")
+        let e: Result<Any, TestFailure> = .Ok(
+            "shared base, isolated writes, stable reopen, base mismatch rejected"
+        )
         return e
     }
 }
 
 function trainDiskProbe(root: borrow String) -> Result<Void, String> {
     let first = Host {
-        architecture: .Aarch64, darwin: true, home: environmentValue("HOME"),
-        path: environmentValue("PATH"), buildRoot: root + "/one", llvm: ""
+        architecture: .Aarch64,
+        darwin: true,
+        home: environmentValue("HOME"),
+        path: environmentValue("PATH"),
+        buildRoot: root + "/one",
+        llvm: ""
     }
     let second = Host {
-        architecture: .Aarch64, darwin: true, home: environmentValue("HOME"),
-        path: environmentValue("PATH"), buildRoot: root + "/two", llvm: ""
+        architecture: .Aarch64,
+        darwin: true,
+        home: environmentValue("HOME"),
+        path: environmentValue("PATH"),
+        buildRoot: root + "/two",
+        llvm: ""
     }
     for directory in [first.machineDirectory(.Aarch64), second.machineDirectory(.Aarch64)] {
         match makePathTree(directory) {
@@ -47,14 +59,20 @@ function trainDiskProbe(root: borrow String) -> Result<Void, String> {
     let one = try workspaceTrainDisk(first, .Aarch64, digest, base)
     let two = try workspaceTrainDisk(second, .Aarch64, digest, base)
     let reopened = try workspaceTrainDisk(first, .Aarch64, digest, base)
-    if one == two || reopened != one { return .Error("workspace disks are not isolated and stable") }
+    if one == two || reopened != one {
+        return .Error("workspace disks are not isolated and stable")
+    }
     try hostCommand(first.find("qemu-img"), ["check", one])
     try hostCommand(first.find("qemu-io"), ["-f", "qcow2", "-c", "write -P 0x5a 0 4096", one])
     try hostCommand(first.find("qemu-io"), ["-f", "qcow2", "-c", "read -P 0x5a 0 4096", one])
     try hostCommand(first.find("qemu-io"), ["-f", "qcow2", "-c", "read -P 0 0 4096", two])
     try hostCommand(first.find("qemu-io"), ["-f", "raw", "-c", "read -P 0 0 4096", base])
-    return match workspaceTrainDisk(first, .Aarch64,
-        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", base) {
+    return match workspaceTrainDisk(
+        first,
+        .Aarch64,
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        base
+    ) {
         Ok(path) -> .Error("workspace disk accepted another train")
         Error(problem) -> .Ok
     }

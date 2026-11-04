@@ -2,7 +2,8 @@ import Foundation
 import LibTessera
 
 // debugserver: lldb's remote stub on a development machine, after macOS's
-// debugserver. init starts it when the boot line has `tessera.dev`; it serves
+// debugserver. init starts it when the boot line has `tessera.dev` and
+// `tessera.debug-ports`; it serves
 // the machine's debug port, which a `-dev` boot joins to 127.0.0.1:7331 on
 // the host:
 //

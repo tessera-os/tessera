@@ -47,7 +47,10 @@ function stageTime(server: borrow Server) -> UNumber {
     match nowMillis() {
         Ok(value) -> return value
         Error(reason) -> {
-            log warn("the stage clock could not be read; its motion is held", error: errorName(reason))
+            log warn(
+                "the stage clock could not be read; its motion is held",
+                error: errorName(reason)
+            )
             return server.stageTicked
         }
     }
@@ -215,11 +218,14 @@ function resizeMoving(server: borrow mut Server) {
         if !server.clients[motion.index].alive { continue }
         match sendConfigureFrame(server, motion.index, size, Relayout.serial) {
             Ok -> {
-            server.stageMotion[at].sent = move size
-            match nowMillis() {
-                Ok(now) -> server.stageMotion[at].sentAt = now
-                Error(reason) -> log warn("a resized stage window's time could not be read", error: errorName(reason))
-            }
+                server.stageMotion[at].sent = move size
+                match nowMillis() {
+                    Ok(now) -> server.stageMotion[at].sentAt = now
+                    Error(reason) -> log warn(
+                        "a resized stage window's time could not be read",
+                        error: errorName(reason)
+                    )
+                }
             }
             Error(reason) -> configurationFailed(server, motion.index, reason)
         }

@@ -110,6 +110,15 @@ function describeRelease(
         [.Place(TreePlace { path: SealedSystem.key, artifact: sealKey })]
     )
     var initramfsTrees = [initramfsBase, copy runtime, sealKeyTree]
+    var dm2qFirmware: Artifact? = .None
+    // The built-in msm driver probes before PID 1 mounts the system volume.
+    // Keep the A740 SQE, GMU and Samsung-signed zap image available during
+    // that probe, then retain their system copies for later firmware requests.
+    if context.kernelProfile == "dm2q" {
+        let firmware = dm2qGpuFirmware(graph, context)
+        initramfsTrees.append(copy firmware)
+        dm2qFirmware = .Some(firmware)
+    }
     // The system: everything else. The mount points the system's init
     // mounts onto, `Volumes` where the Volume service mounts disks, and
     // /Applications, /Cache and /BuildCache, which PID 1 binds from the data
@@ -124,10 +133,13 @@ function describeRelease(
             "Applications", "Cache", "BuildCache", "volume"
         ]
     )
-    var systemTrees = [systemBase, copy runtime, platformGraphics(graph, context), platformZoneInfo(
+    var systemTrees = [systemBase, copy runtime, platformGraphics(
         graph,
-        context
-    ), platformWebKit(graph, context)]
+        context,
+        copy dm2qFirmware
+    ), platformZoneInfo(graph, context), platformWebKit(graph, context)]
+    // The current dm2q diagnostic DTB leaves the remote processor nodes off.
+    // Its stock ADSP split firmware is not staged, so don't source an unused tree.
     if context.valgrind != "none" {
         var program = ""
         for described in components {

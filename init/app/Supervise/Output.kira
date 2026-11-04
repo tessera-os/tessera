@@ -12,6 +12,12 @@ import LibTessera
 namespace OutputRelay {
     // The most one read takes. A larger write is read in one larger block.
     let readBytes: Number = 65536
+    // The most one console write holds: under the 1024 bytes a record of the
+    // kernel's log takes, after its own prefix.
+    let consoleBytes: Number = 960
+    // The longest piece a line is cut into, in characters: four bytes each
+    // at most, so a piece fits one write.
+    let lineCharacters: Number = 240
 }
 
 // Asks for a completion on `port` when the service in `slot` writes or
@@ -85,22 +91,48 @@ function handleOutput(fleet: borrow mut Fleet, slot: Number, port: borrow Handle
 }
 
 // Writes every line `text` ends, and keeps the line it begins. The console
-// takes them in one write: each is a trip through the serial port.
+// takes them in as few writes as fit `OutputRelay.consoleBytes`: each is a
+// trip through the serial port, and the kernel's log, which the console is
+// when `tessera.logpart` is set, refuses a longer one.
 function relayText(fleet: borrow mut Fleet, slot: Number, text: String) {
     let pieces = (fleet.partial[slot] + text).split("\n")
     var console: [String] = []
+    var bytes: Number = 0
     for index in 0..pieces.count - 1 {
-        console.append("\(fleet.services[slot].name): \(pieces[index])")
         writeSystemLog(fleet.systemLog, fleet.services[slot].name, pieces[index])
+        for part in consoleParts("\(fleet.services[slot].name): \(pieces[index])") {
+            let size = part.utf8().count + 1
+            if console.count > 0 && bytes + size > OutputRelay.consoleBytes {
+                print(joined(console, "\n"))
+                console = []
+                bytes = 0
+            }
+            console.append(copy part)
+            bytes += size
+        }
     }
     if console.count > 0 { print(joined(console, "\n")) }
     fleet.partial[slot] = copy pieces[pieces.count - 1]
 }
 
+// `line` in pieces of at most `OutputRelay.lineCharacters` characters.
+function consoleParts(line: String) -> [String] {
+    var parts: [String] = []
+    var start: Number = 0
+    while line.count - start > OutputRelay.lineCharacters {
+        parts.append(line.substring(start, start + OutputRelay.lineCharacters))
+        start += OutputRelay.lineCharacters
+    }
+    parts.append(line.substring(start, line.count))
+    return parts
+}
+
 // Writes the line the service left unfinished, and lets its output go.
 function closeOutput(fleet: borrow mut Fleet, slot: Number) {
     if fleet.partial[slot].count > 0 {
-        print("\(fleet.services[slot].name): \(fleet.partial[slot])")
+        for part in consoleParts("\(fleet.services[slot].name): \(fleet.partial[slot])") {
+            print(part)
+        }
         writeSystemLog(fleet.systemLog, fleet.services[slot].name, fleet.partial[slot])
         fleet.partial[slot] = ""
     }

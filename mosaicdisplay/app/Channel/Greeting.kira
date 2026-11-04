@@ -67,7 +67,11 @@ function sayWhatArrived(reader: Handle, file: Handle) {
     }
 }
 
-function reportGreeting(reader: Handle, file: Handle, room: borrow ByteBlock) -> Result<Number, TesseraError> {
+function reportGreeting(
+    reader: Handle,
+    file: Handle,
+    room: borrow ByteBlock
+) -> Result<Number, TesseraError> {
     return readGreeting(reader, file, room)
 }
 

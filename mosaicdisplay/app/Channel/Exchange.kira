@@ -78,7 +78,11 @@ enum SessionFailure {
     ExpectedConfigureAck
 }
 
-function exchangeStep(server: borrow mut Server, index: Number, message: DisplayMessage) -> Result<Void, SessionFailure> {
+function exchangeStep(
+    server: borrow mut Server,
+    index: Number,
+    message: DisplayMessage
+) -> Result<Void, SessionFailure> {
     let exchange = server.clients[index].exchange
     return match message {
         FrameRequest(frame) -> match exchange {
@@ -99,12 +103,18 @@ function exchangeStep(server: borrow mut Server, index: Number, message: Display
             VerifyResult, InjectInput, Notify, Notification, ActivateRequested, SetBar,
             PointerMotion, PointerButton, PointerAxis, PointerEnter, PointerLeave, SetDock,
             SurfacePressed, RequestWindow, WindowRequested, GrantMove, GrantResize, HoldInput, SetOverlay, SetIdle, IdleChanged, BarBackdrop, SetGlass, SetLaunchOrigin, SetStageBadge,
-            PlaceSurface, SurfacePlaced, SetHidden, SetMargin, Insets, Output -> .Error(.NotFrameStep)
+            PlaceSurface, SurfacePlaced, SetHidden, SetMargin, Insets, Output -> .Error(
+                .NotFrameStep
+            )
     }
 }
 
 // Grants the frame a client asked for.
-function grantFrame(server: borrow mut Server, index: Number, frame: borrow DisplayFrame) -> Result<Void, SessionFailure> {
+function grantFrame(
+    server: borrow mut Server,
+    index: Number,
+    frame: borrow DisplayFrame
+) -> Result<Void, SessionFailure> {
     if frame.surface == DisplaySurfaceId.none || frame.serial == 0 {
         return .Error(.InvalidFrame)
     }
@@ -161,7 +171,10 @@ function commitFrame(
         Shown(value) -> value
         // The client is told the frame is done, and draws the next.
         Skipped(reason) -> {
-            log warn("a client's surface would not import; its frame is skipped", error: errorName(reason))
+            log warn(
+                "a client's surface would not import; its frame is skipped",
+                error: errorName(reason)
+            )
             tell(
                 server.clients[index].channel,
                 .FrameDone(DisplayFrame { surface: committed.surface, serial: committed.serial })

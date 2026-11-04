@@ -49,14 +49,16 @@ function splitPath(path: borrow String) -> Result<PathSplit, TesseraError> {
 
 // A descriptor for the directory at `path`, which the caller closes.
 function openDirectoryAt(path: borrow String) -> Result<Number, TesseraError> {
-    let directory = openat(
-        AtDirectory.current,
-        cStringFrom(path),
-        LinuxOpen.readOnly | openDirectoryFlag() | LinuxOpen.closeOnExec,
-        0
-    )
-    if answerFailed(directory) { return .Error(errnoFailure(answerErrno(directory))) }
-    return .Ok(directory)
+    unsafe {
+        let directory = openat(
+            AtDirectory.current,
+            cStringFrom(path),
+            LinuxOpen.readOnly | openDirectoryFlag() | LinuxOpen.closeOnExec,
+            0
+        )
+        if answerFailed(directory) { return .Error(errnoFailure(answerErrno(directory))) }
+        return .Ok(directory)
+    }
 }
 
 // Runs the btrfs ioctl `request` on the directory holding `path`, with a
@@ -70,19 +72,21 @@ function subvolumeCall(
     source: Number?,
     flags: U64
 ) -> Result<Void, TesseraError> {
-    let split = try splitPath(path)
-    let argumentBytes = zeroedBlock(count: BtrfsIoctl.argumentBytes, alignment: 8)
-    let argument = argumentBytes.pointer()
-    match source {
-        Some(descriptor) -> heapStore<I32>(argument, 0, I32(descriptor))
-        None -> {}
+    unsafe {
+        let split = try splitPath(path)
+        let argumentBytes = zeroedBlock(count: BtrfsIoctl.argumentBytes, alignment: 8)
+        let argument = argumentBytes.pointer()
+        match source {
+            Some(descriptor) -> heapStore<I32>(argument, 0, I32(descriptor))
+            None -> {}
+        }
+        if flags != U64(0) { heapStore<U64>(argument, BtrfsIoctl.flagsAt, flags) }
+        copyBytes(heapOffset(argument, nameAt), split.name.data, split.name.count)
+        let directory = try openDirectoryAt(split.directory)
+        let answer = ioctl(directory, request, argument)
+        closeBacking(directory)
+        return answerStatus(answer)
     }
-    if flags != U64(0) { heapStore<U64>(argument, BtrfsIoctl.flagsAt, flags) }
-    copyBytes(heapOffset(argument, nameAt), split.name.data, split.name.count)
-    let directory = try openDirectoryAt(split.directory)
-    let answer = ioctl(directory, request, argument)
-    closeBacking(directory)
-    return answerStatus(answer)
 }
 
 function kernelVolumeMountSubvolume(
@@ -91,16 +95,18 @@ function kernelVolumeMountSubvolume(
     subvolume: borrow String,
     options: VolumeOptions
 ) -> Result<Void, TesseraError> {
-    let data = cStringFrom("subvol=" + subvolume)
-    return answerStatus(
-        mount(
-            cStringFrom(diskNode(source)),
-            cStringFrom(target),
-            cStringFrom("btrfs"),
-            mountFlags(options),
-            data.address
+    unsafe {
+        let data = cStringFrom("subvol=" + subvolume)
+        return answerStatus(
+            mount(
+                cStringFrom(diskNode(source)),
+                cStringFrom(target),
+                cStringFrom("btrfs"),
+                mountFlags(options),
+                data.address
+            )
         )
-    )
+    }
 }
 
 function kernelVolumeCreateSubvolume(path: borrow String) -> Result<Void, TesseraError> {

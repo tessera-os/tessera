@@ -1,0 +1,45 @@
+import Foundation
+import Heap
+
+// The kernel's log as it stands, read through syslog(2) without taking
+// anything out of it: the ring's newest text, the way `dmesg` prints it.
+
+namespace KernelLogAction {
+    // `SYSLOG_ACTION_READ_ALL`: the last bytes of the ring, left in it.
+    let readAll: Int = 3
+}
+
+function kernelLogTail(limit: Number) -> Result<String, TesseraError> {
+    unsafe {
+        // One byte more than is asked for, left zero, ends the text.
+        let block = zeroedBlock(count: Int(limit + 1), alignment: 16)
+        let got = syslog(KernelLogAction.readAll, block.pointer(), Int(limit))
+        if answerFailed(Number(got)) { return .Error(errnoFailure(answerErrno(Number(got)))) }
+        return .Ok(stringFromCBytes(block.pointer(), Number(got)))
+    }
+}
+
+// Standard output and error opened onto `/dev/kmsg`: each write a record of
+// the kernel's log, which the kernel still prints on its consoles.
+function kernelLogStreams() -> Result<Void, TesseraError> {
+    unsafe {
+        let fd = openat(
+            AtDirectory.current,
+            cStringFrom("/dev/kmsg"),
+            LinuxOpen.writeOnly | LinuxOpen.closeOnExec,
+            0
+        )
+        if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
+        for stream in [StandardStream.Output, StandardStream.Error] {
+            match answerStatus(dup3(fd, Number(code(stream)), 0)) {
+                Ok -> {}
+                Error(failed) -> {
+                    closeBacking(fd)
+                    return .Error(failed)
+                }
+            }
+        }
+        closeBacking(fd)
+        return .Ok
+    }
+}

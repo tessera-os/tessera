@@ -1,0 +1,26 @@
+Subject: init: drop arguments for init past the limit instead of panicking
+
+Samsung's bootloader appends its own parameters to the end of the boot
+image's command line, so on a command line that hands init its arguments
+after "--", every parameter it adds lands after the dashes too: on the
+Galaxy S23+ that is more than CONFIG_INIT_ENV_ARG_LIMIT of them, and the
+kernel panics in start_kernel() with "Too many boot init vars" before any
+console but an early one is up.
+
+The arguments the boot image gives come first, so keep the first
+MAX_INIT_ARGS, report the rest once, and boot.
+
+--- a/init/main.c
++++ b/init/main.c
+@@ -487,9 +487,9 @@ static int __init set_init_arg(char *param, char *val,
+ 
+ 	for (i = 0; argv_init[i]; i++) {
+ 		if (i == MAX_INIT_ARGS) {
+-			panic_later = "init";
+-			panic_param = param;
++			pr_warn_once("Too many boot init vars, dropping `%s' and after\n",
++				     param);
+ 			return 0;
+ 		}
+ 	}
+ 	argv_init[i] = param;

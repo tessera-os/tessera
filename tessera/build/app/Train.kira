@@ -10,13 +10,18 @@ function trainOption(graph: borrow mut Graph) -> String {
     if fileExists(basePath) {
         match readFile(basePath) {
             Ok(contents) -> fallback = contents.text.trim()
-            Error(failure) -> graph.problems.append("cannot read workspace base: \(traceText(failure))")
+            Error(failure) -> graph.problems.append(
+                "cannot read workspace base: \(traceText(failure))"
+            )
         }
     }
-    return graph.option(Choice {
-        name: "base", summary: "the immutable release train snapshot to boot or overlay",
-        fallback: fallback
-    })
+    return graph.option(
+        Choice {
+            name: "base",
+            summary: "the immutable release train snapshot to boot or overlay",
+            fallback: fallback
+        }
+    )
 }
 
 function trainMetadataText(value: borrow Kten, key: borrow String) -> String {
@@ -53,7 +58,9 @@ function trainRepository(root: borrow String, location: borrow String) -> Result
     let path = joinedPath(root, location)
     let empty: [UN8] = []
     let statusCommand = ProcessCommand {
-        program: "git", arguments: ["-C", path, "status", "--porcelain"], input: .Null
+        program: "git",
+        arguments: ["-C", path, "status", "--porcelain"],
+        input: .Null
     }
     let status = match statusCommand.run(empty) {
         Ok(found) -> found
@@ -63,7 +70,9 @@ function trainRepository(root: borrow String, location: borrow String) -> Result
         return .Error("train capture requires committed sources: \(location)")
     }
     let revisionCommand = ProcessCommand {
-        program: "git", arguments: ["-C", path, "rev-parse", "HEAD"], input: .Null
+        program: "git",
+        arguments: ["-C", path, "rev-parse", "HEAD"],
+        input: .Null
     }
     let revision = match revisionCommand.run(empty) {
         Ok(found) -> found
@@ -74,9 +83,13 @@ function trainRepository(root: borrow String, location: borrow String) -> Result
         Some(found) -> found.trim()
         None -> return .Error("invalid revision text for \(location)")
     }
-    return .Ok(ktenBare([
-        ktenField("location", .Text(copy location)), ktenField("commit", .Text(text))
-    ]))
+    return .Ok(
+        ktenBare(
+            [
+                ktenField("location", .Text(copy location)), ktenField("commit", .Text(text))
+            ]
+        )
+    )
 }
 
 function describeTrain(
@@ -133,22 +146,30 @@ function describeTrain(
     for artifact in booted { artifacts.append(copy artifact) }
     var bootRoles: [Kten] = []
     for role in roles { bootRoles.append(.Text(copy role)) }
-    let metadata = ktenObject("TesseraTrain", [
-        ktenField("schema", .Text("tessera-train-1")),
-        ktenField("architecture", .Text(context.architecture.name())),
-        ktenField("profile", .Text(context.release ? "release" : "debug")),
-        ktenField("symbols", .Text(context.symbols == .Developer ? "developer" : "none")),
-        ktenField("lldb", .Text(context.lldb ? "on" : "off")),
-        ktenField("components", .List(components)),
-        ktenField("repositories", .List(repositories)),
-        ktenField("sdk", .Number(sdk)),
-        ktenField("bootStart", .Number(bootStart)),
-        ktenField("bootRoles", .List(bootRoles))
-    ])
-    graph.step(Step {
-        name: "train", summary: "capture an immutable release train in the shared artifact store",
-        produces: artifacts, snapshot: .Some(metadata), materialize: false
-    })
+    let metadata = ktenObject(
+        "TesseraTrain",
+        [
+            ktenField("schema", .Text("tessera-train-1")),
+            ktenField("architecture", .Text(context.architecture.name())),
+            ktenField("profile", .Text(context.release ? "release" : "debug")),
+            ktenField("symbols", .Text(context.symbols == .Developer ? "developer" : "none")),
+            ktenField("lldb", .Text(context.lldb ? "on" : "off")),
+            ktenField("components", .List(components)),
+            ktenField("repositories", .List(repositories)),
+            ktenField("sdk", .Number(sdk)),
+            ktenField("bootStart", .Number(bootStart)),
+            ktenField("bootRoles", .List(bootRoles))
+        ]
+    )
+    graph.step(
+        Step {
+            name: "train",
+            summary: "capture an immutable release train in the shared artifact store",
+            produces: artifacts,
+            snapshot: .Some(metadata),
+            materialize: false
+        }
+    )
 }
 
 function trainBootArtifacts(
@@ -228,24 +249,41 @@ function bootTrain(
     let pinned = copy digest
     let names = copy overlay.names
     let base = copy overlay.base
-    let started: (() -> Number)? = names.count == 0 ? .None : .Some({ in
-        let ready = carryOutDevRoot(machine, target, names, DevRootSelection { install: [], left: [] },
-            StepRun { paths: [], digests: [], arguments: ["wait"] })
-        if ready != 0 { return ready }
-        return installTrainOverlay(machine, target, pinned, names, base, overlayRun)
-    })
+    let started: (() -> Number)? = names.count == 0 ? .None : .Some(
+        { in
+            let ready = carryOutDevRoot(
+                machine,
+                target,
+                names,
+                DevRootSelection { install: [], left: [] },
+                StepRun { paths: [], digests: [], arguments: ["wait"] }
+            )
+            if ready != 0 { return ready }
+            return installTrainOverlay(machine, target, pinned, names, base, overlayRun)
+        }
+    )
     var effectiveOptions = copy options
     effectiveOptions.train = copy digest
-    return boot(host, architecture, effectiveOptions, roles, StepRun {
-        paths: paths, digests: copy run.digests, arguments: copy run.arguments
-    }, move started)
+    return boot(
+        host,
+        architecture,
+        effectiveOptions,
+        roles,
+        StepRun { paths: paths, digests: copy run.digests, arguments: copy run.arguments },
+        move started
+    )
 }
 
-function validateTrainConfiguration(metadata: borrow Kten, context: borrow BuildContext) -> Result<Void, String> {
+function validateTrainConfiguration(
+    metadata: borrow Kten,
+    context: borrow BuildContext
+) -> Result<Void, String> {
     if trainMetadataText(metadata, "schema") != "tessera-train-1"
         || trainMetadataText(metadata, "architecture") != context.architecture.name()
         || trainMetadataText(metadata, "profile") != (context.release ? "release" : "debug")
-        || trainMetadataText(metadata, "symbols") != (context.symbols == .Developer ? "developer" : "none")
+        || trainMetadataText(metadata, "symbols") != (
+            context.symbols == .Developer ? "developer" : "none"
+        )
         || trainMetadataText(metadata, "lldb") != (context.lldb ? "on" : "off") {
         return .Error("the train's schema, target or build settings do not match this build")
     }

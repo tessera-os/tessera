@@ -41,14 +41,16 @@ function descriptorPath(fd: Number) -> String {
 // (`O_PATH | O_NOFOLLOW`): a link is never followed. The empty path is the
 // directory itself.
 function kernelNodeOpen(directory: Number, path: borrow String) -> Result<Number, TesseraError> {
-    if path.count == 0 { return kernelDuplicate(directory) }
-    let howBytes = zeroedBlock(count: 24, alignment: 16)
-    let how = howBytes.pointer()
-    heapStore<U64>(how, 0, U64(LinuxOpen.path | openNoFollowFlag() | LinuxOpen.closeOnExec))
-    heapStore<U64>(how, 16, Resolve.beneath | Resolve.noSymlinks | Resolve.noMagicLinks)
-    let fd = openat2(directory, cStringFrom(path), how, U64(24))
-    if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
-    return .Ok(fd)
+    unsafe {
+        if path.count == 0 { return kernelDuplicate(directory) }
+        let howBytes = zeroedBlock(count: 24, alignment: 16)
+        let how = howBytes.pointer()
+        heapStore<U64>(how, 0, U64(LinuxOpen.path | openNoFollowFlag() | LinuxOpen.closeOnExec))
+        heapStore<U64>(how, 16, Resolve.beneath | Resolve.noSymlinks | Resolve.noMagicLinks)
+        let fd = openat2(directory, cStringFrom(path), how, U64(24))
+        if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
+        return .Ok(fd)
+    }
 }
 
 function statKind(block: RawPtr) -> NodeKind {
@@ -68,33 +70,37 @@ function statTime(block: RawPtr, offset: Number) -> U64 {
 // `statx` with `AT_SYMLINK_NOFOLLOW`, of `name` beneath `directory` or,
 // with `AT_EMPTY_PATH` and an empty name, of `directory` itself.
 function statAt(directory: Number, name: borrow String) -> Result<KernelNodeStat, TesseraError> {
-    let blockBytes = zeroedBlock(count: 256, alignment: 16)
-    let block = blockBytes.pointer()
-    var flags = AtFlag.symlinkNoFollow
-    if name.count == 0 { flags = flags | AtFlag.emptyPath }
-    let answer = statx(directory, cStringFrom(name), flags, Statx.basicAndBirth, block)
-    if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
-    let kind = statKind(block)
-    let attributes = heapLoad<U64>(block, 8)
-    return .Ok(
-        KernelNodeStat {
-            kind: kind,
-            size: heapLoad<U64>(block, 40),
-            allocated: heapLoad<U64>(block, 48) * Statx.blockUnit,
-            blockSize: heapLoad<U32>(block, 4),
-            identity: heapLoad<U64>(block, 32),
-            volume: (U64(heapLoad<U32>(block, 136)) << U64(32)) | U64(heapLoad<U32>(block, 140)),
-            created: statTime(block, 80),
-            modified: statTime(block, 112),
-            accessed: statTime(block, 64),
-            changed: statTime(block, 96),
-            immutable: (attributes & Statx.immutable) != U64(0),
-            executable: kind == .File && (
-                U32(heapLoad<U16>(block, 28)) & FileMode.anyExecute
-            ) != U32(0),
-            encrypted: (attributes & Statx.encrypted) != U64(0),
-        }
-    )
+    unsafe {
+        let blockBytes = zeroedBlock(count: 256, alignment: 16)
+        let block = blockBytes.pointer()
+        var flags = AtFlag.symlinkNoFollow
+        if name.count == 0 { flags = flags | AtFlag.emptyPath }
+        let answer = statx(directory, cStringFrom(name), flags, Statx.basicAndBirth, block)
+        if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
+        let kind = statKind(block)
+        let attributes = heapLoad<U64>(block, 8)
+        return .Ok(
+            KernelNodeStat {
+                kind: kind,
+                size: heapLoad<U64>(block, 40),
+                allocated: heapLoad<U64>(block, 48) * Statx.blockUnit,
+                blockSize: heapLoad<U32>(block, 4),
+                identity: heapLoad<U64>(block, 32),
+                volume: (U64(heapLoad<U32>(block, 136)) << U64(32)) | U64(
+                    heapLoad<U32>(block, 140)
+                ),
+                created: statTime(block, 80),
+                modified: statTime(block, 112),
+                accessed: statTime(block, 64),
+                changed: statTime(block, 96),
+                immutable: (attributes & Statx.immutable) != U64(0),
+                executable: kind == .File && (
+                    U32(heapLoad<U16>(block, 28)) & FileMode.anyExecute
+                ) != U32(0),
+                encrypted: (attributes & Statx.encrypted) != U64(0),
+            }
+        )
+    }
 }
 
 function kernelNodeStat(backing: Number) -> Result<KernelNodeStat, TesseraError> {
@@ -118,64 +124,72 @@ function direntKind(entryType: U8) -> NodeKind {
 
 // Every entry of the directory but `.` and `..`, from `getdents64`.
 function kernelDirectoryList(directory: Number) -> Result<[KernelDirectoryEntry], TesseraError> {
-    let readable = openat(
-        directory,
-        cStringFrom("."),
-        LinuxOpen.readOnly | openDirectoryFlag() | LinuxOpen.closeOnExec,
-        0
-    )
-    if answerFailed(readable) { return .Error(errnoFailure(answerErrno(readable))) }
-    let blockBytes = zeroedBlock(count: 32768, alignment: 16)
-    let block = blockBytes.pointer()
-    var entries: [KernelDirectoryEntry] = []
-    while true {
-        let got = getdents64(readable, block, U64(32768))
-        if answerFailed(got) || got == 0 { break }
-        var at = U64(0)
-        while at < U64(got) {
-            let length = U64(heapLoad<U16>(block, Number(at + U64(16))))
-            let name = stringFromCBytes(
-                heapOffset(block, Number(at + U64(19))),
-                Number(length - U64(19))
-            )
-            if name != "." && name != ".." {
-                entries.append(
-                    KernelDirectoryEntry {
-                        name: name,
-                        kind: direntKind(heapLoad<U8>(block, Number(at + U64(18)))),
-                        identity: heapLoad<U64>(block, at)
-                    }
+    unsafe {
+        let readable = openat(
+            directory,
+            cStringFrom("."),
+            LinuxOpen.readOnly | openDirectoryFlag() | LinuxOpen.closeOnExec,
+            0
+        )
+        if answerFailed(readable) { return .Error(errnoFailure(answerErrno(readable))) }
+        let blockBytes = zeroedBlock(count: 32768, alignment: 16)
+        let block = blockBytes.pointer()
+        var entries: [KernelDirectoryEntry] = []
+        while true {
+            let got = getdents64(readable, block, U64(32768))
+            if answerFailed(got) || got == 0 { break }
+            var at = U64(0)
+            while at < U64(got) {
+                let length = U64(heapLoad<U16>(block, Number(at + U64(16))))
+                let name = stringFromCBytes(
+                    heapOffset(block, Number(at + U64(19))),
+                    Number(length - U64(19))
                 )
+                if name != "." && name != ".." {
+                    entries.append(
+                        KernelDirectoryEntry {
+                            name: name,
+                            kind: direntKind(heapLoad<U8>(block, Number(at + U64(18)))),
+                            identity: heapLoad<U64>(block, at)
+                        }
+                    )
+                }
+                at += length
             }
-            at += length
         }
+        closeBacking(readable)
+        return .Ok(entries)
     }
-    closeBacking(readable)
-    return .Ok(entries)
 }
 
 // A new directory `name` beneath `directory`, `rwxr-xr-x`.
 function kernelMakeDirectory(directory: Number, name: borrow String) -> Result<Void, TesseraError> {
-    return answerStatus(mkdirat(directory, cStringFrom(name), FileMode.directoryDefault))
+    unsafe {
+        return answerStatus(mkdirat(directory, cStringFrom(name), FileMode.directoryDefault))
+    }
 }
 
 // A new empty file `name` beneath `directory`, `rw-r--r--`; `AlreadyExists`
 // when the name is taken.
 function kernelMakeFile(directory: Number, name: borrow String) -> Result<Void, TesseraError> {
-    let made = openat(
-        directory,
-        cStringFrom(name),
-        LinuxOpen.create | LinuxOpen.exclusive | LinuxOpen.readOnly | LinuxOpen.closeOnExec | openNoFollowFlag(),
-        FileMode.fileDefault
-    )
-    if answerFailed(made) { return .Error(errnoFailure(answerErrno(made))) }
-    closeBacking(made)
-    return .Ok
+    unsafe {
+        let made = openat(
+            directory,
+            cStringFrom(name),
+            LinuxOpen.create | LinuxOpen.exclusive | LinuxOpen.readOnly | LinuxOpen.closeOnExec | openNoFollowFlag(),
+            FileMode.fileDefault
+        )
+        if answerFailed(made) { return .Error(errnoFailure(answerErrno(made))) }
+        closeBacking(made)
+        return .Ok
+    }
 }
 
 // Removes the non-directory `name`; `IsDirectory` when it is one.
 function kernelRemoveFile(directory: Number, name: borrow String) -> Result<Void, TesseraError> {
-    return answerStatus(unlinkat(directory, cStringFrom(name), 0))
+    unsafe {
+        return answerStatus(unlinkat(directory, cStringFrom(name), 0))
+    }
 }
 
 // Removes the empty directory `name`; `NotEmpty` when it is not.
@@ -183,7 +197,9 @@ function kernelRemoveDirectory(
     directory: Number,
     name: borrow String
 ) -> Result<Void, TesseraError> {
-    return answerStatus(unlinkat(directory, cStringFrom(name), AtFlag.removeDirectory))
+    unsafe {
+        return answerStatus(unlinkat(directory, cStringFrom(name), AtFlag.removeDirectory))
+    }
 }
 
 // Moves `fromName` to `toName` in one step (`renameat2`): `RENAME_NOREPLACE`
@@ -196,12 +212,14 @@ function kernelRename(
     replace: Bool,
     exchange: Bool
 ) -> Result<Void, TesseraError> {
-    var flags = RenameFlag.noReplace
-    if replace { flags = U32(0) }
-    if exchange { flags = RenameFlag.exchange }
-    return answerStatus(
-        renameat2(fromDirectory, cStringFrom(fromName), toDirectory, cStringFrom(toName), flags)
-    )
+    unsafe {
+        var flags = RenameFlag.noReplace
+        if replace { flags = U32(0) }
+        if exchange { flags = RenameFlag.exchange }
+        return answerStatus(
+            renameat2(fromDirectory, cStringFrom(fromName), toDirectory, cStringFrom(toName), flags)
+        )
+    }
 }
 
 // Sets the node's access and modification times, those asked for
@@ -213,75 +231,85 @@ function kernelSetTimes(
     setModified: Bool,
     modified: U64
 ) -> Result<Void, TesseraError> {
-    let timesBytes = zeroedBlock(count: 32, alignment: 16)
-    let times = timesBytes.pointer()
-    heapStore<U64>(times, 8, timeOmit)
-    heapStore<U64>(times, 24, timeOmit)
-    if setAccessed { storeTimespec(times, U64(0), accessed) }
-    if setModified { storeTimespec(times, U64(16), modified) }
-    return answerStatus(
-        utimensat(AtDirectory.current, cStringFrom(descriptorPath(backing)), times, 0)
-    )
+    unsafe {
+        let timesBytes = zeroedBlock(count: 32, alignment: 16)
+        let times = timesBytes.pointer()
+        heapStore<U64>(times, 8, timeOmit)
+        heapStore<U64>(times, 24, timeOmit)
+        if setAccessed { storeTimespec(times, U64(0), accessed) }
+        if setModified { storeTimespec(times, U64(16), modified) }
+        return answerStatus(
+            utimensat(AtDirectory.current, cStringFrom(descriptorPath(backing)), times, 0)
+        )
+    }
 }
 
 // Mode 0755 or 0644 through the descriptor's `/proc/self/fd` link, which
 // `fchmodat` follows to the file the Node is.
 function kernelSetExecutable(backing: Number, on: Bool) -> Result<Void, TesseraError> {
-    return answerStatus(
-        fchmodat(
-            AtDirectory.current,
-            cStringFrom(descriptorPath(backing)),
-            on ? FileMode.directoryDefault : FileMode.fileDefault,
-            0
+    unsafe {
+        return answerStatus(
+            fchmodat(
+                AtDirectory.current,
+                cStringFrom(descriptorPath(backing)),
+                on ? FileMode.directoryDefault : FileMode.fileDefault,
+                0
+            )
         )
-    )
+    }
 }
 
 // `FS_IMMUTABLE_FL` (0x10) through `FS_IOC_GETFLAGS` / `FS_IOC_SETFLAGS`.
 function kernelSetImmutable(backing: Number, on: Bool) -> Result<Void, TesseraError> {
-    let fd = openat(
-        AtDirectory.current,
-        cStringFrom(descriptorPath(backing)),
-        LinuxOpen.readOnly | LinuxOpen.nonBlock | LinuxOpen.closeOnExec,
-        0
-    )
-    if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
-    let flagsBytes = zeroedBlock(count: 8, alignment: 16)
-    let flags = flagsBytes.pointer()
-    var answer = ioctl(fd, FileFlags.get, flags)
-    if !answerFailed(answer) {
-        var value = heapLoad<U32>(flags, 0)
-        if on { value = value | FileFlags.immutable } else {
-            value = value & complement32(FileFlags.immutable)
+    unsafe {
+        let fd = openat(
+            AtDirectory.current,
+            cStringFrom(descriptorPath(backing)),
+            LinuxOpen.readOnly | LinuxOpen.nonBlock | LinuxOpen.closeOnExec,
+            0
+        )
+        if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
+        let flagsBytes = zeroedBlock(count: 8, alignment: 16)
+        let flags = flagsBytes.pointer()
+        var answer = ioctl(fd, FileFlags.get, flags)
+        if !answerFailed(answer) {
+            var value = heapLoad<U32>(flags, 0)
+            if on { value = value | FileFlags.immutable } else {
+                value = value & complement32(FileFlags.immutable)
+            }
+            heapStore<U32>(flags, 0, value)
+            answer = ioctl(fd, FileFlags.set, flags)
         }
-        heapStore<U32>(flags, 0, value)
-        answer = ioctl(fd, FileFlags.set, flags)
+        closeBacking(fd)
+        return answerStatus(answer)
     }
-    closeBacking(fd)
-    return answerStatus(answer)
 }
 
 // The node's path from the root, for display only, without its leading `/`.
 function kernelDisplayPath(backing: Number) -> Result<String, TesseraError> {
-    let blockBytes = zeroedBlock(count: 4097, alignment: 16)
-    let block = blockBytes.pointer()
-    let got = readlinkat(
-        AtDirectory.current,
-        cStringFrom(descriptorPath(backing)),
-        block,
-        U64(4096)
-    )
-    if answerFailed(got) { return .Error(errnoFailure(answerErrno(got))) }
-    var start = U64(0)
-    if got > 1 && heapLoad<U8>(block, 0) == U8(47) { start = U64(1) }
-    return .Ok(stringFromCBytes(heapOffset(block, start), Number(U64(got) - start)))
+    unsafe {
+        let blockBytes = zeroedBlock(count: 4097, alignment: 16)
+        let block = blockBytes.pointer()
+        let got = readlinkat(
+            AtDirectory.current,
+            cStringFrom(descriptorPath(backing)),
+            block,
+            U64(4096)
+        )
+        if answerFailed(got) { return .Error(errnoFailure(answerErrno(got))) }
+        var start = U64(0)
+        if got > 1 && heapLoad<U8>(block, 0) == U8(47) { start = U64(1) }
+        return .Ok(stringFromCBytes(heapOffset(block, start), Number(U64(got) - start)))
+    }
 }
 
 // A watch: an inotify instance, nonblocking.
 function kernelWatchCreate() -> Result<Number, TesseraError> {
-    let fd = inotifyInit1(LinuxOpen.nonBlock | LinuxOpen.closeOnExec)
-    if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
-    return .Ok(fd)
+    unsafe {
+        let fd = inotifyInit1(LinuxOpen.nonBlock | LinuxOpen.closeOnExec)
+        if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
+        return .Ok(fd)
+    }
 }
 
 function inotifyMask(mask: WatchMask) -> U32 {
@@ -316,9 +344,11 @@ function kernelWatchAdd(
     node: Number,
     mask: WatchMask
 ) -> Result<Number, TesseraError> {
-    let tag = inotifyAddWatch(watch, cStringFrom(descriptorPath(node)), inotifyMask(mask))
-    if answerFailed(tag) { return .Error(errnoFailure(answerErrno(tag))) }
-    return .Ok(tag)
+    unsafe {
+        let tag = inotifyAddWatch(watch, cStringFrom(descriptorPath(node)), inotifyMask(mask))
+        if answerFailed(tag) { return .Error(errnoFailure(answerErrno(tag))) }
+        return .Ok(tag)
+    }
 }
 
 // Reads what the watch has into the `capacity` bytes at `target`; the
@@ -328,9 +358,11 @@ function kernelWatchRead(
     target: RawPtr,
     capacity: U64
 ) -> Result<U64, TesseraError> {
-    let got = read(watch, target, capacity)
-    if answerFailed(got) { return .Error(channelFailure(answerErrno(got))) }
-    return .Ok(U64(got))
+    unsafe {
+        let got = read(watch, target, capacity)
+        if answerFailed(got) { return .Error(channelFailure(answerErrno(got))) }
+        return .Ok(U64(got))
+    }
 }
 
 // One change a watch read: the tag of the node it happened in, the

@@ -23,6 +23,12 @@
 //                         init handed the machine to it.
 //   tessera.restart-test  kill the display once, on purpose, so that a boot
 //                         demonstrates supervision rather than asserting it.
+//   tessera.bootlog       draw the kernel's log over the splash while it is
+//                         held, so a machine that stops there says why.
+//   tessera.logpart=PARTLABEL:<name>
+//                         copy the kernel's log, once a second, into the
+//                         last 16 MiB of that partition, for a machine whose
+//                         recovery can read nothing else.
 //
 // None is read from /proc/cmdline. The kernel hands an option it does not
 // recognise straight to init as an argument, so reading them costs no file, no
@@ -38,24 +44,38 @@ function main() {
         Ok -> {}
         Error(failed) -> log warn("the machine is not fully prepared", error: errorName(failed))
     }
-    // The serial console is where every service's log events are read, and
-    // the kernel writes to the same line: a kernel message printed while a
-    // service is writing an event lands in the middle of it. Once userland is
-    // up, only what is critical reaches the console; the boot itself, before
-    // this, prints in full.
-    match machineQuietConsole() {
-        Ok -> {}
-        Error(failed) -> log warn(
-            "the kernel console stays at its boot level",
-            error: errorName(failed)
-        )
-    }
-
     let bootArguments = match processArguments() {
         Ok(arguments) -> arguments
         Error(failed) -> {
             refuseToBoot("the kernel's arguments could not be read (" + errorName(failed) + ")")
             return
+        }
+    }
+
+    // Keep every kernel message on the serial console in development mode.
+    // The host captures it over the USB ACM gadget while devroot exchanges
+    // files over the mass-storage function. Normal boots quiet the console
+    // once userland is up so kernel messages do not split service log lines.
+    if !bootFlag(bootArguments, BootFlag.dev) {
+        match machineQuietConsole() {
+            Ok -> {}
+            Error(failed) -> log warn(
+                "the kernel console stays at its boot level",
+                error: errorName(failed)
+            )
+        }
+    }
+
+    // A machine whose log is copied to a partition keeps its console in the
+    // kernel's log too: the copy, and the boot log drawn over the splash,
+    // read only that.
+    if logPartitionLabel(bootArguments) != .None {
+        match standardStreamsToKernelLog() {
+            Ok -> {}
+            Error(failed) -> log warn(
+                "the console could not be kept in the kernel's log",
+                error: errorName(failed)
+            )
         }
     }
 
@@ -86,6 +106,10 @@ function main() {
     if !handedOver && bootFlag(bootArguments, BootFlag.system) {
         handOverToSystem(calls, bootArguments)
     }
+
+    // The system volume is the root now, and its /lib/firmware holds what the
+    // kernel could not load from the initramfs: a phone's DSPs start here.
+    if handedOver { startRemoteProcessors() }
 
     // The writable volume, once this program is the running system rather than a
     // stepping stone to one. On a `tessera.system` boot the handover above never
@@ -153,4 +177,27 @@ function main() {
         bootArguments,
         move systemLog
     )
+}
+
+// Starts the remote processors the kernel holds offline, saying which did and
+// which did not.
+function startRemoteProcessors() {
+    match machineStartRemoteProcessors() {
+        Ok(tried) -> {
+            for processor in tried {
+                match processor.failure {
+                    None -> log info("started a remote processor", name: processor.name)
+                    Some(failed) -> log warn(
+                        "a remote processor did not start",
+                        name: processor.name,
+                        error: errorName(failed)
+                    )
+                }
+            }
+        }
+        Error(failed) -> log warn(
+            "the remote processors could not be listed",
+            error: errorName(failed)
+        )
+    }
 }

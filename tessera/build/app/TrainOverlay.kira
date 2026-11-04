@@ -9,7 +9,9 @@ function componentTrainRoot(
 ) -> Artifact {
     let symbols = graph.tree(
         "\(architecture.name())/\(described.component.name)/train-symbols",
-        [.Place(TreePlace { path: DeveloperSymbols.directory, artifact: copy described.roots.symbols })]
+        [.Place(
+            TreePlace { path: DeveloperSymbols.directory, artifact: copy described.roots.symbols }
+        )]
     )
     return graph.union(
         "\(architecture.name())/\(described.component.name)/train-root",
@@ -92,13 +94,26 @@ function describeTrainOverlay(
     let host = copy context.host
     let architecture = copy context.architecture
     let baseDigest = copy digest
-    graph.step(Step {
-        name: "overlay", summary: "install only component roots differing from the pinned train",
-        produces: description.roots, materialize: false,
-        run: .Some({ run in
-            return installTrainOverlay(host, architecture, baseDigest, description.names, description.base, run)
-        })
-    })
+    graph.step(
+        Step {
+            name: "overlay",
+            summary: "install only component roots differing from the pinned train",
+            produces: description.roots,
+            materialize: false,
+            run: .Some(
+                { run in
+                    return installTrainOverlay(
+                        host,
+                        architecture,
+                        baseDigest,
+                        description.names,
+                        description.base,
+                        run
+                    )
+                }
+            )
+        }
+    )
 }
 
 function installTrainOverlay(
@@ -113,7 +128,10 @@ function installTrainOverlay(
     for (index, name) in names.enumerated() {
         if run.digests[index] == base[index] { continue }
         if imageOnlyComponent(name) {
-            log fault("the overlay changes a component needed before devroot starts; build a derived image", name)
+            log fault(
+                "the overlay changes a component needed before devroot starts; build a derived image",
+                name
+            )
             return 2
         }
         changed.append(copy name)
@@ -161,9 +179,13 @@ function installTrainOverlay(
     if removed.count > 0 {
         var arguments = ["uninstall"]
         for name in removed { arguments.append(copy name) }
-        let result = carryOutDevRoot(host, architecture, names,
+        let result = carryOutDevRoot(
+            host,
+            architecture,
+            names,
             DevRootSelection { install: [], left: [] },
-            StepRun { paths: [], digests: [], arguments: arguments })
+            StepRun { paths: [], digests: [], arguments: arguments }
+        )
         if result != 0 { return result }
         var remaining: [String] = []
         for name in previous {
@@ -225,9 +247,13 @@ function installTrainOverlay(
     }
     var arguments = ["install"]
     for name in changed { arguments.append(copy name) }
-    let status = carryOutDevRoot(host, architecture, names, DevRootSelection { install: copy changed, left: [] }, StepRun {
-        paths: [directory], digests: [], arguments: arguments
-    })
+    let status = carryOutDevRoot(
+        host,
+        architecture,
+        names,
+        DevRootSelection { install: copy changed, left: [] },
+        StepRun { paths: [directory], digests: [], arguments: arguments }
+    )
     if status != 0 { return status }
     match writeFile(appliedPath, joined(changed, "\n")) {
         Ok -> return 0

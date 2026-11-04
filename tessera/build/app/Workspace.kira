@@ -39,28 +39,40 @@ function workspaceNameValid(name: borrow String) -> Bool {
 function describeWorkspace(graph: borrow mut Graph, base: borrow String) {
     let root = copy graph.root
     let pinned = copy base
-    graph.step(Step {
-        name: "workspace", summary: "create <staging|worktree-name> from the development workspace",
-        run: .Some({ run in
-            if run.arguments.count != 2 || run.arguments[0] != "create" {
-                log fault("usage: kira build [-base snapshot] workspace create <name>")
-                return 2
-            }
-            match createWorkspace(root, run.arguments[1], pinned) {
-                Ok(directory) -> {
-                    log info("created workspace", directory)
-                    return 0
+    graph.step(
+        Step {
+            name: "workspace",
+            summary: "create <staging|worktree-name> from the development workspace",
+            run: .Some(
+                { run in
+                    if run.arguments.count != 2 || run.arguments[0] != "create" {
+                        log fault("usage: kira build [-base snapshot] workspace create <name>")
+                        return 2
+                    }
+                    match createWorkspace(root, run.arguments[1], pinned) {
+                        Ok(directory) -> {
+                            log info("created workspace", directory)
+                            return 0
+                        }
+                        Error(problem) -> {
+                            log fault(
+                                "workspace creation failed; completed checkouts are preserved",
+                                problem
+                            )
+                            return 1
+                        }
+                    }
                 }
-                Error(problem) -> {
-                    log fault("workspace creation failed; completed checkouts are preserved", problem)
-                    return 1
-                }
-            }
-        })
-    })
+            )
+        }
+    )
 }
 
-function createWorkspace(root: borrow String, name: borrow String, base: borrow String) -> Result<String, String> {
+function createWorkspace(
+    root: borrow String,
+    name: borrow String,
+    base: borrow String
+) -> Result<String, String> {
     if !workspaceNameValid(name) { return .Error("invalid workspace name: \(name)") }
     let top = parentOf(root)
     if !fileExists(top + "/workspace.kten") {
@@ -73,7 +85,9 @@ function createWorkspace(root: borrow String, name: borrow String, base: borrow 
     let parent = parentOf(top)
     let destination = parent + "/" + name
     if name == "development" {
-        return .Error("development is the integration workspace; create it once from the base repositories")
+        return .Error(
+            "development is the integration workspace; create it once from the base repositories"
+        )
     }
     if pathExists(destination) { return .Error("destination already exists: \(destination)") }
     if name == "staging" {
@@ -100,7 +114,9 @@ function createWorkspace(root: borrow String, name: borrow String, base: borrow 
                     found = true
                 }
             }
-            if !found || !workspaceCommitValid(revision) { return .Error("train has no revision for \(repository.location)") }
+            if !found || !workspaceCommitValid(revision) {
+                return .Error("train has no revision for \(repository.location)")
+            }
         }
         commits.append(try workspaceRevision(root, repository.location, revision))
     }
@@ -110,10 +126,13 @@ function createWorkspace(root: borrow String, name: borrow String, base: borrow 
     }
     for (index, repository) in repositories.enumerated() {
         let checkout = destination + "/" + repository.name
-        try hostCommand("git", [
-            "-C", joinedPath(root, repository.location), "worktree", "add", "--detach",
-            checkout, commits[index]
-        ])
+        try hostCommand(
+            "git",
+            [
+                "-C", joinedPath(root, repository.location), "worktree", "add", "--detach",
+                checkout, commits[index]
+            ]
+        )
         // Ember's host icon renderer consumes a provisioned native payload.
         // It is ignored by Git and shared, rather than copied per workspace.
         if repository.name == "ember" {
@@ -121,7 +140,9 @@ function createWorkspace(root: borrow String, name: borrow String, base: borrow 
             if isDirectory(payload) {
                 match makeSymbolicLink(payload, checkout + "/NativeLibs/Dawn") {
                     Ok -> {}
-                    Error(failure) -> return .Error("cannot share provisioned host graphics: \(traceText(failure))")
+                    Error(failure) -> return .Error(
+                        "cannot share provisioned host graphics: \(traceText(failure))"
+                    )
                 }
             }
         }
@@ -133,7 +154,10 @@ function createWorkspace(root: borrow String, name: borrow String, base: borrow 
 // every repository. It shares development's objects until the weekly merge,
 // keeps its own `staging` branch, and fetches development through a remote
 // named `development`.
-function createStagingWorkspace(root: borrow String, destination: borrow String) -> Result<String, String> {
+function createStagingWorkspace(
+    root: borrow String,
+    destination: borrow String
+) -> Result<String, String> {
     let repositories = try workspaceRepositories(root)
     match makePathTree(destination) {
         Ok -> {}
@@ -145,7 +169,10 @@ function createStagingWorkspace(root: borrow String, destination: borrow String)
         try hostCommand("git", ["clone", "--shared", "--single-branch", source, checkout])
         try hostCommand("git", ["-C", checkout, "remote", "rename", "origin", "development"])
         try hostCommand("git", ["-C", checkout, "checkout", "-b", "staging"])
-        try hostCommand("git", ["-C", checkout, "branch", "--set-upstream-to=development/development", "staging"])
+        try hostCommand(
+            "git",
+            ["-C", checkout, "branch", "--set-upstream-to=development/development", "staging"]
+        )
         // Ember's host icon renderer consumes a provisioned native payload.
         // It is ignored by Git and shared, rather than copied per workspace.
         if repository.name == "ember" {
@@ -153,7 +180,9 @@ function createStagingWorkspace(root: borrow String, destination: borrow String)
             if isDirectory(payload) {
                 match makeSymbolicLink(payload, checkout + "/NativeLibs/Dawn") {
                     Ok -> {}
-                    Error(failure) -> return .Error("cannot share provisioned host graphics: \(traceText(failure))")
+                    Error(failure) -> return .Error(
+                        "cannot share provisioned host graphics: \(traceText(failure))"
+                    )
                 }
             }
         }
@@ -162,11 +191,18 @@ function createStagingWorkspace(root: borrow String, destination: borrow String)
 }
 
 // Write the workspace's record and the rules its sources follow.
-function recordWorkspace(destination: borrow String, role: borrow String, base: borrow String) -> Result<String, String> {
-    let metadata = ktenObject("TesseraWorkspace", [
-        ktenField("version", .Number(1)), ktenField("role", .Text(copy role)),
-        ktenField("base", .Text(copy base))
-    ])
+function recordWorkspace(
+    destination: borrow String,
+    role: borrow String,
+    base: borrow String
+) -> Result<String, String> {
+    let metadata = ktenObject(
+        "TesseraWorkspace",
+        [
+            ktenField("version", .Number(1)), ktenField("role", .Text(copy role)),
+            ktenField("base", .Text(copy base))
+        ]
+    )
     match writeFileBytes(destination + "/workspace.kten", metadata.encoded()) {
         Ok -> {}
         Error(failure) -> return .Error("cannot record workspace: \(traceText(failure))")
@@ -186,13 +222,16 @@ function recordWorkspace(destination: borrow String, role: borrow String, base: 
     }
     match writeFile(destination + "/AGENTS.md", rules) {
         Ok -> return .Ok(destination)
-        Error(failure) -> return .Error("cannot write workspace instructions: \(traceText(failure))")
+        Error(failure) -> return .Error(
+            "cannot write workspace instructions: \(traceText(failure))"
+        )
     }
 }
 
 function workspaceBranch(root: borrow String) -> Result<String, String> {
     let command = ProcessCommand {
-        program: "git", arguments: ["-C", copy root, "rev-parse", "--abbrev-ref", "HEAD"],
+        program: "git",
+        arguments: ["-C", copy root, "rev-parse", "--abbrev-ref", "HEAD"],
         input: .Null
     }
     let empty: [UN8] = []
@@ -201,10 +240,12 @@ function workspaceBranch(root: borrow String) -> Result<String, String> {
         Error(failure) -> return .Error("cannot read the workspace branch: \(traceText(failure))")
     }
     if !result.succeeded() { return .Error("cannot read the workspace branch") }
-    return .Ok(match textFromBytes(result.output) {
-        Some(text) -> text.trim()
-        None -> ""
-    })
+    return .Ok(
+        match textFromBytes(result.output) {
+            Some(text) -> text.trim()
+            None -> ""
+        }
+    )
 }
 
 function workspaceCommitValid(revision: borrow String) -> Bool {
@@ -215,15 +256,25 @@ function workspaceCommitValid(revision: borrow String) -> Bool {
     return true
 }
 
-function workspaceRevision(root: borrow String, location: borrow String, revision: borrow String) -> Result<String, String> {
+function workspaceRevision(
+    root: borrow String,
+    location: borrow String,
+    revision: borrow String
+) -> Result<String, String> {
     let command = ProcessCommand {
-        program: "git", arguments: ["-C", joinedPath(root, location), "rev-parse", "--verify", revision + "^{commit}"],
+        program: "git",
+        arguments: ["-C", joinedPath(
+            root,
+            location
+        ), "rev-parse", "--verify", revision + "^{commit}"],
         input: .Null
     }
     let empty: [UN8] = []
     let result = match command.run(empty) {
         Ok(found) -> found
-        Error(failure) -> return .Error("cannot resolve \(location)'s revision: \(traceText(failure))")
+        Error(failure) -> return .Error(
+            "cannot resolve \(location)'s revision: \(traceText(failure))"
+        )
     }
     if !result.succeeded() { return .Error("revision \(revision) is unavailable in \(location)") }
     let resolved = match textFromBytes(result.output) {
@@ -242,10 +293,14 @@ function checkWorkspaceBuild(graph: borrow mut Graph, base: borrow String) {
     if graph.request.graph { return }
     for step in ["train", "release", "system-volume", "initramfs", "installer-image", "recovery-image"] {
         if graph.requested(step) {
-            graph.problems.append("\(step) builds a complete train; run it from development or staging")
+            graph.problems.append(
+                "\(step) builds a complete train; run it from development or staging"
+            )
         }
     }
     if graph.requested("boot") && base.count == 0 {
-        graph.problems.append("a worktree boot needs a pinned train; pass -base <snapshot> or create it from a train")
+        graph.problems.append(
+            "a worktree boot needs a pinned train; pass -base <snapshot> or create it from a train"
+        )
     }
 }

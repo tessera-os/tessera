@@ -300,7 +300,11 @@ function endHomeFlight(server: borrow mut Server, time: UNumber) -> Result<Void,
 
 // The platform hid the window in front, or showed one again, by a key, a tap
 // or its own choice: in the stack it flies into its icon, or out of it.
-function flyHome(server: borrow mut Server, index: Number, hidden: Bool) -> Result<Void, TesseraError> {
+function flyHome(
+    server: borrow mut Server,
+    index: Number,
+    hidden: Bool
+) -> Result<Void, TesseraError> {
     if hidden && server.focus != .Some(index) { return .Ok }
     match server.homeFlight {
         Some(flight) -> if flight.index == index { return .Ok }
@@ -413,15 +417,17 @@ function takeLaunchBadge(
     server.launchOrigin = .None
     let now = try nowMillis()
     if Number(now) - origin.time > HomeMotion.opened { return .Ok(.None) }
-    return .Ok(.Some(
-        DisplayStageBadge {
-            surface: surface,
-            slot: 0,
-            home: origin.icon,
-            homeCorner: origin.corner,
-            homeScreen: true
-        }
-    ))
+    return .Ok(
+        .Some(
+            DisplayStageBadge {
+                surface: surface,
+                slot: 0,
+                home: origin.icon,
+                homeCorner: origin.corner,
+                homeScreen: true
+            }
+        )
+    )
 }
 
 // Where the card is going.
@@ -434,7 +440,10 @@ function homeTarget(server: borrow Server, flight: borrow HomeFlight) -> HomeCar
 
 // One frame of a flight: the spring moves the card on by the time since the
 // last, and the flight ends once the card is where it goes.
-function homeTick(server: borrow mut Server, fired: borrow Completion) -> Result<Void, TesseraError> {
+function homeTick(
+    server: borrow mut Server,
+    fired: borrow Completion
+) -> Result<Void, TesseraError> {
     if fired.error.code != .Ok { return .Ok }
     var flight = match server.homeFlight {
         Some(value) -> value
@@ -518,7 +527,7 @@ function homeTick(server: borrow mut Server, fired: borrow Completion) -> Result
         )
         server.homeFlight = .None
         redraw(server, "a window's flight settled")
-            return .Ok
+        return .Ok
     }
     server.homeFlight = .Some(move flight)
     armHome(server)

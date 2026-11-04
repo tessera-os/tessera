@@ -98,39 +98,41 @@ function kernelEndpointCreate(
     reuseAddress: Bool,
     dualStack: Bool
 ) -> Result<Number, TesseraError> {
-    let domain = family == AddressFamily.Ipv4 ? 2 : 10
-    var kind = 1
-    var number = 0
-    if protocol == Protocol.Udp { kind = 2 }
-    if protocol == Protocol.Raw {
-        kind = 3
-        number = 255
-    }
-    if protocol == Protocol.Icmp {
-        kind = 2
-        number = family == AddressFamily.Ipv4 ? 1 : 58
-    }
-    let fd = socket(domain, kind | SocketKind.nonBlock | SocketKind.closeOnExec, number)
-    if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
-    let oneBytes = zeroedBlock(count: 8, alignment: 16)
-    let one = oneBytes.pointer()
-    heapStore<U32>(one, 0, U32(1))
-    if reuseAddress {
-        let reused = setsockopt(fd, SocketLevel.socket, SocketOption.reuseAddress, one, U32(4))
-        if answerFailed(reused) {
-            closeBacking(fd)
-            return .Error(errnoFailure(answerErrno(reused)))
+    unsafe {
+        let domain = family == AddressFamily.Ipv4 ? 2 : 10
+        var kind = 1
+        var number = 0
+        if protocol == Protocol.Udp { kind = 2 }
+        if protocol == Protocol.Raw {
+            kind = 3
+            number = 255
         }
-    }
-    if family == AddressFamily.Ipv6 {
-        heapStore<U32>(one, 0, dualStack ? U32(0) : U32(1))
-        let only = setsockopt(fd, SocketLevel.ipv6, Ipv6Option.only, one, U32(4))
-        if answerFailed(only) {
-            closeBacking(fd)
-            return .Error(errnoFailure(answerErrno(only)))
+        if protocol == Protocol.Icmp {
+            kind = 2
+            number = family == AddressFamily.Ipv4 ? 1 : 58
         }
+        let fd = socket(domain, kind | SocketKind.nonBlock | SocketKind.closeOnExec, number)
+        if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
+        let oneBytes = zeroedBlock(count: 8, alignment: 16)
+        let one = oneBytes.pointer()
+        heapStore<U32>(one, 0, U32(1))
+        if reuseAddress {
+            let reused = setsockopt(fd, SocketLevel.socket, SocketOption.reuseAddress, one, U32(4))
+            if answerFailed(reused) {
+                closeBacking(fd)
+                return .Error(errnoFailure(answerErrno(reused)))
+            }
+        }
+        if family == AddressFamily.Ipv6 {
+            heapStore<U32>(one, 0, dualStack ? U32(0) : U32(1))
+            let only = setsockopt(fd, SocketLevel.ipv6, Ipv6Option.only, one, U32(4))
+            if answerFailed(only) {
+                closeBacking(fd)
+                return .Error(errnoFailure(answerErrno(only)))
+            }
+        }
+        return .Ok(fd)
     }
-    return .Ok(fd)
 }
 
 function kernelEndpointBind(
@@ -138,16 +140,20 @@ function kernelEndpointBind(
     family: borrow AddressFamily,
     address: borrow NetAddress
 ) -> Result<Void, TesseraError> {
-    let blockBytes = zeroedBlock(count: 32, alignment: 16)
-    let block = blockBytes.pointer()
-    match sockaddrFrom(address, family, block) {
-        Some(length) -> return answerStatus(bind(backing, block, length))
-        None -> return .Error(failure(.InvalidArgument))
+    unsafe {
+        let blockBytes = zeroedBlock(count: 32, alignment: 16)
+        let block = blockBytes.pointer()
+        match sockaddrFrom(address, family, block) {
+            Some(length) -> return answerStatus(bind(backing, block, length))
+            None -> return .Error(failure(.InvalidArgument))
+        }
     }
 }
 
 function kernelEndpointListen(backing: Number, depth: U32) -> Result<Void, TesseraError> {
-    return answerStatus(listen(backing, depth))
+    unsafe {
+        return answerStatus(listen(backing, depth))
+    }
 }
 
 // The local (`peer` false) or peer address as a `NetAddress` at `out`;
@@ -157,40 +163,44 @@ function kernelEndpointAddress(
     peer: Bool,
     out: RawPtr
 ) -> Result<Void, TesseraError> {
-    let blockBytes = zeroedBlock(count: 136, alignment: 16)
-    let block = blockBytes.pointer()
-    heapStore<U32>(block, 128, U32(128))
-    let answer = peer ? getpeername(backing, block, heapOffset(block, 128)) : getsockname(
-        backing,
-        block,
-        heapOffset(block, 128)
-    )
-    if answerFailed(answer) {
-        if answerErrno(answer) != code(Errno.NotConnected) {
-            return .Error(errnoFailure(answerErrno(answer)))
+    unsafe {
+        let blockBytes = zeroedBlock(count: 136, alignment: 16)
+        let block = blockBytes.pointer()
+        heapStore<U32>(block, 128, U32(128))
+        let answer = peer ? getpeername(backing, block, heapOffset(block, 128)) : getsockname(
+            backing,
+            block,
+            heapOffset(block, 128)
+        )
+        if answerFailed(answer) {
+            if answerErrno(answer) != code(Errno.NotConnected) {
+                return .Error(errnoFailure(answerErrno(answer)))
+            }
+            zeroBytes(out, 32)
+            return .Ok
         }
-        zeroBytes(out, 32)
+        storeNetAddress(block, out)
         return .Ok
     }
-    storeNetAddress(block, out)
-    return .Ok
 }
 
 // A connection taken from the listener, nonblocking; `ShouldWait` when none
 // is waiting. Its address goes to `peer` unless that is null.
 function kernelEndpointAccept(backing: Number, peer: RawPtr) -> Result<Number, TesseraError> {
-    let blockBytes = zeroedBlock(count: 136, alignment: 16)
-    let block = blockBytes.pointer()
-    heapStore<U32>(block, 128, U32(128))
-    let fd = accept4(
-        backing,
-        block,
-        heapOffset(block, 128),
-        LinuxOpen.nonBlock | LinuxOpen.closeOnExec
-    )
-    if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
-    if !isNull(peer) { storeNetAddress(block, peer) }
-    return .Ok(fd)
+    unsafe {
+        let blockBytes = zeroedBlock(count: 136, alignment: 16)
+        let block = blockBytes.pointer()
+        heapStore<U32>(block, 128, U32(128))
+        let fd = accept4(
+            backing,
+            block,
+            heapOffset(block, 128),
+            LinuxOpen.nonBlock | LinuxOpen.closeOnExec
+        )
+        if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
+        if !isNull(peer) { storeNetAddress(block, peer) }
+        return .Ok(fd)
+    }
 }
 
 // Starts connecting: `Ok` when connected at once, `ShouldWait` while it
@@ -200,44 +210,50 @@ function kernelEndpointConnect(
     family: borrow AddressFamily,
     address: borrow NetAddress
 ) -> Result<Void, TesseraError> {
-    let blockBytes = zeroedBlock(count: 32, alignment: 16)
-    let block = blockBytes.pointer()
-    let length = try sockaddrFrom(address, family, block) otherwise return .Error(
-        failure(.InvalidArgument)
-    )
-    let answer = connect(backing, block, length)
-    if !answerFailed(answer) { return .Ok }
-    if failedWith(answer, .InProgress) { return .Error(failure(.ShouldWait)) }
-    return .Error(errnoFailure(answerErrno(answer)))
+    unsafe {
+        let blockBytes = zeroedBlock(count: 32, alignment: 16)
+        let block = blockBytes.pointer()
+        let length = try sockaddrFrom(address, family, block) otherwise return .Error(
+            failure(.InvalidArgument)
+        )
+        let answer = connect(backing, block, length)
+        if !answerFailed(answer) { return .Ok }
+        if failedWith(answer, .InProgress) { return .Error(failure(.ShouldWait)) }
+        return .Error(errnoFailure(answerErrno(answer)))
+    }
 }
 
 // How a connect that went on ended, once the socket turned writable
 // (`SO_ERROR`).
 function kernelConnectResult(backing: Number) -> Result<Void, TesseraError> {
-    let blockBytes = zeroedBlock(count: 8, alignment: 16)
-    let block = blockBytes.pointer()
-    heapStore<U32>(block, 4, U32(4))
-    let answer = getsockopt(
-        backing,
-        SocketLevel.socket,
-        SocketOption.error,
-        block,
-        heapOffset(block, 4)
-    )
-    if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
-    let code = heapLoad<U32>(block, 0)
-    if code == 0 { return .Ok }
-    return .Error(errnoFailure(code))
+    unsafe {
+        let blockBytes = zeroedBlock(count: 8, alignment: 16)
+        let block = blockBytes.pointer()
+        heapStore<U32>(block, 4, U32(4))
+        let answer = getsockopt(
+            backing,
+            SocketLevel.socket,
+            SocketOption.error,
+            block,
+            heapOffset(block, 4)
+        )
+        if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
+        let code = heapLoad<U32>(block, 0)
+        if code == 0 { return .Ok }
+        return .Error(errnoFailure(code))
+    }
 }
 
 function kernelEndpointShutdown(
     backing: Number,
     how: borrow ShutdownHow
 ) -> Result<Void, TesseraError> {
-    match how {
-        Read -> return answerStatus(shutdown(backing, 0))
-        Write -> return answerStatus(shutdown(backing, 1))
-        Both -> return answerStatus(shutdown(backing, 2))
+    unsafe {
+        match how {
+            Read -> return answerStatus(shutdown(backing, 0))
+            Write -> return answerStatus(shutdown(backing, 1))
+            Both -> return answerStatus(shutdown(backing, 2))
+        }
     }
 }
 
@@ -313,33 +329,35 @@ function kernelEndpointSetOption(
     option: borrow EndpointOption,
     value: borrow Buffer
 ) -> Result<Void, TesseraError> {
-    let blockBytes = zeroedBlock(count: 8, alignment: 16)
-    let block = blockBytes.pointer()
-    match optionPath(option, family) {
-        Integer(native) -> {
-            heapStore<U32>(block, 0, heapLoad<U32>(value.address, 0))
-            return answerStatus(setsockopt(backing, native.level, native.name, block, U32(4)))
-        }
-        Interface -> return answerStatus(
-            setsockopt(
-                backing,
-                SocketLevel.socket,
-                SocketOption.bindToDevice,
-                value.address,
-                U32(value.length)
+    unsafe {
+        let blockBytes = zeroedBlock(count: 8, alignment: 16)
+        let block = blockBytes.pointer()
+        match optionPath(option, family) {
+            Integer(native) -> {
+                heapStore<U32>(block, 0, heapLoad<U32>(value.address, 0))
+                return answerStatus(setsockopt(backing, native.level, native.name, block, U32(4)))
+            }
+            Interface -> return answerStatus(
+                setsockopt(
+                    backing,
+                    SocketLevel.socket,
+                    SocketOption.bindToDevice,
+                    value.address,
+                    U32(value.length)
+                )
             )
-        )
-        Multicast(joining) -> return multicastSet(backing, family, joining, value)
-        Linger -> {
-            let seconds = heapLoad<U32>(value.address, 0)
-            let off = seconds == Linger.off
-            heapStore<U32>(block, 0, off ? U32(0) : U32(1))
-            heapStore<U32>(block, 4, off ? U32(0) : seconds)
-            return answerStatus(
-                setsockopt(backing, SocketLevel.socket, SocketOption.linger, block, U32(8))
-            )
+            Multicast(joining) -> return multicastSet(backing, family, joining, value)
+            Linger -> {
+                let seconds = heapLoad<U32>(value.address, 0)
+                let off = seconds == Linger.off
+                heapStore<U32>(block, 0, off ? U32(0) : U32(1))
+                heapStore<U32>(block, 4, off ? U32(0) : seconds)
+                return answerStatus(
+                    setsockopt(backing, SocketLevel.socket, SocketOption.linger, block, U32(8))
+                )
+            }
+            Unsupported -> return .Error(failure(.Unsupported))
         }
-        Unsupported -> return .Error(failure(.Unsupported))
     }
 }
 
@@ -350,23 +368,27 @@ function multicastSet(
     joining: Bool,
     value: borrow Buffer
 ) -> Result<Void, TesseraError> {
-    let group = try netAddressLoad(value.address) otherwise return .Error(failure(.InvalidArgument))
-    let interface = heapLoad<U32>(value.address, 32)
-    let blockBytes = zeroedBlock(count: 24, alignment: 16)
-    let block = blockBytes.pointer()
-    if family != group.family { return .Error(failure(.InvalidArgument)) }
-    return match family {
-        Ipv4 -> {
-            for index in 0..4 { heapStore<U8>(block, index, group.bytes[index]) }
-            heapStore<U32>(block, 8, interface)
-            let name = joining ? IpOption.addMembership : IpOption.dropMembership
-            answerStatus(setsockopt(backing, SocketLevel.ip, name, block, U32(12)))
-        }
-        Ipv6 -> {
-            for index in 0..16 { heapStore<U8>(block, index, group.bytes[index]) }
-            heapStore<U32>(block, 16, interface)
-            let name = joining ? Ipv6Option.joinGroup : Ipv6Option.leaveGroup
-            answerStatus(setsockopt(backing, SocketLevel.ipv6, name, block, U32(20)))
+    unsafe {
+        let group = try netAddressLoad(value.address) otherwise return .Error(
+            failure(.InvalidArgument)
+        )
+        let interface = heapLoad<U32>(value.address, 32)
+        let blockBytes = zeroedBlock(count: 24, alignment: 16)
+        let block = blockBytes.pointer()
+        if family != group.family { return .Error(failure(.InvalidArgument)) }
+        return match family {
+            Ipv4 -> {
+                for index in 0..4 { heapStore<U8>(block, index, group.bytes[index]) }
+                heapStore<U32>(block, 8, interface)
+                let name = joining ? IpOption.addMembership : IpOption.dropMembership
+                answerStatus(setsockopt(backing, SocketLevel.ip, name, block, U32(12)))
+            }
+            Ipv6 -> {
+                for index in 0..16 { heapStore<U8>(block, index, group.bytes[index]) }
+                heapStore<U32>(block, 16, interface)
+                let name = joining ? Ipv6Option.joinGroup : Ipv6Option.leaveGroup
+                answerStatus(setsockopt(backing, SocketLevel.ipv6, name, block, U32(20)))
+            }
         }
     }
 }
@@ -378,40 +400,48 @@ function kernelEndpointGetOption(
     option: borrow EndpointOption,
     block: RawPtr
 ) -> Result<U64, TesseraError> {
-    let lengthBytes = zeroedBlock(count: 8, alignment: 16)
-    let length = lengthBytes.pointer()
-    heapStore<U32>(length, 0, U32(16))
-    var answer = 0
-    var size = U64(4)
-    match optionPath(option, family) {
-        Integer(native) -> answer = getsockopt(backing, native.level, native.name, block, length)
-        Interface -> {
-            answer = getsockopt(
+    unsafe {
+        let lengthBytes = zeroedBlock(count: 8, alignment: 16)
+        let length = lengthBytes.pointer()
+        heapStore<U32>(length, 0, U32(16))
+        var answer = 0
+        var size = U64(4)
+        match optionPath(option, family) {
+            Integer(native) -> answer = getsockopt(
                 backing,
-                SocketLevel.socket,
-                SocketOption.bindToDevice,
+                native.level,
+                native.name,
                 block,
                 length
-            ) size = answerFailed(answer) ? U64(0) : U64(stringFromCBytes(block, 16).count)
-        }
-        Linger -> {
-            answer = getsockopt(
-                backing,
-                SocketLevel.socket,
-                13,
-                block,
-                length
-            ) let on = heapLoad<U32>(block, 0) != 0 heapStore<U32>(
-                block,
-                0,
-                on ? heapLoad<U32>(block, 4) : Linger.off
             )
+            Interface -> {
+                answer = getsockopt(
+                    backing,
+                    SocketLevel.socket,
+                    SocketOption.bindToDevice,
+                    block,
+                    length
+                ) size = answerFailed(answer) ? U64(0) : U64(stringFromCBytes(block, 16).count)
+            }
+            Linger -> {
+                answer = getsockopt(
+                    backing,
+                    SocketLevel.socket,
+                    13,
+                    block,
+                    length
+                ) let on = heapLoad<U32>(block, 0) != 0 heapStore<U32>(
+                    block,
+                    0,
+                    on ? heapLoad<U32>(block, 4) : Linger.off
+                )
+            }
+            Multicast(joining) -> return .Error(failure(.Unsupported))
+            Unsupported -> return .Error(failure(.Unsupported))
         }
-        Multicast(joining) -> return .Error(failure(.Unsupported))
-        Unsupported -> return .Error(failure(.Unsupported))
+        if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
+        return .Ok(size)
     }
-    if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
-    return .Ok(size)
 }
 
 // What one send or receive did: the bytes moved, whether a datagram was cut
@@ -459,67 +489,69 @@ function kernelEndpointTransfer(
     peek: Bool,
     timestamps: Bool
 ) -> Result<KernelTransfer, TesseraError> {
-    let count = buffers.count
-    let blockBytes = zeroedBlock(count: 256 + count * 16, alignment: 16)
-    let block = blockBytes.pointer()
-    var left = skip
-    var vectors = 0
-    for at in 0..count {
-        let piece = buffers[at]
-        if left >= piece.length {
-            left -= piece.length
-        } else {
-            heapStore<RawPtr>(block, (256 + vectors * 16), heapOffset(piece.address, left))
-            heapStore<U64>(block, (264 + vectors * 16), piece.length - left)
-            left = U64(0)
-            vectors += 1
-        }
-    }
-    let name = heapOffset(block, 64)
-    if !isNull(address) {
-        var length = U32(128)
-        if direction == .Send {
-            length = match sockaddrAt(address, family, name) {
-                Some(value) -> value
-                None -> return .Error(failure(.InvalidArgument))
+    unsafe {
+        let count = buffers.count
+        let blockBytes = zeroedBlock(count: 256 + count * 16, alignment: 16)
+        let block = blockBytes.pointer()
+        var left = skip
+        var vectors = 0
+        for at in 0..count {
+            let piece = buffers[at]
+            if left >= piece.length {
+                left -= piece.length
+            } else {
+                heapStore<RawPtr>(block, (256 + vectors * 16), heapOffset(piece.address, left))
+                heapStore<U64>(block, (264 + vectors * 16), piece.length - left)
+                left = U64(0)
+                vectors += 1
             }
         }
-        heapStore<RawPtr>(block, 0, name)
-        heapStore<U32>(block, 8, length)
-    }
-    heapStore<RawPtr>(block, 16, heapOffset(block, 256))
-    heapStore<U64>(block, 24, U64(vectors))
-    let stamped = direction == .Receive && timestamps
-    if stamped {
-        heapStore<RawPtr>(block, 32, heapOffset(block, 192))
-        heapStore<U64>(block, 40, U64(64))
-    }
-    var answer = 0
-    match direction {
-        Send -> {
-            var flags = MessageFlag.dontWait | MessageFlag.noSignal
-            if more { flags = flags | MessageFlag.more }
-            answer = sendmsg(backing, block, flags)
+        let name = heapOffset(block, 64)
+        if !isNull(address) {
+            var length = U32(128)
+            if direction == .Send {
+                length = match sockaddrAt(address, family, name) {
+                    Some(value) -> value
+                    None -> return .Error(failure(.InvalidArgument))
+                }
+            }
+            heapStore<RawPtr>(block, 0, name)
+            heapStore<U32>(block, 8, length)
         }
-        Receive -> {
-            var flags = MessageFlag.dontWait
-            if peek { flags = flags | MessageFlag.peek }
-            answer = recvmsg(backing, block, flags)
+        heapStore<RawPtr>(block, 16, heapOffset(block, 256))
+        heapStore<U64>(block, 24, U64(vectors))
+        let stamped = direction == .Receive && timestamps
+        if stamped {
+            heapStore<RawPtr>(block, 32, heapOffset(block, 192))
+            heapStore<U64>(block, 40, U64(64))
         }
+        var answer = 0
+        match direction {
+            Send -> {
+                var flags = MessageFlag.dontWait | MessageFlag.noSignal
+                if more { flags = flags | MessageFlag.more }
+                answer = sendmsg(backing, block, flags)
+            }
+            Receive -> {
+                var flags = MessageFlag.dontWait
+                if peek { flags = flags | MessageFlag.peek }
+                answer = recvmsg(backing, block, flags)
+            }
+        }
+        if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
+        var stamp = U64(0)
+        if stamped { stamp = controlTimestamp(heapOffset(block, 192), heapLoad<U64>(block, 40)) }
+        if direction == .Receive && !isNull(address) { storeNetAddress(name, address) }
+        return .Ok(
+            KernelTransfer {
+                moved: U64(answer),
+                truncated: direction == .Receive && (
+                    heapLoad<U32>(block, 48) & MessageFlag.truncated
+                ) != U32(0),
+                stamp: stamp
+            }
+        )
     }
-    if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
-    var stamp = U64(0)
-    if stamped { stamp = controlTimestamp(heapOffset(block, 192), heapLoad<U64>(block, 40)) }
-    if direction == .Receive && !isNull(address) { storeNetAddress(name, address) }
-    return .Ok(
-        KernelTransfer {
-            moved: U64(answer),
-            truncated: direction == .Receive && (
-                heapLoad<U32>(block, 48) & MessageFlag.truncated
-            ) != U32(0),
-            stamp: stamp
-        }
-    )
 }
 
 // Sends or receives up to `count` of the caller's 56-byte `Datagram`s at
@@ -535,41 +567,48 @@ function kernelEndpointTransferMany(
     count: Number,
     connected: Bool
 ) -> Result<Number, TesseraError> {
-    let blockBytes = zeroedBlock(count: count * 96, alignment: 16)
-    let block = blockBytes.pointer()
-    for at in 0..count {
-        let datagram = heapOffset(messages, at * 56)
-        let header = heapOffset(block, at * 64)
-        let name = heapOffset(block, count * 64 + at * 32)
-        heapStore<RawPtr>(header, 16, heapLoad<RawPtr>(datagram, 0))
-        heapStore<U64>(header, 24, U64(heapLoad<U32>(datagram, 8)))
-        if direction == .Receive {
-            heapStore<RawPtr>(header, 0, name)
-            heapStore<U32>(header, 8, U32(28))
-        } else if !connected {
-            let length = try sockaddrAt(
-                heapOffset(datagram, 16),
-                family,
-                name
-            ) otherwise return .Error(failureDetail(.InvalidArgument, U64(at)))
-            heapStore<RawPtr>(header, 0, name)
-            heapStore<U32>(header, 8, length)
+    unsafe {
+        let blockBytes = zeroedBlock(count: count * 96, alignment: 16)
+        let block = blockBytes.pointer()
+        for at in 0..count {
+            let datagram = heapOffset(messages, at * 56)
+            let header = heapOffset(block, at * 64)
+            let name = heapOffset(block, count * 64 + at * 32)
+            heapStore<RawPtr>(header, 16, heapLoad<RawPtr>(datagram, 0))
+            heapStore<U64>(header, 24, U64(heapLoad<U32>(datagram, 8)))
+            if direction == .Receive {
+                heapStore<RawPtr>(header, 0, name)
+                heapStore<U32>(header, 8, U32(28))
+            } else if !connected {
+                let length = try sockaddrAt(
+                    heapOffset(datagram, 16),
+                    family,
+                    name
+                ) otherwise return .Error(failureDetail(.InvalidArgument, U64(at)))
+                heapStore<RawPtr>(header, 0, name)
+                heapStore<U32>(header, 8, length)
+            }
         }
-    }
-    let answer = match direction {
-        Send -> sendmmsg(backing, block, U32(count), MessageFlag.dontWait | MessageFlag.noSignal)
-        Receive -> recvmmsg(backing, block, U32(count), MessageFlag.dontWait, nullPointer())
-    }
-    if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
-    for at in 0..answer {
-        let datagram = heapOffset(messages, at * 56)
-        let header = heapOffset(block, at * 64)
-        heapStore<U64>(datagram, 48, U64(heapLoad<U32>(header, 56)))
-        if direction == .Receive {
-            let truncated = (heapLoad<U32>(header, 48) & MessageFlag.truncated) != U32(0)
-            heapStore<U32>(datagram, 12, truncated ? DatagramFlags.truncated.raw : U32(0))
-            storeNetAddress(heapOffset(block, count * 64 + at * 32), heapOffset(datagram, 16))
+        let answer = match direction {
+            Send -> sendmmsg(
+                backing,
+                block,
+                U32(count),
+                MessageFlag.dontWait | MessageFlag.noSignal
+            )
+            Receive -> recvmmsg(backing, block, U32(count), MessageFlag.dontWait, nullPointer())
         }
+        if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
+        for at in 0..answer {
+            let datagram = heapOffset(messages, at * 56)
+            let header = heapOffset(block, at * 64)
+            heapStore<U64>(datagram, 48, U64(heapLoad<U32>(header, 56)))
+            if direction == .Receive {
+                let truncated = (heapLoad<U32>(header, 48) & MessageFlag.truncated) != U32(0)
+                heapStore<U32>(datagram, 12, truncated ? DatagramFlags.truncated.raw : U32(0))
+                storeNetAddress(heapOffset(block, count * 64 + at * 32), heapOffset(datagram, 16))
+            }
+        }
+        return .Ok(answer)
     }
-    return .Ok(answer)
 }

@@ -9,18 +9,22 @@ import Heap
 
 // A file backing for the node, opened for the `OpenMode`.
 function kernelFileOpen(node: Number, mode: OpenMode) -> Result<Number, TesseraError> {
-    let writes = (mode & (OpenMode.write | OpenMode.append | OpenMode.truncate)).raw != U32(0)
-    var flags = LinuxOpen.closeOnExec
-    if writes && mode.has(OpenMode.read) { flags = flags | LinuxOpen.readWrite } else if writes {
-        flags = flags | LinuxOpen.writeOnly
+    unsafe {
+        let writes = (mode & (OpenMode.write | OpenMode.append | OpenMode.truncate)).raw != U32(0)
+        var flags = LinuxOpen.closeOnExec
+        if writes && mode.has(OpenMode.read) {
+            flags = flags | LinuxOpen.readWrite
+        } else if writes {
+            flags = flags | LinuxOpen.writeOnly
+        }
+        if mode.has(OpenMode.append) { flags = flags | LinuxOpen.append }
+        if mode.has(OpenMode.truncate) { flags = flags | LinuxOpen.truncate }
+        if mode.has(OpenMode.noCache) { flags = flags | openDirectFlag() }
+        if mode.has(OpenMode.sync) { flags = flags | LinuxOpen.sync }
+        let fd = openat(AtDirectory.current, cStringFrom(descriptorPath(node)), flags, 0)
+        if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
+        return .Ok(fd)
     }
-    if mode.has(OpenMode.append) { flags = flags | LinuxOpen.append }
-    if mode.has(OpenMode.truncate) { flags = flags | LinuxOpen.truncate }
-    if mode.has(OpenMode.noCache) { flags = flags | openDirectFlag() }
-    if mode.has(OpenMode.sync) { flags = flags | LinuxOpen.sync }
-    let fd = openat(AtDirectory.current, cStringFrom(descriptorPath(node)), flags, 0)
-    if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
-    return .Ok(fd)
 }
 
 // `struct iovec`s for the buffers.
@@ -40,10 +44,12 @@ function kernelReadVectored(
     offset: U64,
     buffers: borrow [Buffer]
 ) -> Result<U64, TesseraError> {
-    let vectorsBytes = bufferVectors(buffers)
-    let got = preadv(backing, vectorsBytes.pointer(), buffers.count, offset, U64(0))
-    if answerFailed(got) { return .Error(errnoFailure(answerErrno(got))) }
-    return .Ok(U64(got))
+    unsafe {
+        let vectorsBytes = bufferVectors(buffers)
+        let got = preadv(backing, vectorsBytes.pointer(), buffers.count, offset, U64(0))
+        if answerFailed(got) { return .Error(errnoFailure(answerErrno(got))) }
+        return .Ok(U64(got))
+    }
 }
 
 // Gather write at `offset`, or at the end in one step when `append`; past
@@ -54,17 +60,19 @@ function kernelWriteVectored(
     buffers: borrow [Buffer],
     append: Bool
 ) -> Result<U64, TesseraError> {
-    let vectorsBytes = bufferVectors(buffers)
-    let vectors = vectorsBytes.pointer()
-    var wrote = 0
-    if append { wrote = writev(backing, vectors, buffers.count) } else {
-        wrote = pwritev(backing, vectors, buffers.count, offset, U64(0))
+    unsafe {
+        let vectorsBytes = bufferVectors(buffers)
+        let vectors = vectorsBytes.pointer()
+        var wrote = 0
+        if append { wrote = writev(backing, vectors, buffers.count) } else {
+            wrote = pwritev(backing, vectors, buffers.count, offset, U64(0))
+        }
+        if answerFailed(wrote) {
+            if failedWith(wrote, .FileTooBig) { return .Error(failure(.OutOfRange)) }
+            return .Error(errnoFailure(answerErrno(wrote)))
+        }
+        return .Ok(U64(wrote))
     }
-    if answerFailed(wrote) {
-        if failedWith(wrote, .FileTooBig) { return .Error(failure(.OutOfRange)) }
-        return .Error(errnoFailure(answerErrno(wrote)))
-    }
-    return .Ok(U64(wrote))
 }
 
 // Copies up to `length` bytes between backings; answers how many moved
@@ -76,33 +84,39 @@ function kernelCopyBetween(
     toOffset: U64,
     length: U64
 ) -> Result<U64, TesseraError> {
-    let chunk = U64(65536)
-    let blockBytes = zeroedBlock(count: chunk, alignment: 16)
-    let block = blockBytes.pointer()
-    var done = U64(0)
-    while done < length {
-        var step = length - done
-        if step > chunk { step = chunk }
-        let got = pread(from, block, step, fromOffset + done)
-        if answerFailed(got) { return .Error(errnoFailure(answerErrno(got))) }
-        if got == 0 { break }
-        try kernelWriteAt(to, block, U64(got), toOffset + done)
-        done += U64(got)
+    unsafe {
+        let chunk = U64(65536)
+        let blockBytes = zeroedBlock(count: chunk, alignment: 16)
+        let block = blockBytes.pointer()
+        var done = U64(0)
+        while done < length {
+            var step = length - done
+            if step > chunk { step = chunk }
+            let got = pread(from, block, step, fromOffset + done)
+            if answerFailed(got) { return .Error(errnoFailure(answerErrno(got))) }
+            if got == 0 { break }
+            try kernelWriteAt(to, block, U64(got), toOffset + done)
+            done += U64(got)
+        }
+        return .Ok(done)
     }
-    return .Ok(done)
 }
 
 // Makes `target`'s contents `source`'s, sharing its blocks: `FICLONE`,
 // `_IOW(0x94, 9, int)`. A file system that cannot share blocks, or two
 // volumes, answer `Unsupported`.
 function kernelClone(target: Number, source: Number) -> Result<Void, TesseraError> {
-    return answerStatus(ioctlValue(target, U64(0x40049409), source))
+    unsafe {
+        return answerStatus(ioctlValue(target, U64(0x40049409), source))
+    }
 }
 
 function kernelSync(backing: Number, options: SyncOptions) -> Result<Void, TesseraError> {
-    return match options {
-        Data -> answerStatus(fdatasync(backing))
-        All -> answerStatus(fsync(backing))
+    unsafe {
+        return match options {
+            Data -> answerStatus(fdatasync(backing))
+            All -> answerStatus(fsync(backing))
+        }
     }
 }
 
@@ -114,12 +128,14 @@ function kernelAllocate(
     length: U64,
     options: AllocateOptions
 ) -> Result<Void, TesseraError> {
-    var mode = 0
-    if options.has(AllocateOptions.punchHole) {
-        mode = FallocateMode.punchHole | FallocateMode.keepSize
+    unsafe {
+        var mode = 0
+        if options.has(AllocateOptions.punchHole) {
+            mode = FallocateMode.punchHole | FallocateMode.keepSize
+        }
+        if options.has(AllocateOptions.zeroRange) { mode = FallocateMode.zeroRange }
+        return answerStatus(fallocate(backing, mode, offset, length))
     }
-    if options.has(AllocateOptions.zeroRange) { mode = FallocateMode.zeroRange }
-    return answerStatus(fallocate(backing, mode, offset, length))
 }
 
 // Takes a byte-range lock, shared or exclusive, or releases
@@ -131,17 +147,19 @@ function lockRange(
     length: U64,
     lockType: Number
 ) -> Result<Void, TesseraError> {
-    let blockBytes = zeroedBlock(count: 32, alignment: 16)
-    let block = blockBytes.pointer()
-    heapStore<U16>(block, 0, U16(lockType))
-    heapStore<U64>(block, 8, offset)
-    heapStore<U64>(block, 16, length)
-    let answer = fcntl(backing, Fcntl.openFileDescriptionLock, block)
-    if !answerFailed(answer) { return .Ok }
-    if failedWith(answer, .Again) || failedWith(answer, .Access) {
-        return .Error(failure(.ShouldWait))
+    unsafe {
+        let blockBytes = zeroedBlock(count: 32, alignment: 16)
+        let block = blockBytes.pointer()
+        heapStore<U16>(block, 0, U16(lockType))
+        heapStore<U64>(block, 8, offset)
+        heapStore<U64>(block, 16, length)
+        let answer = fcntl(backing, Fcntl.openFileDescriptionLock, block)
+        if !answerFailed(answer) { return .Ok }
+        if failedWith(answer, .Again) || failedWith(answer, .Access) {
+            return .Error(failure(.ShouldWait))
+        }
+        return .Error(errnoFailure(answerErrno(answer)))
     }
-    return .Error(errnoFailure(answerErrno(answer)))
 }
 
 function kernelLockRange(

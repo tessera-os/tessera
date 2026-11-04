@@ -62,7 +62,35 @@ other way round: aarch64 is the native architecture, it is compiled without a
 cross toolchain and runs under Hypervisor.framework with nothing translated, and
 x86_64 is not built at all — a Mac has no Linux cross compiler to build it with.
 
+The experimental `dm2q` kernel profile targets the Snapdragon Galaxy S23+
+(SM-S916B/DS). Build it with `kira build kernel devicetrees -arch aarch64
+-kernel-profile dm2q`. It uses the phone's 4 KB page size and builds
+`qcom/sm8550-samsung-dm2q.dtb` from `patches/linux`. The panel has no mainline
+driver, so simpledrm scans out of the framebuffer the bootloader left lit. The
+Adreno 740 runs as a render-only DRM/MSM device for Mesa Turnip. The STM
+FTS2BA61Y touchscreen and the S2DOS05 display PMIC sit on GPIO-driven SPI and
+I2C buses. The QEMU `boot` step refuses this profile.
+
+The GPU needs Samsung's signed zap shader, which cannot be downloaded. Extract
+`a740_zap.mbn` from the stock vendor partition of the firmware on the phone and
+put it in `~/.tessera-build/device/dm2q/firmware/` (`Host.dm2qFirmware`). The
+SQE and GMU images come from linux-firmware.
+
+`scripts/package-dm2q-odin.py` creates an installer archive and a system
+archive with Android boot header v4 images. Both carry `BOOT`, `INIT_BOOT`, a
+`VENDOR_BOOT` holding the dm2q DTB, and a `DTBO` of empty overlays that match
+the board. The installer archive also carries the Tessera system image for
+`CACHE`; its initramfs formats the `SUPER` partition and installs the image
+there. The system archive boots with `tessera.system`, so PID 1 hands over to
+the installed system. The script checks image sizes against the partition
+capacities from the device PIT and only writes local files. The boot path
+still needs validation on the S23+.
+
 ## Building
+
+Tessera's host build root is always `$HOME/.tessera-build`, including when the
+checkout is on a Cairn-mounted workspace. Kernel source and Kbuild outputs,
+guest GPU workspaces, initramfs, and system images live under that path.
 
 On Windows, everything builds inside a Fedora WSL2 distribution. Source lives on
 the Windows filesystem where the editor can reach it; build artifacts live on the

@@ -77,7 +77,11 @@ function closeReceivedHandles(handles: borrow [Handle]) {
 
 // The answer to a token check: `verdict`, about `token`.
 public function tokenAnswer(verdict: TokenVerdict, token: InteractionToken) -> TokenCheckMessage {
-    return TokenCheckMessage { kind: TokenCheckWire.answer, verdict: verdict.rawValue(), token: token }
+    return TokenCheckMessage {
+        kind: TokenCheckWire.answer,
+        verdict: verdict.rawValue(),
+        token: token
+    }
 }
 
 // The check for `token`, which MosaicDisplay answers.
@@ -144,7 +148,15 @@ public function presenceVerify(token: InteractionToken) -> Result<Void, TesseraE
         Error(failed) -> return .Error(failureIn(.NotFound, .Presence))
     }
     let operation = code(PresenceOperation.Verify)
-    let sent = deviceSend(connection, operation, token.idLow, token.idHigh, token.surfaceId, nullPointer(), U64(0))
+    let sent = deviceSend(
+        connection,
+        operation,
+        token.idLow,
+        token.idHigh,
+        token.surfaceId,
+        nullPointer(),
+        U64(0)
+    )
     if !succeeded(sent) {
         kernelRelease(connection)
         return .Error(failureIn(.DeviceLost, .Presence))

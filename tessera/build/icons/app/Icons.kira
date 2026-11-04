@@ -93,20 +93,188 @@ public function renderedIconTree(
         Some(made) -> return copy made[0]
         None -> {}
     }
-    let document = graph.sourceTree(location + "/" + asset, [])
     let names = asset.split("/")
     let file = copy names[names.count - 1]
     let name = file.substring(0, file.count - IconBundleLayout.extension.count)
+    let renderer = sourceDigest!()
+    let componentName = copy component
+    let iconName = copy name
+    let document = graph.sourceTree(location + "/" + asset, [])
     let made = graph.native(
         NativeAction {
             label: copy label,
-            code: sourceDigest!(),
+            code: copy renderer,
+            parameters: .Text("\(componentName):\(iconName):\(renderer)"),
             inputs: [document],
             outputs: [Output { name: IconRender.output, kind: .Tree }],
-            work: { run in return renderIcons(run, name) }
+            work: { run in
+                return renderCachedIcons(run, componentName, iconName)
+            }
         }
     )
     return copy made[0]
+}
+
+// Render an icon request once outside `.kira-build`, then reuse its images
+// after a clean build. The request stamp covers the source document; component
+// and icon name are the cache path. The cache lives under HOME so it survives
+// build graph resets and unrelated renderer dependency changes.
+function renderCachedIcons(
+    run: borrow NativeRun,
+    component: borrow String,
+    name: borrow String
+) -> Result<Void, BuildFailure> {
+    let home = environmentValue("HOME")
+    if home.count == 0 { return renderIcons(run, name) }
+    let directory = "\(home)/.tessera-build/icon-cache/\(component)/\(name)"
+    let request = run.digests[0]
+    if iconCacheComplete(directory, request, name) {
+        if copyCachedIcons(directory, run.outputs[0], name) { return .Ok }
+        log warn("the persistent icon cache could not be copied", path: directory)
+    }
+    match renderIcons(run, name) {
+        Ok -> {
+            cacheRenderedIcons(home, component, directory, request, run.outputs[0], name)
+        }
+        Error(failure) -> return .Error(failure)
+    }
+    return .Ok
+}
+
+function iconCacheComplete(
+    directory: borrow String,
+    request: borrow String,
+    name: borrow String
+) -> Bool {
+    if !isDirectory(directory) { return false }
+    match readFile(directory + "/.request") {
+        Ok(contents) -> if !iconCacheRequestMatches(contents.text, request) { return false }
+        Error(failure) -> {
+            absorb failure
+            return false
+        }
+    }
+    for picture in iconPictures(name) {
+        if !fileExists(directory + "/" + picture.file) { return false }
+    }
+    return true
+}
+
+// Earlier cache stamps included the renderer dependency digest after a colon.
+// Keep accepting those stamps by comparing only their leading input digest.
+function iconCacheRequestMatches(contents: borrow String, request: borrow String) -> Bool {
+    if contents == request { return true }
+    if contents.count <= request.count { return false }
+    if contents.substring(0, request.count) != request { return false }
+    return contents.substring(request.count, request.count + 1) == ":"
+}
+
+function copyCachedIcons(
+    directory: borrow String,
+    output: borrow String,
+    name: borrow String
+) -> Bool {
+    for picture in iconPictures(name) {
+        match copyFile(directory + "/" + picture.file, output + "/" + picture.file) {
+            Ok -> {}
+            Error(failure) -> {
+                absorb failure
+                return false
+            }
+        }
+    }
+    return true
+}
+
+function cacheRenderedIcons(
+    home: borrow String,
+    component: borrow String,
+    directory: borrow String,
+    request: borrow String,
+    output: borrow String,
+    name: borrow String
+) {
+    if !removeIconCacheEntry(directory) { return }
+    if !makeIconCacheDirectories(home, component, name) { return }
+    for picture in iconPictures(name) {
+        match copyFile(output + "/" + picture.file, directory + "/" + picture.file) {
+            Ok -> {}
+            Error(failure) -> {
+                log warn(
+                    "a rendered icon could not be saved in the persistent cache",
+                    path: directory,
+                    error: traceText(failure)
+                )
+                removeIconCacheEntry(directory)
+                return
+            }
+        }
+    }
+    match writeFile(directory + "/.request", request) {
+        Ok -> {}
+        Error(failure) -> {
+            log warn(
+                "the persistent icon cache request could not be saved",
+                path: directory,
+                error: traceText(failure)
+            )
+            removeIconCacheEntry(directory)
+        }
+    }
+}
+
+function makeIconCacheDirectories(
+    home: borrow String,
+    component: borrow String,
+    name: borrow String
+) -> Bool {
+    let root = "\(home)/.tessera-build/icon-cache"
+    for path in [root, root + "/" + component, root + "/" + component + "/" + name] {
+        if isDirectory(path) { continue }
+        match makeDirectory(path) {
+            Ok -> {}
+            Error(failure) -> {
+                if isDirectory(path) { continue }
+                log warn(
+                    "a persistent icon cache directory could not be made",
+                    path: path,
+                    error: traceText(failure)
+                )
+                return false
+            }
+        }
+    }
+    return true
+}
+
+function removeIconCacheEntry(path: borrow String) -> Bool {
+    if !fileExists(path) && !isDirectory(path) { return true }
+    if isDirectory(path) {
+        match listDirectory(path) {
+            Ok(listing) -> for entry in listing.entries {
+                if !removeIconCacheEntry(path + "/" + entry) { return false }
+            }
+            Error(failure) -> {
+                log warn(
+                    "a stale persistent icon cache could not be listed",
+                    path: path,
+                    error: traceText(failure)
+                )
+                return false
+            }
+        }
+    }
+    return match removePath(path) {
+        Ok -> true
+        Error(failure) -> {
+            log warn(
+                "a stale persistent icon cache could not be removed",
+                path: path,
+                error: traceText(failure)
+            )
+            return false
+        }
+    }
 }
 
 function renderIcons(run: borrow NativeRun, name: borrow String) -> Result<Void, BuildFailure> {
@@ -118,12 +286,7 @@ function renderIcons(run: borrow NativeRun, name: borrow String) -> Result<Void,
     }
     for picture in iconPictures(name) {
         let path = "\(run.outputs[0])/\(picture.file)"
-        let image = match renderedIcon(
-            bundle,
-            copy picture.style,
-            picture.side,
-            picture.layout
-        ) {
+        let image = match renderedIcon(bundle, copy picture.style, picture.side, picture.layout) {
             Ok(image) -> image
             Error(failure) -> return .Error(
                 .Failed(

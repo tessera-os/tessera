@@ -2,5 +2,5 @@ construct TesseraDiskutil extends Package {
     let version: String = "26.10.4"
     let kind: PackageKind = .App
     let moduleRoot: String = "TesseraDiskutil"
-    let dependencies: [Dependency] = [Dependency { name: "ArgumentParser", path: "../argument-parser" }]
+    let dependencies: [Dependency] = [Dependency { name: "ArgumentParser", path: "../../kira-packages/argument-parser" }]
 }

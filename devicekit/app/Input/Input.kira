@@ -251,7 +251,9 @@ function translate(
                 return .None
             }
             var record = plainRecord(.Absolute, absoluteUsage(eventCode), value)
-            if eventCode > InputLayout.multitouchSlot { record.slot = deviceLibrary.inputs[input].slot }
+            if eventCode > InputLayout.multitouchSlot {
+                record.slot = deviceLibrary.inputs[input].slot
+            }
             if eventCode == InputLayout.trackingId && value != U32(0xFFFFFFFF) {
                 record.tracking = .Some(signedOf32(value))
             }

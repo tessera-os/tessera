@@ -3,10 +3,9 @@ import Build
 
 // A dev root request carried out on the machine `kira build boot -dev`
 // is running, whose devroot service waits for a volume labelled `devroot`
-// (roadmap/18-components.md). The request and the archives go onto a small
-// ext4 image, which is plugged in as a USB stick through QEMU's monitor; the
-// service's answer comes back on the serial line, and the stick is pulled
-// out again.
+// (roadmap/18-components.md). QEMU exchanges requests through an ext4 image
+// and its monitor. On macOS, `-usb` uses the phone's removable FAT volume and
+// waits for the service to return that volume with its response.
 //
 // The service does the rest on the machine: it keeps the stack of installed
 // roots, backs up what a root overwrites, restores it on uninstall, refuses
@@ -25,11 +24,12 @@ namespace DevRootVolume {
     // a run stopped while it waited leaves its stick behind, which keeps
     // /Volumes/devroot taken.
     let plugged: String = "devroot.plugged"
-    let usage: String = "kira build devroot install|uninstall <component>... [-force] [-only] | reset | sample [seconds] [hz] | crashes | wait"
+    let usage: String = "kira build devroot install|uninstall <component>... [-force] [-only] [-usb] | reset | sample [seconds] [hz] [-usb] | crashes [-usb] | logs -usb | wait [-usb]"
     // Room on the stick for what a sample brings back.
     let sampleBytes: Number = 48 * 1048576
     // Room for every crash report the machine keeps.
     let crashBytes: Number = 16 * 1048576
+    let kernelBytes: Number = 524288
 }
 
 // Carries out the request after `devroot`, `known` naming every component,
@@ -60,49 +60,66 @@ function devRootOutcome(
 ) -> Result<Void, String> {
     if run.arguments.count == 0 { return .Error("usage: \(DevRootVolume.usage)") }
     let action = copy run.arguments[0]
+    let usb = run.arguments.contains("-usb")
     let logs = host.logDirectory()
     let serialLog = "\(logs)/serial-\(architecture.name()).log"
     let monitor = Monitor { path: "\(logs)/qemu-\(architecture.name())-services.monitor" }
+    if usb && action == "wait" {
+        try awaitUsbMountOnHost(UsbDevRoot.mountPoint, 3000)
+        log info("the dev root USB volume is mounted", path: UsbDevRoot.mountPoint)
+        return .Ok
+    }
     // `wait` is run beside a machine still starting: QEMU gets a minute to
     // make them.
-    if action == "wait" {
+    if !usb && action == "wait" {
         for poll in 0..600 {
             if pathExists(monitor.path) && fileExists(serialLog) { break }
             processSleep(100)
         }
     }
-    if !pathExists(monitor.path) {
-        return .Error(
-            "no machine is running for \(architecture.name()): \(monitor.path) is missing (boot it with kira build boot -dev)"
-        )
-    }
-    if !fileExists(serialLog) {
-        return .Error("the machine was not booted with -dev: \(serialLog) is missing")
-    }
-    if action == "wait" {
-        if !awaitSerial(serialLog, 3000, { written in return serviceStarted(written) }) {
-            return .Error("the dev root service did not start")
+    if !usb {
+        if !pathExists(monitor.path) {
+            return .Error(
+                "no machine is running for \(architecture.name()): \(monitor.path) is missing (boot it with kira build boot -dev)"
+            )
         }
-        log info("the dev root service is running", architecture: architecture.name())
-        return .Ok
+        if !fileExists(serialLog) {
+            return .Error("the machine was not booted with -dev: \(serialLog) is missing")
+        }
+        if action == "wait" {
+            if !awaitSerial(serialLog, 3000, { written in return serviceStarted(written) }) {
+                return .Error("the dev root service did not start")
+            }
+            log info("the dev root service is running", architecture: architecture.name())
+            return .Ok
+        }
     }
-    let actions = ["install", "uninstall", "reset", "sample", "crashes"]
+    let actions = ["install", "uninstall", "reset", "sample", "crashes", "logs"]
     if !actions.contains(action) {
         return .Error(
-            "unknown action \(action): install, uninstall, reset, sample, crashes or wait"
+            "unknown action \(action): install, uninstall, reset, sample, crashes, logs or wait"
         )
+    }
+    if action == "logs" && !usb {
+        return .Error("kernel log export requires -usb")
     }
     var force = ""
     var components: [String] = []
     for index in 1..run.arguments.count {
         let argument = run.arguments[index]
         if action == "sample" || action == "crashes" { break }
-        if argument == "-force" {
-            force = " force"
-        } else if known.contains(argument) {
-            components.append(copy argument)
-        } else if argument != "-only" {
-            return .Error("\(argument) is not a component")
+        match argument {
+            "-force" -> force = " force"
+            "-usb" -> continue
+            "-only" -> {}
+            else -> {
+                if !known.contains(argument) && !(
+                    action == "uninstall" && argument == "display-check"
+                ) {
+                    return .Error("\(argument) is not a component")
+                }
+                components.append(copy argument)
+            }
         }
     }
     if (action == "install" || action == "uninstall") && components.count == 0 {
@@ -160,9 +177,28 @@ function devRootOutcome(
         request.append("crashes\n")
         bytes = DevRootVolume.crashBytes
     }
+    if action == "logs" {
+        request.append("kernel\n")
+        bytes = DevRootVolume.kernelBytes
+    }
     match writeFile("\(tree)/\(DevRootVolume.request)", request) {
         Ok -> {}
         Error(failure) -> return .Error("the request cannot be written: \(traceText(failure))")
+    }
+    if usb {
+        return carryOutUsbDevRoot(
+            host,
+            architecture,
+            action,
+            known,
+            components,
+            tree,
+            id,
+            request,
+            bytes,
+            run,
+            logs
+        )
     }
     let image = "\(machine)/\(DevRootVolume.image)"
     match makeVolume(host, tree, image, bytes + request.count) {
@@ -212,14 +248,19 @@ function devRootOutcome(
             symbols: run.paths.count > 0 ? copy run.paths[0] : "",
             system: run.paths.count > 1 ? copy run.paths[1] : ""
         }
-        return reportSamples(host, image, roots, "\(logs)/sample-\(id).txt")
+        return reportSamples(
+            host,
+            SampleVolume.Image(copy image),
+            roots,
+            "\(logs)/sample-\(id).txt"
+        )
     }
     if action == "crashes" {
         let roots = SampleRoots {
             symbols: run.paths.count > 0 ? copy run.paths[0] : "",
             system: run.paths.count > 1 ? copy run.paths[1] : ""
         }
-        return reportCrashes(host, image, roots, "\(logs)/crashes")
+        return reportCrashes(host, SampleVolume.Image(copy image), roots, "\(logs)/crashes")
     }
     return .Ok
 }

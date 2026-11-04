@@ -109,6 +109,14 @@ QEMU's monitor. The service carries out the request, the build waits for its
 answer on the serial line, then pulls the volume out. `kira build devroot --
 wait` waits for the service to be running.
 
+On macOS, append `-usb` to use the phone's removable USB disk. The phone
+exposes a 512 MiB FAT16 image through its mass-storage LUN; the host writes the
+archives and request to `/Volumes/devroot` and ejects it. The devroot service
+mounts the image through a loop device, carries out the request, writes its
+answer, unmounts the image, and returns it to the LUN. The host then reads the
+answer and any sample or crash reports from the remounted volume. `wait -usb`
+waits for that volume to appear.
+
 The service keeps its state in `/var/db/devroots`, on the dev snapshot:
 
 - `stack`: the installed roots, an ordered stack, bottom first.

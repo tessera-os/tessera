@@ -64,9 +64,11 @@ function mountOne(
     kind: borrow String,
     flags: U64
 ) -> Result<Void, TesseraError> {
-    return answerStatus(
-        mount(cStringFrom(source), cStringFrom(target), cStringFrom(kind), flags, nullPointer())
-    )
+    unsafe {
+        return answerStatus(
+            mount(cStringFrom(source), cStringFrom(target), cStringFrom(kind), flags, nullPointer())
+        )
+    }
 }
 
 function kernelVolumeMount(
@@ -89,22 +91,26 @@ function kernelVolumeUnmount(
     target: borrow String,
     options: VolumeUnmountOptions
 ) -> Result<Void, TesseraError> {
-    let flags = options.has(VolumeUnmountOptions.detach) ? MountFlag.detach : 0
-    return answerStatus(umount2(cStringFrom(target), flags))
+    unsafe {
+        let flags = options.has(VolumeUnmountOptions.detach) ? MountFlag.detach : 0
+        return answerStatus(umount2(cStringFrom(target), flags))
+    }
 }
 
 // The entries of the directory at `path`.
 function listPath(path: borrow String) -> Result<[KernelDirectoryEntry], TesseraError> {
-    let directory = openat(
-        AtDirectory.current,
-        cStringFrom(path),
-        LinuxOpen.readOnly | openDirectoryFlag() | LinuxOpen.closeOnExec,
-        0
-    )
-    if answerFailed(directory) { return .Error(errnoFailure(answerErrno(directory))) }
-    let listed = kernelDirectoryList(directory)
-    kernelRelease(directory)
-    return listed
+    unsafe {
+        let directory = openat(
+            AtDirectory.current,
+            cStringFrom(path),
+            LinuxOpen.readOnly | openDirectoryFlag() | LinuxOpen.closeOnExec,
+            0
+        )
+        if answerFailed(directory) { return .Error(errnoFailure(answerErrno(directory))) }
+        let listed = kernelDirectoryList(directory)
+        kernelRelease(directory)
+        return listed
+    }
 }
 
 // Whether the disk `a` was numbered before `b`. The kernel names a kind's
@@ -218,12 +224,14 @@ struct KernelStatfs {
 // The size of the volume holding `target` and the bytes on it a program may
 // still write, in that order.
 function kernelVolumeSpace(target: borrow String) -> Result<(Number, Number), TesseraError> {
-    let block = zeroedBlock(count: sizeOf<KernelStatfs>(), alignment: 16)
-    let answer = statfs(cStringFrom(target), block.pointer())
-    if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
-    let status = heapLoad<KernelStatfs>(block.pointer())
-    let unit = Number(status.fragmentSize > 0 ? status.fragmentSize : status.blockSize)
-    return .Ok((Number(status.blocks) * unit, Number(status.availableBlocks) * unit))
+    unsafe {
+        let block = zeroedBlock(count: sizeOf<KernelStatfs>(), alignment: 16)
+        let answer = statfs(cStringFrom(target), block.pointer())
+        if answerFailed(answer) { return .Error(errnoFailure(answerErrno(answer))) }
+        let status = heapLoad<KernelStatfs>(block.pointer())
+        let unit = Number(status.fragmentSize > 0 ? status.fragmentSize : status.blockSize)
+        return .Ok((Number(status.blocks) * unit, Number(status.availableBlocks) * unit))
+    }
 }
 
 // What Linux needs mounted before a userland can run on it: the process and
@@ -270,20 +278,22 @@ function kernelMachinePrepare() -> Result<Void, TesseraError> {
 // machine runs, and a sealed root cannot hold them. Detail 2 is ENOENT, a root
 // without the directory, and 16 EBUSY, one mounted there already.
 function mountVolumesDirectory() -> Result<Void, TesseraError> {
-    let options = VolumeOptions.noExecute | VolumeOptions.noDevices | VolumeOptions.noSetIdentity
-    let data = cStringFrom("mode=0755")
-    let answer = mount(
-        cStringFrom("tmpfs"),
-        cStringFrom("/" + SystemDirectory.volumes),
-        cStringFrom("tmpfs"),
-        mountFlags(options),
-        data.address
-    )
-    match answerStatus(answer) {
-        Ok -> return .Ok
-        Error(failed) -> {
-            if failed.detail == U64(2) || failed.detail == U64(16) { return .Ok }
-            return .Error(failed)
+    unsafe {
+        let options = VolumeOptions.noExecute | VolumeOptions.noDevices | VolumeOptions.noSetIdentity
+        let data = cStringFrom("mode=0755")
+        let answer = mount(
+            cStringFrom("tmpfs"),
+            cStringFrom("/" + SystemDirectory.volumes),
+            cStringFrom("tmpfs"),
+            mountFlags(options),
+            data.address
+        )
+        match answerStatus(answer) {
+            Ok -> return .Ok
+            Error(failed) -> {
+                if failed.detail == U64(2) || failed.detail == U64(16) { return .Ok }
+                return .Error(failed)
+            }
         }
     }
 }
@@ -319,31 +329,39 @@ function kernelCrashReporter(program: borrow String) -> Result<Void, TesseraErro
     return writeSmallFile(AtDirectory.current, "/proc/sys/kernel/core_pattern", "|\(program) %P\n")
 }
 
-function kernelMachineFlush() -> Result<Void, TesseraError> { return answerStatus(sync()) }
+function kernelMachineFlush() -> Result<Void, TesseraError> {
+    unsafe {
+        return answerStatus(sync())
+    }
+}
 
 // `LINUX_REBOOT_CMD_POWER_OFF` or `_RESTART`, after a sync. Returns only
 // when the kernel refuses.
 function kernelMachineStop(how: borrow MachineStop) -> Result<Void, TesseraError> {
-    // A volume that cannot be flushed is still better stopped than kept up
-    // by a machine nobody wants running.
-    match answerStatus(sync()) {
-        Ok -> {}
-        Error(failed) -> absorb failed
+    unsafe {
+        // A volume that cannot be flushed is still better stopped than kept up
+        // by a machine nobody wants running.
+        match answerStatus(sync()) {
+            Ok -> {}
+            Error(failed) -> absorb failed
+        }
+        let command = match how {
+            PowerOff -> Reboot.powerOff
+            Restart -> Reboot.restart
+        }
+        return answerStatus(reboot(Reboot.magic, Reboot.magicSecond, command, nullPointer()))
     }
-    let command = match how {
-        PowerOff -> Reboot.powerOff
-        Restart -> Reboot.restart
-    }
-    return answerStatus(reboot(Reboot.magic, Reboot.magicSecond, command, nullPointer()))
 }
 
 // Moves the volume mounted at `path` onto `/` and makes it this process's
 // root: `pivot_root` cannot leave an initramfs, so it is a move and a chroot.
 function kernelEnterRoot(path: borrow String) -> Result<Void, TesseraError> {
-    try answerStatus(chdir(cStringFrom(path)))
-    try mountOne(".", "/", "", MountFlag.move)
-    try answerStatus(chroot(cStringFrom(".")))
-    return answerStatus(chdir(cStringFrom("/")))
+    unsafe {
+        try answerStatus(chdir(cStringFrom(path)))
+        try mountOne(".", "/", "", MountFlag.move)
+        try answerStatus(chroot(cStringFrom(".")))
+        return answerStatus(chdir(cStringFrom("/")))
+    }
 }
 
 // The environment a child is started with: the Kira runtime's own settings
@@ -362,9 +380,11 @@ function kernelProcessReplace(
     path: borrow String,
     arguments: borrow [String]
 ) -> Result<Void, TesseraError> {
-    let argvBytes = argumentVector(arguments)
-    let envpBytes = runtimeEnvironment()
-    return answerStatus(execve(cStringFrom(path), argvBytes.pointer(), envpBytes.pointer()))
+    unsafe {
+        let argvBytes = argumentVector(arguments)
+        let envpBytes = runtimeEnvironment()
+        return answerStatus(execve(cStringFrom(path), argvBytes.pointer(), envpBytes.pointer()))
+    }
 }
 
 // ─── What happens to the first process ──────────────────────────────────────
@@ -374,27 +394,29 @@ function kernelProcessReplace(
 // `LINUX_REBOOT_CMD_CAD_OFF` is set), or when a child ends (`SIGCHLD`). The
 // three are blocked and read through one `signalfd`.
 function kernelSystemWatch() -> Result<Number, TesseraError> {
-    match library.systemWatch {
-        Some(watch) -> return .Ok(watch)
-        None -> {}
+    unsafe {
+        match library.systemWatch {
+            Some(watch) -> return .Ok(watch)
+            None -> {}
+        }
+        let maskBytes = zeroedBlock(count: 8, alignment: 8)
+        let mask = maskBytes.pointer()
+        heapStore<U64>(mask, 0, (U64(1) << U64(14)) | (U64(1) << U64(1)) | (U64(1) << U64(16)))
+        let blocked = sigprocmask(SignalMaskHow.block, mask, nullPointer(), U64(8))
+        if answerFailed(blocked) { return .Error(errnoFailure(answerErrno(blocked))) }
+        let fd = signalfd4(-1, mask, U64(8), LinuxOpen.nonBlock | LinuxOpen.closeOnExec)
+        if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
+        // Refused, Ctrl-Alt-Del restarts the machine at once rather than asking
+        // PID 1; the watch still hears the rest.
+        match answerStatus(
+            reboot(Reboot.magic, Reboot.magicSecond, Reboot.controlAltDeleteOff, nullPointer())
+        ) {
+            Ok -> {}
+            Error(failed) -> absorb failed
+        }
+        library.systemWatch = .Some(fd)
+        return .Ok(fd)
     }
-    let maskBytes = zeroedBlock(count: 8, alignment: 8)
-    let mask = maskBytes.pointer()
-    heapStore<U64>(mask, 0, (U64(1) << U64(14)) | (U64(1) << U64(1)) | (U64(1) << U64(16)))
-    let blocked = sigprocmask(SignalMaskHow.block, mask, nullPointer(), U64(8))
-    if answerFailed(blocked) { return .Error(errnoFailure(answerErrno(blocked))) }
-    let fd = signalfd4(-1, mask, U64(8), LinuxOpen.nonBlock | LinuxOpen.closeOnExec)
-    if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
-    // Refused, Ctrl-Alt-Del restarts the machine at once rather than asking
-    // PID 1; the watch still hears the rest.
-    match answerStatus(
-        reboot(Reboot.magic, Reboot.magicSecond, Reboot.controlAltDeleteOff, nullPointer())
-    ) {
-        Ok -> {}
-        Error(failed) -> absorb failed
-    }
-    library.systemWatch = .Some(fd)
-    return .Ok(fd)
 }
 
 // The signals the system watch reads, as `signalfd` numbers them.
@@ -407,82 +429,171 @@ function kernelSystemWatch() -> Result<Number, TesseraError> {
 
 // Everything the watch holds.
 function kernelSystemEvents() -> SystemEvent {
-    let watch = try library.systemWatch otherwise return SystemEvent.none
-    let infoBytes = zeroedBlock(count: 128, alignment: 16)
-    let info = infoBytes.pointer()
-    var events = SystemEvent.none
-    while true {
-        let got = read(watch, info, U64(128))
-        if answerFailed(got) || got < 128 { break }
-        match fromCode<WatchedSignal>(heapLoad<U32>(info, 0)) {
-            Terminate -> events = events | SystemEvent.stop
-            Interrupt -> events = events | SystemEvent.attention
-            Child -> events = events | SystemEvent.childEnded
-            // Nothing else is blocked, so nothing else is read.
-            else -> {}
+    unsafe {
+        let watch = try library.systemWatch otherwise return SystemEvent.none
+        let infoBytes = zeroedBlock(count: 128, alignment: 16)
+        let info = infoBytes.pointer()
+        var events = SystemEvent.none
+        while true {
+            let got = read(watch, info, U64(128))
+            if answerFailed(got) || got < 128 { break }
+            match fromCode<WatchedSignal>(heapLoad<U32>(info, 0)) {
+                Terminate -> events = events | SystemEvent.stop
+                Interrupt -> events = events | SystemEvent.attention
+                Child -> events = events | SystemEvent.childEnded
+                // Nothing else is blocked, so nothing else is read.
+                else -> {}
+            }
         }
+        return events
     }
-    return events
 }
 
 // Reaps every ended child that is not in `own`: the processes reparented
 // to PID 1, which nobody holds a backing for. A child of the caller's own
 // is left for its Process object. Answers how many were reaped.
 function kernelReapOrphans(own: borrow [U64]) -> Result<U32, TesseraError> {
-    let parent = stringFromUnsigned(U64(getpid()))
-    let listed = try listPath("/proc")
-    let infoBytes = zeroedBlock(count: 128, alignment: 16)
-    let info = infoBytes.pointer()
-    var reaped = U32(0)
-    for index in 0..listed.count {
-        let pid = parseUnsigned(listed[index].name)
-        var mine = pid == U64(0)
-        for at in 0..own.count {
-            if own[at] == pid { mine = true }
-        }
-        if !mine {
-            // One that has gone since the listing needs no reaping.
-            let read = try processStatFields(pid)
-            let fields = match read {
-                Some(value) -> value
-                None -> []
+    unsafe {
+        let parent = stringFromUnsigned(U64(getpid()))
+        let listed = try listPath("/proc")
+        let infoBytes = zeroedBlock(count: 128, alignment: 16)
+        let info = infoBytes.pointer()
+        var reaped = U32(0)
+        for index in 0..listed.count {
+            let pid = parseUnsigned(listed[index].name)
+            var mine = pid == U64(0)
+            for at in 0..own.count {
+                if own[at] == pid { mine = true }
             }
-            if fields.count > 1 && fields[0] == "Z" && fields[1] == parent {
-                if !answerFailed(
-                    waitid(
-                        code(WaitWhom.Pid),
-                        pid,
-                        info,
-                        (WaitHow.exited | WaitHow.noHang).raw,
-                        nullPointer()
-                    )
-                ) {
-                    reaped += U32(1)
+            if !mine {
+                // One that has gone since the listing needs no reaping.
+                let read = try processStatFields(pid)
+                let fields = match read {
+                    Some(value) -> value
+                    None -> []
+                }
+                if fields.count > 1 && fields[0] == "Z" && fields[1] == parent {
+                    if !answerFailed(
+                        waitid(
+                            code(WaitWhom.Pid),
+                            pid,
+                            info,
+                            (WaitHow.exited | WaitHow.noHang).raw,
+                            nullPointer()
+                        )
+                    ) {
+                        reaped += U32(1)
+                    }
                 }
             }
         }
+        return .Ok(reaped)
     }
-    return .Ok(reaped)
 }
 
 // Sets the wall clock (`CLOCK_REALTIME`) to `nanoseconds` since 1970.
 function kernelSetRealtime(nanoseconds: U64) -> Result<Void, TesseraError> {
-    let valueBytes = zeroedBlock(count: 16, alignment: 16)
-    let value = valueBytes.pointer()
-    storeTimespec(value, U64(0), nanoseconds)
-    return answerStatus(clockSettime(0, value))
+    unsafe {
+        let valueBytes = zeroedBlock(count: 16, alignment: 16)
+        let value = valueBytes.pointer()
+        storeTimespec(value, U64(0), nanoseconds)
+        return answerStatus(clockSettime(0, value))
+    }
 }
 
 // The process's standard stream `stream`, as a backing of its own
 // (`F_DUPFD_CLOEXEC` above the streams), or None when it is not open.
 function kernelStandardStream(stream: borrow StandardStream) -> Result<Number?, TesseraError> {
-    unsafe {
-        let copied = fcntl(Number(code(stream)), Fcntl.duplicateCloseOnExec, RawPtr(Fcntl.aboveStreams))
-        if answerFailed(copied) {
+    let descriptor = Number(code(stream))
+    match kernelDuplicate(descriptor) {
+        Ok(copied) -> return .Ok(.Some(copied))
+        Error(problem) -> {
             // A stream the process was started without.
-            if answerErrno(copied) == code(Errno.BadDescriptor) { return .Ok(.None) }
-            return .Error(errnoFailure(answerErrno(copied)))
+            if problem.subsystem == .Kernel && problem.code == .InvalidHandle { return .Ok(.None) }
+            return .Error(move problem)
         }
-        return .Ok(.Some(copied))
     }
+}
+
+// Each remote processor the kernel holds offline, started by writing `start`
+// to its `/sys/class/remoteproc/<n>/state`: the kernel loads its firmware
+// then, from the root that is mounted now. One that fails is said and the
+// rest are still tried. A machine with none has no such class.
+function kernelStartRemoteProcessors() -> Result<[RemoteProcessorStart], TesseraError> {
+    let base = "/sys/class/remoteproc"
+    let listed = match listPath(base) {
+        Ok(entries) -> entries
+        Error(failed) -> {
+            if failed.code == .NotFound { return .Ok([]) }
+            return .Error(failed)
+        }
+    }
+    var tried: [RemoteProcessorStart] = []
+    for entry in listed {
+        let directory = base + "/" + entry.name
+        let state = try readSmallFile(AtDirectory.current, directory + "/state")
+        if state.trim() != "offline" { continue }
+        let named = try readSmallFile(AtDirectory.current, directory + "/name")
+        match writeSmallFile(AtDirectory.current, directory + "/state", "start") {
+            Ok -> tried.append(RemoteProcessorStart { name: named.trim(), failure: .None })
+            Error(failed) -> tried.append(
+                RemoteProcessorStart { name: named.trim(), failure: .Some(failed) }
+            )
+        }
+    }
+    return .Ok(tried)
+}
+
+// The `file` attribute of the first mass-storage LUN of the gadget on the
+// machine's USB device controller: the image the host sees as a drive is
+// named there. It is at /sys/class/udc/<controller>/device/gadget.<n>/lun0.
+// None when no gadget has such a LUN.
+function kernelUsbDriveAttribute() -> Result<String?, TesseraError> {
+    let base = "/sys/class/udc"
+    let controllers = match listPath(base) {
+        Ok(entries) -> entries
+        Error(failed) -> {
+            if failed.code == .NotFound { return .Ok(.None) }
+            return .Error(failed)
+        }
+    }
+    for controller in controllers {
+        let device = base + "/" + controller.name + "/device"
+        let children = match listPath(device) {
+            Ok(entries) -> entries
+            Error(failed) -> {
+                if failed.code == .NotFound { continue }
+                return .Error(failed)
+            }
+        }
+        for child in children {
+            if !child.name.startsWith("gadget") { continue }
+            let attribute = device + "/" + child.name + "/lun0/file"
+            match readSmallFile(AtDirectory.current, attribute) {
+                Ok -> return .Ok(.Some(attribute))
+                Error(failed) -> if failed.code != .NotFound { return .Error(failed) }
+            }
+        }
+    }
+    return .Ok(.None)
+}
+
+// The image in the USB drive's LUN, none when the host ejected it or none
+// was put in; NotFound when the machine has no such drive.
+function kernelUsbDriveMedium() -> Result<String?, TesseraError> {
+    let attribute = try kernelUsbDriveAttribute()
+    let path = try attribute otherwise return .Error(failure(.NotFound))
+    let named = try readSmallFile(AtDirectory.current, path)
+    let image = named.trim()
+    if image.isEmpty() { return .Ok(.None) }
+    return .Ok(.Some(image))
+}
+
+// Puts the file at `image` in the USB drive's LUN, or takes the medium out
+// when `image` is empty: the kernel opens the file itself and the host sees
+// a medium put in or taken out.
+function kernelUsbDriveLoad(image: borrow String) -> Result<Void, TesseraError> {
+    let attribute = try kernelUsbDriveAttribute()
+    let path = try attribute otherwise return .Error(failure(.NotFound))
+    return writeSmallFile(AtDirectory.current, path, image + "\n")
 }

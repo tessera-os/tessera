@@ -310,7 +310,9 @@ function recordFlip(display: Number, flip: borrow Flip) {
 
 public function displayTimeline(display: Ref) -> Result<Ref, TesseraError> {
     let index = try resolveDisplay(display, RefRights.read)
-    let fence = try deviceLibrary.displays[index].timeline otherwise return .Error(failure(.Unsupported))
+    let fence = try deviceLibrary.displays[index].timeline otherwise return .Error(
+        failure(.Unsupported)
+    )
     // The display keeps its own reference; the caller's reads and waits.
     return .Ok(
         mintRef(
@@ -450,7 +452,9 @@ public function displayAcquire(
 
 // Marks a surface object as on screen or off it, while it is still one.
 function setOnScreen(surface: Number, shown: Bool) {
-    if !deviceLibrary.objects[surface].live || deviceLibrary.objects[surface].kind != .Surface { return }
+    if !deviceLibrary.objects[surface].live || deviceLibrary.objects[surface].kind != .Surface {
+        return
+    }
     match surfaceOf(surface) {
         Ok(index) -> deviceLibrary.surfaces[index].onScreen = shown
         Error(failed) -> log debug("a scanned-out surface has no record", error: errorName(failed))

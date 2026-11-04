@@ -17,7 +17,16 @@ import TesseraDisplayClient
 namespace Pointer {
     // `InputDevice.inputKinds` bit 1: a pointer.
     let inputKind: UNumber = UNumber(2)
+    // `InputDevice.inputKinds` bit 2: a touchscreen, held as an absolute
+    // pointer whose contact is the primary button.
+    let touchKind: UNumber = UNumber(4)
     let buttonPage: UN32 = UN32(9)
+    // HID's digitizer page and its Touch usage, which DeviceKit gives
+    // BTN_TOUCH.
+    let digitizerPage: UN32 = UN32(0x0D)
+    let touchContact: UN32 = UN32(0x42)
+    // The button page's first usage: the primary button.
+    let primaryButton: UNumber = UNumber(1)
     // A record's timestamp is in nanoseconds; the protocol's in milliseconds.
     let nanosecondsPerMillisecond: Number = 1000000
 }
@@ -33,13 +42,30 @@ struct PendingPointer {
     // Where a tablet put the pointer, in points (Tablet.kira).
     var x: Number? = .None
     var y: Number? = .None
+    // Whether a tablet or a touchscreen put the pointer in the dead zone: the
+    // frame's presses reach nothing, and its releases still let go.
+    var dead: Bool = false
 }
 
-// Whether the entry moves the pointer. A failure to say what it is is the
-// caller's.
+// Whether the entry moves the pointer: a mouse, a tablet or a touchscreen. A
+// failure to say what it is is the caller's.
 function movesPointer(entry: EntryId) -> Result<Bool, TesseraError> {
     let kinds = try numberProperty(entry, "inputKinds")
-    return .Ok((kinds & Pointer.inputKind) == Pointer.inputKind)
+    let pointer = (kinds & Pointer.inputKind) == Pointer.inputKind
+    let touch = (kinds & Pointer.touchKind) == Pointer.touchKind
+    return .Ok(pointer || touch)
+}
+
+// The button a key record presses, if it is one: a pointer button, or a
+// touchscreen's contact as the primary button.
+function pointerButton(usage: UN32) -> UNumber? {
+    let page = usage >> Keyboard.usageShift
+    let code = usage & Keyboard.usageMask
+    if page == Pointer.buttonPage { return .Some(UNumber(code)) }
+    if page == Pointer.digitizerPage && code == Pointer.touchContact {
+        return .Some(Pointer.primaryButton)
+    }
+    return .None
 }
 
 // Asks the port for one completion when the pointer has records.
@@ -83,15 +109,12 @@ function takePointerRecord(
                 else -> {}
             }
         }
-        Key -> {
-            if (usage >> Keyboard.usageShift) == Pointer.buttonPage {
-                server.pointing.buttons.append(
-                    PendingKey {
-                        code: UNumber(usage & Keyboard.usageMask),
-                        state: keyStateOf(UN32(record.value)),
-                    }
-                )
-            }
+        Key -> match pointerButton(usage) {
+            Some(button) -> server.pointing.buttons.append(
+                PendingKey { code: button, state: keyStateOf(UN32(record.value)) }
+            )
+            // A key that is no button moves nothing the protocol carries.
+            None -> {}
         }
         Frame -> return flushPointer(server)
         Dropped -> {
@@ -117,6 +140,7 @@ function flushPointer(server: borrow mut Server) -> Result<Void, TesseraError> {
     server.pointing = PendingPointer {}
     settleAbsolute(server, pending)
     if woke { pending.buttons = [] }
+    if pending.dead { pending.buttons = releasesOf(pending.buttons) }
     let time = UNumber(max(pending.time, 0))
     if pending.dx != 0 || pending.dy != 0 {
         server.pointerX = clamp(
@@ -163,6 +187,16 @@ function flushPointer(server: borrow mut Server) -> Result<Void, TesseraError> {
         )
     }
     return .Ok
+}
+
+// The releases among `buttons`: what a frame in the dead zone still delivers,
+// so a touch that slid into it lets go where it was.
+function releasesOf(buttons: borrow [PendingKey]) -> [PendingKey] {
+    var kept: [PendingKey] = []
+    for button in buttons {
+        if button.state != .Pressed { kept.append(copy button) }
+    }
+    return kept
 }
 
 namespace HeldRecord {

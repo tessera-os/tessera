@@ -122,7 +122,9 @@ function mintRef(object: Number, rights: RefRights) -> Ref {
             return refOfSlot(index)
         }
     }
-    deviceLibrary.refs.append(RefSlot { live: true, object: object, rights: rights, generation: U64(1) })
+    deviceLibrary.refs.append(
+        RefSlot { live: true, object: object, rights: rights, generation: U64(1) }
+    )
     return refOfSlot(deviceLibrary.refs.count - 1)
 }
 

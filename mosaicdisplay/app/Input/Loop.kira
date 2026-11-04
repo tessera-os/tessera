@@ -21,6 +21,7 @@ namespace PortKey {
     let flip: Number = 0xC0000
     let presence: Number = 0xD0000
     let settings: Number = 0xE0000
+    let bootLog: Number = 0xF0000
     // How many keys past its kind's a keyboard's or a pointer's may be.
     let span: Number = 0x10000
 }
@@ -45,6 +46,7 @@ enum Waker {
     Flip
     Presence
     Settings
+    BootLog
     Stop
     Link
     Unknown
@@ -68,6 +70,7 @@ function wakerOf(key: UNumber, count: Number) -> Waker {
     if value == PortKey.flip { return .Flip }
     if value == PortKey.presence { return .Presence }
     if value == PortKey.settings { return .Settings }
+    if value == PortKey.bootLog { return .BootLog }
     if value == PortKey.stop { return .Stop }
     if value == PortKey.link { return .Link }
     let index = Number(value) - 1
@@ -441,6 +444,7 @@ function startServer(
         }
     }
     startInput(server)
+    startBootLog(server)
     server.repeatTimer = makeRepeatTimer()
     // The platform may have set its idle times while the output was still
     // starting, before there was a timer to arm for them.
@@ -448,6 +452,7 @@ function startServer(
     armIdle(server)
     server.keymap = keymapNamed(settingValue(KeyboardSetting.layout, KeyboardSetting.fallback))
     log info("keys are typed through a keymap", layout: server.keymap.name)
+    server.deadZone = deadZoneSetting()
     armSettingsWatch(server.settings, server.port, UNumber(PortKey.settings))
     for index in 0..server.clients.count {
         if server.clients[index].alive {
@@ -503,6 +508,10 @@ function runDisplayLoop(
         Some(timer) -> closeHandle(timer)
         None -> {}
     }
+    match server.bootLog {
+        Some(view) -> closeHandle(view.timer)
+        None -> {}
+    }
 
     // `display.shown` is intentionally retained: it is the current scanout, and
     // the display reads it until a later commit replaces it, whether or not
@@ -556,6 +565,7 @@ function serve(server: borrow mut Server) -> Result<Void, TesseraError> {
             Flip -> flipLanded(server, completion)
             Presence -> servePresence(server)
             Settings -> settingsChanged(server)
+            BootLog -> bootLogTick(server)
             Unknown -> log warn("a completion no wait was made for", key: completion.key)
         }
     // A session that ends leaves the server serving: PID 1 starts a

@@ -143,17 +143,19 @@ function withPublished(entries: borrow [Entry]) -> Result<[Entry], TesseraError>
         match findEntry(entries, published.parent) {
             Some(parent) -> {
                 let name = try publishedName(published.properties)
-                merged.append(Entry {
-                    id: published.id,
-                    entryClass: published.entryClass,
-                    family: .None,
-                    parent: .Some(published.parent),
-                    flags: EntryFlags.none,
-                    path: entries[parent].path + "/published-" + hexText(published.id.raw, 16),
-                    node: .None,
-                    name: name,
-                    properties: published.properties,
-                })
+                merged.append(
+                    Entry {
+                        id: published.id,
+                        entryClass: published.entryClass,
+                        family: .None,
+                        parent: .Some(published.parent),
+                        flags: EntryFlags.none,
+                        path: entries[parent].path + "/published-" + hexText(published.id.raw, 16),
+                        node: .None,
+                        name: name,
+                        properties: published.properties,
+                    }
+                )
             }
             // Its parent went; the manager drops it with the next list.
             None -> {}

@@ -44,30 +44,32 @@ function readyBits(events: Number) -> Number {
 
 // The readiness `backing` reports now, or 0 when it reports none.
 function kernelReady(backing: Number, ready: Number) -> Number {
-    // Nothing but room to write, seen this pass, stands: a backing that
-    // becomes readable since is found by the wait that follows the pass. One
-    // seen readable is asked again, since an operation in the pass may have
-    // read it empty.
-    for index in 0..library.readyPolled.count {
-        if library.readyPolled[index] == backing {
-            let events = library.readyEvents[index]
-            if events == 0 { return 0 }
-            if events == Poll.out { return Number(U64(ready) & U64(Ready.writable)) }
-            break
+    unsafe {
+        // Nothing but room to write, seen this pass, stands: a backing that
+        // becomes readable since is found by the wait that follows the pass. One
+        // seen readable is asked again, since an operation in the pass may have
+        // read it empty.
+        for index in 0..library.readyPolled.count {
+            if library.readyPolled[index] == backing {
+                let events = library.readyEvents[index]
+                if events == 0 { return 0 }
+                if events == Poll.out { return Number(U64(ready) & U64(Ready.writable)) }
+                break
+            }
         }
+        let blockBytes = zeroedBlock(count: 24, alignment: 16)
+        let block = blockBytes.pointer()
+        heapStore<U32>(block, 16, U32(backing))
+        heapStore<U16>(block, 20, U16(pollEvents(ready)))
+        var answer = ppoll(heapOffset(block, 16), U64(1), block, nullPointer())
+        while failedWith(answer, .Interrupted) {
+            answer = ppoll(heapOffset(block, 16), U64(1), block, nullPointer())
+        }
+        // Without memory for the poll the kernel reports nothing; every caller
+        // looks again.
+        if answerFailed(answer) || answer == 0 { return 0 }
+        return readyBits(heapLoad<U16>(block, 22))
     }
-    let blockBytes = zeroedBlock(count: 24, alignment: 16)
-    let block = blockBytes.pointer()
-    heapStore<U32>(block, 16, U32(backing))
-    heapStore<U16>(block, 20, U16(pollEvents(ready)))
-    var answer = ppoll(heapOffset(block, 16), U64(1), block, nullPointer())
-    while failedWith(answer, .Interrupted) {
-        answer = ppoll(heapOffset(block, 16), U64(1), block, nullPointer())
-    }
-    // Without memory for the poll the kernel reports nothing; every caller
-    // looks again.
-    if answerFailed(answer) || answer == 0 { return 0 }
-    return readyBits(heapLoad<U16>(block, 22))
 }
 
 // Sleeps until one of the interests is ready, a signal arrives, or `wait`
@@ -75,22 +77,26 @@ function kernelReady(backing: Number, ready: Number) -> Number {
 // again at what it waits on once it wakes, so a wait the kernel cuts short
 // only ends the sleep early.
 function kernelWaitFor(interests: borrow [Interest], wait: U64) {
-    let blockBytes = zeroedBlock(count: 16 + interests.count * 8, alignment: 16)
-    let block = blockBytes.pointer()
-    var at = 16
-    for interest in interests {
-        heapStore<U32>(block, at, U32(interest.backing))
-        heapStore<U16>(block, at + 4, U16(pollEvents(interest.ready)))
-        at += 8
-    }
-    var timeout = nullPointer()
-    if wait != Deadline.infinite {
-        storeTimespec(block, U64(0), wait)
-        timeout = block
-    }
-    match answerStatus(ppoll(heapOffset(block, 16), U64(interests.count), timeout, nullPointer())) {
-        Ok -> {}
-        Error(failed) -> absorb failed
+    unsafe {
+        let blockBytes = zeroedBlock(count: 16 + interests.count * 8, alignment: 16)
+        let block = blockBytes.pointer()
+        var at = 16
+        for interest in interests {
+            heapStore<U32>(block, at, U32(interest.backing))
+            heapStore<U16>(block, at + 4, U16(pollEvents(interest.ready)))
+            at += 8
+        }
+        var timeout = nullPointer()
+        if wait != Deadline.infinite {
+            storeTimespec(block, U64(0), wait)
+            timeout = block
+        }
+        match answerStatus(
+            ppoll(heapOffset(block, 16), U64(interests.count), timeout, nullPointer())
+        ) {
+            Ok -> {}
+            Error(failed) -> absorb failed
+        }
     }
 }
 
@@ -102,30 +108,32 @@ function kernelWaitOn(backing: Number, ready: Number, wait: U64) {
 // Polls every backing in `backings` in one call, so the operations a pass
 // steps through look up what each reported instead of polling it alone.
 function kernelReadySnapshot(backings: borrow [Number]) {
-    kernelReadyForget()
-    if backings.count == 0 { return }
-    let blockBytes = zeroedBlock(count: 16 + backings.count * 8, alignment: 16)
-    let block = blockBytes.pointer()
-    let events = Poll.input | Poll.out | Poll.readHangUp
-    var at = 16
-    for backing in backings {
-        heapStore<U32>(block, at, U32(backing))
-        heapStore<U16>(block, at + 4, U16(events))
-        at += 8
+    unsafe {
+        kernelReadyForget()
+        if backings.count == 0 { return }
+        let blockBytes = zeroedBlock(count: 16 + backings.count * 8, alignment: 16)
+        let block = blockBytes.pointer()
+        let events = Poll.input | Poll.out | Poll.readHangUp
+        var at = 16
+        for backing in backings {
+            heapStore<U32>(block, at, U32(backing))
+            heapStore<U16>(block, at + 4, U16(events))
+            at += 8
+        }
+        var answer = ppoll(heapOffset(block, 16), U64(backings.count), block, nullPointer())
+        while failedWith(answer, .Interrupted) {
+            answer = ppoll(heapOffset(block, 16), U64(backings.count), block, nullPointer())
+        }
+        if answerFailed(answer) { return }
+        var reported: [Number] = []
+        at = 22
+        for _ in 0..backings.count {
+            reported.append(Number(heapLoad<U16>(block, at)))
+            at += 8
+        }
+        library.readyPolled = copy backings
+        library.readyEvents = move reported
     }
-    var answer = ppoll(heapOffset(block, 16), U64(backings.count), block, nullPointer())
-    while failedWith(answer, .Interrupted) {
-        answer = ppoll(heapOffset(block, 16), U64(backings.count), block, nullPointer())
-    }
-    if answerFailed(answer) { return }
-    var reported: [Number] = []
-    at = 22
-    for _ in 0..backings.count {
-        reported.append(Number(heapLoad<U16>(block, at)))
-        at += 8
-    }
-    library.readyPolled = copy backings
-    library.readyEvents = move reported
 }
 
 function kernelReadyForget() {

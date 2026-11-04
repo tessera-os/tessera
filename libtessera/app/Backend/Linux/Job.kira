@@ -9,29 +9,33 @@ import Heap
 // The calling process's own job, from `/proc/self/cgroup`; none on a
 // kernel without the cgroup v2 hierarchy.
 function kernelJobSelf() -> Result<Number?, TesseraError> {
-    let line = try readSmallFile(AtDirectory.current, "/proc/self/cgroup")
-    if !line.startsWith("0::") { return .Ok(.None) }
-    let path = "/sys/fs/cgroup" + line.substring(3, line.count)
-    let fd = openat(
-        AtDirectory.current,
-        cStringFrom(path),
-        LinuxOpen.readOnly | openDirectoryFlag() | LinuxOpen.closeOnExec,
-        0
-    )
-    if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
-    return .Ok(.Some(fd))
+    unsafe {
+        let line = try readSmallFile(AtDirectory.current, "/proc/self/cgroup")
+        if !line.startsWith("0::") { return .Ok(.None) }
+        let path = "/sys/fs/cgroup" + line.substring(3, line.count)
+        let fd = openat(
+            AtDirectory.current,
+            cStringFrom(path),
+            LinuxOpen.readOnly | openDirectoryFlag() | LinuxOpen.closeOnExec,
+            0
+        )
+        if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
+        return .Ok(.Some(fd))
+    }
 }
 
 // A backing that reports the job's processes coming and going.
 function kernelJobWatch(job: Number) -> Result<Number, TesseraError> {
-    let events = openat(
-        job,
-        cStringFrom("cgroup.events"),
-        LinuxOpen.readOnly | LinuxOpen.closeOnExec,
-        0
-    )
-    if answerFailed(events) { return .Error(errnoFailure(answerErrno(events))) }
-    return .Ok(events)
+    unsafe {
+        let events = openat(
+            job,
+            cStringFrom("cgroup.events"),
+            LinuxOpen.readOnly | LinuxOpen.closeOnExec,
+            0
+        )
+        if answerFailed(events) { return .Error(errnoFailure(answerErrno(events))) }
+        return .Ok(events)
+    }
 }
 
 // The readiness a job's watch reports when it changes: `cgroup.events`
@@ -40,33 +44,35 @@ let kernelJobWatchReady: Number = Ready.priority
 
 // A new job `name` beneath `parent`, with the controllers its limits need.
 function kernelJobCreate(parent: Number, name: borrow String) -> Result<Number, TesseraError> {
-    // A controller the kernel does not offer is left out, and the job goes
-    // without that limit; one the parent already hands down is not asked for
-    // again. A parent that holds processes itself cannot hand any down, and
-    // its jobs go without them too.
-    let offered = try readSmallFile(parent, "cgroup.controllers")
-    let handed = try readSmallFile(parent, "cgroup.subtree_control")
-    for controller in ["pids", "memory", "cpu"] {
-        if !wordListed(offered, controller) || wordListed(handed, controller) { continue }
-        match writeSmallFile(parent, "cgroup.subtree_control", "+" + controller) {
-            Ok -> {}
-            Error(failed) -> log debug(
-                "a job goes without a controller",
-                controller,
-                error: errorName(failed)
-            )
+    unsafe {
+        // A controller the kernel does not offer is left out, and the job goes
+        // without that limit; one the parent already hands down is not asked for
+        // again. A parent that holds processes itself cannot hand any down, and
+        // its jobs go without them too.
+        let offered = try readSmallFile(parent, "cgroup.controllers")
+        let handed = try readSmallFile(parent, "cgroup.subtree_control")
+        for controller in ["pids", "memory", "cpu"] {
+            if !wordListed(offered, controller) || wordListed(handed, controller) { continue }
+            match writeSmallFile(parent, "cgroup.subtree_control", "+" + controller) {
+                Ok -> {}
+                Error(failed) -> log debug(
+                    "a job goes without a controller",
+                    controller,
+                    error: errorName(failed)
+                )
+            }
         }
+        let made = mkdirat(parent, cStringFrom(name), 0x1ED)
+        if answerFailed(made) { return .Error(errnoFailure(answerErrno(made))) }
+        let fd = openat(
+            parent,
+            cStringFrom(name),
+            LinuxOpen.readOnly | openDirectoryFlag() | LinuxOpen.closeOnExec,
+            0
+        )
+        if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
+        return .Ok(fd)
     }
-    let made = mkdirat(parent, cStringFrom(name), 0x1ED)
-    if answerFailed(made) { return .Error(errnoFailure(answerErrno(made))) }
-    let fd = openat(
-        parent,
-        cStringFrom(name),
-        LinuxOpen.readOnly | openDirectoryFlag() | LinuxOpen.closeOnExec,
-        0
-    )
-    if answerFailed(fd) { return .Error(errnoFailure(answerErrno(fd))) }
-    return .Ok(fd)
 }
 
 // Whether `word` is one of the space-separated words of `list`.
@@ -79,12 +85,18 @@ function wordListed(list: borrow String, word: borrow String) -> Bool {
 
 // Removes the empty job at `path`.
 function kernelJobRemovePath(path: borrow String) -> Result<Void, TesseraError> {
-    return answerStatus(unlinkat(AtDirectory.current, cStringFrom(path), AtFlag.removeDirectory))
+    unsafe {
+        return answerStatus(
+            unlinkat(AtDirectory.current, cStringFrom(path), AtFlag.removeDirectory)
+        )
+    }
 }
 
 // Removes the empty job `name` beneath `parent`.
 function kernelJobRemove(parent: Number, name: borrow String) -> Result<Void, TesseraError> {
-    return answerStatus(unlinkat(parent, cStringFrom(name), AtFlag.removeDirectory))
+    unsafe {
+        return answerStatus(unlinkat(parent, cStringFrom(name), AtFlag.removeDirectory))
+    }
 }
 
 // Writes the limits the policy sets. Processes and threads are one count to
@@ -115,11 +127,13 @@ function kernelJobKill(job: Number) -> Result<Void, TesseraError> {
 
 // Whether any process is in the job, by its watch.
 function kernelJobPopulated(watch: Number) -> Result<Bool, TesseraError> {
-    let blockBytes = zeroedBlock(count: 257, alignment: 16)
-    let block = blockBytes.pointer()
-    let got = pread(watch, block, U64(256), U64(0))
-    if answerFailed(got) { return .Error(errnoFailure(answerErrno(got))) }
-    return .Ok(!stringFromCBytes(block, got).contains("populated 0"))
+    unsafe {
+        let blockBytes = zeroedBlock(count: 257, alignment: 16)
+        let block = blockBytes.pointer()
+        let got = pread(watch, block, U64(256), U64(0))
+        if answerFailed(got) { return .Error(errnoFailure(answerErrno(got))) }
+        return .Ok(!stringFromCBytes(block, got).contains("populated 0"))
+    }
 }
 
 function jobLineCount(job: Number, name: borrow String) -> Result<U32, TesseraError> {

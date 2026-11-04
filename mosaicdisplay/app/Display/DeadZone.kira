@@ -1,0 +1,52 @@
+import Foundation
+import LibTessera
+
+// The touch dead zone on the display (LibTessera's DeadZone.kira): a band
+// along one edge of the panel, kept while developer mode is on. The output is
+// laid out in what the band leaves, so every client is given that size; the
+// composition is drawn there and the band stays the background colour
+// (Compose.kira); a touch in the band is dropped (Tablet.kira).
+
+// `scanout` laid out in what `zone` leaves of its panel, a whole number of
+// points along the side the zone shortens.
+function bandedScanout(scanout: borrow Scanout, zone: borrow DeadZone?) -> Scanout {
+    let area = liveArea(zone, scanout.panelWidth, scanout.panelHeight, scanout.scale)
+    var banded = scanout
+    banded.width = area.width
+    banded.height = area.height
+    banded.originX = area.x
+    banded.originY = area.y
+    return banded
+}
+
+// The display as it starts: its output laid out in what the dead zone the
+// settings keep leaves of the panel.
+function startingDeadZone(display: borrow mut Display) {
+    let zone = deadZoneSetting()
+    display.scanout = bandedScanout(display.scanout, zone)
+    match zone {
+        Some(held) -> log info(
+            "the output keeps a dead zone",
+            edge: deadZoneEdgeName(held.edge),
+            percent: held.percent,
+            width: display.scanout.width,
+            height: display.scanout.height
+        )
+        None -> {}
+    }
+}
+
+// A setting the dead zone follows changed: the output takes what the zone the
+// settings now keep leaves of the panel, as it takes a new mode.
+function deadZoneChanged(server: borrow mut Server) {
+    server.deadZone = deadZoneSetting()
+    match server.deadZone {
+        Some(held) -> log info(
+            "the dead zone changed",
+            edge: deadZoneEdgeName(held.edge),
+            percent: held.percent
+        )
+        None -> log info("the output has no dead zone")
+    }
+    outputScanoutChanged(server, server.display.scanout)
+}

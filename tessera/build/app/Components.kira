@@ -66,7 +66,7 @@ function tesseraComponents() -> [Component] {
         components.append(tesseraComponent(name, .Driver))
     }
     let applications = [
-        "desktop", "inlay", "disk-utility", "notes", "welcome", "clock", "calculator", "about", "settings", "display-check",
+        "desktop", "inlay", "disk-utility", "notes", "welcome", "clock", "calculator", "about", "settings",
         "tessera-browser"
     ]
     for name in applications {
@@ -94,13 +94,11 @@ function frameworkDirectory(module: borrow String) -> String {
     return "System/Library/\(frameworks)/\(module).framework"
 }
 
-// Application `name`'s bundle, from a release's root and without `.app`: the
-// desktop and the boot check are the system's own, in CoreServices; the rest
-// are in /System/Applications, where the desktop lists them.
+// Application `name`'s bundle, from a release's root and without `.app`.
+// Desktop is in /System/Applications so PID 1 can open it as Mobile's home.
 function applicationBundle(name: borrow String) -> String {
     return match name {
-        "desktop" -> "System/Library/CoreServices/Desktop"
-        "display-check" -> "System/Library/CoreServices/Display Check"
+        "desktop" -> "System/Applications/Desktop"
         "inlay" -> "System/Applications/Inlay"
         "disk-utility" -> "System/Applications/Disk Utility"
         "notes" -> "System/Applications/Notes"

@@ -264,109 +264,117 @@ function viewDirectories(view: borrow mut KernelView, path: borrow String) {
 // What the link at `path` points at, or the errno it failed with: EINVAL when
 // the path is not a link, ENOENT when nothing is there.
 function linkTarget(path: borrow String) -> Result<String, Number> {
-    let blockBytes = zeroedBlock(count: 4097, alignment: 16)
-    let block = blockBytes.pointer()
-    let got = readlinkat(AtDirectory.current, cStringFrom(path), block, U64(4096))
-    if answerFailed(got) { return .Error(answerErrno(got)) }
-    return .Ok(stringFromCBytes(block, got))
+    unsafe {
+        let blockBytes = zeroedBlock(count: 4097, alignment: 16)
+        let block = blockBytes.pointer()
+        let got = readlinkat(AtDirectory.current, cStringFrom(path), block, U64(4096))
+        if answerFailed(got) { return .Error(answerErrno(got)) }
+        return .Ok(stringFromCBytes(block, got))
+    }
 }
 
 function nodePresent(path: borrow String) -> Bool {
-    let fd = openat(
-        AtDirectory.current,
-        cStringFrom(path),
-        LinuxOpen.path | LinuxOpen.closeOnExec,
-        0
-    )
-    if answerFailed(fd) { return false }
-    closeBacking(fd)
-    return true
+    unsafe {
+        let fd = openat(
+            AtDirectory.current,
+            cStringFrom(path),
+            LinuxOpen.path | LinuxOpen.closeOnExec,
+            0
+        )
+        if answerFailed(fd) { return false }
+        closeBacking(fd)
+        return true
+    }
 }
 
 function directoryPresent(path: borrow String) -> Bool {
-    let fd = openat(
-        AtDirectory.current,
-        cStringFrom(path),
-        LinuxOpen.path | LinuxOpen.closeOnExec | openDirectoryFlag(),
-        0
-    )
-    if answerFailed(fd) { return false }
-    closeBacking(fd)
-    return true
+    unsafe {
+        let fd = openat(
+            AtDirectory.current,
+            cStringFrom(path),
+            LinuxOpen.path | LinuxOpen.closeOnExec | openDirectoryFlag(),
+            0
+        )
+        if answerFailed(fd) { return false }
+        closeBacking(fd)
+        return true
+    }
 }
 
 // Turns the stage into the child's root, in the mount namespace it was
 // cloned into: whether every step held. Called between clone and exec, so
 // nothing here allocates.
 function enterView(view: borrow KernelView) -> Bool {
-    let none = nullCString()
-    // Nothing mounted from here on reaches the parent's namespace.
-    let shared = ConfineMount.recursive | ConfineMount.isPrivate
-    if !held(mount(none, view.slash, none, shared, nullPointer())) { return false }
-    let memoryFlags = MountFlag.noSetIdentity | MountFlag.noDevices
-    if !held(mount(view.memory, view.stage, view.memory, memoryFlags, nullPointer())) {
-        return false
-    }
-    for step in view.steps {
-        var answer = 0
-        match step.kind {
-            Directory -> {
-                answer = mkdirat(AtDirectory.current, step.target, 493)
-                // EEXIST: made already.
-                if answer == -17 { answer = 0 }
-            }
-            Link -> answer = symlinkat(step.source, AtDirectory.current, step.target)
-            Bind, Remount -> answer = mount(
-                step.source,
-                step.target,
-                none,
-                step.flags,
-                nullPointer()
-            )
-            Memory -> answer = mount(
-                view.memory,
-                step.target,
-                view.memory,
-                step.flags,
-                step.source.address
-            )
-            File -> {
-                answer = openat(
-                    AtDirectory.current,
-                    step.target,
-                    LinuxOpen.writeOnly | LinuxOpen.create | LinuxOpen.closeOnExec,
-                    420
-                )
-                if !answerFailed(answer) { answer = close(answer) }
-            }
-            Processes -> answer = mount(
-                view.procfs,
-                step.target,
-                view.procfs,
-                step.flags,
-                nullPointer()
-            )
+    unsafe {
+        let none = nullCString()
+        // Nothing mounted from here on reaches the parent's namespace.
+        let shared = ConfineMount.recursive | ConfineMount.isPrivate
+        if !held(mount(none, view.slash, none, shared, nullPointer())) { return false }
+        let memoryFlags = MountFlag.noSetIdentity | MountFlag.noDevices
+        if !held(mount(view.memory, view.stage, view.memory, memoryFlags, nullPointer())) {
+            return false
         }
-        if !held(answer) { return false }
+        for step in view.steps {
+            var answer = 0
+            match step.kind {
+                Directory -> {
+                    answer = mkdirat(AtDirectory.current, step.target, 493)
+                    // EEXIST: made already.
+                    if answer == -17 { answer = 0 }
+                }
+                Link -> answer = symlinkat(step.source, AtDirectory.current, step.target)
+                Bind, Remount -> answer = mount(
+                    step.source,
+                    step.target,
+                    none,
+                    step.flags,
+                    nullPointer()
+                )
+                Memory -> answer = mount(
+                    view.memory,
+                    step.target,
+                    view.memory,
+                    step.flags,
+                    step.source.address
+                )
+                File -> {
+                    answer = openat(
+                        AtDirectory.current,
+                        step.target,
+                        LinuxOpen.writeOnly | LinuxOpen.create | LinuxOpen.closeOnExec,
+                        420
+                    )
+                    if !answerFailed(answer) { answer = close(answer) }
+                }
+                Processes -> answer = mount(
+                    view.procfs,
+                    step.target,
+                    view.procfs,
+                    step.flags,
+                    nullPointer()
+                )
+            }
+            if !held(answer) { return false }
+        }
+        // The stage over the old root, and the old root let go of:
+        // `pivot_root(".", ".")`, which needs no directory to put it in.
+        if !held(chdir(view.stage)) { return false }
+        if !held(pivotRoot(view.dot, view.dot)) { return false }
+        if !held(umount2(view.dot, MountFlag.detach)) { return false }
+        if !held(chdir(view.slash)) { return false }
+        let sealed = ConfineMount.remount | MountFlag.readOnly | MountFlag.noSetIdentity | MountFlag.noDevices
+        if !held(mount(none, view.slash, none, sealed, nullPointer())) { return false }
+        // No capability survives the exec: root's are bounded by an empty set.
+        for capability in 0..ConfineMount.capabilities {
+            let dropped = prctl(ConfineMount.dropBounding, U64(capability), U64(0), U64(0), U64(0))
+            // EINVAL: a capability this kernel does not have.
+            if !held(dropped) && dropped != -22 { return false }
+        }
+        if !held(prctl(ConfineMount.ambient, ConfineMount.clearAmbient, U64(0), U64(0), U64(0))) {
+            return false
+        }
+        return held(prctl(ConfineMount.noNewPrivileges, U64(1), U64(0), U64(0), U64(0)))
     }
-    // The stage over the old root, and the old root let go of:
-    // `pivot_root(".", ".")`, which needs no directory to put it in.
-    if !held(chdir(view.stage)) { return false }
-    if !held(pivotRoot(view.dot, view.dot)) { return false }
-    if !held(umount2(view.dot, MountFlag.detach)) { return false }
-    if !held(chdir(view.slash)) { return false }
-    let sealed = ConfineMount.remount | MountFlag.readOnly | MountFlag.noSetIdentity | MountFlag.noDevices
-    if !held(mount(none, view.slash, none, sealed, nullPointer())) { return false }
-    // No capability survives the exec: root's are bounded by an empty set.
-    for capability in 0..ConfineMount.capabilities {
-        let dropped = prctl(ConfineMount.dropBounding, U64(capability), U64(0), U64(0), U64(0))
-        // EINVAL: a capability this kernel does not have.
-        if !held(dropped) && dropped != -22 { return false }
-    }
-    if !held(prctl(ConfineMount.ambient, ConfineMount.clearAmbient, U64(0), U64(0), U64(0))) {
-        return false
-    }
-    return held(prctl(ConfineMount.noNewPrivileges, U64(1), U64(0), U64(0), U64(0)))
 }
 
 function held(answer: Number) -> Bool { return !answerFailed(answer) }
