@@ -4,7 +4,7 @@
 // What it changes it writes to the Settings service, `tessera.settings`,
 // which keeps it on the data volume and tells every process.
 construct SettingsApp extends Package {
-    let version: String = "26.10.4"
+    let version: String = "26.11.1"
     let kind: PackageKind = .App
     // Its icon, light and dark, which the platform shows wherever the
     // application is.

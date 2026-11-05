@@ -1,5 +1,5 @@
 construct DevRoot extends Package {
-    let version: String = "26.10.4"
+    let version: String = "26.11.1"
     let kind: PackageKind = .App
     let moduleRoot: String = "DevRoot"
 }

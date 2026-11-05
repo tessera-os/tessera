@@ -1,7 +1,7 @@
 //! The Adaptive Mobile app package: the phone, tablet and fold platform, running on Dynamic Platforms.
 /// The Adaptive Mobile package: one Dynamic Platform for phone, tablet and fold.
 construct AdaptiveMobile extends Package {
-    let version: String = "26.10.4"
+    let version: String = "26.11.1"
     let kind: PackageKind = .App
     let moduleRoot: String = "AdaptiveMobile"
     let dependencies: [Dependency] = [Dependency {

@@ -1,7 +1,7 @@
 //! The Tessera installer package: installs a system onto a volume from the recovery media.
 /// The Tessera installer package: installs a system onto a volume.
 construct TesseraInstaller extends Package {
-    let version: String = "26.10.4"
+    let version: String = "26.11.1"
     let kind: PackageKind = .App
     let moduleRoot: String = "TesseraInstaller"
 }
