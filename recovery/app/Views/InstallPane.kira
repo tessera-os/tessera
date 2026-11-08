@@ -187,7 +187,7 @@ public construct InstallPane(
         }
         .fillWidth()
         .fillHeight()
-        .scenePadding()
+        .scenePadding(EdgeSet.all)
     }
 }
 

@@ -2,64 +2,54 @@ import Foundation
 import KiraUI
 import FileOperations
 
-// A look at the chosen file without opening it (roadmap/19-files-and-
-// documents.md, "Find and inspect documents"), as Quick Look gives one: the
-// start of a text, a picture whole, or, for any other kind, its size alone.
-
-enum PreviewKind {
-    Text
-    Picture
-    Other
-}
+// A bounded, non-executing preview of the chosen regular document. Names and
+// extensions are not trusted as proof of image content or UTF-8. The view
+// never calls readFile on the complete document.
 
 namespace PreviewLimit {
-    // How much of a text is shown.
-    let characters: Number = 2000
+    let bytes: Number = 4096
+    let imageBytes: Number = 8388608
     let pictureHeight: Number = 240
-}
-
-// The kind of preview a file's name promises.
-function previewKind(name: borrow String) -> PreviewKind {
-    let (_, extension) = nameParts(name.lowercased())
-    return match extension {
-        ".txt", ".md", ".text", ".log", ".json", ".kira", ".csv", ".ridl" -> .Text
-        ".png", ".jpg", ".jpeg" -> .Picture
-        else -> .Other
-    }
 }
 
 // The preview of the file at `path`, nothing when no file is chosen.
 function previewSection(path: borrow String) -> Any Widget {
     if path.count == 0 || isDirectory(path) || !fileExists(path) { return EmptyView() }
     let name = lastPathPart(path)
-    let shown: Any Widget = match previewKind(name) {
-        Text -> textPreview(path)
-        Picture -> ImageFile(path = copy path, aspectFill = false)
-        .height(resolvedLength(PreviewLimit.pictureHeight))
-        Other -> Text("No preview for this kind of document.").foregroundColor(.Secondary)
-    }
+    let shown = boundedDocumentPreview(path)
     return Section(children: [shown], header: Text("Preview of \(name)"))
 }
 
-function textPreview(path: borrow String) -> Any Widget {
-    return match readFile(path) {
-        Ok(contents) -> Text(textStart(contents.text, PreviewLimit.characters))
+function boundedDocumentPreview(path: borrow String) -> Any Widget {
+    let preview = match previewDocument(path, PreviewLimit.bytes) {
+        Ok(value) -> value
         Error(failure) -> {
-            log info("a text could not be previewed", failure)
-            Text("This document cannot be read as text.").foregroundColor(.Secondary)
+            absorb failure
+            return Text("Preview unavailable. The file may have moved or changed.")
+                .foregroundColor(.Secondary)
         }
+    }
+    return match preview.content {
+        Text(content) -> textPreviewContent(content, preview.truncated)
+        ImageFormat(format) -> imagePreviewContent(path, format, preview.totalBytes)
+        Unsupported -> Text("This document cannot be safely previewed.")
+            .foregroundColor(.Secondary)
     }
 }
 
-// The start of `text`, at most `limit` bytes cut where a character ends, and
-// an ellipsis when there was more.
-function textStart(text: borrow String, limit: Number) -> String {
-    if text.count <= limit { return copy text }
-    var at: Number = 0
-    while at < limit {
-        let width = scalarWidthAt(text, at)
-        if at + width > limit { break }
-        at += width
+function textPreviewContent(content: borrow String, truncated: Bool) -> Any Widget {
+    let text = truncated ? content + "…" : copy content
+    return Text(text)
+}
+
+// Only files with a recognized image signature are offered to ImageFile, and
+// only at a bounded size. A signature is a hint, not image validation; the
+// image decoder is still responsible for rejecting malformed input.
+function imagePreviewContent(path: borrow String, format: borrow String, size: Number) -> Any Widget {
+    if size > PreviewLimit.imageBytes {
+        return Text("\(format) image (\(size) bytes). Too large for a preview.")
+            .foregroundColor(.Secondary)
     }
-    return text.substring(0, at) + "…"
+    return ImageFile(path = copy path, aspectFill = false)
+        .height(resolvedLength(PreviewLimit.pictureHeight))
 }

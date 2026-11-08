@@ -63,6 +63,26 @@ function answerRequest(reply: Handle, said: borrow String) {
     release(reply)
 }
 
+// A successful Notes document launch sends an unambiguous acknowledgement.
+// Abruptly losing the reply channel must not be recorded as a successful open
+// by Inlay's recent-documents history.
+function answerDocumentOpened(reply: Handle) {
+    if reply == Handle.invalid { return }
+    let total = ServiceMessage.headerBytes
+    let bytes = zeroedBlock(count: total, alignment: 16)
+    let body = bytes.pointer()
+    heapStore<U32>(body, 0, ServiceOpcode.DocumentOpened.rawValue())
+    heapStore<U32>(body, 4, UN32(total))
+    heapStore<U32>(body, 8, UN32(1))
+    heapStore<U32>(body, 12, UN32(0))
+    let none: [Handle] = []
+    match channelWrite(reply, Buffer { address: body, length: total }, none) {
+        Ok -> {}
+        Error(reason) -> log warn("could not confirm a document launch", error: errorName(reason))
+    }
+    release(reply)
+}
+
 function installedDigestName(name: borrow String) -> String { return name + ".sha256" }
 
 // The SHA-256 of `bytes`, in lowercase hexadecimal.

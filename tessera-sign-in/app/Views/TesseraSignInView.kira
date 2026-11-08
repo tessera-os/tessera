@@ -1,0 +1,435 @@
+import Foundation
+import KiraUI
+import TesseraAuth
+
+// Tessera-owned applications embed this view. The screen, its wording, field
+// styles, validation, Cognito requests and intermediate steps are all shared.
+// Only the app name and the successful-session callback vary by application.
+public construct TesseraSignInView(
+    config: TesseraAuthConfig,
+    application: String,
+    onSignedIn: (TesseraTokens) -> Void
+) extends Widget {
+    @State var page: String = "login"
+    @State var email: String = ""
+    @State var password: String = ""
+    @State var repeatedPassword: String = ""
+    @State var code: String = ""
+    @State var newPassword: String = ""
+    @State var challengeName: String = ""
+    @State var challengeSession: String = ""
+    @State var enrollmentSecret: String = ""
+    @State var enrollmentSession: String = ""
+    @State var message: String = ""
+    @State var error: String = ""
+    @State var busy: Bool = false
+
+    body {
+        ScrollView {
+            VStack(spacing = .Large, alignment = .Center) {
+                VStack(spacing = .Small, alignment = .Center) {
+                    Text("Tessera")
+                    .font(size = scaledMetric(36, relativeTo: .largeTitle), weight = .Bold)
+                    Text("Your account, across Tessera.")
+                    .foregroundColor(.Secondary)
+                }
+
+                GroupBox {
+                    VStack(spacing = .Medium, alignment = .Leading) {
+                        Text(signInPageTitle(page, challengeName))
+                        .font(size = scaledMetric(23, relativeTo: .title), weight = .SemiBold)
+
+                        Text(signInPageDescription(page, application))
+                        .foregroundColor(.Secondary)
+
+                        self.fields()
+
+                        if error.count > 0 {
+                            Text(copy error).foregroundColor(.Danger)
+                            .typography(.footnote)
+                        }
+                        if message.count > 0 {
+                            Text(copy message).foregroundColor(.Secondary)
+                            .typography(.footnote)
+                        }
+                    }
+                    .frame(maxWidth = .Infinity, alignment = .Leading)
+                }
+                .frame(maxWidth = 460)
+
+                Text("Secured by Tessera Accounts")
+                .typography(.footnote)
+                .foregroundColor(.Tertiary)
+            }
+            .padding(resolvedLength(24))
+            .frame(maxWidth = .Infinity)
+        }
+    }
+
+    function fields() -> Any Widget {
+        if page == SignInPage.register { return self.registrationFields() }
+        if page == SignInPage.verify { return self.verificationFields() }
+        if page == SignInPage.forgot { return self.forgotFields() }
+        if page == SignInPage.reset { return self.resetFields() }
+        if page == SignInPage.challenge { return self.challengeFields() }
+        if page == SignInPage.enroll { return self.enrollmentFields() }
+        if page == SignInPage.unsupported { return self.unsupportedFields() }
+        return self.loginFields()
+    }
+
+    function loginFields() -> Any Widget {
+        return VStack(spacing = .Medium, alignment = .Leading) {
+            TextField(title = "Email", text = $email)
+            .textFieldStyle(.RoundedBorder)
+
+            SecureField(title = "Password", text = $password)
+            .textFieldStyle(.RoundedBorder)
+            .onSubmit({ in self.logIn() })
+
+            Button(action = { in self.logIn() }) {
+                Text("Sign In").frame(maxWidth = .Infinity)
+            }
+            .buttonStyle(.BorderedProminent)
+            .disabled(busy || !validEmailForSignIn(email) || password.count == 0)
+
+            HStack(spacing = .Medium, alignment = .Center) {
+                Button(action = { in self.goTo(SignInPage.forgot) }) {
+                    Text("Forgot password?")
+                }.buttonStyle(.Borderless)
+                Spacer()
+                Button(action = { in self.goTo(SignInPage.register) }) {
+                    Text("Create account")
+                }.buttonStyle(.Borderless)
+            }
+        }
+    }
+
+    function registrationFields() -> Any Widget {
+        return VStack(spacing = .Medium, alignment = .Leading) {
+            TextField(title = "Email", text = $email)
+            .textFieldStyle(.RoundedBorder)
+
+            SecureField(title = "Password", text = $password)
+            .textFieldStyle(.RoundedBorder)
+
+            SecureField(title = "Confirm password", text = $repeatedPassword)
+            .textFieldStyle(.RoundedBorder)
+            .onSubmit({ in self.register() })
+
+            Text("Use 14 or more characters, including uppercase, lowercase, a number and a symbol.")
+            .typography(.footnote)
+            .foregroundColor(.Secondary)
+
+            Button(action = { in self.register() }) {
+                Text("Create Account").frame(maxWidth = .Infinity)
+            }
+            .buttonStyle(.BorderedProminent)
+            .disabled(busy || password.count == 0 || repeatedPassword.count == 0)
+
+            self.backToLogin()
+        }
+    }
+
+    function verificationFields() -> Any Widget {
+        return VStack(spacing = .Medium, alignment = .Leading) {
+            Text(copy email).foregroundColor(.Secondary)
+            TextField(title = "Email verification code", text = $code)
+            .textFieldStyle(.RoundedBorder)
+            .onSubmit({ in self.confirmEmail() })
+
+            Button(action = { in self.confirmEmail() }) {
+                Text("Verify Email").frame(maxWidth = .Infinity)
+            }
+            .buttonStyle(.BorderedProminent)
+            .disabled(busy || code.count == 0)
+
+            HStack(spacing = .Medium, alignment = .Center) {
+                Button(action = { in self.resendEmail() }) {
+                    Text("Resend code")
+                }.buttonStyle(.Borderless)
+                Spacer()
+                self.backToLogin()
+            }
+        }
+    }
+
+    function forgotFields() -> Any Widget {
+        return VStack(spacing = .Medium, alignment = .Leading) {
+            TextField(title = "Email", text = $email)
+            .textFieldStyle(.RoundedBorder)
+            .onSubmit({ in self.forgotPassword() })
+
+            Button(action = { in self.forgotPassword() }) {
+                Text("Send Reset Code").frame(maxWidth = .Infinity)
+            }
+            .buttonStyle(.BorderedProminent)
+            .disabled(busy || !validEmailForSignIn(email))
+
+            self.backToLogin()
+        }
+    }
+
+    function resetFields() -> Any Widget {
+        return VStack(spacing = .Medium, alignment = .Leading) {
+            Text(copy email).foregroundColor(.Secondary)
+            TextField(title = "Reset code", text = $code)
+            .textFieldStyle(.RoundedBorder)
+
+            SecureField(title = "New password", text = $newPassword)
+            .textFieldStyle(.RoundedBorder)
+            .onSubmit({ in self.resetPassword() })
+
+            Button(action = { in self.resetPassword() }) {
+                Text("Set New Password").frame(maxWidth = .Infinity)
+            }
+            .buttonStyle(.BorderedProminent)
+            .disabled(busy || code.count == 0 || newPassword.count < 14)
+
+            self.backToLogin()
+        }
+    }
+
+    function challengeFields() -> Any Widget {
+        let passwordChallenge = challengeName == "PASSWORD"
+            || challengeName == "NEW_PASSWORD_REQUIRED"
+        return VStack(spacing = .Medium, alignment = .Leading) {
+            Text(copy email).foregroundColor(.Secondary)
+            if passwordChallenge {
+                SecureField(
+                    title = challengeName == "NEW_PASSWORD_REQUIRED"
+                        ? "New password" : "Password",
+                    text = $newPassword
+                )
+                .textFieldStyle(.RoundedBorder)
+                .onSubmit({ in self.answerChallenge() })
+            } else {
+                TextField(title = "Verification code", text = $code)
+                .textFieldStyle(.RoundedBorder)
+                .onSubmit({ in self.answerChallenge() })
+            }
+
+            Button(action = { in self.answerChallenge() }) {
+                Text("Continue").frame(maxWidth = .Infinity)
+            }
+            .buttonStyle(.BorderedProminent)
+            .disabled(busy || (passwordChallenge ? newPassword.count == 0 : code.count == 0))
+
+            self.backToLogin()
+        }
+    }
+
+    function unsupportedFields() -> Any Widget {
+        return VStack(spacing = .Medium, alignment = .Leading) {
+            Text("Verification requested: " + challengeName)
+            .foregroundColor(.Secondary)
+            self.backToLogin()
+        }
+    }
+
+    function enrollmentFields() -> Any Widget {
+        return VStack(spacing = .Medium, alignment = .Leading) {
+            Text("Authenticator setup key")
+            .fontWeight(.SemiBold)
+            Text(copy enrollmentSecret)
+            Text("Enter this key manually in your authenticator app. Keep it private.")
+            .foregroundColor(.Secondary)
+            .typography(.footnote)
+
+            TextField(title = "Six-digit code", text = $code)
+            .textFieldStyle(.RoundedBorder)
+            .onSubmit({ in self.completeEnrollment() })
+
+            Button(action = { in self.completeEnrollment() }) {
+                Text("Enable Authenticator").frame(maxWidth = .Infinity)
+            }
+            .buttonStyle(.BorderedProminent)
+            .disabled(busy || code.count != 6)
+
+            self.backToLogin()
+        }
+    }
+
+    function backToLogin() -> Any Widget {
+        return Button(action = { in self.goTo(SignInPage.login) }) {
+            Text("Back to Sign In")
+        }.buttonStyle(.Borderless)
+    }
+
+    // Switching pages never leaves a prior password, code or Cognito session
+    // on a form where it doesn't belong. Email is intentionally retained.
+    function goTo(target: borrow String) {
+        page = copy target
+        self.clearPrivateFields()
+        error = ""
+        message = ""
+    }
+
+    function clearPrivateFields() {
+        password = ""
+        repeatedPassword = ""
+        code = ""
+        newPassword = ""
+        challengeName = ""
+        challengeSession = ""
+        enrollmentSecret = ""
+        enrollmentSession = ""
+    }
+
+    function logIn() {
+        if busy { return }
+        if !validEmailForSignIn(email) || password.count == 0 {
+            error = "Enter your email and password."
+            return
+        }
+        let secret = copy password
+        password = ""
+        self.submit(.Login(SignInCredentials { email: copy email, password: secret }))
+    }
+
+    function register() {
+        if busy { return }
+        let issue = registrationProblem(email, password, repeatedPassword)
+        match issue {
+            Some(text) -> {
+                error = text
+                return
+            }
+            None -> {}
+        }
+        let secret = copy password
+        password = ""
+        repeatedPassword = ""
+        self.submit(.Register(SignInCredentials { email: copy email, password: secret }))
+    }
+
+    function confirmEmail() {
+        if busy || code.count == 0 { return }
+        let supplied = copy code
+        code = ""
+        self.submit(.ConfirmEmail(SignInCode { email: copy email, code: supplied }))
+    }
+
+    function resendEmail() {
+        if busy { return }
+        self.submit(.ResendEmail(copy email))
+    }
+
+    function forgotPassword() {
+        if busy { return }
+        if !validEmailForSignIn(email) {
+            error = "Enter a valid email address."
+            return
+        }
+        self.submit(.RequestReset(copy email))
+    }
+
+    function resetPassword() {
+        if busy { return }
+        if code.count == 0 || newPassword.count < 14 {
+            error = "Enter the code and a new password of at least 14 characters."
+            return
+        }
+        let suppliedCode = copy code
+        let secret = copy newPassword
+        code = ""
+        newPassword = ""
+        self.submit(.ConfirmReset(SignInReset {
+            email: copy email, code: suppliedCode, password: secret
+        }))
+    }
+
+    function answerChallenge() {
+        if busy || challengeSession.count == 0 { return }
+        let passwordChallenge = challengeName == "PASSWORD"
+            || challengeName == "NEW_PASSWORD_REQUIRED"
+        let answer = passwordChallenge ? copy newPassword : copy code
+        if answer.count == 0 { return }
+        let challenge = TesseraAuthChallenge {
+            name: copy challengeName,
+            session: copy challengeSession,
+            parameters: .Object([])
+        }
+        // Cognito will return the next challenge (or tokens). A challenge
+        // response is never considered a successful sign-in on its own.
+        code = ""
+        newPassword = ""
+        self.submit(.AnswerChallenge(SignInChallengeAnswer {
+            email: copy email, challenge: challenge, answer: answer
+        }))
+    }
+
+    function completeEnrollment() {
+        if busy || enrollmentSession.count == 0 || code.count != 6 { return }
+        let supplied = copy code
+        code = ""
+        self.submit(.FinishEnrollment(SignInEnrollmentAnswer {
+            email: copy email,
+            session: copy enrollmentSession,
+            code: supplied
+        }))
+    }
+
+    function submit(action: TesseraSignInAction) {
+        if busy { return }
+        error = ""
+        message = ""
+        busy = true
+        let result = performTesseraSignIn(config, move action)
+        busy = false
+        match result {
+            Ok(effect) -> self.handle(move effect)
+            Error(failure) -> match failure {
+                Unconfirmed -> {
+                    self.goTo(SignInPage.verify)
+                    message = "Your email needs verification. You can resend the code below."
+                }
+                else -> error = signInProblem(failure)
+            }
+        }
+    }
+
+    function handle(effect: TesseraSignInEffect) {
+        match effect {
+            Authenticated(tokens) -> {
+                self.clearPrivateFields()
+                error = ""
+                message = ""
+                onSignedIn(move tokens)
+            }
+            NeedsChallenge(challenge) -> {
+                if challenge.name == "MFA_SETUP" {
+                    self.clearPrivateFields()
+                    self.submit(.BeginEnrollment(copy challenge.session))
+                    return
+                }
+                self.clearPrivateFields()
+                challengeName = copy challenge.name
+                challengeSession = copy challenge.session
+                page = supportsChallenge(challenge.name)
+                    ? SignInPage.challenge : SignInPage.unsupported
+            }
+            VerificationSent -> {
+                page = SignInPage.verify
+                message = "A verification code has been sent."
+            }
+            EmailConfirmed -> {
+                self.goTo(SignInPage.login)
+                message = "Email verified. Sign in to continue."
+            }
+            ResetSent -> {
+                page = SignInPage.reset
+                message = "A reset code has been sent."
+            }
+            PasswordChanged -> {
+                self.goTo(SignInPage.login)
+                message = "Password updated. Sign in with your new password."
+            }
+            EnrollmentStarted(setup) -> {
+                self.clearPrivateFields()
+                enrollmentSecret = copy setup.secret
+                enrollmentSession = copy setup.session
+                page = SignInPage.enroll
+            }
+        }
+    }
+}

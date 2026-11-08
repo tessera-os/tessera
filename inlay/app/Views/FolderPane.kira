@@ -35,6 +35,7 @@ construct FolderPane(path: String, writable: Bool) extends Widget {
         if rows.count == 0 { rows.append(Text("This folder is empty").foregroundColor(.Secondary)) }
         let sections: [Any Widget] = [
             Section(children: rows, header: Text(lastPathPart(path)), footer: Text(self.footer())),
+            FolderSearch(root = copy path),
             previewSection(chosen),
             transferSection()
         ]
@@ -148,6 +149,7 @@ construct FolderPane(path: String, writable: Bool) extends Widget {
         let picked = copy chosen
         let cut = copy chosen
         return HStack(spacing = .Small, alignment = .Center) {
+            self.documentButton()
             Button(action = { in hold([copy picked], .Copy) }) {
                 Label(title = "Copy", systemImage = .DocOnDoc)
             }
@@ -176,6 +178,31 @@ construct FolderPane(path: String, writable: Bool) extends Widget {
                     }
                 }
             }
+        }
+    }
+
+    function documentButton() -> Any Widget {
+        if !isNotesRegularFile(chosen) { return EmptyView() }
+        let selected = copy chosen
+        if writable {
+            return Button(action = { in
+                match openSelectedInNotes(selected, true) {
+                    Ok -> {}
+                    Error(reason) -> problem = "Could not open this document in Notes ("
+                        + errorName(reason) + ")."
+                }
+            }) {
+                Label(title = "Edit in Notes", systemImage = .DocText)
+            }
+        }
+        return Button(action = { in
+            match openSelectedInNotes(selected, false) {
+                Ok -> {}
+                Error(reason) -> problem = "Could not open this document in Notes ("
+                    + errorName(reason) + ")."
+            }
+        }) {
+            Label(title = "Read in Notes", systemImage = .DocText)
         }
     }
 

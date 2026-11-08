@@ -79,6 +79,11 @@ function finderExecutable() -> String {
     return "/" + SystemDirectory.systemApplications + "/Inlay.app/Contents/MacOS/Inlay"
 }
 
+// The system's shared desktop and mobile home surface.
+function desktopExecutable() -> String {
+    return "/" + SystemDirectory.coreServices + "/Desktop.app/Contents/MacOS/Desktop"
+}
+
 // The page the browser boot loads: a data URL, so it needs no network.
 namespace BrowserTest {
     let page: String = "data:text/html,<html><body style='margin:0;background:%23336699'><h1 style='color:white;font-family:sans-serif'>Tessera Browser</h1></body></html>"
@@ -238,11 +243,14 @@ function services(calls: Handle, bootArguments: borrow [String]) -> [Service] {
     // `tessera.desktop` boots to the desktop, from which applications are
     // opened, instead of the toolkit's boot check. It is restarted like the
     // platform: without it nothing can be opened.
-    if bootFlag(bootArguments, "tessera.desktop") {
+    if !recovery && (
+        bootFlag(bootArguments, "tessera.desktop")
+        || chosenPlatform(calls, bootArguments) == PlatformSetting.adaptiveMobile
+    ) {
         services.append(
             Service {
                 name: "desktop",
-                path: "/" + SystemDirectory.systemApplications + "/Desktop.app/Contents/MacOS/Desktop",
+                path: desktopExecutable(),
                 arguments: [],
                 restart: true,
                 displayRole: DisplayRole.Desktop,

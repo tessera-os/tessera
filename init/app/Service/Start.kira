@@ -115,6 +115,32 @@ function consoleEntries() -> [StartupEntry] {
 // is assembled by a script, so the two can disagree, and a program that is
 // not there is one warning.
 function start(calls: Handle, service: borrow Service) -> Result<Started, TesseraError> {
+    return startWithDocument(calls, service, .None, false)
+}
+
+// Only the privileged Inlay request can reach this path. The caller retains
+// its document handle; this function duplicates a narrowed child grant.
+function startDocument(
+    calls: Handle,
+    service: borrow Service,
+    document: Handle,
+    editable: Bool
+) -> Result<Started, TesseraError> {
+    return startWithDocument(calls, service, .Some(document), editable)
+}
+
+function startWithDocument(
+    calls: Handle,
+    service: borrow Service,
+    document: borrow Handle?,
+    editable: Bool
+) -> Result<Started, TesseraError> {
+    if document.isSome() && !confinedByDefault(service) {
+        return .Error(TesseraError {
+            code: .AccessDenied, subsystem: .LibTessera,
+            flags: ErrorFlags.none, detail: 0
+        })
+    }
     let executable = try lookup(calls, service.path, Rights.read | Rights.execute | Rights.inspect)
     // A service started without arguments is started with its own path as
     // the first, the name it was started under.
@@ -122,7 +148,8 @@ function start(calls: Handle, service: borrow Service) -> Result<Started, Tesser
     if service.arguments.count > 0 { given = copy service.arguments } else {
         given.append(copy service.path)
     }
-    let arguments: Handle? = match launchInfoCreate(.Helper, given) {
+    let reason = document.isSome() ? LaunchReason.Document : LaunchReason.Helper
+    let arguments: Handle? = match launchInfoCreate(reason, given) {
         Ok(memory) -> .Some(memory)
         Error(failed) -> {
             release(executable)
@@ -150,6 +177,42 @@ function start(calls: Handle, service: borrow Service) -> Result<Started, Tesser
                 return .Error(failed)
             }
         }
+    }
+    // A chosen File is never named through the filesystem after this point.
+    // Clone only its approved rights, and let processLaunch consume the clone.
+    match document {
+        Some(file) -> {
+            var rights = Rights.read | Rights.inspect | Rights.transfer
+            if editable { rights = rights | Rights.write }
+            let grant = match handleDuplicate(file, rights) {
+                Ok(value) -> value
+                Error(failed) -> {
+                    for entry in initialHandles { release(entry.handle) }
+                    if output.reader != Handle.invalid { release(output.reader) }
+                    release(executable)
+                    match arguments {
+                        Some(memory) -> release(memory)
+                        None -> {}
+                    }
+                    return .Error(failed)
+                }
+            }
+            match launchDocumentEntry(grant, editable) {
+                Ok(entry) -> initialHandles.append(entry)
+                Error(failed) -> {
+                    release(grant)
+                    for entry in initialHandles { release(entry.handle) }
+                    if output.reader != Handle.invalid { release(output.reader) }
+                    release(executable)
+                    match arguments {
+                        Some(memory) -> release(memory)
+                        None -> {}
+                    }
+                    return .Error(failed)
+                }
+            }
+        }
+        None -> {}
     }
     let job = serviceJob(service)
     let options = LaunchOptions {

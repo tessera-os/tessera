@@ -127,6 +127,39 @@ function serviceRequested(
         ask: request.ask,
         application: name
     )
+    // The Inlay file manager alone can hand PID 1 a document File. Its
+    // request cannot name an arbitrary program: Notes is compiled into PID
+    // 1's trusted route, and the File is narrowed during confined launch.
+    if request.ask == .OpenDocument {
+        var said = ""
+        var started = false
+        if fleet.services[slot].path != finderExecutable()
+            || request.document == Handle.invalid {
+            said = "Only Inlay can open a selected document."
+            log warn("rejected a document-open request from another service",
+                service: fleet.services[slot].name)
+        } else {
+            match startNotesDocument(calls, request.document, request.editable, fleet) {
+                Ok(opened) -> {
+                    connectLaunchedClient(fleet, opened)
+                    linkToPlatform(fleet, opened)
+                    watchSlot(fleet, opened, port)
+                    started = true
+                }
+                Error(failure) -> {
+                    absorb failure
+                    said = "The selected document could not be opened in Notes."
+                }
+            }
+        }
+        // startNotesDocument duplicates and narrows the grant, so this
+        // request-owned handle remains ours to close after every outcome.
+        if request.document != Handle.invalid { release(request.document) }
+        if started { answerDocumentOpened(request.reply) }
+        else { answerRequest(request.reply, said) }
+        watchRequests(fleet, slot, port)
+        return
+    }
     // Switching platforms is the platform's alone. Its new channel is
     // watched when it starts, and the old one went with it.
     if request.ask == .SwitchPlatform {
@@ -183,6 +216,7 @@ function serviceRequested(
         }
         // Answered above, and never reaches here.
         SwitchPlatform -> {}
+        OpenDocument -> {}
         Launch -> {
             match openApplication(calls, request.path, fleet) {
                 Ok(outcome) -> {

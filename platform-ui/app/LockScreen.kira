@@ -65,7 +65,7 @@ function lockScreenMetrics(navigation: borrow NavigationModel) -> LockScreenMetr
 // How the lock screen says it is opened.
 function lockScreenHint(navigation: borrow NavigationModel) -> String {
     return match navigation {
-        Touch -> "Swipe up to open"
+        Touch -> "Swipe up or tap to open"
         Pointer -> "Click or press any key to open"
         Directional -> "Press any button to open"
     }

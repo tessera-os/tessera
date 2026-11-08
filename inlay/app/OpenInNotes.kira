@@ -1,0 +1,169 @@
+//! Inlay's explicit Open in Notes action. A selected regular File is opened
+//! here and its handle transferred to PID 1, never its filesystem pathname.
+import Foundation
+import LibTessera
+import TesseraUI
+
+namespace NotesDocumentLimit {
+    let maxBytes: UNumber = 1048576
+    let callKey: UNumber = 1
+}
+
+function openNotesFailure(code: ErrorCode) -> TesseraError {
+    return TesseraError {
+        code: code, subsystem: .LibTessera,
+        flags: ErrorFlags.none, detail: 0
+    }
+}
+
+// Only the plain-text formats that the system Notes external editor supports.
+function isNotesTextFile(path: borrow String) -> Bool {
+    let lowered = path.lowercased()
+    return lowered.endsWith(".txt") || lowered.endsWith(".md")
+}
+
+// Do not offer the action for a folder, link or device just because its name
+// ends in a text extension. The actual open repeats this check.
+function isNotesRegularFile(path: borrow String) -> Bool {
+    if !isNotesTextFile(path) { return false }
+    return match linkStatus(path) {
+        Ok(status) -> status.kind == .File
+        Error(reason) -> {
+            absorb reason
+            false
+        }
+    }
+}
+
+// The lookup and File.open completion share one local port. No arbitrary
+// path appears in the workspace request; this lookup ends at the selected
+// File, before the request is queued.
+function openNotesAnswer(
+    calls: Handle,
+    request: borrow Result<Void, TesseraError>
+) -> Result<Handle, TesseraError> {
+    try request
+    let found = try portWait(calls, 1, Deadline.infinite)
+    if found.count != 1 { return .Error(openNotesFailure(.Internal)) }
+    let result = found[0]
+    if result.error.code != .Ok { return .Error(result.error) }
+    return .Ok(Handle(result.result0))
+}
+
+/// Open only the chosen regular text document and queue a scoped File grant.
+/// The call does not start the app itself. PID 1 accepts the request only
+/// from Inlay and always chooses the system's sealed Notes executable.
+function openSelectedInNotes(path: borrow String, editable: Bool) -> Result<Void, TesseraError> {
+    if !path.startsWith("/") || path.contains("..") || path.contains("//")
+        || !isNotesTextFile(path) { return .Error(openNotesFailure(.InvalidArgument)) }
+    let status = match linkStatus(path) {
+        Ok(found) -> found
+        Error(reason) -> {
+            absorb reason
+            return .Error(openNotesFailure(.NotFound))
+        }
+    }
+    if status.kind != .File { return .Error(openNotesFailure(.InvalidArgument)) }
+    if status.size > NotesDocumentLimit.maxBytes {
+        return .Error(openNotesFailure(.OutOfRange))
+    }
+    let root = match startupHandle(StartupTag.systemRoot) {
+        Some(found) -> found
+        None -> return .Error(openNotesFailure(.AccessDenied))
+    }
+    let calls = try portCreate(.None)
+    var rights = Rights.read | Rights.inspect | Rights.transfer | Rights.duplicate
+    if editable { rights = rights | Rights.write }
+    let node = match openNotesAnswer(calls, nodeLookup(
+        root, path.substring(1, path.count), rights,
+        calls, NotesDocumentLimit.callKey
+    )) {
+        Ok(value) -> value
+        Error(reason) -> {
+            match handleClose(calls) {
+                Ok -> {}
+                Error(closed) -> absorb closed
+            }
+            return .Error(reason)
+        }
+    }
+    let selected = match nodeSnapshot(node) {
+        Ok(value) -> value
+        Error(reason) -> {
+            match handleClose(node) {
+                Ok -> {}
+                Error(closed) -> absorb closed
+            }
+            match handleClose(calls) {
+                Ok -> {}
+                Error(closed) -> absorb closed
+            }
+            return .Error(reason)
+        }
+    }
+    if selected.kind != .File || Number(selected.size) != Number(status.size)
+        || Number(selected.modified) != Number(status.modified)
+        || Number(selected.nodeId) != status.inode
+        || Number(linuxDeviceIdFromVolumeId(selected.volumeId)) != status.device {
+        match handleClose(node) {
+            Ok -> {}
+            Error(reason) -> absorb reason
+        }
+        match handleClose(calls) {
+            Ok -> {}
+            Error(reason) -> absorb reason
+        }
+        return .Error(openNotesFailure(.BadState))
+    }
+    let mode = editable ? OpenMode.read | OpenMode.write : OpenMode.read
+    let opened = openNotesAnswer(calls, fileOpen(node, mode, calls, NotesDocumentLimit.callKey))
+    match handleClose(node) {
+        Ok -> {}
+        Error(reason) -> absorb reason
+    }
+    match handleClose(calls) {
+        Ok -> {}
+        Error(reason) -> absorb reason
+    }
+    let document = try opened
+    let info = match fileInfo(document) {
+        Ok(value) -> value
+        Error(reason) -> {
+            match handleClose(document) {
+                Ok -> {}
+                Error(closed) -> absorb closed
+            }
+            return .Error(reason)
+        }
+    }
+    if info.size > NotesDocumentLimit.maxBytes {
+        match handleClose(document) {
+            Ok -> {}
+            Error(reason) -> absorb reason
+        }
+        return .Error(openNotesFailure(.OutOfRange))
+    }
+    // The selected entry may have changed while the File was being opened.
+    // Once opened, use this descriptor only; refuse a different size/time
+    // rather than sending a potentially stale selection to the editor.
+    // No pathname is resolved again for the actual File access.
+    if info.nodeId != selected.nodeId || info.volumeId != selected.volumeId
+        || info.size != selected.size || info.modified != selected.modified {
+        match handleClose(document) {
+            Ok -> {}
+            Error(reason) -> absorb reason
+        }
+        return .Error(openNotesFailure(.BadState))
+    }
+    // The queued workspace request takes ownership. The received process
+    // can read only this File, and can write only if the person asked to edit.
+    if !openDocumentInNotes(document, editable) {
+        match handleClose(document) {
+            Ok -> {}
+            Error(reason) -> absorb reason
+        }
+        return .Error(openNotesFailure(.BadState))
+    }
+    recentOpenRequested(path)
+    return .Ok
+}

@@ -1,0 +1,6 @@
+// Cognito identity client for first-party Tessera applications, in pure Kira.
+construct TesseraAuth extends Package {
+    let version: String = "26.11.1"
+    let kind: PackageKind = .Library
+    let moduleRoot: String = "TesseraAuth"
+}

@@ -1,0 +1,212 @@
+import Foundation
+import AppRegistry
+
+function registrySaved(result: Result<Void, RegistryStoreFailure>) -> Bool {
+    return match result {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+}
+
+function storedLinkSelected(result: Result<Void, StoredLinkFailure>) -> Bool {
+    return match result {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+}
+
+function cleanupStoredLink(path: borrow String) {
+    match removePath(path) {
+        Ok -> {}
+        Error(failure) -> absorb failure
+    }
+}
+
+@Test
+function savedLinkDefaultRoutesOnlyWhileItsSignedDeclarationIsAccepted() {
+    let registryFile = ".tessera-stored-link-registry"
+    let defaultsFile = ".tessera-stored-link-preferences"
+    cleanupStoredLink(registryFile)
+    cleanupStoredLink(defaultsFile)
+    var registry = ApplicationRegistry {}
+    var current = candidate(pubA, 1, digestA)
+    current.linkSchemes = ["demo+notes"]
+    expect!(registrationSucceeded(registry.prepare(current)))
+    expect!(registrationSucceeded(registry.activate(current.identity, digestA)))
+    expect!(registrySaved(saveRegistryFile(registryFile, registry)))
+    expect!(storedLinkSelected(chooseStoredLinkDefault(
+        registryFile, defaultsFile, "DEMO+NOTES", current.identity
+    )))
+    let before = match resolveStoredLink(registryFile, defaultsFile, "demo+notes:open/123") {
+        Ok(decision) -> match decision {
+            Ready(ticket) -> ticket.imageDigest == digestA
+                && ticket.version == 1 && sameApp(ticket.application, current.identity)
+            ChooseApplication, Unavailable -> false
+        }
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+    expect!(before)
+    let handlers = try storedLinkHandlers(registryFile, "DEMO+NOTES:open/123") otherwise return
+    expect!(handlers.count == 1)
+    expect!(sameApp(handlers[0], current.identity))
+    expect!((try storedLinkHandlers(registryFile, "https://example.com") otherwise return).count == 0)
+    let original = match resolveStoredLink(registryFile, defaultsFile, "demo+notes:open/123") {
+        Ok(decision) -> match decision {
+            Ready(ticket) -> ticket
+            ChooseApplication, Unavailable -> return
+        }
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    expect!((try storedLinkActivationIsCurrent(registryFile, defaultsFile, original)
+        otherwise return))
+
+    var updated = candidate(pubA, 2, digestB)
+    updated.linkSchemes = []
+    expect!(registrationSucceeded(registry.prepare(updated)))
+    expect!(registrationSucceeded(registry.activate(current.identity, digestB)))
+    expect!(registrySaved(saveRegistryFile(registryFile, registry)))
+    expect!(!(try storedLinkActivationIsCurrent(registryFile, defaultsFile, original)
+        otherwise return))
+    expect!((try storedLinkHandlers(registryFile, "demo+notes:open/123") otherwise return).count == 0)
+    let stale = match resolveStoredLink(registryFile, defaultsFile, "demo+notes:open/123") {
+        Ok(decision) -> match decision {
+            Unavailable(identity) -> sameApp(identity, current.identity)
+            ChooseApplication, Ready -> false
+        }
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+    expect!(stale)
+    expect!(!storedLinkSelected(chooseStoredLinkDefault(
+        registryFile, defaultsFile, "demo+notes", current.identity
+    )))
+    expect!(storedLinkSelected(forgetStoredLinkDefault(defaultsFile, "demo+notes")))
+    let cleared = match resolveStoredLink(registryFile, defaultsFile, "demo+notes:open/123") {
+        Ok(decision) -> match decision {
+            ChooseApplication -> true
+            Unavailable, Ready -> false
+        }
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+    expect!(cleared)
+    cleanupStoredLink(registryFile)
+    cleanupStoredLink(defaultsFile)
+}
+
+@Test
+function storedLinkResolutionDoesNotTrustDamagedStateOrStagedApps() {
+    let registryFile = ".tessera-stored-link-registry-bad"
+    let defaultsFile = ".tessera-stored-link-preferences-bad"
+    cleanupStoredLink(registryFile)
+    cleanupStoredLink(defaultsFile)
+    var registry = ApplicationRegistry {}
+    var staged = candidate(pubA, 1, digestA)
+    staged.linkSchemes = ["demo+notes"]
+    expect!(registrationSucceeded(registry.prepare(staged)))
+    expect!(registrySaved(saveRegistryFile(registryFile, registry)))
+    expect!(!storedLinkSelected(chooseStoredLinkDefault(
+        registryFile, defaultsFile, "demo+notes", staged.identity
+    )))
+    expect!(registrySaved(saveRegistryFile(registryFile, registry)))
+    match writeFile(defaultsFile, "broken preferences\n") {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    let corrupt = match resolveStoredLink(registryFile, defaultsFile, "demo+notes:open") {
+        Ok(decision) -> {
+            absorb decision
+            false
+        }
+        Error(failure) -> match failure {
+            Preferences(reason) -> {
+                absorb reason
+                true
+            }
+            Registry, Selection -> false
+        }
+    }
+    expect!(corrupt)
+    expect!(!storedLinkSelected(forgetStoredLinkDefault(defaultsFile, "demo+notes")))
+    expect!(!storedLinkSelected(chooseStoredLinkDefault(
+        registryFile, defaultsFile, "demo+notes", staged.identity
+    )))
+    cleanupStoredLink(defaultsFile)
+    cleanupStoredLink(registryFile)
+}
+
+@Test
+function acceptedImageUpgradeInvalidatesSavedLinkTicketButNotItsDefault() {
+    let registryFile = ".tessera-stored-link-upgrade-registry"
+    let defaultsFile = ".tessera-stored-link-upgrade-defaults"
+    cleanupStoredLink(registryFile)
+    cleanupStoredLink(defaultsFile)
+    var registry = ApplicationRegistry {}
+    var initial = candidate(pubA, 1, digestA)
+    initial.linkSchemes = ["demo+notes"]
+    expect!(registrationSucceeded(registry.prepare(initial)))
+    expect!(registrationSucceeded(registry.activate(initial.identity, digestA)))
+    expect!(registrySaved(saveRegistryFile(registryFile, registry)))
+    expect!(storedLinkSelected(chooseStoredLinkDefault(
+        registryFile, defaultsFile, "demo+notes", initial.identity
+    )))
+    let old = match resolveStoredLink(registryFile, defaultsFile, "demo+notes:read/3") {
+        Ok(decision) -> match decision {
+            Ready(ticket) -> ticket
+            Unavailable, ChooseApplication -> return
+        }
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    var next = candidate(pubA, 2, digestB)
+    next.linkSchemes = ["demo+notes"]
+    expect!(registrationSucceeded(registry.prepare(next)))
+    expect!(registrySaved(saveRegistryFile(registryFile, registry)))
+    // Pending images must not change the current ticket.
+    expect!((try storedLinkActivationIsCurrent(registryFile, defaultsFile, old)
+        otherwise return))
+    expect!(registrationSucceeded(registry.activate(initial.identity, digestB)))
+    expect!(registrySaved(saveRegistryFile(registryFile, registry)))
+    expect!(!(try storedLinkActivationIsCurrent(registryFile, defaultsFile, old)
+        otherwise return))
+    let replacement = match resolveStoredLink(registryFile, defaultsFile, "demo+notes:read/3") {
+        Ok(decision) -> match decision {
+            Ready(ticket) -> ticket
+            Unavailable, ChooseApplication -> return
+        }
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    expect!(replacement.version == 2)
+    expect!(replacement.imageDigest == digestB)
+    expect!((try storedLinkActivationIsCurrent(registryFile, defaultsFile, replacement)
+        otherwise return))
+    expect!(storedLinkSelected(forgetStoredLinkDefault(defaultsFile, "demo+notes")))
+    expect!(!(try storedLinkActivationIsCurrent(registryFile, defaultsFile, replacement)
+        otherwise return))
+    cleanupStoredLink(registryFile)
+    cleanupStoredLink(defaultsFile)
+}

@@ -235,7 +235,7 @@ function resizeMoving(server: borrow mut Server) {
 // Whether a window resized on the way has yet to draw the size it was last
 // sent, and has not been waited on for a whole step.
 function waitingOnResize(server: borrow Server, now: UNumber) -> Bool {
-    let scale = server.display.scanout.scale
+    let scale = server.display.scanout.clientScale()
     for motion in server.stageMotion {
         if motion.fromBadge != 0 || motion.toBadge != 0 || motion.sent.width == 0 { continue }
         if now > motion.sentAt + ResizePace.step { continue }

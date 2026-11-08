@@ -1972,3 +1972,541 @@ supports advisory locking. The Cairn-backed build directory may refuse
 advisory locks; a full `kira build boot -arch aarch64 -test` still needs a
 compatible build filesystem and complete train SDK integration. Host
 compilation and tests must never be presented as successful OS boot tests.
+
+## 2026-11-06 Open Link preference model
+
+`app-registry/app/LinkAssociations.kira` adds user-selected custom URL-scheme
+defaults bound to accepted app identity and certificate fingerprint. It refuses
+web and reserved/system schemes; removing the app leaves the selected default
+unavailable, not reassigned by display name. `LinkAssociationStore.kira` saves
+the preferences in a strict versioned text format and refuses damaged or linked
+metadata paths. The associated `registry_kik` suites exercise identity,
+parsing, replacement, persistence and unsafe-file cases. These are models,
+not a trusted URL dispatcher. The app manifest's declared schemes, verified
+domain associations, RIDL dispatch into a running app, and PID 1 integration
+remain open in roadmap chapter 36. Chapter 12 records the image-launch boundary.
+
+Run from the Cairn Tessera root:
+
+```
+~/.klf/bin/kira check tessera-packages/app-registry/tests/registry_kik --test
+~/.klf/bin/kira check --target aarch64-unknown-linux-gnu tessera-packages/app-registry
+```
+
+Both printed `Check: Ok` on this macOS host. Executable host test attempts
+could not reach the tests: `ld64.lld` fails to parse the macOS 27 SDK's
+`libSystem.tbd`; `KLF_USE_SYSTEM_LINKER=1` fixes that parsing error but exposes
+an unresolved `_Any` from `kir.Optional` in the generated test binary. A clean
+temporary copy of the registry without the new link files reproduces `_Any`.
+`--backend runtime` builds `.klbc` but the current test runner fails to
+enumerate it (`argument ... is not an integer`). No guest boot checkpoint was
+verified, and no end-to-end app-opening checkpoint is closed.
+
+## 2026-11-07 Signed link declarations and persistent activation
+
+This continuation added code (not only roadmap wording): app manifests accept
+canonical custom schemes from the optional `links` field; the v2 Ed25519 app
+signature statement binds those schemes, with v1 retained only for images with
+no declared links. Registry v3 persists declarations across staged and
+accepted installations, rollback and reboots. The v1/v2 parser migrates old
+records with zero claims. `LinkAssociations` refuses user defaults for apps
+that never signed the requested scheme, and produces a digest/version-bound
+`LinkActivation` ticket; updates, preference changes and removal invalidate it.
+`StoredLinkActivation.kira` provides protected file-backed selection, chooser
+candidate discovery, resolution and revalidation. `LaunchURL.kira` in
+LibTessera produces and reads typed URL launch memory, bounded to 64 KiB and
+without sending URL contents as process arguments.
+
+Added tests for a genuinely signed v2 fixture (public certificate and signature
+only), tamper rejection, malformed or symlinked manifest fields, v1/v2 registry
+compatibility, staged/uninstalled handlers, persisted defaults and stale
+activation tickets. Source checks succeeded for `registry_kik --test`,
+`catalog_kik --test`, and LibTessera `--target aarch64-unknown-linux-gnu`.
+The macOS host executable test and app smoke binary remain blocked by SDK/
+linker errors (including the pre-existing `_Any` issue); the runtime backend
+also cannot enumerate the tests. The trusted image launcher, RIDL activation of
+already-running apps, document-scoped content grants and a guest boot are **not
+yet integrated**, so chapter 36's end-to-end checkpoint remains open.
+
+## 2026-11-07 Signed document declarations and scoped startup handles
+
+Added source implementation to `AppRegistry` and `LibTessera`:
+
+- `AppCandidate.documentTypes` and the optional manifest `types` field accept
+  only unique, canonical lowercase filename extensions. The verified-image
+  signature statement v3 binds both links and document types to the exact
+  image digest. v1 and v2 remain valid only for claims they signed.
+- Registry v4 persists document types in accepted, pending and rollback
+  versions. Strict readers accept v1/v2/v3 records with missing declarations
+  defaulting to empty, not fabricated compatibility.
+- `DocumentAssociations` now refuses Open With defaults for accepted apps that
+  did not declare the extension, or that withdraw it in an update. The saved
+  publisher identity is preserved as unavailable rather than silently moved.
+- `StoredDocumentActivation` loads preferences and accepted registry from disk,
+  lists eligible handlers, creates image-digest/version-bound document tickets,
+  allows explicit selection/forgetting, and rechecks tickets before a grant.
+- `LibTessera` reserves `StartupTag.document` for a single explicitly narrowed
+  File capability in a confined launch. `launchDocumentEntry` and
+  `processLaunchDocument` create/receive that handle without a filesystem path.
+  The startup validator refuses directories, duplicate document entries,
+  unconfined launches and broad rights. The shared LaunchInfo argument reader
+  now bounds the memory, argument count and individual lengths.
+
+New/updated `registry_kik` suites cover signed v3 Ed25519 fixture acceptance,
+tampered document/link declarations and image bytes, v1–v3 migration to v4,
+withdrawn types after update, persisted Open With resolution, damaged metadata,
+and stale activation tickets. The public fixture signature was independently
+verified with OpenSSL; its private key was not retained. Run from the Tessera
+root with the installed Kira toolchain:
+
+```
+~/.klf/bin/kira check tessera-packages/app-registry/tests/registry_kik --test
+~/.klf/bin/kira check tessera-packages/app-catalog/tests/catalog_kik --test
+~/.klf/bin/kira check --target aarch64-unknown-linux-gnu tessera-packages/libtessera
+```
+
+All three returned `Check: Ok` on this host (the final LibTessera reader change
+still requires a fresh check). Executable Kira tests remain blocked by the
+native linker/runtime issues described above, independently reproduced on the
+pre-change registry baseline. PID 1's protected image-opening transaction,
+selected-file broker, Inlay UI and RIDL delivery to an already-running app
+remain unimplemented. No actual document-open boot test was claimed.
+
+## 2026-11-07 Explicit Inlay → PID 1 → Notes document launch
+
+The actual built-in text-document path now spans `inlay`, `tessera-ui`,
+`libtessera`, `init` and `notes`. Inlay offers Read/Edit in Notes for a selected
+regular `.txt` or `.md` file no larger than 1 MiB. It opens the File with
+LibTessera's no-symlink `nodeLookup` and sends a capability, not its document
+pathname. Workspace opcode 12 carries the reply and selected File as separate
+handles plus an explicit read/edit mode. PID 1 accepts it only from its sealed
+Inlay service, chooses the fixed system Notes executable, and launches a new
+confined Notes process with one narrowed `StartupTag.document` capability.
+The child strips Transfer rights on receipt and uses only the granted File.
+Ordinary launches still use Notes' private library.
+
+The local Tessera cross sysroot source checks below printed `Check: Ok`:
+
+```
+export KLF_SYSROOT="$HOME/.tessera-build/sysroot/aarch64-linux-gnu.cross"
+~/.klf/bin/kira check --target aarch64-unknown-tessera tessera-packages/libtessera
+~/.klf/bin/kira check --target aarch64-unknown-tessera tessera-packages/init
+~/.klf/bin/kira check --target aarch64-unknown-tessera tessera-packages/tessera-ui
+~/.klf/bin/kira check --target aarch64-unknown-tessera tessera-packages/inlay
+~/.klf/bin/kira check --target aarch64-unknown-tessera tessera-packages/notes
+```
+
+The guarded `boot-with-local-lock.sh --build` fails at host linking before a
+guest starts (SDK / undefined symbol errors in `/private/tmp/tessera-boot-openwith.log`).
+No successful guest Open With checkpoint is claimed. The new path is explicit
+and Notes-only: it does not yet use the signed AppRegistry defaults, implement
+an application chooser, atomic Save As or RIDL delivery to running apps.
+
+Additional safety and validation: LibTessera's `nodeSnapshot` exposes typed
+inode, volume, size and modification metadata, and Inlay verifies that its
+File handle matches the selected Node before transfer. The workspace encoder
+now has `tessera-ui/tests/tests/WorkspaceDocumentTests.kira` covering the fixed
+Notes-only route, read/edit mode and unchanged ordinary launch opcode;
+`kira check --target aarch64-unknown-tessera tessera-packages/tessera-ui/tests
+--test` printed `Check: Ok`. Test source validation is not test execution.
+
+The repeatable source gate is `tessera-packages/tessera/scripts/check-document-open.sh`.
+An earlier attempt encountered concurrently changing KiraUI sources; a second
+was stalled in the TesseraUI compiler and its processes were terminated. The
+**third complete run passed** on the current tree: all five package checks
+plus the workspace-wire test package printed `Check: Ok` and the script exited
+successfully (log `/private/tmp/tessera-document-open-gate3.log`). Source
+checks compile test registrations but do not execute tests or boot a guest.
+The host linker remains the blocker for a boot-verified checkpoint.
+
+Notes now uses LibTessera's `fileSnapshotMatches` to retain the FileInfo it
+loaded, detect changes during reading and refuse overwriting a changed file
+when Save is selected. A successful Save refreshes the snapshot; an error
+preserves the editor's unsaved text. `FileSnapshotTests.kira` in TesseraUI's
+test package covers changed time, size, inode and volume (as well as unchanged
+metadata), and its `--test` source check printed `Check: Ok`. This is an
+optimistic check, not atomic Save As; another writer can still race the write.
+
+PID 1's document-open path now also checks the received File's opened kind,
+size and actual open mode with LibTessera's `openedFileKind` and
+`eligibleNotesDocument`: only regular Files no larger than 1 MiB opened for
+reading (and writing when explicitly requested) qualify. The wire-format,
+snapshot and eligibility tests were moved out of TesseraUI into an isolated
+`tessera-packages/libtessera/tests/document_kik` package. It returns
+`Check: Ok` for `kira check --target aarch64-unknown-tessera ... --test`.
+This avoids unrelated, concurrently edited KiraUI test dependencies; no tests
+have been run as guest executables.
+
+Inlay's selected-file check now compares the Foundation status's original
+inode and Linux `st_dev` against the opened Node, in addition to size and
+mtime. `linuxDeviceIdFromVolumeId` maps the statx `(major << 32) | minor`
+value to Linux `st_dev`. A new pure test checks typical disk/NVMe and
+extended-minor encodings; both the isolated LibTessera test package and Inlay
+printed `Check: Ok` after this change. No real file-opening guest test is
+implied by these source validations.
+
+Inlay's root handle is already supplied by `LibTessera`'s
+`launchStartupEntries`: PID 1's `confinedByDefault` intentionally exempts
+sealed Inlay, and unconfined children receive `StartupTag.systemRoot`. Do not
+add a second `inlayRoot` startup grant. The explicit document File is the
+only extra handle passed to the confined Notes child; that process never
+receives a root Node. This was verified by reading the existing launch policy,
+not by a guest boot.
+
+The final combined source gate after the document-kind/mode/size checks,
+selected-device/inode comparison, and isolated test move completed with six
+`Check: Ok` results (five packages plus the isolated protocol suite). Its
+log is `/private/tmp/tessera-document-open-final-isolated-gate.log`, with the
+repeatable command `tessera-packages/tessera/scripts/check-document-open.sh`.
+The isolated `document_kik` package has ten `@Test` registrations, all
+source-checked but not executed. The existing macOS SDK/host-linker failure
+still blocks a completed guest boot; do not mark the chapter's end-to-end
+checkpoint as passed.
+
+## 2026-11-07 Xperia XZ2 (akari) first-stage profile
+
+Added a separate `-kernel-profile akari` for the regular Sony Xperia XZ2,
+not the similarly named Compact or Premium. Linux 7.2 already carries
+`qcom/sdm845-sony-xperia-tama-akari.dtb`, its TD4353 JDI panel driver and
+Synaptics RMI4 touchscreen support. The profile selects 4 KB pages, built-in
+DRM/MSM DPU, panel, backlight, touch and Qualcomm serial/USB plumbing.
+Mesa's existing Turnip build is shared with dm2q; the Adreno 630 SQE and GMU
+are fetched with checked digests, and the Sony-signed `a630_zap.mbn` is staged
+from `$TESSERA_AKARI_FIRMWARE` (default
+`~/.tessera-build/device/akari/firmware`). Kira build sources checked with
+`kira check tessera-packages/tessera/build` (`Check: Ok`).
+
+Do not present this as a bootable Xperia image. Upstream Tama explicitly
+disables UFS due to a historical risk of damaging bootloader storage; the
+profile additionally disables `CONFIG_SCSI_UFSHCD`. This blocks the Tessera
+system/data volume mount. A September 2026 UFS enablement patch has reported
+tests but is not part of this build, and no physical-device boot or safe
+flashing route has been established. See the Tessera README for the build
+command and the missing bring-up checkpoints.
+
+Linux 7.2's `defconfig` merged with the Tessera common and akari fragments was
+verified separately with `make olddefconfig`. The effective result had
+`CONFIG_ARM64_4K_PAGES=y`, `CONFIG_DRM_MSM_DPU=y`,
+`CONFIG_DRM_PANEL_SONY_TD4353_JDI=y`, `CONFIG_RMI4_I2C=y`, `CONFIG_RMI4_F12=y`,
+`CONFIG_BACKLIGHT_QCOM_WLED=y`, `CONFIG_USB_G_SERIAL=y`, and both UFS-related
+options disabled. The upstream `sdm845-sony-xperia-tama-akari.dtb` compiled
+successfully (110312 bytes, SHA-256
+`3dece01fcc2d6b1ed4c9f36849b940dd6a270cc277f71cd446496ba03bb3e716`).
+These checks use the actual upstream tree and config but are not a boot test.
+
+On macOS 27, the LLVM bundle's `ld64.lld` cannot read the SDK's newer TAPI
+files. `Kernel.kira` now passes `-fuse-ld=/usr/bin/ld` for kbuild's macOS host
+tools only; the Linux target still links with LLVM. The Kira build executable
+itself needs `KLF_USE_SYSTEM_LINKER=1`. Host LLVM 23.1.3 is currently a broken
+wrapper pointing to an absent Homebrew LLVM, so this workstation also needs
+`TESSERA_LLVM=$HOME/.kira/toolchains/llvm/23.1.0/aarch64-macos` for kernel
+builds. Neither workaround changes the phone's bootloader or firmware.
+
+The subsequent full kernel compile uncovered two additional host/arch issues:
+Tessera does not need AArch32 compatibility and the host LLVM has no ARM32
+backend, so akari now specifies `# CONFIG_COMPAT is not set` (confirmed in
+the generated Kira `akari/.config`). Kbuild's `certs/extract-cert` also
+needed Homebrew's `pkg-config` to locate installed OpenSSL headers; the
+Darwin tool PATH now includes `/opt/homebrew/bin`. The in-progress full
+kernel run was stopped after this host-path fix, so **no successful Image
+build or hardware boot is claimed**. The standalone Sony DTB did compile.
+
+## 2026-11-07 Akari offline installer staging
+
+The Akari Linux 7.2 `Image` and DTB compiled, as did the Adreno 630 Turnip
+stack and complete ARM64 Tessera initramfs and sealed system SquashFS.
+`kira build installer-image recovery-image -arch aarch64 -kernel-profile akari
+-symbols none -lldb off -icons skip` also produced the ARM64 installer initramfs
+and Tessera recovery SquashFS. The installer cpio includes executable `/init`,
+`bin/mkfs.btrfs`, its Btrfs dependencies and the ARM64 dynamic loader.
+Recovery contains `/System/Installation/system.img`, its 32-byte fs-verity
+digest, `/bin/installer`, `composefs.img` and `composefs.sig`.
+
+An early bundle check found that a previous `system-volume` published artifact
+was stale relative to the system image embedded by the `recovery-image` build.
+The staging packager now hashes the *decompressed embedded recovery payload*
+using `unsquashfs -cat` and refuses to package different system versions. Run
+`kira build system-volume installer-image recovery-image` with all three
+steps requested to publish a consistent set, then package using
+`scripts/package-akari-installer.py --output <new-zip-path>`. The eight
+installer-bundle tests and seven diagnostic-boot tests passed. The staging ZIP
+has per-member SHA-256, a manifest recording the Btrfs layout, an external ZIP
+SHA-256 checksum, and no device-writing or flashing commands.
+
+The installer's destination is a new Btrfs volume, not the shipped SquashFS
+system payload. It creates `boot/`, `data`, and a read-only `system/<version>`
+snapshot, then records `boot/current`. For the Xperia, a safe external microSD
+partition layout, distinct SquashFS source and Btrfs destination, stock Sony
+zap firmware, DTBO boot compatibility and hardware boot/recovery checks are
+still missing. Do **not** present the staging ZIP or the recovery SquashFS as
+an Android flashable package, and do not write internal UFS.
+
+The combined Akari build subsequently published consistent system and
+recovery images. `system.img` and the recovery's embedded
+`System/Installation/system.img` both hash to
+`550fce17e551e38227591441cf30066c87fa699338d70489a60dc0044ba2bae8`.
+The verified offline installer ZIP is
+`~/.tessera-build/out/Tessera-XZ2-akari-installer-staging-20261107.zip`
+(806,848,211 bytes; SHA-256
+`f8f531d7fec4c1917ba32b603b434ba95d797b8691ca634a275dedbeb99603e3`).
+Its `system/<version>` install version is `550fce17e551e382`; the ZIP CRC,
+every `SHA256SUMS` entry and the external `.zip.sha256` check passed. The
+`package-akari-installer.py` suite had eight passing tests, including a real
+SquashFS recovery-payload consistency test, and the diagnostic packager had
+seven passing tests. No Xperia boot or filesystem installation is claimed.
+
+## 2026-11-07 Xperia XZ2 diagnostic packaging
+
+Sony/Lineage Tama device configuration uses an Android boot v1 header, 4096-byte
+pages and a gzip-compressed Image with appended DTB, not dm2q's v4 layout.
+Added `scripts/package-akari-diagnostic.py`: generates an explicitly
+non-flashable local image, a DO-NOT-FLASH notice and SHA256SUMS, with exclusive
+creation and a caller-supplied boot partition limit. It validates an ARM64
+Image, zstd initramfs, Akari compatible, effective 4K/UFS-disabled kernel
+config, and parses FDT properties to require UFS host and PHY disabled and
+microSD enabled. All seven tests pass with
+`python3 scripts/test-package-akari-diagnostic.py -v`; the same FDT check
+passed against the real compiled upstream Akari DTB.
+
+The upstream Tama DTS enables SDHC2 (`mmc@8804000`) for removable microSD.
+The effective config has MMC_BLOCK, MMC_SDHCI_MSM and BTRFS built in, and
+LibTessera lists generic `/sys/block` disks and partitions. An external
+microSD Btrfs volume may therefore avoid internal UFS entirely, but no
+phone-side boot or persistent data test has validated this path.
+
+The matching Sony-signed `a630_zap.mbn` and physical phone are absent from
+this host (`fastboot devices` returned no device). Xperia bootloader DTBO
+handling, GPU, display, touch and USB diagnostics require a device test.
+The in-session Kira Linux 7.2 Akari kernel build log is
+`/private/tmp/tessera-akari-20261107-build.log`. Report a successful Image
+only after that run and artifact checks finish. These packaging tests cannot
+make an image safe to flash.
+
+## 2026-11-07 Chapter 19 — Inlay find, preview and recent documents
+
+Implemented real UI and routing beyond the earlier `FileOperations` models:
+
+- `inlay/app/Views/FolderSearch.kira` provides an explicit bounded filename
+  search of a selected `/Documents` or `/Volumes` folder. Results offer
+  Preview, Reveal and Open Folder. Navigating to a different root suppresses
+  stale results; recursive search never runs during ordinary redraws.
+- `inlay/app/Views/Preview.kira` uses `previewDocument`'s 4096-byte reader,
+  replacing the full-file read. Image preview requires a signature hint and
+  a size below 8 MiB; the image decoder must still reject malformed bytes.
+  The preview library now also checks inode and device after reading.
+- Recent Documents is a real Inlay sidebar place, with a private strict cache
+  in `/data/appdata/Inlay/RecentDocuments`. Offline documents remain visible;
+  Forget leaves the underlying file untouched. Reopen uses the secure
+  selected-File capability path rather than treating history as a grant.
+- `FileOperations.ConfirmedRecentOpens` enforces user-document roots, strict
+  persisted metadata, ordering across wall-clock corrections and rejection
+  of corrupt caches. Added source-checked regression cases for reload,
+  private-path rejection, corruption and forgetting without file deletion.
+- PID 1 sends explicit `DocumentOpened` opcode 13 only after a successful
+  Notes process launch. TesseraUI rejects error, malformed or silent replies
+  as launch failures, and permits only one document request in flight. Inlay
+  records history only after this acknowledgement; the selected document path
+  remains local to Inlay, not in the PID 1 request.
+
+Verification: `kira check --target aarch64-unknown-tessera` printed
+`Check: Ok` for Inlay and the `inlay/tests/operations_kik --test` suite, and
+the six-stage `check-document-open.sh` source gate passed with the updated
+acknowledgement protocol. The gate now also includes the Inlay operations
+suite. This verifies source checking and test registration, **not executed
+tests, UI behavior, reboot persistence or guest boot**. Chapter 19 §3's
+three acceptance checkpoints remain open until interactive guest verification.
+The macOS host linker/SDK blocker documented above still applies.
+
+## 2026-11-07 Xperia XZ2 offline release outputs
+
+The Linux 7.2 Akari `Image` (96 MiB raw) and upstream
+`sdm845-sony-xperia-tama-akari.dtb` (110,312 bytes) compiled. The Kira/ARM64
+build graph also produced `~/.tessera-build/out/initramfs/initramfs.cpio.zst`
+(Zstandard, 6.6 MiB) and `~/.tessera-build/out/system-volume/system.img`
+(SquashFS 4.0, 218 MiB), including the ARM64 Tessera application and service
+binaries. `file` identified each format, `zstd -t` passed, `unsquashfs -s`
+validated the system-image superblock, and all four publish SHA-256 digests
+matched the actual files. The full build log is
+`/private/tmp/tessera-akari-20261107-release-retry10.log`; it reached the
+system-image and loaders stages but contains absorbed publish lookup failures,
+so do **not** claim the end-to-end build or phone boot passed.
+
+The complete offline diagnostic bundle is at
+`~/.tessera-build/out/aarch64/tessera-akari-engineering-20261107.tar.zst`
+(148 MiB, SHA-256
+`b65feaa0635a0a7a49a86da49d5543019de68024f23cdff1805167a99bcc83da`).
+The archive passed `zstd -t`; all eight internal manifest entries passed
+`shasum -a 256 -c SHA256SUMS`. It contains the kernel, DTB, effective config,
+initramfs, system image, explicit safety notice and a 37,634,048-byte Android
+boot v1 diagnostic. The diagnostic packager and its seven tests passed with
+UFS disabled and microSD enabled. The image fits the published 0x04000000
+Akari boot partition maximum from Sony's archived `BoardConfig.mk`, but this
+is not a substitute for measuring a specific phone.
+
+ARM64 source/compile blockers resolved during this session included the
+current KLF's plugin-service ABI archive mismatch, TrashRules dependency,
+KiraUI frame/export and navigation builder bugs, Inlay state typing, Notes
+editing overload and Recovery's `scenePadding(edges:)` signature. The
+Sony-signed `a630_zap.mbn` is still missing. No Xperia was connected over
+ADB/fastboot and no bootloader/DTBO, display, touch, storage or recovery tests
+were possible. Both the boot diagnostic and engineering archive are
+**not flashable or installable**. The necessary hardware bring-up remains open.
+
+## 2026-11-07 Akari experimental internal UFS and Sony firmware revision
+
+This supersedes the earlier UFS-disabled Akari staging notes above.
+`patches/linux/0021-arm64-dts-qcom-sdm845-sony-tama-enable-ufs.patch`
+reproduces Shujath Mohd's September 14, 2026 Sony Tama UFS reset/regulator
+proposal, with TLMM GPIO 150 active-low reset, VCC `vreg_l20a_2p7`,
+`vcc-max-microamp=600000`, and PHY supplies `vreg_l1a_0p9`/`vreg_l26a_1p2`.
+The current `akari` config includes built-in `CONFIG_SCSI_UFSHCD`,
+`CONFIG_SCSI_UFSHCD_PLATFORM`, `CONFIG_SCSI_UFS_QCOM`, and
+`CONFIG_PHY_QCOM_QMP_UFS`; `CONFIG_SCSI_UFS_BSG` is disabled. The kernel Image
+and Akari DTB were compiled again and the effective properties checked.
+
+The `a630_sqe.fw` and `a630_gmu.bin` were downloaded from upstream linux-firmware
+with pinned SHA-256. The Sony Tama split `a630_zap.{mdt,b00,b01,b02}` was
+downloaded to `~/.tessera-build/device/akari/firmware/sony-stock` from
+TheMuppets' `proprietary_vendor_sony_tama-common` (lineage-23.0). The new
+`scripts/assemble-akari-zap.py` checks the inputs' hashes and reconstructs
+the original Qualcomm ELF segments into `a630_zap.mbn` (14256 bytes; SHA-256
+`9e5c3828fecc98fef87c8a7c841618f28a3d258c35981d1189ac03d85b547479`).
+Firmware authentication and Adreno 630 rendering are not tested on an Xperia;
+proprietary blobs are not in the repository. The rebuilt Tessera initramfs
+contains all three GPU files, each read back and matched byte-for-byte.
+
+To mitigate historical Tama UFS PURGE/UNMAP risk, `installer/app/Volume.kira`
+passes `-K` to `mkfs.btrfs`, `libtessera/app/Backend/Linux/Machine.kira`
+mounts Btrfs with `nodiscard`, and `Subvolumes.kira` uses
+`subvol=<name>,nodiscard`. The full release rebuilt with these changes, and
+the compiled installer's `/init` contains the `-K` option while compiled
+LibTessera contains `nodiscard`. System and recovery SquashFS embed matching
+`system.img`: SHA-256
+`efa9bd520f539f6b5de228af710d792facfad0287cbcbb7e052d02557e43a109`.
+
+Latest experimental ZIP:
+`~/.tessera-build/out/Tessera-XZ2-akari-UFS-GPU-nodiscard-experimental-20261107.zip`
+(845,785,278 bytes; SHA-256
+`2601a0de2242edc0030a1b4dd82506602c5e63693e1375484958792c0da641bf`).
+Its 14 members include kernel, DTB, effective config, the matching Android-v1
+`boot/experimental-boot.img`, no-discard initramfs, installer initramfs, sealed
+system and recovery images, all three GPU firmware files, manifest and hashes.
+ZIP CRC, every member's SHA-256 and outer `.zip.sha256` checked. The manifest
+system version is `efa9bd520f539f6b`. Nine diagnostic-boot tests and twelve
+installer-bundle tests pass. The boot candidate was checked against its exact
+Image, DTB, matching zstd initramfs and Android v1 image ID.
+
+**Not flashable.** Historical Sony bootloader corruption is not disproved by
+the successful kernel build or `nodiscard`. Actual XZ2 DTBO/AVB policy, boot
+partition geometry, independent recovery, GPU authentication, UFS operations,
+input, storage installation and reboot remain untested. `adb devices` and
+`fastboot devices` returned no Xperia. No physical-device flashing occurred.
+
+## 2026-11-07 Xperia XZ2 fastboot-first hardware prep
+
+The UFS-enabled build is unsafe for a first phone boot without Sony's older
+UFS-card-specific quirks: kernel commit
+`2e7a9ee1c91a016baa0b826a7752ec45663a0561` explicitly warns that probing
+Tama UFS without the quirks could permanently erase bootloader storage. The
+September 2026 DTS reset/regulator patch does not supply those quirks.
+
+Built an isolated `akari-ramboot-ufs-off` Linux 7.2 variant using an APFS clone
+of the existing kernel objects and the pinned LLVM toolchain. Its effective
+config has `# CONFIG_SCSI_UFSHCD is not set` and
+`# CONFIG_PHY_QCOM_QMP_UFS is not set`. The newly linked Image differs from
+the experimental UFS-enabled Image. The script
+`scripts/package-akari-fastboot-test.py` produces a separate DTB with the
+UFS host and PHY nodes disabled and a verified Android-v1 temporary boot
+candidate carrying the UFS-disabled Image and existing Tessera initramfs
+with Sony-specific GPU firmware.
+
+Boot-test archive:
+`~/.tessera-build/out/Tessera-XZ2-akari-FASTBOOT-RAM-TEST-UFS-OFF-20261107.zip`
+(36 MiB, SHA-256
+`125d2e8d409d39bc33aad2cac096b91599360d3d98eeab1e21e6f3b458c18cfd`).
+Eight ZIP members: Android-v1 `boot-test-ufs-disabled.img`, disabled Akari
+DTB, effective safe kernel config, `probe-device.sh`, `akari-boot-once.sh`,
+README, manifest and SHA256SUMS. The packager verified exact Image, DTB,
+ramdisk and Android boot ID. ZIP CRC, all inner SHA-256 entries and outer
+SHA-256 verified. A simulated XZ2 fastboot session confirmed the probe
+reads product/unlocked/slot/partition-size, rejects a wrong typed serial,
+then issues only `fastboot boot` after explicit confirmation; never flash,
+erase or unlock.
+
+This ZIP deliberately does not have `android-info.txt` or Android `system.img`
+because Tessera's sealed SquashFS system is not an Android fastboot system
+partition. It is not `fastboot update` compatible and does NOT install Tessera.
+With the physical phone connected, extract this ZIP and run
+`sh akari-boot-once.sh --probe` first. No Xperia was present over adb/fastboot
+as of the last check. No physical phone was booted or flashed.
+
+## 2026-11-07 19:05 CET — live XZ3 H8416 fastboot bring-up
+
+The phone plugged into Edmond's Windows PC is an Xperia **XZ3 H8416**
+(`akatsuki`, not XZ2/`akari`). NetBird SSH reaches Edmond as `ipado` and
+WinUSB is installed. Fastboot initially read `product=H8416`, `unlocked=yes`,
+`current-slot=b`, inactive boot_a 64 MiB, system_a 4,227,858,432 bytes and
+userdata 51,448,823,808 bytes (ext4).
+
+The actual XZ3 offline installer ZIP was built from a kernel with the LGD OLED
+panel and UFS guards plus Tessera's Btrfs installer and sealed SquashFS system:
+`~/.tessera-build/out/Tessera-XZ3-H8416-FASTBOOT-INSTALLER-USB-GUARDED-20261107.zip`.
+Its SHA-256 is `2a2f11d37a9001abedfa6519f8400ab10c6fff3fd3a9606d3b7fd85a4d16e1b2`.
+The ZIP and extracted files were transferred to Edmond under
+`C:\Users\ipado\Downloads\Tessera-XZ3-H8416-installer-USB-guarded` and all
+hashes verified. Its `akatsuki-install.ps1` now fails on `FAILED` or `no link`
+output even if fastboot.exe reports process exit code zero, an observed issue
+with Windows fastboot 36.0.0.
+
+**No phone partitions were written. No user data was erased.** The XZ3
+read-only installer preflight passed, but a UFS-disabled `fastboot boot`
+temporary RAM image failed at the USB transfer with `Write to device failed
+(no link)`. After that failure, `fastboot devices` still enumerated the Sony
+interface but even `fastboot getvar product` returned the same `no link`
+error. This is a hard blocker to any installation attempt; the user needs to
+physically disconnect and reenter fastboot mode (Sony blue LED), possibly
+changing USB cable or port. Additionally, a verified successful hardware boot
+and UFS/DTBO/display validation are not available; do not claim install safety
+from offline checks alone. The destructive `-Install` script mode was never run.
+
+## 2026-11-07 19:37 CET — Sony splash / XZ3 boot test outcome
+
+After the user physically reconnected, WinUSB fastboot worked reliably: product
+H8416, unlocked, slot b and partition sizes all read back. The original XZ3
+temporary UFS-off boot image was accepted by `fastboot boot` with `OKAY` for
+both Sending and Booting, but returned to fastboot soon afterwards. The user
+reported seeing only the **Sony logo** (boot splash), not Tessera.
+
+Identified a real Android boot header layout bug: 96 MiB decompressed arm64
+kernel plus ~29 MiB gzip+DTB overlapped the old 16 MiB RAMDISK_ADDRESS.
+`scripts/package-akari-diagnostic.py` and all XZ3 package helpers now put
+ramdisk at 0x08000000 (128 MiB), checking compressed and decompressed load
+ranges. A corrected UFS-off XZ3 test image booted with `OKAY`; the phone
+disappeared from fastboot initially but then reappeared (still not a successful
+Tessera boot).
+
+Further rebuilt a separate XZ3 mainline 7.2 test kernel **with LGD OLED and
+Atmel touch enabled but UFS host and PHY disabled** at
+`~/.tessera-build/out/aarch64/kernel/akatsuki-ramboot-ufs-off/`. It also has
+both DT UFS nodes disabled. A checked test ZIP now exists on the Mac and
+Edmond Windows:
+`Tessera-XZ3-akatsuki-OLED-UFS-OFF-RAM-TEST-20261107.zip`
+(SHA256 `a371c5915e92c6d0b48d3bdb9d4d2df9c0ce4aef1c7cf144be058680e501aa61`).
+On 2026-11-07 around 19:35 CET the **OLED-capable UFS-off RAM image** was sent
+successfully to the XZ3 with `Sending OKAY`, `Booting OKAY` through fastboot,
+but fastboot returned within 8 seconds. At 19:36, `fastboot getvar product`
+again returned H8416; ADB listed no devices. **Thus Tessera STILL HAS NOT
+BOOTED AND NOTHING WAS FLASHED OR FORMATTED.** Need actual early-boot serial
+console/DTBO or equivalent kernel logs before any destructive install.
+
+Fixed an installer crash guard in `installer/app/Volume.kira`: GPT lookup returns
+`Result<String?, TesseraError>`, requiring nested `Some(device)` to compare
+with the resolved Linux target partition. The new installer rebuilt correctly
+and the final ZIP exists on the Mac and Edmond at
+`Tessera-XZ3-H8416-FASTBOOT-INSTALLER-FIXED-20261107.zip`
+(SHA256 `7e7747f620e24b8986024499bde3fcfa1d9fa73ba18767367cb9bda676184947`).
+It has the corrected 128 MiB ramdisk header, OLED driver, kernel UFS command
+guards, 218 MiB sealed SquashFS source, Btrfs installer with `-K` and the
+target-partition GPT check. ZIP and the two transferred files verified SHA256
+on Edmond. The script still requires exact serial and two explicit user
+confirmations for `-Install`, and no such operation has been performed.

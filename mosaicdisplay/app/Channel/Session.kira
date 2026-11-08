@@ -164,7 +164,7 @@ function beginClient(
             width: scanout.width,
             height: scanout.height,
             refresh: scanout.refresh,
-            scale: scanout.scale,
+            scale: UNumber(scanout.clientScale()),
         }
     )
     for message in [welcome, output] {
@@ -178,7 +178,8 @@ function beginClient(
         width: scanout.width,
         height: scanout.height,
         refresh: scanout.refresh,
-        scale: scanout.scale
+        scale: scanout.clientScale(),
+        physicalScale: scanout.scale
     )
     return .Ok
 }

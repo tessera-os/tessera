@@ -53,7 +53,11 @@ extend ApplicationRegistry {
             Some(current) -> {
                 if current.candidate.version == candidate.version
                     && current.candidate.imageDigest == candidate.imageDigest
-                    && current.candidate.management == candidate.management {
+                    && current.candidate.management == candidate.management
+                    && current.candidate.name == candidate.name
+                    && current.candidate.requests == candidate.requests
+                    && current.candidate.linkSchemes == candidate.linkSchemes
+                    && current.candidate.documentTypes == candidate.documentTypes {
                     return .Ok
                 }
                 return .Error(.PendingDifferentImage)

@@ -549,11 +549,11 @@ function drawComposition(
                     index,
                     client,
                     content,
-                    scanout.scale,
+                    scanout.clientScale(),
                     progress
                 ) {
                     Some(frame) -> {
-                        let window = windowIn(frame, client, content, scanout.scale)
+                        let window = windowIn(frame, client, content, scanout.clientScale())
                         if client.corner > 0 {
                             drawWindowShadow(
                                 composer,
@@ -567,8 +567,8 @@ function drawComposition(
                             composer,
                             client,
                             frame,
-                            content.width / scanout.scale,
-                            content.height / scanout.scale,
+                            content.width / scanout.clientScale(),
+                            content.height / scanout.clientScale(),
                             GlassWindowClip {
                                 window: copy window,
                                 radius: client.corner * windowShrink(window, client)

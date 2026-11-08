@@ -5,6 +5,28 @@ import TesseraUI
 /// Runs Notes on Tessera's display until the person closes it.
 @Main
 function main() {
+    // The normal Notes launch retains its own private library. Only a File
+    // capability expressly transferred under StartupTag.document activates
+    // the external editor; no path or command-line argument can do so.
+    match incomingDocument() {
+        Opened(document) -> {
+            RunTesseraApplication(
+                "Notes – Document",
+                { in return ExternalDocumentView(document: document) },
+                ApplicationOptions {}
+            )
+            return
+        }
+        Refused(why) -> {
+            RunTesseraApplication(
+                "Notes – Document",
+                { in return ExternalDocumentFailureView(why: copy why) },
+                ApplicationOptions {}
+            )
+            return
+        }
+        NoDocument -> {}
+    }
     firstShown(loadFolders())
     let search = NotesSearch {}
     RunTesseraApplication(

@@ -24,7 +24,7 @@ namespace DevRootVolume {
     // a run stopped while it waited leaves its stick behind, which keeps
     // /Volumes/devroot taken.
     let plugged: String = "devroot.plugged"
-    let usage: String = "kira build devroot install|uninstall <component>... [-force] [-only] [-usb] | reset | sample [seconds] [hz] [-usb] | crashes [-usb] | logs -usb | wait [-usb]"
+    let usage: String = "kira build devroot install|uninstall <component>... [-force] [-only] [-usb] | stage-chunks <directory> -usb | discard-update <id> -usb | reset | sample [seconds] [hz] [-usb] | crashes [-usb] | logs -usb | wait [-usb]"
     // Room on the stick for what a sample brings back.
     let sampleBytes: Number = 48 * 1048576
     // Room for every crash report the machine keeps.
@@ -61,6 +61,12 @@ function devRootOutcome(
     if run.arguments.count == 0 { return .Error("usage: \(DevRootVolume.usage)") }
     let action = copy run.arguments[0]
     let usb = run.arguments.contains("-usb")
+    if action == "prepare-update" {
+        if run.arguments.count != 4 {
+            return .Error("usage: kira build devroot prepare-update <boot-directory> <system-image> <destination>")
+        }
+        return prepareUpdateInputs(run.arguments[1], run.arguments[2], run.arguments[3])
+    }
     let logs = host.logDirectory()
     let serialLog = "\(logs)/serial-\(architecture.name()).log"
     let monitor = Monitor { path: "\(logs)/qemu-\(architecture.name())-services.monitor" }
@@ -94,7 +100,7 @@ function devRootOutcome(
             return .Ok
         }
     }
-    let actions = ["install", "uninstall", "reset", "sample", "crashes", "logs"]
+    let actions = ["install", "uninstall", "reset", "sample", "crashes", "logs", "stage-update", "stage-chunks", "discard-update"]
     if !actions.contains(action) {
         return .Error(
             "unknown action \(action): install, uninstall, reset, sample, crashes, logs or wait"
@@ -102,6 +108,24 @@ function devRootOutcome(
     }
     if action == "logs" && !usb {
         return .Error("kernel log export requires -usb")
+    }
+    if action == "stage-update" {
+        if !usb || run.arguments.count < 2 || run.arguments[1].startsWith("-") {
+            return .Error("usage: kira build devroot stage-update <directory> -usb")
+        }
+        return stageUpdateUsb(host, run.arguments[1])
+    }
+    if action == "stage-chunks" {
+        if !usb || run.arguments.count < 2 || run.arguments[1].startsWith("-") {
+            return .Error("usage: kira build devroot stage-chunks <directory> -usb")
+        }
+        return sendUpdateChunks(host, run.arguments[1])
+    }
+    if action == "discard-update" {
+        if !usb || run.arguments.count < 2 || run.arguments[1].startsWith("-") {
+            return .Error("usage: kira build devroot discard-update <id> -usb")
+        }
+        return discardStagedUpdate(host, run.arguments[1])
     }
     var force = ""
     var components: [String] = []

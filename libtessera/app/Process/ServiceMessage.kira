@@ -44,6 +44,13 @@ public enum ServiceOpcode: U32 {
     // The running platform asks PID 1 to switch to the Dynamic Platform whose
     // program, a `platform.dynamic` value, follows (roadmap/15-form-factors.md).
     SwitchPlatform = 11
+    // Inlay transfers a selected File (the second handle after its reply
+    // channel) to PID 1. Only the fixed sealed Notes executable is eligible.
+    // The request never contains the selected document's pathname.
+    OpenDocument = 12
+    // PID 1 has successfully started a confined document application. This
+    // explicit reply is not equivalent to a suddenly closed reply channel.
+    DocumentOpened = 13
 }
 
 // The role PID 1 gives a display link, which MosaicDisplay keeps for the

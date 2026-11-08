@@ -3,7 +3,9 @@
 import Foundation
 
 public namespace RegistryText {
-    let version: String = "Tessera application registry 2"
+    let version: String = "Tessera application registry 4"
+    let linksVersion: String = "Tessera application registry 3"
+    let rollbackVersion: String = "Tessera application registry 2"
     let legacyVersion: String = "Tessera application registry 1"
     let maxBytes: Number = 8388608
     let maxEntries: Number = 4096
@@ -12,11 +14,24 @@ public namespace RegistryText {
 /// A strictly delimited, UTF-8-preserving format. Display names escape tabs,
 /// newlines and percent; publisher keys and app IDs are validated on read.
 public function registryText(registry: borrow ApplicationRegistry) -> String {
-    var lines: [String] = [RegistryText.version]
-    for entry in registry.installed { lines.append(acceptedRow("A", entry)) }
-    for entry in registry.previousVersions { lines.append(acceptedRow("B", entry)) }
+    return registryTextForVersion(registry, RegistryText.version, true, true)
+}
+
+function registryTextForVersion(
+    registry: borrow ApplicationRegistry,
+    version: borrow String,
+    writeSchemes: Bool,
+    writeDocuments: Bool
+) -> String {
+    var lines: [String] = [copy version]
+    for entry in registry.installed {
+        lines.append(acceptedRow("A", entry, writeSchemes, writeDocuments))
+    }
+    for entry in registry.previousVersions {
+        lines.append(acceptedRow("B", entry, writeSchemes, writeDocuments))
+    }
     for entry in registry.pending {
-        lines.append(candidateRow("P", entry.candidate, entry.carried))
+        lines.append(candidateRow("P", entry.candidate, entry.carried, writeSchemes, writeDocuments))
     }
     for id in registry.retainedData {
         lines.append("D\t" + id.identifier + "\t" + id.publisher)
@@ -24,19 +39,28 @@ public function registryText(registry: borrow ApplicationRegistry) -> String {
     return joined(lines, "\n") + "\n"
 }
 
-function acceptedRow(prefix: borrow String, entry: borrow AcceptedApp) -> String {
-    return candidateRow(prefix, entry.candidate, entry.grants)
+function acceptedRow(
+    prefix: borrow String,
+    entry: borrow AcceptedApp,
+    writeSchemes: Bool,
+    writeDocuments: Bool
+) -> String {
+    return candidateRow(prefix, entry.candidate, entry.grants, writeSchemes, writeDocuments)
 }
 
 function candidateRow(
     prefix: borrow String,
     candidate: borrow AppCandidate,
-    grants: borrow [String]
+    grants: borrow [String],
+    writeSchemes: Bool,
+    writeDocuments: Bool
 ) -> String {
-    return prefix + "\t" + candidate.identity.identifier + "\t" + candidate.identity.publisher
+    let base = prefix + "\t" + candidate.identity.identifier + "\t" + candidate.identity.publisher
         + "\t\(candidate.version)\t" + candidate.imageDigest + "\t"
         + managementWord(candidate.management) + "\t" + writtenRegistryField(candidate.name)
         + "\t" + joined(candidate.requests, ",") + "\t" + joined(grants, ",")
+    let linked = writeSchemes ? base + "\t" + joined(candidate.linkSchemes, ",") : base
+    return writeDocuments ? linked + "\t" + joined(candidate.documentTypes, ",") : linked
 }
 
 /// Parses all records atomically. Unknown versions, repeated identities,
@@ -47,7 +71,10 @@ public function parsedRegistry(text: borrow String) -> ApplicationRegistry? {
     if lines.count > RegistryText.maxEntries * 3 + 2 { return .None }
     if lines.count < 2 || lines[lines.count - 1] != "" { return .None }
     let legacy = lines[0] == RegistryText.legacyVersion
-    if !legacy && lines[0] != RegistryText.version { return .None }
+    let rollbackLegacy = lines[0] == RegistryText.rollbackVersion
+    let linksLegacy = lines[0] == RegistryText.linksVersion
+    if !legacy && !rollbackLegacy && !linksLegacy
+        && lines[0] != RegistryText.version { return .None }
     var registry = ApplicationRegistry {}
     for index in 1..lines.count - 1 {
         let row = lines[index].split("\t")
@@ -63,7 +90,8 @@ public function parsedRegistry(text: borrow String) -> ApplicationRegistry? {
         if row[0] != "A" && row[0] != "P" && (row[0] != "B" || legacy) {
             return .None
         }
-        if row.count != 9 { return .None }
+        let columns = legacy || rollbackLegacy ? 9 : (linksLegacy ? 10 : 11)
+        if row.count != columns { return .None }
         let version = try row[3].toNumber() otherwise return .None
         let management = match row[5] {
             "direct" -> AppManagement.Direct
@@ -73,13 +101,19 @@ public function parsedRegistry(text: borrow String) -> ApplicationRegistry? {
         let name = try readRegistryField(row[6]) otherwise return .None
         let requests: [String] = row[7].count == 0 ? [] : row[7].split(",")
         let grants: [String] = row[8].count == 0 ? [] : row[8].split(",")
+        let linkSchemes: [String] = legacy || rollbackLegacy || row[9].count == 0
+            ? [] : row[9].split(",")
+        let documentTypes: [String] = legacy || rollbackLegacy || linksLegacy || row[10].count == 0
+            ? [] : row[10].split(",")
         let app = AppCandidate {
             identity: AppIdentity { identifier: copy row[1], publisher: copy row[2] },
             name: name,
             version: version,
             imageDigest: copy row[4],
             management: management,
-            requests: requests
+            requests: requests,
+            linkSchemes: linkSchemes,
+            documentTypes: documentTypes
         }
         if validAppCandidate(app).isSome() { return .None }
         var seen: [String] = []
@@ -113,14 +147,13 @@ public function parsedRegistry(text: borrow String) -> ApplicationRegistry? {
         if item.candidate.version >= current.candidate.version { return .None }
     }
     // A strict canonical spelling protects against forged or repeated records.
-    // Preserve v1 files on read; the next successful write upgrades to v2.
-    let canonical = registryText(registry)
-    if legacy {
-        let currentPrefix = RegistryText.version + "\n"
-        let old = RegistryText.legacyVersion + "\n"
-            + canonical.substring(currentPrefix.count, canonical.count)
-        if old != text { return .None }
-    } else if canonical != text { return .None }
+    // v1/v2 have nine columns, v3 has ten, and v4 adds document types. Reading
+    // an older registry never fabricates verified document or URL handlers.
+    if legacy || rollbackLegacy {
+        if registryTextForVersion(registry, lines[0], false, false) != text { return .None }
+    } else if linksLegacy {
+        if registryTextForVersion(registry, lines[0], true, false) != text { return .None }
+    } else if registryText(registry) != text { return .None }
     return .Some(move registry)
 }
 

@@ -1,0 +1,219 @@
+import Foundation
+import AppRegistry
+
+function storedDocumentSaved(result: Result<Void, StoredDocumentFailure>) -> Bool {
+    return match result {
+        Ok -> true
+        Error(reason) -> {
+            absorb reason
+            false
+        }
+    }
+}
+
+function storedDocumentRegistrySaved(result: Result<Void, RegistryStoreFailure>) -> Bool {
+    return match result {
+        Ok -> true
+        Error(reason) -> {
+            absorb reason
+            false
+        }
+    }
+}
+
+function cleanupStoredDocument(path: borrow String) {
+    if pathExists(path) {
+        match removePath(path) {
+            Ok -> {}
+            Error(reason) -> absorb reason
+        }
+    }
+}
+
+@Test
+function persistedOpenWithSelectionBindsAcceptedImageAndExposesNoDocumentPath() {
+    let registryPath = ".tessera-stored-document-registry"
+    let preferencesPath = ".tessera-stored-document-defaults"
+    cleanupStoredDocument(registryPath)
+    cleanupStoredDocument(preferencesPath)
+    var registry = ApplicationRegistry {}
+    var app = candidate(pubA, 1, digestA)
+    app.documentTypes = ["txt"]
+    expect!(registrationSucceeded(registry.prepare(app)))
+    expect!(registrationSucceeded(registry.activate(app.identity, digestA)))
+    expect!(storedDocumentRegistrySaved(saveRegistryFile(registryPath, registry)))
+    let handlers = try storedDocumentHandlers(registryPath, "report.TXT") otherwise return
+    expect!(handlers.count == 1)
+    expect!(sameApp(handlers[0], app.identity))
+    expect!((try storedDocumentHandlers(registryPath, "report.png") otherwise return).count == 0)
+    let noDefault = try resolveStoredDocument(registryPath, preferencesPath, "notes.TXT")
+        otherwise return
+    let chooser = match noDefault {
+        ChooseApplication -> true
+        Unavailable, Ready -> false
+    }
+    expect!(chooser)
+    expect!(storedDocumentSaved(chooseStoredDocumentDefault(
+        registryPath, preferencesPath, "TXT", app.identity
+    )))
+    let selected = try resolveStoredDocument(
+        registryPath, preferencesPath, "/home/person/private/notes.TXT"
+    ) otherwise return
+    let ticket = match selected {
+        Ready(value) -> value
+        ChooseApplication, Unavailable -> return
+    }
+    expect!(ticket.extension == "txt")
+    expect!(sameApp(ticket.application, app.identity))
+    expect!(ticket.imageDigest == digestA)
+    expect!(ticket.version == 1)
+    expect!((try storedDocumentActivationIsCurrent(registryPath, preferencesPath, ticket)
+        otherwise return))
+    expect!(storedDocumentSaved(forgetStoredDocumentDefault(preferencesPath, "TXT")))
+    expect!(!(try storedDocumentActivationIsCurrent(registryPath, preferencesPath, ticket)
+        otherwise return))
+    cleanupStoredDocument(registryPath)
+    cleanupStoredDocument(preferencesPath)
+}
+
+@Test
+function storedDocumentTicketsCannotOutliveAnAppUpdateOrUninstall() {
+    let registryPath = ".tessera-stored-document-updated-registry"
+    let preferencesPath = ".tessera-stored-document-updated-defaults"
+    cleanupStoredDocument(registryPath)
+    cleanupStoredDocument(preferencesPath)
+    var registry = ApplicationRegistry {}
+    var app = candidate(pubA, 1, digestA)
+    app.documentTypes = ["txt"]
+    expect!(registrationSucceeded(registry.prepare(app)))
+    expect!(storedDocumentRegistrySaved(saveRegistryFile(registryPath, registry)))
+    // A staged candidate cannot be used as a default document handler.
+    expect!(!storedDocumentSaved(chooseStoredDocumentDefault(
+        registryPath, preferencesPath, "txt", app.identity
+    )))
+    expect!(registrationSucceeded(registry.activate(app.identity, digestA)))
+    expect!(storedDocumentRegistrySaved(saveRegistryFile(registryPath, registry)))
+    expect!(storedDocumentSaved(chooseStoredDocumentDefault(
+        registryPath, preferencesPath, "txt", app.identity
+    )))
+    let active = try resolveStoredDocument(registryPath, preferencesPath, "report.txt")
+        otherwise return
+    let ticket = match active {
+        Ready(value) -> value
+        ChooseApplication, Unavailable -> return
+    }
+    var replacement = candidate(pubA, 2, digestB)
+    replacement.documentTypes = ["txt"]
+    expect!(registrationSucceeded(registry.prepare(replacement)))
+    expect!(storedDocumentRegistrySaved(saveRegistryFile(registryPath, registry)))
+    expect!((try storedDocumentActivationIsCurrent(registryPath, preferencesPath, ticket)
+        otherwise return))
+    expect!(registrationSucceeded(registry.activate(app.identity, digestB)))
+    expect!(storedDocumentRegistrySaved(saveRegistryFile(registryPath, registry)))
+    expect!(!(try storedDocumentActivationIsCurrent(registryPath, preferencesPath, ticket)
+        otherwise return))
+    let reopened = try resolveStoredDocument(registryPath, preferencesPath, "report.txt")
+        otherwise return
+    let newTicket = match reopened {
+        Ready(value) -> value
+        ChooseApplication, Unavailable -> return
+    }
+    expect!(newTicket.version == 2)
+    expect!(newTicket.imageDigest == digestB)
+    expect!((try storedDocumentActivationIsCurrent(registryPath, preferencesPath, newTicket)
+        otherwise return))
+    registry.uninstall(app.identity)
+    expect!(storedDocumentRegistrySaved(saveRegistryFile(registryPath, registry)))
+    expect!(!(try storedDocumentActivationIsCurrent(registryPath, preferencesPath, newTicket)
+        otherwise return))
+    let unavailable = try resolveStoredDocument(registryPath, preferencesPath, "report.txt")
+        otherwise return
+    let denied = match unavailable {
+        Unavailable(identity) -> sameApp(identity, app.identity)
+        Ready, ChooseApplication -> false
+    }
+    expect!(denied)
+    cleanupStoredDocument(registryPath)
+    cleanupStoredDocument(preferencesPath)
+}
+
+@Test
+function damagedDocumentDefaultsCannotBeTreatedAsNoDefault() {
+    let registryPath = ".tessera-stored-document-corrupt-registry"
+    let preferencesPath = ".tessera-stored-document-corrupt-defaults"
+    cleanupStoredDocument(registryPath)
+    cleanupStoredDocument(preferencesPath)
+    expect!(storedDocumentRegistrySaved(saveRegistryFile(registryPath, ApplicationRegistry {})))
+    match writeFile(preferencesPath, AssociationText.version + "\nX\tpartial\n") {
+        Ok -> {}
+        Error(reason) -> {
+            absorb reason
+            return
+        }
+    }
+    let denied = match resolveStoredDocument(registryPath, preferencesPath, "report.txt") {
+        Ok(decision) -> {
+            absorb decision
+            false
+        }
+        Error(failure) -> match failure {
+            Preferences(reason) -> {
+                absorb reason
+                true
+            }
+            Registry, Selection -> false
+        }
+    }
+    expect!(denied)
+    expect!(!storedDocumentSaved(forgetStoredDocumentDefault(preferencesPath, "txt")))
+    expect!((try readFile(preferencesPath) otherwise return).text.contains("partial"))
+    cleanupStoredDocument(registryPath)
+    cleanupStoredDocument(preferencesPath)
+}
+
+@Test
+function withdrawnDocumentTypeLeavesSavedDefaultUnavailableAfterReopen() {
+    let registryPath = ".tessera-stored-document-withdrawn-registry"
+    let preferencesPath = ".tessera-stored-document-withdrawn-defaults"
+    cleanupStoredDocument(registryPath)
+    cleanupStoredDocument(preferencesPath)
+    var registry = ApplicationRegistry {}
+    var first = candidate(pubA, 1, digestA)
+    first.documentTypes = ["txt", "md"]
+    expect!(registrationSucceeded(registry.prepare(first)))
+    expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
+    expect!(storedDocumentRegistrySaved(saveRegistryFile(registryPath, registry)))
+    expect!(storedDocumentSaved(chooseStoredDocumentDefault(
+        registryPath, preferencesPath, "md", first.identity
+    )))
+    let initial = try resolveStoredDocument(registryPath, preferencesPath, "draft.md")
+        otherwise return
+    let ticket = match initial {
+        Ready(value) -> value
+        ChooseApplication, Unavailable -> return
+    }
+    var replacement = candidate(pubA, 2, digestB)
+    replacement.documentTypes = ["txt"]
+    expect!(registrationSucceeded(registry.prepare(replacement)))
+    expect!(registrationSucceeded(registry.activate(first.identity, digestB)))
+    expect!(storedDocumentRegistrySaved(saveRegistryFile(registryPath, registry)))
+    expect!(!(try storedDocumentActivationIsCurrent(registryPath, preferencesPath, ticket)
+        otherwise return))
+    let withdrawn = try resolveStoredDocument(registryPath, preferencesPath, "draft.md")
+        otherwise return
+    let unavailable = match withdrawn {
+        Unavailable(identity) -> sameApp(identity, first.identity)
+        Ready, ChooseApplication -> false
+    }
+    expect!(unavailable)
+    expect!((try storedDocumentHandlers(registryPath, "draft.md") otherwise return).count == 0)
+    expect!(!storedDocumentSaved(chooseStoredDocumentDefault(
+        registryPath, preferencesPath, "md", first.identity
+    )))
+    // The previously chosen identity remains visible, not reassigned.
+    let saved = try readAssociationFile(preferencesPath) otherwise return
+    expect!(saved.defaults.count == 1)
+    expect!(sameApp(saved.defaults[0].application, first.identity))
+    cleanupStoredDocument(registryPath)
+    cleanupStoredDocument(preferencesPath)
+}

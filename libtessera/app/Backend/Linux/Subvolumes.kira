@@ -96,7 +96,9 @@ function kernelVolumeMountSubvolume(
     options: VolumeOptions
 ) -> Result<Void, TesseraError> {
     unsafe {
-        let data = cStringFrom("subvol=" + subvolume)
+        // A newly mounted subvolume must not silently re-enable Btrfs's
+        // default asynchronous discard on Xperia UFS.
+        let data = cStringFrom("subvol=" + subvolume + ",nodiscard")
         return answerStatus(
             mount(
                 cStringFrom(diskNode(source)),

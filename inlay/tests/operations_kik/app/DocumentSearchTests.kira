@@ -118,3 +118,20 @@ function filenameSearchRefusesAnEmbeddedNulQuery() {
     expect!(refused)
     expect!(removed(removeTree(folder)))
 }
+
+@Test
+function inlaySearchOnlyOffersUserDocumentsAndMountedVolumes() {
+    for allowed in [
+        "/Documents", "/Documents/Desktop", "/Documents/Reports/2026",
+        "/Volumes", "/Volumes/External", "/Volumes/External/Notes"
+    ] {
+        expect!(inlayDocumentSearchRoot(allowed))
+    }
+    for blocked in [
+        "/", "/System", "/Applications", "/data", "/data/Applications",
+        "/System/Library", "/VolumesHidden", "/Documents-old",
+        "/Documents/../System", "/Volumes//Other", "/Documents/."
+    ] {
+        expect!(!inlayDocumentSearchRoot(blocked))
+    }
+}

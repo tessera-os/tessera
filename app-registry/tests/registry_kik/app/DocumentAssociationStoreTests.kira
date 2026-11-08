@@ -16,7 +16,8 @@ function openWithPreferencesSurviveRestartWithoutChangingPublisher() {
     let path = ".tessera-document-associations-test"
     if pathExists(path) { match removePath(path) { Ok -> {} Error(reason) -> absorb reason } }
     var registry = ApplicationRegistry {}
-    let first = candidate(pubA, 1, digestA)
+    var first = candidate(pubA, 1, digestA)
+    first.documentTypes = ["txt", "md"]
     expect!(registrationSucceeded(registry.prepare(first)))
     expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
     var preferences = DocumentAssociations {}

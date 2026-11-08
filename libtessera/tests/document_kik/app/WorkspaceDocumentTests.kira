@@ -1,0 +1,108 @@
+import Foundation
+import Heap
+import LibTessera
+
+// The selected File is an out-of-band handle, not a filename in the packet.
+// The only encoded string is the system's fixed executable path.
+@Test
+function selectedDocumentRequestCarriesOnlyTheFixedNotesPath() {
+    let request = WorkspaceRequest.OpenDocument(DocumentOpenRequest {
+        file: Handle.invalid, editable: false
+    })
+    let frame = match encodedRequest(request) {
+        Ok(bytes) -> move bytes
+        Error(reason) -> {
+            absorb reason
+            expect!(false)
+            return
+        }
+    }
+    let length = Number(blockLoad<U32>(frame, 12))
+    expect!(blockLoad<U32>(frame, 0) == ServiceOpcode.OpenDocument.rawValue())
+    expect!(Number(blockLoad<U32>(frame, 4)) == ServiceMessage.headerBytes + length)
+    expect!(Number(blockLoad<U32>(frame, 8)) == 1)
+    expect!(length == WorkspaceDocument.notesExecutable.utf8().count)
+    let text = stringFromCBytes(heapOffset(frame.pointer(), ServiceMessage.headerBytes), length)
+    expect!(text == WorkspaceDocument.notesExecutable)
+    expect!(!text.contains("/home/"))
+    expect!(!text.contains("/data/"))
+}
+
+@Test
+function documentEditModeHasSameWirePathAndSeparateModeBit() {
+    let read = match encodedRequest(.OpenDocument(DocumentOpenRequest {
+        file: Handle.invalid, editable: false
+    })) {
+        Ok(bytes) -> move bytes
+        Error(reason) -> {
+            absorb reason
+            expect!(false)
+            return
+        }
+    }
+    let edit = match encodedRequest(.OpenDocument(DocumentOpenRequest {
+        file: Handle.invalid, editable: true
+    })) {
+        Ok(bytes) -> move bytes
+        Error(reason) -> {
+            absorb reason
+            expect!(false)
+            return
+        }
+    }
+    expect!(Number(blockLoad<U32>(read, 8)) == 1)
+    expect!(Number(blockLoad<U32>(edit, 8)) == 2)
+    expect!(Number(blockLoad<U32>(read, 4)) == Number(blockLoad<U32>(edit, 4)))
+    expect!(Number(blockLoad<U32>(read, 12)) == Number(blockLoad<U32>(edit, 12)))
+    let length = Number(blockLoad<U32>(edit, 12))
+    expect!(stringFromCBytes(heapOffset(read.pointer(), ServiceMessage.headerBytes), length)
+        == stringFromCBytes(heapOffset(edit.pointer(), ServiceMessage.headerBytes), length))
+}
+
+@Test
+function ordinaryApplicationLaunchKeepsItsOriginalOpcodeAndSerial() {
+    let request = WorkspaceRequest.Open(
+        "/System/Applications/Notes.app/Contents/MacOS/Notes"
+    )
+    let frame = match encodedRequest(request) {
+        Ok(bytes) -> move bytes
+        Error(reason) -> {
+            absorb reason
+            expect!(false)
+            return
+        }
+    }
+    expect!(blockLoad<U32>(frame, 0) == ServiceOpcode.Launch.rawValue())
+    expect!(Number(blockLoad<U32>(frame, 8)) == 1)
+    expect!(Number(blockLoad<U32>(frame, 12)) == WorkspaceDocument.notesExecutable.utf8().count)
+}
+
+@Test
+function unknownDocumentRequestModesNeverBecomeGrants() {
+    let read = try workspaceDocumentMode(U32(1)) otherwise return
+    let edit = try workspaceDocumentMode(U32(2)) otherwise return
+    expect!(read == WorkspaceDocumentMode.Read)
+    expect!(edit == WorkspaceDocumentMode.Edit)
+    for raw in [U32(0), U32(3), U32(12), U32(255), U32(0xFFFFFFFF)] {
+        expect!(workspaceDocumentMode(raw).isNone())
+    }
+}
+
+@Test
+function successfulDocumentOpenMustBeExplicitlyAcknowledged() {
+    expect!(validDocumentOpenedReply(
+        ServiceOpcode.DocumentOpened.rawValue(), ServiceMessage.headerBytes, U32(1), 0
+    ))
+    expect!(!validDocumentOpenedReply(
+        ServiceOpcode.Answer.rawValue(), ServiceMessage.headerBytes, U32(1), 0
+    ))
+    expect!(!validDocumentOpenedReply(
+        ServiceOpcode.DocumentOpened.rawValue(), ServiceMessage.headerBytes - 1, U32(1), 0
+    ))
+    expect!(!validDocumentOpenedReply(
+        ServiceOpcode.DocumentOpened.rawValue(), ServiceMessage.headerBytes, U32(2), 0
+    ))
+    expect!(!validDocumentOpenedReply(
+        ServiceOpcode.DocumentOpened.rawValue(), ServiceMessage.headerBytes, U32(1), 1
+    ))
+}

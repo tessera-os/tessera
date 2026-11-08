@@ -1,0 +1,18 @@
+From: Shujath Mohd <shujath@outlook.in>
+Subject: [PATCH] arm64: dts: qcom: sdm845-sony-xperia-tama: Fix Bluetooth UART pinctrl
+
+Use the four-pin UART configuration for Bluetooth hardware flow control.
+
+---
+diff --git a/arch/arm64/boot/dts/qcom/sdm845-sony-xperia-tama.dtsi b/arch/arm64/boot/dts/qcom/sdm845-sony-xperia-tama.dtsi
+--- a/arch/arm64/boot/dts/qcom/sdm845-sony-xperia-tama.dtsi
++++ b/arch/arm64/boot/dts/qcom/sdm845-sony-xperia-tama.dtsi
+@@ -774,6 +774,8 @@
+ };
+ 
+ &uart6 {
++	pinctrl-0 = <&qup_uart6_4pin>;
++
+ 	status = "okay";
+ 
+ 	bluetooth {

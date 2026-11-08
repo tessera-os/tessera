@@ -1,0 +1,49 @@
+import Foundation
+import TesseraAuth
+
+@Test
+function signInPagesProvideConsistentCopy() {
+    expect!(signInPageTitle(SignInPage.login, "") == "Sign in to Tessera")
+    expect!(signInPageTitle(SignInPage.register, "") == "Create a Tessera Account")
+    expect!(signInPageTitle(SignInPage.verify, "") == "Verify your email")
+    expect!(signInPageTitle(SignInPage.challenge, "SOFTWARE_TOKEN_MFA") == "Authenticator code")
+    expect!(signInPageTitle(SignInPage.enroll, "") == "Set up an authenticator")
+    expect!(signInPageDescription(SignInPage.login, "Notes").contains("Notes"))
+}
+
+@Test
+function invalidEmailCannotStartSignIn() {
+    expect!(validEmailForSignIn("mira@example.com"))
+    expect!(!validEmailForSignIn(""))
+    expect!(!validEmailForSignIn("mira"))
+    expect!(!validEmailForSignIn("mira@"))
+    expect!(!validEmailForSignIn("mira @example.com"))
+    expect!(!validEmailForSignIn("mira@example.com\n"))
+}
+
+@Test
+function registrationValidatesPasswordAndConfirmation() {
+    expect!(registrationProblem("mira@example.com", "SomeLongPassword123!", "SomeLongPassword123!").isNone())
+    expect!(!registrationProblem("invalid", "SomeLongPassword123!", "SomeLongPassword123!").isNone())
+    expect!(!registrationProblem("mira@example.com", "short", "short").isNone())
+    expect!(!registrationProblem("mira@example.com", "SomeLongPassword123!", "different").isNone())
+}
+
+@Test
+function onlyImplementedChallengesOfferInputScreen() {
+    expect!(supportsChallenge("SOFTWARE_TOKEN_MFA"))
+    expect!(supportsChallenge("PASSWORD"))
+    expect!(supportsChallenge("EMAIL_OTP"))
+    expect!(supportsChallenge("NEW_PASSWORD_REQUIRED"))
+    expect!(!supportsChallenge("CUSTOM_CHALLENGE"))
+    expect!(!supportsChallenge("WEB_AUTHN"))
+    expect!(!supportsChallenge("MFA_SETUP"))
+}
+
+@Test
+function authErrorsNeverExposeCognitoRawMessages() {
+    expect!(signInProblem(.Unconfirmed).contains("Verify your email"))
+    expect!(signInProblem(.RateLimited).contains("later"))
+    expect!(signInProblem(.InvalidCode).contains("code"))
+    expect!(signInProblem(.Rejected).contains("Check your details"))
+}

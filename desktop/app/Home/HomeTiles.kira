@@ -33,8 +33,6 @@ namespace HomePaging {
     // dropped into it rather than beside it.
     let into: Number = 0.4
     let badge: Number = 22
-    // How far a press pulls down on a page to open system search.
-    let searchPull: Number = 60
 }
 
 // How much a page holds: the grid's columns, times the rows that fit between

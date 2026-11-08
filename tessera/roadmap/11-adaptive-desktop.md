@@ -214,7 +214,7 @@ application bundles, `<Name>.app` in `/System/Applications` and
 `/Applications`, as on a Mac ([12](12-apps.md)) — filtered by typing.
 
 The list is the desktop's, the surface under every application, drawn by
-the Desktop application, `/System/Library/CoreServices/Desktop.app`, the way Finder
+the Desktop application, `/System/Applications/Desktop.app`, the way Finder
 draws a Mac's. Launching is asking PID 1 to start it ([03](03-processes.md)),
 as Finder asks launchd: the desktop sends the path of a bundle's executable over
 the channel PID 1 gave it, and that is the whole protocol. PID 1 accepts only

@@ -1,0 +1,39 @@
+//! Comparison for a File opened through a selected capability. A caller may
+//! use a snapshot to refuse saving over an externally changed document.
+//! This is optimistic conflict detection, not a lock or atomic transaction.
+import Foundation
+
+/// Comparing File handles (rather than names) prevents a rename or path
+/// replacement from authorizing writes to a different inode. A changed size
+/// or modification timestamp also makes an old editing snapshot stale.
+public function fileSnapshotMatches(
+    original: borrow FileInfo,
+    current: borrow FileInfo
+) -> Bool {
+    return original.nodeId == current.nodeId
+        && original.volumeId == current.volumeId
+        && original.size == current.size
+        && original.modified == current.modified
+}
+
+/// Inspect the kind of node behind an already-opened File. Unlike a
+/// pathname status check this cannot be redirected by replacing a name.
+public function openedFileKind(file: Handle) -> Result<NodeKind, TesseraError> {
+    let object = try resolveObject(file, .File, Rights.inspect)
+    let backing = try backingOf(object)
+    let status = try kernelNodeStat(backing)
+    return .Ok(status.kind)
+}
+
+/// Defense in depth for the privileged, built-in Notes request. The 1 MiB
+/// limit and supported kind/modes are enforced again by the receiving app,
+/// but PID 1 should refuse a bad grant before launching that app.
+public function eligibleNotesDocument(
+    info: borrow FileInfo,
+    kind: NodeKind,
+    editable: Bool
+) -> Bool {
+    if kind != .File || info.size > UNumber(1048576)
+        || !info.mode.has(OpenMode.read) { return false }
+    return !editable || info.mode.has(OpenMode.write)
+}

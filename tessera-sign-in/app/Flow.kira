@@ -1,0 +1,194 @@
+import Foundation
+import Network as Net
+import TesseraAuth
+
+// The view never knows which AWS operation to issue or how tokens are parsed.
+// This typed flow is shared by all first-party Tessera login screens.
+public struct SignInCredentials {
+    let email: String
+    let password: String
+}
+
+public struct SignInCode {
+    let email: String
+    let code: String
+}
+
+public struct SignInReset {
+    let email: String
+    let code: String
+    let password: String
+}
+
+public struct SignInChallengeAnswer {
+    let email: String
+    let challenge: TesseraAuthChallenge
+    let answer: String
+}
+
+public struct SignInEnrollmentAnswer {
+    let email: String
+    let session: String
+    let code: String
+}
+
+public enum TesseraSignInAction {
+    Login(SignInCredentials)
+    Register(SignInCredentials)
+    ConfirmEmail(SignInCode)
+    ResendEmail(String)
+    RequestReset(String)
+    ConfirmReset(SignInReset)
+    AnswerChallenge(SignInChallengeAnswer)
+    BeginEnrollment(String)
+    FinishEnrollment(SignInEnrollmentAnswer)
+}
+
+public enum TesseraSignInEffect {
+    Authenticated(TesseraTokens)
+    NeedsChallenge(TesseraAuthChallenge)
+    VerificationSent
+    EmailConfirmed
+    ResetSent
+    PasswordChanged
+    EnrollmentStarted(TesseraMfaEnrollment)
+}
+
+// State labels are internal to the UI; apps never need to construct them.
+public namespace SignInPage {
+    let login: String = "login"
+    let register: String = "register"
+    let verify: String = "verify"
+    let forgot: String = "forgot"
+    let reset: String = "reset"
+    let challenge: String = "challenge"
+    let unsupported: String = "unsupported"
+    let enroll: String = "enroll"
+}
+
+public function signInPageTitle(page: borrow String, challenge: borrow String) -> String {
+    if page == SignInPage.register { return "Create a Tessera Account" }
+    if page == SignInPage.verify { return "Verify your email" }
+    if page == SignInPage.forgot { return "Reset your password" }
+    if page == SignInPage.reset { return "Choose a new password" }
+    if page == SignInPage.enroll { return "Set up an authenticator" }
+    if page == SignInPage.challenge {
+        if challenge == "NEW_PASSWORD_REQUIRED" { return "Set a new password" }
+        if challenge == "SOFTWARE_TOKEN_MFA" { return "Authenticator code" }
+        if challenge == "SMS_MFA" || challenge == "SMS_OTP" { return "Text message code" }
+        if challenge == "EMAIL_OTP" { return "Email sign-in code" }
+        if challenge == "PASSWORD" { return "Confirm your password" }
+    }
+    if page == SignInPage.unsupported { return "Another verification step is needed" }
+    return "Sign in to Tessera"
+}
+
+public function signInPageDescription(page: borrow String, application: borrow String) -> String {
+    if page == SignInPage.login { return "Use your Tessera Account to continue to " + application + "." }
+    if page == SignInPage.register { return "One account for your Tessera apps." }
+    if page == SignInPage.verify { return "Enter the verification code sent to your email." }
+    if page == SignInPage.forgot { return "We'll send a password reset code to your email." }
+    if page == SignInPage.reset { return "Enter the code from your email and your new password." }
+    if page == SignInPage.enroll { return "Add the key below to your authenticator app, then enter its six-digit code." }
+    if page == SignInPage.challenge { return "Complete the additional security check to sign in." }
+    return "This account requires a verification step that is not available in this version."
+}
+
+public function validEmailForSignIn(email: borrow String) -> Bool {
+    if email.count < 3 || email.count > 320 || email.contains(" ") || email.contains("\n") {
+        return false
+    }
+    let halves = email.split("@")
+    return halves.count == 2 && halves[0].count > 0 && halves[1].contains(".")
+}
+
+public function registrationProblem(email: borrow String, password: borrow String, again: borrow String) -> String? {
+    if !validEmailForSignIn(email) { return .Some("Enter a valid email address.") }
+    if password.count < 14 { return .Some("Use a password with at least 14 characters.") }
+    if password != again { return .Some("Passwords do not match.") }
+    return .None
+}
+
+public function signInProblem(failure: borrow TesseraAuthFailure) -> String {
+    return match failure {
+        InvalidInput -> "Check your details and try again."
+        Rejected -> "We couldn't complete that request. Check your details or verification code."
+        Unconfirmed -> "Verify your email before signing in."
+        AlreadyRegistered -> "This email may already have an account. Try signing in or resetting your password."
+        InvalidCode -> "That code isn't correct. Check it and try again."
+        ExpiredCode -> "That code has expired. Request another code."
+        WeakPassword -> "Choose a stronger password with uppercase, lowercase, a number and a symbol."
+        RateLimited -> "Too many attempts. Try again later."
+        Unavailable -> "Can't connect to Tessera Accounts right now. Please try again."
+        UnexpectedResponse -> "Something went wrong with sign-in. Please try again."
+    }
+}
+
+public function supportsChallenge(name: borrow String) -> Bool {
+    return name == "PASSWORD" || name == "SOFTWARE_TOKEN_MFA"
+        || name == "NEW_PASSWORD_REQUIRED" || name == "EMAIL_OTP"
+        || name == "SMS_MFA" || name == "SMS_OTP"
+}
+
+function loginEffect(result: TesseraSignInResult) -> TesseraSignInEffect {
+    return match result {
+        SignedIn(tokens) -> .Authenticated(tokens)
+        Challenge(challenge) -> .NeedsChallenge(challenge)
+    }
+}
+
+// One command, one Cognito round trip. The view holds only input and the
+// opaque challenge session; it hands tokens to the embedding app immediately.
+// Each request gets its own TLS Network context; no global AWS credentials.
+public function performTesseraSignIn(
+    config: borrow TesseraAuthConfig,
+    action: TesseraSignInAction
+) -> Result<TesseraSignInEffect, TesseraAuthFailure> {
+    var network = match Net.openNetwork(Net.NetworkOptions {}) {
+        Ok(value) -> value
+        Error(failure) -> {
+            log warn("could not initialize sign-in transport", failure)
+            return .Error(.Unavailable)
+        }
+    }
+    match move action {
+        Login(credentials) -> {
+            let result = try tesseraSignIn(network, config, credentials.email, credentials.password)
+            return .Ok(loginEffect(move result))
+        }
+        Register(credentials) -> {
+            try tesseraSignUp(network, config, credentials.email, credentials.password)
+            return .Ok(.VerificationSent)
+        }
+        ConfirmEmail(details) -> {
+            try tesseraConfirmEmail(network, config, details.email, details.code)
+            return .Ok(.EmailConfirmed)
+        }
+        ResendEmail(email) -> {
+            try tesseraResendConfirmation(network, config, email)
+            return .Ok(.VerificationSent)
+        }
+        RequestReset(email) -> {
+            try tesseraForgotPassword(network, config, email)
+            return .Ok(.ResetSent)
+        }
+        ConfirmReset(details) -> {
+            try tesseraResetPassword(network, config, details.email, details.code, details.password)
+            return .Ok(.PasswordChanged)
+        }
+        AnswerChallenge(details) -> {
+            let result = try tesseraAnswerChallenge(network, config, details.email, details.challenge, details.answer)
+            return .Ok(loginEffect(move result))
+        }
+        BeginEnrollment(session) -> {
+            let setup = try tesseraBeginMfaEnrollment(network, config, session)
+            return .Ok(.EnrollmentStarted(setup))
+        }
+        FinishEnrollment(details) -> {
+            let result = try tesseraFinishMfaEnrollment(
+                network, config, details.email, details.session, details.code
+            )
+            return .Ok(loginEffect(move result))
+        }
+    }
+}

@@ -142,7 +142,7 @@ public construct PartitionEditor(
                 }
                 mapBar(shown, 640.0)
             }
-            .scenePadding()
+            .scenePadding(EdgeSet.all)
             List(children: [Section(children: planRows(plan, chosen, $chosen))])
             HStack(spacing = .Small, alignment = .Center) {
                 Button(
@@ -178,7 +178,7 @@ public construct PartitionEditor(
                 }
                 .buttonStyle(.BorderedProminent)
             }
-            .scenePadding()
+            .scenePadding(EdgeSet.all)
         }
     }
 }
@@ -191,7 +191,7 @@ public construct EraseForm(head: Any Widget, disk: RecoveryDisk, done: () -> Voi
     body {
         VStack(spacing = .None, alignment = .Leading) {
             copy head
-            .scenePadding()
+            .scenePadding(EdgeSet.all)
             Form {
                 Section {
                     LabeledContent(label = "Name") {
@@ -226,7 +226,7 @@ public construct EraseForm(head: Any Widget, disk: RecoveryDisk, done: () -> Voi
                 }
                 .buttonStyle(.BorderedProminent)
             }
-            .scenePadding()
+            .scenePadding(EdgeSet.all)
         }
     }
 }

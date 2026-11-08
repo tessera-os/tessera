@@ -1,0 +1,84 @@
+import Foundation
+import LibTessera
+
+function snapshotFixture() -> FileInfo {
+    return FileInfo {
+        size: UNumber(4096),
+        allocated: UNumber(4096),
+        modified: UNumber(1480000000),
+        blockSize: UNumber(4096),
+        mode: OpenMode.read | OpenMode.write,
+        nodeId: UNumber(412),
+        volumeId: UNumber(11)
+    }
+}
+
+@Test
+function sameFileSnapshotAllowsSave() {
+    let before = snapshotFixture()
+    let after = snapshotFixture()
+    expect!(fileSnapshotMatches(before, after))
+}
+
+@Test
+function changedFileMetadataRefusesStaleSave() {
+    let initial = snapshotFixture()
+    var different = snapshotFixture()
+    different.modified += UNumber(1)
+    expect!(!fileSnapshotMatches(initial, different))
+    different = snapshotFixture()
+    different.size += UNumber(1)
+    expect!(!fileSnapshotMatches(initial, different))
+    different = snapshotFixture()
+    different.nodeId += UNumber(1)
+    expect!(!fileSnapshotMatches(initial, different))
+    different = snapshotFixture()
+    different.volumeId += UNumber(1)
+    expect!(!fileSnapshotMatches(initial, different))
+}
+
+@Test
+function SavingPolicyDoesNotRejectHarmlessAllocationChange() {
+    let initial = snapshotFixture()
+    var now = snapshotFixture()
+    now.allocated += UNumber(4096)
+    expect!(fileSnapshotMatches(initial, now))
+}
+
+@Test
+function privilegedDocumentLaunchRejectsLargeAndSpecialFiles() {
+    var file = snapshotFixture()
+    expect!(eligibleNotesDocument(file, .File, true))
+    expect!(eligibleNotesDocument(file, .File, false))
+    expect!(!eligibleNotesDocument(file, .Directory, false))
+    expect!(!eligibleNotesDocument(file, .Link, false))
+    expect!(!eligibleNotesDocument(file, .Special, false))
+    file.size = UNumber(1048577)
+    expect!(!eligibleNotesDocument(file, .File, false))
+    file.size = UNumber(1048576)
+    expect!(eligibleNotesDocument(file, .File, false))
+}
+
+@Test
+function privilegedDocumentEditCannotUpgradeReadOnlyOpen() {
+    var file = snapshotFixture()
+    file.mode = OpenMode.read
+    expect!(eligibleNotesDocument(file, .File, false))
+    expect!(!eligibleNotesDocument(file, .File, true))
+    file.mode = OpenMode.write
+    expect!(!eligibleNotesDocument(file, .File, false))
+    expect!(!eligibleNotesDocument(file, .File, true))
+}
+
+@Test
+function nodeVolumeIdConvertsToLinuxSelectedPathDeviceEncoding() {
+    // Common block device major 8, minor 1: Linux st_dev 2049.
+    let disk = (UNumber(8) << UNumber(32)) | UNumber(1)
+    expect!(linuxDeviceIdFromVolumeId(disk) == UNumber(2049))
+    // Major 259, minor 0 (NVMe): 259 << 8.
+    let nvme = UNumber(259) << UNumber(32)
+    expect!(linuxDeviceIdFromVolumeId(nvme) == UNumber(66304))
+    // A device number with a high minor requires the legacy + high bits.
+    let extended = (UNumber(1) << UNumber(32)) | UNumber(0x101)
+    expect!(linuxDeviceIdFromVolumeId(extended) == UNumber(1048833))
+}

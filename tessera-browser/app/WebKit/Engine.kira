@@ -75,180 +75,208 @@ public class WebEngine {
 
     // Brings the engine up and starts loading `uri`, or returns why it stopped.
     function start(uri: borrow String) -> Result<Void, WebEngineFailure> {
-        if started { return match startFailure {
-            Some(failure) -> .Error(failure)
-            None -> .Ok
-        } }
-        started = true
-        display = wpeDisplayTesseraNew()
-        if Heap.isNull(display) {
-            startFailure = .Some(.DisplayUnavailable)
-            return .Error(.DisplayUnavailable)
+        unsafe {
+            if started { return match startFailure {
+                Some(failure) -> .Error(failure)
+                None -> .Ok
+            } }
+            started = true
+            display = wpeDisplayTesseraNew()
+            if Heap.isNull(display) {
+                startFailure = .Some(.DisplayUnavailable)
+                return .Error(.DisplayUnavailable)
+            }
+            if wpeDisplayConnect(display, Heap.nullPointer()) == 0 {
+                startFailure = .Some(.DisplayConnectFailed)
+                return .Error(.DisplayConnectFailed)
+            }
+            wpeDisplaySetPrimary(display)
+            view = webkitWebViewNewWithDisplay(display)
+            if Heap.isNull(view) {
+                startFailure = .Some(.ViewUnavailable)
+                return .Error(.ViewUnavailable)
+            }
+            platformView = webkitWebViewGetWpeView(view)
+            webkitWebViewLoadUri(view, cStringFrom(uri))
+            return .Ok
         }
-        if wpeDisplayConnect(display, Heap.nullPointer()) == 0 {
-            startFailure = .Some(.DisplayConnectFailed)
-            return .Error(.DisplayConnectFailed)
-        }
-        wpeDisplaySetPrimary(display)
-        view = webkitWebViewNewWithDisplay(display)
-        if Heap.isNull(view) {
-            startFailure = .Some(.ViewUnavailable)
-            return .Error(.ViewUnavailable)
-        }
-        platformView = webkitWebViewGetWpeView(view)
-        webkitWebViewLoadUri(view, cStringFrom(uri))
-        return .Ok
     }
 
     function load(uri: borrow String) {
-        if !started || startFailure.isSome() { return }
-        webkitWebViewLoadUri(view, cStringFrom(uri))
+        unsafe {
+            if !started || startFailure.isSome() { return }
+            webkitWebViewLoadUri(view, cStringFrom(uri))
+        }
     }
 
     function goBack() {
-        if started && startFailure.isNone() { webkitWebViewGoBack(view) }
+        unsafe {
+            if started && startFailure.isNone() { webkitWebViewGoBack(view) }
+        }
     }
 
     function goForward() {
-        if started && startFailure.isNone() { webkitWebViewGoForward(view) }
+        unsafe {
+            if started && startFailure.isNone() { webkitWebViewGoForward(view) }
+        }
     }
 
     function reload() {
-        if started && startFailure.isNone() { webkitWebViewReload(view) }
+        unsafe {
+            if started && startFailure.isNone() { webkitWebViewReload(view) }
+        }
     }
 
     function stop() {
-        if started && startFailure.isNone() { webkitWebViewStopLoading(view) }
+        unsafe {
+            if started && startFailure.isNone() { webkitWebViewStopLoading(view) }
+        }
     }
 
     // Tells the page how large the area it fills is, once per change.
     function resize(newWidth: Number, newHeight: Number) {
-        if !started || startFailure.isSome() { return }
-        if newWidth <= 0 || newHeight <= 0 { return }
-        if newWidth == width && newHeight == height { return }
-        width = newWidth
-        height = newHeight
-        wpeViewTesseraResize(platformView, I32(newWidth), I32(newHeight))
+        unsafe {
+            if !started || startFailure.isSome() { return }
+            if newWidth <= 0 || newHeight <= 0 { return }
+            if newWidth == width && newHeight == height { return }
+            width = newWidth
+            height = newHeight
+            wpeViewTesseraResize(platformView, I32(newWidth), I32(newHeight))
+        }
     }
 
     function focus(gained: Bool) {
-        if !started || startFailure.isSome() || gained == focused { return }
-        focused = gained
-        wpeViewTesseraFocus(platformView, gained ? 1 : 0)
+        unsafe {
+            if !started || startFailure.isSome() || gained == focused { return }
+            focused = gained
+            wpeViewTesseraFocus(platformView, gained ? 1 : 0)
+        }
     }
 
     function pointerMove(time: Number, x: Number, y: Number) {
-        if !started || startFailure.isSome() { return }
-        wpeViewTesseraPointerMove(platformView, UN32(time), 0, F64(x), F64(y))
+        unsafe {
+            if !started || startFailure.isSome() { return }
+            wpeViewTesseraPointerMove(platformView, UN32(time), 0, F64(x), F64(y))
+        }
     }
 
     function pointerButton(time: Number, pressed: Bool, button: Number, x: Number, y: Number) {
-        if !started || startFailure.isSome() { return }
-        wpeViewTesseraPointerButton(
-            platformView, UN32(time), 0, pressed ? 1 : 0, UN32(button), F64(x), F64(y)
-        )
+        unsafe {
+            if !started || startFailure.isSome() { return }
+            wpeViewTesseraPointerButton(
+                platformView, UN32(time), 0, pressed ? 1 : 0, UN32(button), F64(x), F64(y)
+            )
+        }
     }
 
     function scroll(time: Number, dx: Number, dy: Number, x: Number, y: Number) {
-        if !started || startFailure.isSome() { return }
-        wpeViewTesseraScroll(platformView, UN32(time), 0, F64(dx), F64(dy), F64(x), F64(y))
+        unsafe {
+            if !started || startFailure.isSome() { return }
+            wpeViewTesseraScroll(platformView, UN32(time), 0, F64(dx), F64(dy), F64(x), F64(y))
+        }
     }
 
     // Runs what GLib has ready, takes the newest frame the web process drew and
     // reads the page's state. Answers whether anything the window shows changed.
     function pump(graphics: borrow Graphics) -> Result<Bool, WebEngineFailure> {
-        if !started || startFailure.isSome() { return .Ok(false) }
-        var changed = false
-        var rounds = 0
-        while rounds < 64 && glibMainContextIteration(Heap.nullPointer(), 0) != 0 {
-            rounds = rounds + 1
+        unsafe {
+            if !started || startFailure.isSome() { return .Ok(false) }
+            var changed = false
+            var rounds = 0
+            while rounds < 64 && glibMainContextIteration(Heap.nullPointer(), 0) != 0 {
+                rounds = rounds + 1
+            }
+            let tookFrame = try self.takeFrame(graphics)
+            if tookFrame { changed = true }
+            if self.readState() { changed = true }
+            return .Ok(changed)
         }
-        let tookFrame = try self.takeFrame(graphics)
-        if tookFrame { changed = true }
-        if self.readState() { changed = true }
-        return .Ok(changed)
     }
 
     function readState() -> Bool {
-        let uri = stringFromCString(webkitWebViewGetUri(view))
-        let heading = stringFromCString(webkitWebViewGetTitle(view))
-        let busy = webkitWebViewIsLoading(view) != 0
-        let done = webkitWebViewGetEstimatedLoadProgress(view)
-        let back = webkitWebViewCanGoBack(view) != 0
-        let forward = webkitWebViewCanGoForward(view) != 0
-        let changed = uri != address || heading != title || busy != loading || back != canGoBack
-            || forward != canGoForward || (busy && Number(done * 100.0) != Number(progress * 100.0))
-        address = uri
-        title = heading
-        loading = busy
-        progress = Number(done)
-        canGoBack = back
-        canGoForward = forward
-        return changed
+        unsafe {
+            let uri = stringFromCString(webkitWebViewGetUri(view))
+            let heading = stringFromCString(webkitWebViewGetTitle(view))
+            let busy = webkitWebViewIsLoading(view) != 0
+            let done = webkitWebViewGetEstimatedLoadProgress(view)
+            let back = webkitWebViewCanGoBack(view) != 0
+            let forward = webkitWebViewCanGoForward(view) != 0
+            let changed = uri != address || heading != title || busy != loading || back != canGoBack
+                || forward != canGoForward || (busy && Number(done * 100.0) != Number(progress * 100.0))
+            address = uri
+            title = heading
+            loading = busy
+            progress = Number(done)
+            canGoBack = back
+            canGoForward = forward
+            return changed
+        }
     }
 
     function takeFrame(graphics: borrow Graphics) -> Result<Bool, WebEngineFailure> {
-        let buffer = wpeViewTesseraTakeFrame(platformView)
-        if Heap.isNull(buffer) { return .Ok(false) }
-        if wpeViewTesseraFrameImportable(buffer) == 0 {
-            wpeViewTesseraFrameReleased(platformView, buffer)
-            glibObjectUnref(buffer)
-            return .Error(.FrameUnsupported)
-        }
-        let word = rawPointerWord(buffer)
-        var existing: Number? = .None
-        for at in 0..imported.count {
-            if imported[at].word == word { existing = .Some(at) }
-        }
-        let index = match existing {
-            Some(value) -> value
-            None -> match self.importFrame(graphics, buffer, word) {
-                Ok(entry) -> {
-                    imported.append(entry)
-                    imported.count - 1
-                }
-                Error(failure) -> {
-                    wpeViewTesseraFrameReleased(platformView, buffer)
-                    glibObjectUnref(buffer)
-                    return .Error(failure)
-                }
-            }
-        }
-        if imported[index].released {
-            // The web process drew into this memory since the last sampling.
-            if !graphics.acquireImportedTexture(imported[index].texture) {
+        unsafe {
+            let buffer = wpeViewTesseraTakeFrame(platformView)
+            if Heap.isNull(buffer) { return .Ok(false) }
+            if wpeViewTesseraFrameImportable(buffer) == 0 {
                 wpeViewTesseraFrameReleased(platformView, buffer)
                 glibObjectUnref(buffer)
-                return .Error(.FrameUnavailable)
+                return .Error(.FrameUnsupported)
             }
-            imported[index].released = false
-        }
-        shown = TextureHandle(Number(imported[index].texture.viewId))
-        shownWidth = imported[index].width
-        shownHeight = imported[index].height
-        if !firstShown {
-            firstShown = true
-            log info("the browser shows a page", width: shownWidth, height: shownHeight)
-        }
-        wpeViewTesseraFramePresented(platformView, buffer)
-        held.append(HeldFrame { buffer: buffer, word: word })
-        // A frame the compositor may still be reading is held back for two more
-        // frames before the web process may draw into it again.
-        if held.count > 3 {
-            var kept: [HeldFrame] = []
-            for place in 0..held.count {
-                if place < held.count - 3 {
-                    let old = held[place].buffer
-                    self.giveBack(graphics, held[place].word)
-                    wpeViewTesseraFrameReleased(platformView, old)
-                    glibObjectUnref(old)
-                } else {
-                    kept.append(HeldFrame { buffer: held[place].buffer, word: held[place].word })
+            let word = rawPointerWord(buffer)
+            var existing: Number? = .None
+            for at in 0..imported.count {
+                if imported[at].word == word { existing = .Some(at) }
+            }
+            let index = match existing {
+                Some(value) -> value
+                None -> match self.importFrame(graphics, buffer, word) {
+                    Ok(entry) -> {
+                        imported.append(entry)
+                        imported.count - 1
+                    }
+                    Error(failure) -> {
+                        wpeViewTesseraFrameReleased(platformView, buffer)
+                        glibObjectUnref(buffer)
+                        return .Error(failure)
+                    }
                 }
             }
-            held = kept
+            if imported[index].released {
+                // The web process drew into this memory since the last sampling.
+                if !graphics.acquireImportedTexture(imported[index].texture) {
+                    wpeViewTesseraFrameReleased(platformView, buffer)
+                    glibObjectUnref(buffer)
+                    return .Error(.FrameUnavailable)
+                }
+                imported[index].released = false
+            }
+            shown = TextureHandle(Number(imported[index].texture.viewId))
+            shownWidth = imported[index].width
+            shownHeight = imported[index].height
+            if !firstShown {
+                firstShown = true
+                log info("the browser shows a page", width: shownWidth, height: shownHeight)
+            }
+            wpeViewTesseraFramePresented(platformView, buffer)
+            held.append(HeldFrame { buffer: buffer, word: word })
+            // A frame the compositor may still be reading is held back for two more
+            // frames before the web process may draw into it again.
+            if held.count > 3 {
+                var kept: [HeldFrame] = []
+                for place in 0..held.count {
+                    if place < held.count - 3 {
+                        let old = held[place].buffer
+                        self.giveBack(graphics, held[place].word)
+                        wpeViewTesseraFrameReleased(platformView, old)
+                        glibObjectUnref(old)
+                    } else {
+                        kept.append(HeldFrame { buffer: held[place].buffer, word: held[place].word })
+                    }
+                }
+                held = kept
+            }
+            return .Ok(true)
         }
-        return .Ok(true)
     }
 
     // The texture over the buffer at `word` given back to the web process, which
@@ -270,40 +298,42 @@ public class WebEngine {
         buffer: RawPtr,
         word: Number
     ) -> Result<ImportedFrame, WebEngineFailure> {
-        let format = wpeViewTesseraFrameFormat(buffer)
-        var pixels: ExportedPixelFormat = .Bgra8Unorm
-        if format == WebFrameFormat.xb24 || format == WebFrameFormat.ab24 {
-            pixels = .Rgba8Unorm
-        } else if format != WebFrameFormat.xr24 && format != WebFrameFormat.ar24 {
-            return .Error(.FrameUnsupported)
-        }
-        if wpeViewTesseraFrameModifier(buffer) != 0 {
-            return .Error(.FrameUnsupported)
-        }
-        let fd = wpeViewTesseraFrameDupFd(buffer)
-        if fd < 0 { return .Error(.FrameUnavailable) }
-        let memory = ExportedMemory {
-            kind: .DmaBuf,
-            handle: UN32(fd),
-            width: wpeViewTesseraFrameWidth(buffer),
-            height: wpeViewTesseraFrameHeight(buffer),
-            stride: wpeViewTesseraFrameStride(buffer),
-            offset: wpeViewTesseraFrameOffset(buffer),
-            format: pixels,
-            layout: .Linear
-        }
-        match graphics.importTexture(memory) {
-            Ok(texture) -> {
-                return .Ok(
-                    ImportedFrame {
-                        word: word,
-                        texture: texture,
-                        width: Number(memory.width),
-                        height: Number(memory.height)
-                    }
-                )
+        unsafe {
+            let format = wpeViewTesseraFrameFormat(buffer)
+            var pixels: ExportedPixelFormat = .Bgra8Unorm
+            if format == WebFrameFormat.xb24 || format == WebFrameFormat.ab24 {
+                pixels = .Rgba8Unorm
+            } else if format != WebFrameFormat.xr24 && format != WebFrameFormat.ar24 {
+                return .Error(.FrameUnsupported)
             }
-            Error(failure) -> return .Error(.FrameUnavailable)
+            if wpeViewTesseraFrameModifier(buffer) != 0 {
+                return .Error(.FrameUnsupported)
+            }
+            let fd = wpeViewTesseraFrameDupFd(buffer)
+            if fd < 0 { return .Error(.FrameUnavailable) }
+            let memory = ExportedMemory {
+                kind: .DmaBuf,
+                handle: UN32(fd),
+                width: wpeViewTesseraFrameWidth(buffer),
+                height: wpeViewTesseraFrameHeight(buffer),
+                stride: wpeViewTesseraFrameStride(buffer),
+                offset: wpeViewTesseraFrameOffset(buffer),
+                format: pixels,
+                layout: .Linear
+            }
+            match graphics.importTexture(memory) {
+                Ok(texture) -> {
+                    return .Ok(
+                        ImportedFrame {
+                            word: word,
+                            texture: texture,
+                            width: Number(memory.width),
+                            height: Number(memory.height)
+                        }
+                    )
+                }
+                Error(failure) -> return .Error(.FrameUnavailable)
+            }
         }
     }
 }

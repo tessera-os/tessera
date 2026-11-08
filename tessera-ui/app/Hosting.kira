@@ -347,6 +347,20 @@ function takeFrameStep(hosting: borrow mut Hosting, message: borrow DisplayMessa
                 }
                 hosting.pipe.flying = flying
             }
+            Rejected(serial) -> {
+                // A transferred surface token expired or its slot was lost.
+                // No corresponding texture was imported. The next frame must
+                // send a fresh token for every slot instead of reusing one.
+                hosting.pipe.attached = [0, 0, 0]
+                var flying: [UNumber] = []
+                for sent in hosting.pipe.flying {
+                    if sent != serial { flying.append(sent) }
+                }
+                hosting.pipe.flying = flying
+                hosting.host.stale = true
+                hosting.host.drawOwed = true
+                log warn("display rejected a texture; the next frame will re-export it", frame: serial)
+            }
         }
         None -> return false
     }

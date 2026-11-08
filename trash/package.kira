@@ -4,5 +4,8 @@ construct TesseraTrash extends Package {
     let version: String = "26.10.4"
     let kind: PackageKind = .App
     let moduleRoot: String = "TesseraTrash"
-    let dependencies: [Dependency] = [Dependency { name: "TrashStore", path: "store" }]
+    let dependencies: [Dependency] = [
+        Dependency { name: "TrashStore", path: "store" },
+        Dependency { name: "TrashRules", path: "rules" }
+    ]
 }

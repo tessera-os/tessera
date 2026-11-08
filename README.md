@@ -52,6 +52,8 @@ Each directory is one component with its own `package.kira`.
 | [devicekit](devicekit/) | Driver interface beneath LibTessera services and Ember |
 | [appkit](appkit/) | Application integration with the platform: menus, lifecycle, links |
 | [tessera-ui](tessera-ui/) | Connects Kira UI programs to MosaicDisplay: surfaces, input, reconnection |
+| [tessera-auth](tessera-auth/) | Kira client for Cognito's first-party user-pool authentication API |
+| [tessera-sign-in](tessera-sign-in/) | Ready-made first-party Tessera sign-in screens and authentication flows |
 | [platform-kit](platform-kit/) | State, model and presentation contract shared by Dynamic Platforms |
 | [platform-ui](platform-ui/) | Shared UI components for Dynamic Platforms |
 | [display-client](display-client/) | Client library for the display protocol |

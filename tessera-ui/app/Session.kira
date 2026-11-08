@@ -394,13 +394,18 @@ extend Session {
 enum FrameStep {
     Granted(UNumber)
     Done(UNumber)
+    Rejected(UNumber)
 }
 
 /// The frame step a display message carries, if it is one: a frame granted, or a frame done.
 function frameStep(message: borrow DisplayMessage) -> FrameStep? {
     return match message {
         FrameReady(frame) -> .Some(.Granted(frame.serial))
-        FrameDone(frame) -> .Some(.Done(frame.serial))
+        // A completion without a surface is an import rejection, not a frame
+        // shown. Preserve the serial so the client can retire the in-flight
+        // frame while invalidating its slot cache for a fresh export.
+        FrameDone(frame) -> frame.surface == DisplaySurfaceId.none
+            ? .Some(.Rejected(frame.serial)) : .Some(.Done(frame.serial))
         Hello, Welcome, Attach, Commit, Key, FrameRequest, FocusIn, FocusOut, Configure, AckConfigure, SetMode, ModeChanged, InputCapability, SurfaceCreated, SurfaceDestroyed, GrantFocus, InstallGrab, GrabFired, SetChannel, ChannelChanged, PresentSystem, Verify, VerifyResult, InjectInput, Notify, Notification, ActivateRequested, SetBar, PointerMotion, PointerButton, PointerAxis, PointerEnter, PointerLeave, SetDock, SurfacePressed, RequestWindow, WindowRequested, GrantMove, GrantResize, HoldInput, SetOverlay, SetIdle, IdleChanged, BarBackdrop, SetGlass, SetLaunchOrigin, SetStageBadge, PlaceSurface, SurfacePlaced, SetHidden, SetMargin, Insets, Output -> .None
     }
 }

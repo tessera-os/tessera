@@ -1,6 +1,24 @@
 import Foundation
 import AppRegistry
 
+// Strip v4's trailing declaration columns for migration fixtures. v1/v2 have
+// neither handler field; v3 already has the custom-scheme column.
+function oldRegistryBytes(registry: borrow ApplicationRegistry, version: borrow String) -> String {
+    let modern = registryText(registry)
+    let rows = modern.split("\n")
+    var previous: [String] = [copy version]
+    let dropped = version == RegistryText.linksVersion ? 1 : 2
+    for index in 1..rows.count - 1 {
+        let row = rows[index]
+        if row.startsWith("D\t") {
+            previous.append(copy row)
+        } else {
+            previous.append(row.substring(0, row.count - dropped))
+        }
+    }
+    return joined(previous, "\n") + "\n"
+}
+
 @Test
 function registryRoundTripsAcceptedPendingGrantsAndIdentity() {
     var registry = ApplicationRegistry {}
@@ -32,7 +50,7 @@ function registryRejectsTruncationForgedGrantsAndUnknownVersions() {
     let saved = registryText(registry)
     expect!(parsedRegistry(saved).isSome())
     expect!(parsedRegistry(saved.substring(0, saved.count - 1)).isNone())
-    expect!(parsedRegistry("Tessera application registry 3\n").isNone())
+    expect!(parsedRegistry("Tessera application registry 5\n").isNone())
     expect!(parsedRegistry(saved + "D\tbad/id\t" + pubA + "\n").isNone())
     let forged = saved.before("\t\t\n") + "\t\tnetwork\n"
     expect!(parsedRegistry(forged).isNone())
@@ -107,14 +125,12 @@ function versionOneAcceptedRegistriesRemainReadableAndUpgradeOnNextWrite() {
     expect!(registrationSucceeded(registry.prepare(item)))
     expect!(registrationSucceeded(registry.activate(item.identity, digestA)))
     let versionTwo = registryText(registry)
-    let prefix = RegistryText.version + "\n"
-    let versionOne = RegistryText.legacyVersion + "\n"
-        + versionTwo.substring(prefix.count, versionTwo.count)
+    let versionOne = oldRegistryBytes(registry, RegistryText.legacyVersion)
     let decoded = try parsedRegistry(versionOne) otherwise return
     expect!(decoded.installed.count == 1)
     expect!(decoded.previousVersions.count == 0)
     expect!(registryText(decoded) == versionTwo)
-    expect!(parsedRegistry("Tessera application registry 3\n").isNone())
+    expect!(parsedRegistry("Tessera application registry 5\n").isNone())
 }
 
 @Test
@@ -149,10 +165,7 @@ function versionOneRegistryMigratesWithoutChangingAcceptedPermissions() {
     expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
     expect!(registrationSucceeded(registry.setGrant(first.identity, "data", true)))
     let modern = registryText(registry)
-    let old = RegistryText.legacyVersion + modern.substring(
-        RegistryText.version.count,
-        modern.count
-    )
+    let old = oldRegistryBytes(registry, RegistryText.legacyVersion)
     let upgraded = try parsedRegistry(old) otherwise return
     expect!(upgraded.installed.count == 1)
     expect!(upgraded.previousVersions.count == 0)
@@ -160,6 +173,90 @@ function versionOneRegistryMigratesWithoutChangingAcceptedPermissions() {
     expect!(accepted.candidate.imageDigest == digestA)
     expect!(accepted.grants == ["data"])
     expect!(registryText(upgraded) == modern)
+}
+
+@Test
+function versionTwoRegistryMigratesWithRollbackAndNoInventedLinkClaims() {
+    var registry = ApplicationRegistry {}
+    let first = candidate(pubA, 1, digestA)
+    let second = candidate(pubA, 2, digestB)
+    expect!(registrationSucceeded(registry.prepare(first)))
+    expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
+    expect!(registrationSucceeded(registry.prepare(second)))
+    expect!(registrationSucceeded(registry.activate(second.identity, digestB)))
+    let previous = oldRegistryBytes(registry, RegistryText.rollbackVersion)
+    let decoded = try parsedRegistry(previous) otherwise return
+    expect!(decoded.installed.count == 1)
+    expect!(decoded.previousVersions.count == 1)
+    expect!((try decoded.accepted(first.identity) otherwise return).candidate.linkSchemes.count == 0)
+    expect!((try decoded.previous(first.identity) otherwise return).candidate.linkSchemes.count == 0)
+    expect!((try decoded.accepted(first.identity) otherwise return).candidate.documentTypes.count == 0)
+    expect!(registryText(decoded) == registryText(registry))
+    // An old record with a forged extra field is not a trusted declaration.
+    expect!(parsedRegistry(previous.substring(0, previous.count - 1) + "\tdemo+notes\n").isNone())
+}
+
+@Test
+function versionThreeRegistryMigratesLinkHandlersWithoutInventingDocumentTypes() {
+    var registry = ApplicationRegistry {}
+    var first = candidate(pubA, 1, digestA)
+    first.linkSchemes = ["demo+notes"]
+    expect!(registrationSucceeded(registry.prepare(first)))
+    expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
+    let v3 = oldRegistryBytes(registry, RegistryText.linksVersion)
+    let recovered = try parsedRegistry(v3) otherwise return
+    let active = try recovered.accepted(first.identity) otherwise return
+    expect!(active.candidate.linkSchemes == ["demo+notes"])
+    expect!(active.candidate.documentTypes.count == 0)
+    expect!(registryText(recovered) == registryText(registry))
+    expect!(parsedRegistry(v3.substring(0, v3.count - 1) + "\ttxt\n").isNone())
+}
+
+@Test
+function registryV4PersistsDocumentTypesAcrossStagingUpdatesAndRollback() {
+    var registry = ApplicationRegistry {}
+    var first = candidate(pubA, 1, digestA)
+    first.documentTypes = ["txt", "md"]
+    first.linkSchemes = ["demo+notes"]
+    expect!(registrationSucceeded(registry.prepare(first)))
+    expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
+    var next = candidate(pubA, 2, digestB)
+    next.documentTypes = ["txt"]
+    expect!(registrationSucceeded(registry.prepare(next)))
+    let staged = try parsedRegistry(registryText(registry)) otherwise return
+    expect!((try staged.staged(first.identity) otherwise return).candidate.documentTypes == ["txt"])
+    expect!(registrationSucceeded(registry.activate(first.identity, digestB)))
+    let encoded = registryText(registry)
+    let restored = try parsedRegistry(encoded) otherwise return
+    expect!((try restored.accepted(first.identity) otherwise return).candidate.documentTypes == ["txt"])
+    expect!((try restored.previous(first.identity) otherwise return).candidate.documentTypes
+        == ["txt", "md"])
+    expect!(registryText(restored) == encoded)
+    let forbidden = encoded.substring(0, encoded.count - 1) + ",TXT\n"
+    expect!(parsedRegistry(forbidden).isNone())
+}
+
+@Test
+function registryRoundTripsAcceptedStagedAndRollbackCustomLinkDeclarations() {
+    var registry = ApplicationRegistry {}
+    var first = candidate(pubA, 1, digestA)
+    first.linkSchemes = ["demo+notes", "demo+task"]
+    expect!(registrationSucceeded(registry.prepare(first)))
+    expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
+    var update = candidate(pubA, 2, digestB)
+    update.linkSchemes = ["demo+task"]
+    expect!(registrationSucceeded(registry.prepare(update)))
+    let staged = try parsedRegistry(registryText(registry)) otherwise return
+    expect!((try staged.staged(first.identity) otherwise return).candidate.linkSchemes == ["demo+task"])
+    expect!(registrationSucceeded(registry.activate(first.identity, digestB)))
+    let encoded = registryText(registry)
+    let restored = try parsedRegistry(encoded) otherwise return
+    expect!((try restored.accepted(first.identity) otherwise return).candidate.linkSchemes
+        == ["demo+task"])
+    expect!((try restored.previous(first.identity) otherwise return).candidate.linkSchemes
+        == ["demo+notes", "demo+task"])
+    expect!(registryText(restored) == encoded)
+    expect!(parsedRegistry(encoded.substring(0, encoded.count - 1) + ",https\n").isNone())
 }
 
 @Test

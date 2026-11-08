@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Package Tessera's installer and system boot images for a Samsung SM-S916B.
+"""Package a native Tessera update for a Samsung SM-S916B.
 
-This only creates local files; it never opens or writes to a device. The
-Android v4 boot and vendor_boot headers are generated from scratch. The
-mainline kernel cannot use Samsung's downstream device tree, and ABL's overlay
-code rejects a mainline base tree, so the dm2q DTB is appended to the gzip
-kernel and DTBO is disabled (a zero header): ABL then boots the appended tree.
-vendor_boot carries the same DTB. Both ramdisks are LZ4 legacy, as on stock.
+This only creates local files; it never opens or writes to a device. The Android
+v4 boot and vendor_boot headers are generated from scratch. The mainline kernel
+cannot use Samsung's downstream device tree, and ABL's overlay code rejects a
+mainline base tree, so the dm2q DTB is appended to the gzip kernel and DTBO is
+disabled (a zero header): ABL then boots the appended tree. vendor_boot carries
+the same DTB. The initramfs is LZ4 legacy, as on stock.
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ import os
 import gzip
 import struct
 import subprocess
-import tarfile
 from pathlib import Path
 
 
@@ -27,9 +26,10 @@ BOOT_HEADER_V4_SIZE = 1584
 BOOT_SIGNATURE_SIZE_OFFSET = 1580
 BOOT_CMDLINE_OFFSET = 44
 BOOT_CMDLINE_SIZE = 1536
+UPDATE_IMAGE_LIMIT = 64 * 16 * 1048576
 
 
-# The kernel's parameters on both images. The panel, its clocks and its
+# The kernel's parameters on the system image. The panel, its clocks and its
 # supplies stay as the bootloader left them, because simpledrm scans out of the
 # splash region and no driver owns them. The Adreno is a render-only DRM device.
 # Every kernel message reaches the console (ignore_loglevel), which includes
@@ -37,16 +37,14 @@ BOOT_CMDLINE_SIZE = 1536
 # log while the panel shows nothing. tty0 stays last, as /dev/console.
 # From setup_arch() on, the log also goes into Samsung's sec_log_buf ring
 # (earlycon=seclog, kept past console_init by keep_bootcon). Only a warm
-# reset keeps that ring, and the panic reboot, power-off and restart are cold,
-# so a panic hangs (panic=0) and so do power-off and restart
-# (samsung_sec_log.hold=1): holding Volume Down and Power warm-resets the
-# phone, and a recovery then shows the log as /proc/last_kmsg.
+# reset keeps that ring; software restart and power-off are cold and lose it.
+# A panic still hangs (panic=0) so a hardware warm reset can preserve the log.
 KERNEL_CMDLINE = (
     # g_multi binds before userspace creates the exchange image. An empty
     # non-removable LUN rejects binding and takes ACM and ECM down with it.
     # This must precede `--`: it is a built-in kernel driver parameter.
     "g_multi.removable=1 "
-    "earlycon=seclog,0x880200000 keep_bootcon samsung_sec_log.hold=1 "
+    "earlycon=seclog,0x880200000 keep_bootcon "
     "console=ttyMSM0,115200n8 console=ttyGS0,115200 console=tty0 ignore_loglevel printk.time=1 printk.devkmsg=on panic=0 "
     "clk_ignore_unused pd_ignore_unused regulator_ignore_unused "
     "msm.separate_gpu_kms=1"
@@ -211,66 +209,6 @@ def write_new(path: Path, contents: bytes) -> None:
         raise PackageError(f"cannot write {path}: {error}") from error
 
 
-SPARSE_MAGIC = 0xED26FF3A
-SPARSE_BLOCK_SIZE = 4096
-SPARSE_CHUNK_RAW = 0xCAC1
-SPARSE_CHUNK_DONT_CARE = 0xCAC3
-SPARSE_MAX_RAW_BLOCKS = 4096
-
-
-def android_sparse(image: bytes) -> bytes:
-    """Encode a raw image in Android sparse format v1.0.
-
-    The SM-S916B bootloader rejects a raw image that spans more than one 30 MiB
-    Odin slice (response 0xFFFFFFFF, value 3), so CACHE must be sent sparse.
-    All-zero blocks become DONT_CARE chunks; the bootloader expands the rest to
-    the same bytes on the partition.
-    """
-    remainder = len(image) % SPARSE_BLOCK_SIZE
-    if remainder:
-        image += b"\0" * (SPARSE_BLOCK_SIZE - remainder)
-    block_count = len(image) // SPARSE_BLOCK_SIZE
-    zero_block = b"\0" * SPARSE_BLOCK_SIZE
-
-    def is_zero(index: int) -> bool:
-        start = index * SPARSE_BLOCK_SIZE
-        return image[start : start + SPARSE_BLOCK_SIZE] == zero_block
-
-    chunks: list[bytes] = []
-    index = 0
-    while index < block_count:
-        zero = is_zero(index)
-        end = index + 1
-        while end < block_count and is_zero(end) == zero and (zero or end - index < SPARSE_MAX_RAW_BLOCKS):
-            end += 1
-        count = end - index
-        if zero:
-            chunks.append(struct.pack("<HHII", SPARSE_CHUNK_DONT_CARE, 0, count, 12))
-        else:
-            payload = image[index * SPARSE_BLOCK_SIZE : end * SPARSE_BLOCK_SIZE]
-            chunks.append(struct.pack("<HHII", SPARSE_CHUNK_RAW, 0, count, 12 + len(payload)) + payload)
-        index = end
-    header = struct.pack("<IHHHHIIII", SPARSE_MAGIC, 1, 0, 28, 12, SPARSE_BLOCK_SIZE, block_count, len(chunks), 0)
-    return header + b"".join(chunks)
-
-
-def odin_tar(entries: list[tuple[Path | bytes, str]]) -> bytes:
-    import io
-
-    stream = io.BytesIO()
-    with tarfile.open(fileobj=stream, mode="w", format=tarfile.USTAR_FORMAT) as archive:
-        for source, name in entries:
-            contents = source if isinstance(source, bytes) else read_bytes(source, "image for Odin archive")
-            info = tarfile.TarInfo(name)
-            info.size = len(contents)
-            info.mode = 0o644
-            info.uid = 0
-            info.gid = 0
-            info.mtime = 0
-            archive.addfile(info, io.BytesIO(contents))
-    return stream.getvalue()
-
-
 def byte_count(value: str) -> int:
     try:
         parsed = int(value, 0)
@@ -285,11 +223,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--kernel", required=True, type=Path, help="Tessera arm64 Image")
     parser.add_argument("--initramfs", required=True, type=Path, help="Tessera initramfs.cpio.zst")
-    parser.add_argument("--installer-initramfs", required=True, type=Path, help="installer.cpio.zst")
-    parser.add_argument("--system-image", required=True, type=Path, help="system-volume/system.img to flash to CACHE")
+    parser.add_argument("--system-image", required=True, type=Path, help="system-volume/system.img")
     parser.add_argument("--boot-partition-bytes", required=True, type=byte_count, help="boot capacity reported by the device PIT")
     parser.add_argument("--init-boot-partition-bytes", required=True, type=byte_count, help="init_boot capacity reported by the device PIT")
-    parser.add_argument("--cache-partition-bytes", required=True, type=byte_count, help="CACHE capacity reported by the device PIT")
+    parser.add_argument("--system-partition-bytes", required=True, type=byte_count, help="system partition capacity reported by the device PIT")
     parser.add_argument("--dtb", required=True, type=Path, help="sm8550-samsung-dm2q.dtb from the dm2q kernel build")
     parser.add_argument("--vendor-boot-partition-bytes", required=True, type=byte_count, help="vendor_boot capacity reported by the device PIT")
     parser.add_argument("--dtbo-partition-bytes", required=True, type=byte_count, help="dtbo capacity reported by the device PIT")
@@ -303,22 +240,12 @@ def main() -> int:
     if not initramfs.startswith(b"\x28\xb5\x2f\xfd"):
         raise PackageError(f"{args.initramfs} is not a Zstandard-compressed initramfs")
 
-    installer_initramfs = read_bytes(args.installer_initramfs, "Tessera installer initramfs")
     system_image = read_bytes(args.system_image, "Tessera system volume")
-    if not installer_initramfs.startswith(bytes([0x28, 0xb5, 0x2f, 0xfd])):
-        raise PackageError(
-            f"{args.installer_initramfs} is not a Zstandard-compressed installer initramfs"
-        )
     if not system_image.startswith(b"hsqs"):
         raise PackageError(f"{args.system_image} is not a little-endian SquashFS image")
-    require_image_size(len(system_image), args.cache_partition_bytes, "Tessera system image for CACHE")
+    require_image_size(len(system_image), min(UPDATE_IMAGE_LIMIT, args.system_partition_bytes), "Tessera system image")
 
     version = hashlib.sha256(system_image).hexdigest()[:16]
-    installer_cmdline = (
-        f"{KERNEL_CMDLINE} -- "
-        f"tessera.version={version} tessera.target=PARTLABEL:SUPER "
-        "tessera.image=PARTLABEL:CACHE tessera.logpart=PARTLABEL:CACHE"
-    )
     system_cmdline = (
         f"{KERNEL_CMDLINE} -- tessera.system tessera.dev tessera.bootlog "
         "tessera.adaptive-mobile "
@@ -329,15 +256,9 @@ def main() -> int:
         raise PackageError(f"{args.dtb} is not a flattened device tree")
     boot_kernel = appended_dtb_kernel(kernel, dtb)
     system_boot = make_boot_image(v4_boot_header(system_cmdline), boot_kernel, b"")
-    installer_boot = make_boot_image(v4_boot_header(installer_cmdline), boot_kernel, b"")
     system_init_boot = make_boot_image(v4_boot_header(""), b"", lz4_legacy(zstd_decompress(initramfs)))
-    installer_init_boot = make_boot_image(
-        v4_boot_header(""), b"", lz4_legacy(zstd_decompress(installer_initramfs))
-    )
     require_image_size(len(system_boot), args.boot_partition_bytes, "Tessera system boot image")
-    require_image_size(len(installer_boot), args.boot_partition_bytes, "Tessera installer boot image")
     require_image_size(len(system_init_boot), args.init_boot_partition_bytes, "Tessera system init_boot image")
-    require_image_size(len(installer_init_boot), args.init_boot_partition_bytes, "Tessera installer init_boot image")
 
     vendor_boot = make_vendor_boot_image(dtb)
     dtbo = disabled_dtbo()
@@ -345,68 +266,30 @@ def main() -> int:
     require_image_size(len(dtbo), args.dtbo_partition_bytes, "Tessera dtbo image")
 
     out_dir = args.out_dir
-    system_boot_path = out_dir / "boot-system.img"
-    system_init_boot_path = out_dir / "init_boot-system.img"
-    installer_boot_path = out_dir / "boot-installer.img"
-    installer_init_boot_path = out_dir / "init_boot-installer.img"
-    vendor_boot_path = out_dir / "vendor_boot.img"
-    dtbo_path = out_dir / "dtbo.img"
-    system_tar_path = out_dir / "Tessera-SM-S916B-system.tar"
-    system_tar_md5_path = out_dir / "Tessera-SM-S916B-system.tar.md5"
-    installer_tar_path = out_dir / "Tessera-SM-S916B-install.tar"
-    installer_tar_md5_path = out_dir / "Tessera-SM-S916B-install.tar.md5"
-    output_paths = (
-        system_boot_path,
-        system_init_boot_path,
-        installer_boot_path,
-        installer_init_boot_path,
-        vendor_boot_path,
-        dtbo_path,
-        system_tar_path,
-        system_tar_md5_path,
-        installer_tar_path,
-        installer_tar_md5_path,
-    )
+    images = [
+        (out_dir / "boot.img", system_boot),
+        (out_dir / "init_boot.img", system_init_boot),
+        (out_dir / "vendor_boot.img", vendor_boot),
+        (out_dir / "dtbo.img", dtbo),
+        (out_dir / "system.img", system_image),
+    ]
+    sums_path = out_dir / "SHA256SUMS"
+    output_paths = [path for path, _ in images] + [sums_path]
     for path in output_paths:
         if path.exists():
             raise PackageError(f"refusing to overwrite existing output {path}")
 
-    write_new(system_boot_path, system_boot)
-    write_new(system_init_boot_path, system_init_boot)
-    write_new(installer_boot_path, installer_boot)
-    write_new(installer_init_boot_path, installer_init_boot)
-    write_new(vendor_boot_path, vendor_boot)
-    write_new(dtbo_path, dtbo)
-
-    system_tar = odin_tar([
-        (system_boot_path, "boot.img"),
-        (system_init_boot_path, "init_boot.img"),
-        (vendor_boot_path, "vendor_boot.img"),
-        (dtbo_path, "dtbo.img"),
-    ])
-    write_new(system_tar_path, system_tar)
-    system_trailer = f"{hashlib.md5(system_tar).hexdigest()}  {system_tar_path.name}\n".encode("ascii")
-    write_new(system_tar_md5_path, system_tar + system_trailer)
-
-    installer_tar = odin_tar([
-        (installer_boot_path, "boot.img"),
-        (installer_init_boot_path, "init_boot.img"),
-        (vendor_boot_path, "vendor_boot.img"),
-        (dtbo_path, "dtbo.img"),
-        (android_sparse(system_image), "cache.img"),
-    ])
-    write_new(installer_tar_path, installer_tar)
-    installer_trailer = f"{hashlib.md5(installer_tar).hexdigest()}  {installer_tar_path.name}\n".encode("ascii")
-    write_new(installer_tar_md5_path, installer_tar + installer_trailer)
+    sums = ""
+    for path, contents in images:
+        write_new(path, contents)
+        sums += f"{hashlib.sha256(contents).hexdigest()}  {path.name}\n"
+    write_new(sums_path, sums.encode("ascii"))
 
     print(f"System version: {version}")
-    print(f"Created {system_boot_path} ({len(system_boot)} bytes)")
-    print(f"Created {system_init_boot_path} ({len(system_init_boot)} bytes)")
-    print(f"Created installer images {installer_boot_path} and {installer_init_boot_path}")
-    print(f"Created {vendor_boot_path} ({len(vendor_boot)} bytes) and {dtbo_path} ({len(dtbo)} bytes)")
-    print(f"Created Odin install archive {installer_tar_md5_path} (BOOT, INIT_BOOT, VENDOR_BOOT, DTBO, sparse CACHE)")
-    print(f"Created Odin system archive {system_tar_md5_path} (BOOT, INIT_BOOT, VENDOR_BOOT, DTBO)")
-    print("No device was opened or flashed.")
+    for path, contents in images:
+        print(f"Created {path} ({len(contents)} bytes)")
+    print(f"Created {sums_path} with five SHA-256 entries")
+    print("Native update package only; no device was opened or written.")
     return 0
 
 

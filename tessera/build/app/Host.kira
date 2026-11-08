@@ -55,12 +55,13 @@ function hostIsDarwin() -> Bool {
 // needs make 4 or newer, where Darwin ships 3.81; `nproc` and `sha256sum` are
 // coreutils; arch/arm64/kvm runs `find -printf`, which BSD find lacks; and
 // arch/arm64/tools/gen-kernel-hwcaps.sh uses a GNU sed pattern that BSD sed
-// matches nothing with, silently.
+// matches nothing with, silently. Homebrew's main bin also supplies pkg-config,
+// which kbuild's host extract-cert tool needs for OpenSSL's include and lib flags.
 function darwinToolPath() -> String {
     let brew = "/opt/homebrew/opt"
     return "\(brew)/make/libexec/gnubin:\(brew)/bison/bin:\(brew)/coreutils/libexec/gnubin:"
         + "\(brew)/findutils/libexec/gnubin:\(brew)/gnu-sed/libexec/gnubin:\(brew)/bc/bin:"
-        + "\(brew)/e2fsprogs/sbin"
+        + "\(brew)/e2fsprogs/sbin:/opt/homebrew/bin"
 }
 
 // The tz database the system's time zones are taken from: the host's own,
@@ -260,5 +261,23 @@ extend Host {
             return environmentValue("TESSERA_DM2Q_FIRMWARE")
         }
         return "\(buildRoot)/device/dm2q/firmware"
+    }
+
+    // Sony-signed Adreno 630 zap shader extracted from the phone's stock
+    // firmware. Keep this outside the repository and do not substitute
+    // a firmware file from a different Snapdragon device.
+    function akariFirmware(borrow self) -> String {
+        if environmentIsSet("TESSERA_AKARI_FIRMWARE") {
+            return environmentValue("TESSERA_AKARI_FIRMWARE")
+        }
+        return "\(buildRoot)/device/akari/firmware"
+    }
+
+    // Bluetooth firmware extracted from the target XZ3's own Android image.
+    function akatsukiBluetoothFirmware(borrow self) -> String {
+        if environmentIsSet("TESSERA_AKATSUKI_BLUETOOTH_FIRMWARE") {
+            return environmentValue("TESSERA_AKATSUKI_BLUETOOTH_FIRMWARE")
+        }
+        return "\(buildRoot)/device/akatsuki/firmware/bluetooth"
     }
 }

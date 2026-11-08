@@ -9,6 +9,13 @@ construct BrowserApp extends Package {
     let kind: PackageKind = .App
     let assets: [String] = ["Resources/AppIcon.tessicon"]
     let moduleRoot: String = "Browser"
+    let dependencies: [Dependency] = [
+        Dependency { name: "Ember", path: "../../kira-packages/ember" },
+        Dependency { name: "KCoreAnimation", path: "../../kira-packages/kcoreanimation" },
+        Dependency { name: "KiraUI", path: "../../kira-packages/kira-ui" },
+        Dependency { name: "LibTessera", path: "../libtessera" },
+        Dependency { name: "TesseraUI", path: "../tessera-ui" }
+    ]
     let nativeLibraries: [NativeLibrary] = [
         NativeLibrary {
             name: "wpewebkit",

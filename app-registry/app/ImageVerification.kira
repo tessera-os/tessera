@@ -131,9 +131,22 @@ public function appSignatureStatement(
     manifest: borrow ApplicationManifest,
     imageDigest: borrow String
 ) -> String {
-    return "Tessera app image 1\n" + manifest.identifier + "\n" + manifest.name + "\n"
+    // Domain separation prevents legacy signatures from acquiring handlers.
+    // v1 covers no handlers, v2 binds custom-link declarations, and v3 binds
+    // both custom links and document types. Old formats stay verifiable only
+    // while their newly introduced declaration fields are empty.
+    let old = manifest.identifier + "\n" + manifest.name + "\n"
         + "\(manifest.version)\n" + manifest.executable + "\n"
-        + joined(manifest.requests, ",") + "\n" + imageDigest + "\n"
+        + joined(manifest.requests, ",") + "\n"
+    if manifest.documentTypes.count > 0 {
+        return "Tessera app image 3\n" + old + joined(manifest.linkSchemes, ",")
+            + "\n" + joined(manifest.documentTypes, ",") + "\n" + imageDigest + "\n"
+    }
+    if manifest.linkSchemes.count == 0 {
+        return "Tessera app image 1\n" + old + imageDigest + "\n"
+    }
+    return "Tessera app image 2\n" + old
+        + joined(manifest.linkSchemes, ",") + "\n" + imageDigest + "\n"
 }
 
 function appHex(bytes: borrow [UN8]) -> String {

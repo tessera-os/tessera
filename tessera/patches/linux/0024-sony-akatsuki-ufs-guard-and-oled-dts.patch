@@ -1,0 +1,111 @@
+From 3fe2a001ec902682bce10000000000bb0624f571 Mon Sep 17 00:00:00 2001
+From: Tessera OS <engineering@localhost>
+Date: Sat, 7 Nov 2026 18:20:00 +0100
+Subject: [PATCH] sony: block UFS purge/unmap; enable XZ3 OLED panel and DTS
+
+Protect the Sony Tama XZ3 against UFS ERASE/UNMAP/SANITIZE opcodes.
+Disable SCSI discard at discovery so Btrfs never submits such requests.
+Bind Marijn Suijten's LGD LH599QH3-EDB1 panel driver to the Akatsuki DT.
+
+---
+diff --git a/drivers/ufs/core/ufshcd.c b/drivers/ufs/core/ufshcd.c
+--- a/drivers/ufs/core/ufshcd.c
++++ b/drivers/ufs/core/ufshcd.c
+@@ -3062,6 +3062,27 @@
+ 	int err = 0;
+ 	struct ufs_hw_queue *hwq = NULL;
+ 
++	/*
++	 * Sony Tama bootloader partitions were historically destroyed by a UFS
++	 * PURGE / UNMAP command. Prevent all SCSI erase-like commands even if a
++	 * future filesystem, userspace ioctl or kernel background worker tries
++	 * to send them. Ordinary reads/writes and sync-cache remain permitted.
++	 * This hardware gate does not depend on the UFS supplier or LUN model.
++	 */
++	if (of_machine_is_compatible("sony,akatsuki-row")) {
++		switch (cmd->cmnd[0]) {
++		case FORMAT_UNIT:
++		case WRITE_BUFFER:
++		case WRITE_SAME:
++		case UNMAP:
++		case 0x48: /* SANITIZE */
++		case WRITE_SAME_16:
++			set_host_byte(cmd, DID_ERROR);
++			scsi_done(cmd);
++			goto out;
++		}
++	}
++
+ 	switch (hba->ufshcd_state) {
+ 	case UFSHCD_STATE_OPERATIONAL:
+ 		break;
+diff --git a/drivers/scsi/sd.c b/drivers/scsi/sd.c
+--- a/drivers/scsi/sd.c
++++ b/drivers/scsi/sd.c
+@@ -54,6 +54,7 @@
+ #include <linux/slab.h>
+ #include <linux/sed-opal.h>
+ #include <linux/pm_runtime.h>
++#include <linux/of.h>
+ #include <linux/pr.h>
+ #include <linux/t10-pi.h>
+ #include <linux/uaccess.h>
+@@ -157,6 +158,13 @@
+ {
+ 	unsigned int logical_block_size = sdkp->device->sector_size;
+ 	unsigned int max_blocks = 0;
++
++	/* Hide all discard capability on Sony Tama XZ3, regardless of whether
++	 * this UFS chip claims UNMAP or WRITE SAME support. Never offer a purge
++	 * path to btrfs, mkfs, fstrim or any block-layer caller.
++	 */
++	if (of_machine_is_compatible("sony,akatsuki-row"))
++		mode = SD_LBP_DISABLE;
+ 
+ 	lim->discard_alignment = sdkp->unmap_alignment * logical_block_size;
+ 	lim->discard_granularity = max(sdkp->physical_block_size,
+diff --git a/drivers/gpu/drm/panel/Kconfig b/drivers/gpu/drm/panel/Kconfig
+--- a/drivers/gpu/drm/panel/Kconfig
++++ b/drivers/gpu/drm/panel/Kconfig
+@@ -500,6 +500,14 @@
+ 	  pixel. It provides a MIPI DSI interface to the host and has a
+ 	  built-in LED backlight.
+ 
++config DRM_PANEL_LGD_LH599QH3_EDB1
++	tristate "LGD LH599QH3-EDB1 OLED DSI panel (Xperia XZ3)"
++	depends on GPIOLIB && OF && DRM_MIPI_DSI && BACKLIGHT_CLASS_DEVICE
++	select DRM_DISPLAY_DSC_HELPER
++	select DRM_DISPLAY_HELPER
++	help
++	  The Sony Xperia XZ3 1440x2880 OLED panel uses MIPI DSC 1.1.
++
+ config DRM_PANEL_LXD_M9189A
+ 	tristate "LXD M9189A MIPI-DSI LCD panel"
+ 	depends on OF
+diff --git a/drivers/gpu/drm/panel/Makefile b/drivers/gpu/drm/panel/Makefile
+--- a/drivers/gpu/drm/panel/Makefile
++++ b/drivers/gpu/drm/panel/Makefile
+@@ -49,6 +49,7 @@
+ obj-$(CONFIG_DRM_PANEL_LG_LD070WX3) += panel-lg-ld070wx3.o
+ obj-$(CONFIG_DRM_PANEL_LG_LG4573) += panel-lg-lg4573.o
+ obj-$(CONFIG_DRM_PANEL_LG_SW43408) += panel-lg-sw43408.o
++obj-$(CONFIG_DRM_PANEL_LGD_LH599QH3_EDB1) += panel-lgd-lh599qh3-edb1.o
+ obj-$(CONFIG_DRM_PANEL_LXD_M9189A) += panel-lxd-m9189a.o
+ obj-$(CONFIG_DRM_PANEL_MAGNACHIP_D53E6EA8966) += panel-magnachip-d53e6ea8966.o
+ obj-$(CONFIG_DRM_PANEL_MOTOROLA_MOT) += panel-motorola-mot.o
+diff --git a/arch/arm64/boot/dts/qcom/sdm845-sony-xperia-tama-akatsuki.dts b/arch/arm64/boot/dts/qcom/sdm845-sony-xperia-tama-akatsuki.dts
+--- a/arch/arm64/boot/dts/qcom/sdm845-sony-xperia-tama-akatsuki.dts
++++ b/arch/arm64/boot/dts/qcom/sdm845-sony-xperia-tama-akatsuki.dts
+@@ -37,7 +37,11 @@
+ };
+ 
+ &panel {
+-	/* Akatsuki uses an OLED panel. */
++	/* Xperia XZ3 1440x2880 OLED requires the LGD MIPI DSC 1.1 driver. */
++	compatible = "lgd,lh599qh3-edb1-um1";
++	avdd-supply = <&vreg_l28a_2p8>;
++	reset-gpios = <&tlmm 6 GPIO_ACTIVE_LOW>;
++	/delete-property/ panel-reset-gpios;
+ 	/delete-property/ backlight;
+ 	/delete-property/ vsp-supply;
+ 	/delete-property/ vsn-supply;

@@ -1,0 +1,289 @@
+import Foundation
+import LibTessera
+import Heap
+
+// Stages a complete dm2q update from the USB exchange. Staging never writes a
+// partition; the ready file is written only after each copy has been checked.
+namespace UpdateStage {
+    let directory: String = "/data/system/updates"
+    let images: [String] = ["boot.img", "init_boot.img", "vendor_boot.img", "dtbo.img", "system.img"]
+}
+
+function validUpdateId(id: borrow String) -> Bool {
+    if id.count == 0 || id.count > 32 { return false }
+    for character in id.utf8() {
+        if character < UN8(48) || character > UN8(57) { return false }
+    }
+    return true
+}
+
+// Accepts one bounded chunk from the exchange. The receipt is written only
+// after the persisted copy was read back and verified. A repeated request is
+// accepted only if both its receipt and its contents match.
+function stageUpdateChunk(files: borrow Files, id: borrow String) -> Result<Void, RootFailure> {
+    if !validUpdateId(id) { return .Error(.InvalidUpdate("invalid update identifier")) }
+    let source = RequestVolume.path + "/update"
+    let text = match files.readTextIfPresent(source + "/chunk.info") {
+        Ok(value) -> match value {
+            Some(found) -> found.trim()
+            None -> return .Error(.InvalidUpdate("missing chunk metadata"))
+        }
+        Error(failed) -> return .Error(.Storage(failed))
+    }
+    let fields = text.split(" ")
+    if fields.count != 3 || !UpdateStage.images.contains(fields[0]) || fields[2].count != 64 {
+        return .Error(.InvalidUpdate("invalid chunk metadata"))
+    }
+    let ordinal = fields[1]
+    if ordinal.count == 0 || ordinal.count > 8 {
+        return .Error(.InvalidUpdate("invalid chunk number"))
+    }
+    for character in ordinal.utf8() {
+        if character < UN8(48) || character > UN8(57) {
+            return .Error(.InvalidUpdate("invalid chunk number"))
+        }
+    }
+    let bytes = match files.load(source + "/chunk") {
+        Ok(value) -> move value
+        Error(failed) -> return .Error(.Storage(failed))
+    }
+    if bytes.count == 0 || bytes.count > 16 * 1048576 {
+        return .Error(.InvalidUpdate("invalid chunk size"))
+    }
+    let actual = digestSha256(Buffer { address: bytes.pointer(), length: bytes.count })
+    if actual != fields[2] { return .Error(.InvalidUpdate("chunk digest mismatch")) }
+    let directory = UpdateStage.directory + "/" + id + "/chunks/" + fields[0]
+    match files.ensureDirectories(directory) {
+        Ok -> {}
+        Error(failed) -> return .Error(.Storage(failed))
+    }
+    let path = directory + "/" + ordinal
+    match files.kindAt(path) {
+        Ok(existing) -> if existing.isSome() {
+            let previous = match fileDigest(files, path) {
+                Ok(value) -> value
+                Error(failed) -> return .Error(.Storage(failed))
+            }
+            if previous != actual { return .Error(.InvalidUpdate("chunk already differs")) }
+        } else {
+            match files.store(path, Buffer { address: bytes.pointer(), length: bytes.count }, false) {
+                Ok -> {}
+                Error(failed) -> return .Error(.Storage(failed))
+            }
+        }
+        Error(failed) -> return .Error(.Storage(failed))
+    }
+    let stored = match fileDigest(files, path) {
+        Ok(value) -> value
+        Error(failed) -> return .Error(.Storage(failed))
+    }
+    if stored != actual { return .Error(.InvalidUpdate("stored chunk digest mismatch")) }
+    match machineFlush() {
+        Ok -> {}
+        Error(failed) -> return .Error(.Storage(failed))
+    }
+    match files.writeText(path + ".receipt", actual + "\n") {
+        Ok -> {}
+        Error(failed) -> return .Error(.Storage(failed))
+    }
+    match machineFlush() {
+        Ok -> return .Ok
+        Error(failed) -> return .Error(.Storage(failed))
+    }
+}
+
+// The final manifest names each image, its chunk count and the SHA-256 of the
+// complete image. A ready marker is never written for an incomplete update.
+function finishUpdate(files: borrow Files, id: borrow String) -> Result<Void, RootFailure> {
+    if !validUpdateId(id) { return .Error(.InvalidUpdate("invalid update identifier")) }
+    let root = UpdateStage.directory + "/" + id
+    let manifest = match files.readTextIfPresent(RequestVolume.path + "/update/finalize.info") {
+        Ok(value) -> match value {
+            Some(text) -> text
+            None -> return .Error(.InvalidUpdate("missing final manifest"))
+        }
+        Error(failed) -> return .Error(.Storage(failed))
+    }
+    match files.readTextIfPresent(root + "/ready") {
+        Ok(value) -> match value {
+            Some(text) -> {
+                if text == manifest { return .Ok }
+                return .Error(.InvalidUpdate("update is already ready with a different manifest"))
+            }
+            None -> {}
+        }
+        Error(failed) -> return .Error(.Storage(failed))
+    }
+    let lines = manifest.trim().split("\n")
+    if lines.count != UpdateStage.images.count {
+        return .Error(.InvalidUpdate("expected five image descriptions"))
+    }
+    for index in 0..UpdateStage.images.count {
+        let fields = lines[index].trim().split(" ")
+        if fields.count != 3 || fields[0] != UpdateStage.images[index] {
+            return .Error(.InvalidUpdate("invalid final manifest"))
+        }
+        let count = try fields[1].toNumber() otherwise return .Error(.InvalidUpdate("invalid chunk count"))
+        try finishUpdateImage(files, id, fields[0], count, fields[2])
+    }
+    match files.writeText(root + "/ready", manifest) {
+        Ok -> {}
+        Error(failed) -> return .Error(.Storage(failed))
+    }
+    match machineFlush() {
+        Ok -> return .Ok
+        Error(failed) -> return .Error(.Storage(failed))
+    }
+}
+
+// Discards one explicitly named staged update, whether incomplete or ready.
+function discardUpdate(files: borrow Files, id: borrow String) -> Result<Void, RootFailure> {
+    if !validUpdateId(id) { return .Error(.InvalidUpdate("invalid update identifier")) }
+    let root = UpdateStage.directory + "/" + id
+    match files.kindAt(root) {
+        Ok(kind) -> match kind {
+            None -> return .Ok
+            Some(entryKind) -> if entryKind != .Directory {
+                return .Error(.InvalidUpdate("staged update path is not a directory"))
+            }
+        }
+        Error(failed) -> return .Error(.Storage(failed))
+    }
+    match files.removeTree(root) {
+        Ok -> {}
+        Error(failed) -> return .Error(.Storage(failed))
+    }
+    match machineFlush() {
+        Ok -> return .Ok
+        Error(failed) -> return .Error(.Storage(failed))
+    }
+}
+
+// Verifies every receipt and chunk, reassembles the image, and verifies its
+// whole-file digest before it can be used. It does not write any partition.
+function finishUpdateImage(
+    files: borrow Files,
+    id: borrow String,
+    name: borrow String,
+    count: Number,
+    expected: borrow String
+) -> Result<Void, RootFailure> {
+    if !UpdateStage.images.contains(name) || count < 1 || count > 64 || expected.count != 64 {
+        return .Error(.InvalidUpdate("invalid image description"))
+    }
+    let root = UpdateStage.directory + "/" + id
+    let directory = root + "/chunks/" + name
+    var total = 0
+    for index in 0..count {
+        let path = directory + "/" + String(index)
+        let receipt = match files.readTextIfPresent(path + ".receipt") {
+            Ok(value) -> match value {
+                Some(text) -> text.trim()
+                None -> return .Error(.InvalidUpdate("missing chunk receipt"))
+            }
+            Error(failed) -> return .Error(.Storage(failed))
+        }
+        let bytes = match files.load(path) {
+            Ok(value) -> move value
+            Error(failed) -> return .Error(.Storage(failed))
+        }
+        if bytes.count == 0 || bytes.count > 16 * 1048576 ||
+            (index + 1 < count && bytes.count != 16 * 1048576) {
+            return .Error(.InvalidUpdate("invalid staged chunk size"))
+        }
+        if digestSha256(Buffer { address: bytes.pointer(), length: bytes.count }) != receipt {
+            return .Error(.InvalidUpdate("staged chunk digest mismatch"))
+        }
+        total += bytes.count
+    }
+    let image = zeroedBlock(count: total, alignment: 16)
+    var offset = 0
+    for index in 0..count {
+        let bytes = match files.load(directory + "/" + String(index)) {
+            Ok(value) -> move value
+            Error(failed) -> return .Error(.Storage(failed))
+        }
+        if offset + bytes.count > total { return .Error(.InvalidUpdate("staged chunks changed")) }
+        copyBytes(heapOffset(image.pointer(), offset), bytes.pointer(), bytes.count)
+        offset += bytes.count
+    }
+    if offset != total || digestSha256(Buffer { address: image.pointer(), length: total }) != expected {
+        return .Error(.InvalidUpdate("whole-image digest mismatch"))
+    }
+    match files.store(root + "/" + name, Buffer { address: image.pointer(), length: total }, false) {
+        Ok -> {}
+        Error(failed) -> return .Error(.Storage(failed))
+    }
+    match machineFlush() {
+        Ok -> return .Ok
+        Error(failed) -> return .Error(.Storage(failed))
+    }
+}
+
+function stageUpdate(files: borrow Files, id: borrow String) -> Result<Void, RootFailure> {
+    if id.count == 0 || id.contains("/") || id.contains("..") || id.contains(" ") {
+        return .Error(.InvalidUpdate("invalid update identifier"))
+    }
+    let source = RequestVolume.path + "/update"
+    let target = UpdateStage.directory + "/" + id
+    match files.kindAt(target) {
+        Ok(existing) -> if existing.isSome() {
+            return .Error(.InvalidUpdate("update identifier already exists"))
+        }
+        Error(failed) -> return .Error(.Storage(failed))
+    }
+    let manifest = match files.readTextIfPresent(source + "/SHA256SUMS") {
+        Ok(value) -> match value {
+            Some(text) -> text
+            None -> return .Error(.InvalidUpdate("missing SHA256SUMS"))
+        }
+        Error(failed) -> return .Error(.Storage(failed))
+    }
+    let lines = manifest.trim().split("\n")
+    if lines.count != UpdateStage.images.count {
+        return .Error(.InvalidUpdate("expected five image digests"))
+    }
+    var digests: [String] = []
+    for index in 0..UpdateStage.images.count {
+        let line = lines[index].trim()
+        let suffix = "  " + UpdateStage.images[index]
+        if line.count != 64 + suffix.count || !line.endsWith(suffix) {
+            return .Error(.InvalidUpdate("invalid image digest list"))
+        }
+        let expected = line.substring(0, 64)
+        let actual = match fileDigest(files, source + "/" + UpdateStage.images[index]) {
+            Ok(value) -> value
+            Error(failed) -> return .Error(.Storage(failed))
+        }
+        if actual != expected { return .Error(.InvalidUpdate("image digest mismatch")) }
+        digests.append(expected)
+    }
+    match files.ensureDirectories(target) {
+        Ok -> {}
+        Error(failed) -> return .Error(.Storage(failed))
+    }
+    for index in 0..UpdateStage.images.count {
+        let name = UpdateStage.images[index]
+        match files.storeShared(target + "/" + name, source + "/" + name) {
+            Ok -> {}
+            Error(failed) -> return .Error(.Storage(failed))
+        }
+        let actual = match fileDigest(files, target + "/" + name) {
+            Ok(value) -> value
+            Error(failed) -> return .Error(.Storage(failed))
+        }
+        if actual != digests[index] { return .Error(.InvalidUpdate("staged image digest mismatch")) }
+    }
+    match machineFlush() {
+        Ok -> {}
+        Error(failed) -> return .Error(.Storage(failed))
+    }
+    match files.writeText(target + "/ready", manifest) {
+        Ok -> {}
+        Error(failed) -> return .Error(.Storage(failed))
+    }
+    match machineFlush() {
+        Ok -> return .Ok
+        Error(failed) -> return .Error(.Storage(failed))
+    }
+}

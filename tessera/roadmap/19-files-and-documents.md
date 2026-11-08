@@ -109,6 +109,46 @@ wire these choices through the verified launcher and document access grants.
 Host tests cover identity isolation, duplicate extensions, corruption,
 persistence, and symlinked preference paths.
 
+### Signed Open With declarations and document startup grants (2026-11-07)
+
+`AppRegistry` now reads canonical `types` manifest declarations for supported
+filename extensions. The Ed25519 image statement v3 authenticates both custom
+links and declared document types. Registry v4 persists types across accepted,
+staged and rollback images, and reads v1/v2/v3 records without inventing
+declarations. Saved Open With preferences select only an accepted image that
+declares that extension; an update withdrawing the type leaves the previous
+selection unavailable, not redirected. `StoredDocumentActivation` resolves
+file-backed preferences, lists declared eligible handlers and revalidates an
+image-digest/version-bound ticket before dispatch.
+
+LibTessera now defines `StartupTag.document` and accepts one explicit File
+capability in a **confined** launch, with read or approved read/write rights.
+`launchDocumentEntry` narrows the grant and `processLaunchDocument` retrieves
+it in the child. This is a real typed capability pathway, not a filename in
+argv or a filesystem root grant. It does not open the document on the person's
+behalf, create the selected handle, or implement a live-process RIDL delivery.
+Inlay, the document picker, the privileged image launcher and the broker that
+serializes ticket revalidation with file opening still need integration. The
+end-to-end Open With, Save As and confinement boot checkpoints remain open.
+
+### Explicit Read/Edit in Notes path (2026-11-07)
+
+Inlay now offers Read in Notes or Edit in Notes for a selected regular `.txt`
+or `.md` file up to 1 MiB. It opens the exact File through a symlink-rejecting
+node lookup and transfers the capability, not its pathname, over the existing
+workspace channel. PID 1 accepts the new document-open request only from the
+sealed Inlay service, selects the fixed system Notes executable, and starts a
+fresh confined process with a single narrowed File grant. Notes removes the
+bootstrap Transfer right and opens a bounded read-only/editor view. Editing
+saves in-place to the granted File; ordinary Notes launches still open the
+private Notes library.
+
+This is an explicitly selected built-in Notes route, not the generic signed
+AppRegistry Open With resolver. It has no application chooser, live-app RIDL
+activation or atomic Save As. The five involved packages pass Tessera-target
+Kira source checks, but the guarded boot build fails at host linking. The
+original end-to-end boot checkpoints remain open.
+
 ## 2. Open and save documents
 
 Applications declare the document types they can open. Inlay opens a document
@@ -176,3 +216,35 @@ folded paths conservatively. A same-folder transfer using a differently cased
 alias duplicates the item rather than offering to replace its own source.
 Hostname-independent symlink and casing tests remain part of the host harness;
 OS-backed no-replace rename and concurrent mutation safety are still open.
+
+### Inlay search, bounded preview and recent-document UI (2026-11-07)
+
+Inlay's folder UI now has an explicit Find action for recursive filename
+searches in `/Documents` and mounted volumes. It uses the existing bounded,
+case-insensitive `FileOperations.searchDocumentsByName` with 75 results,
+four nested levels and the library's 10,000-entry inspection budget. Each
+result can be revealed in its folder; files also expose a bounded Preview.
+Search results are invalidated when navigating to a different search root,
+and no recursive scan runs as part of ordinary UI redraws.
+
+The preview UI now calls `previewDocument` rather than loading complete text
+files. It reads at most 4096 bytes, refuses unsafe/linked and changed files,
+and recognizes text and image signatures without executing content. Only
+recognized image signatures within an 8 MiB display bound reach `ImageFile`;
+the decoder still has to reject malformed image bytes.
+
+The sidebar now includes Recent Documents. Inlay stores path references (not
+grants) in `/data/appdata/Inlay/RecentDocuments` with strict, bounded codec
+validation. The launch path sends no document pathname to PID 1. Instead,
+PID 1 explicitly acknowledges successful Notes launches with opcode 13;
+failed sends, error replies and unexpected channel closure do not record a
+recent file. Missing/removable paths remain visible, and Forget only deletes
+the history record. Reopen uses Inlay's normal selected-File capability checks
+again. Recorded paths must be under `/Documents` or `/Volumes`; malformed and
+app-private entries cannot be previewed or reopened through the Recents UI.
+
+Added source-checked regression cases for scope restrictions, cache reload,
+ordering and clock rollback, corruption preservation and forget semantics,
+as well as the explicit PID 1 success-reply format. These changes are wired in
+source and checked for Tessera AArch64, not guest-boot verified; all three §3
+acceptance checkpoints remain open until an interactive boot and reboot test.

@@ -43,41 +43,25 @@ public enum LaunchReason: U32 {
     Intent = 3
     Helper = 4
     Debug = 5
+    // A newly launched document editor received a File grant in Startup.
+    Document = 6
 }
 
-// A Memory holding the `LaunchInfo` (§11.4) for `reason` and `arguments`:
-// the reason padded to eight, then a `Vector<String>` (a count, then each
-// string's length and its bytes padded to eight), then no URL, no intent, no
-// locale and no working directory, each one empty word.
+// A Memory holding the `LaunchInfo` (§11.4): the reason padded to eight, then
+// a Vector<String> (count and padded length-prefixed values), an optional URL
+// (tag, then padded length-prefixed string when present), empty intent, locale
+// and working directory words. Link data is never added to argv.
 public function launchInfoCreate(
     reason: LaunchReason,
     arguments: borrow [String]
 ) -> Result<Handle, TesseraError> {
-    var size = 16 + 32
-    for index in 0..arguments.count { size += 8 + trunc((arguments[index].count + 7) / 8) * 8 }
-    let blockBytes = zeroedBlock(count: size, alignment: 16)
-    let block = blockBytes.pointer()
-    heapStore<U32>(block, 0, code(reason))
-    heapStore<U64>(block, 8, U64(arguments.count))
-    var at = 16
-    for index in 0..arguments.count {
-        heapStore<U64>(block, at, U64(arguments[index].count))
-        copyBytes(heapOffset(block, at + 8), arguments[index].data, arguments[index].count)
-        at += 8 + trunc((arguments[index].count + 7) / 8) * 8
-    }
-    let memory = try memoryCreate(memoryPageRound(size), MemoryOptions.none)
-    match memoryWrite(memory, U64(0), Buffer { address: block, length: U64(size) }) {
-        Ok -> return .Ok(memory)
-        Error(failed) -> {
-            handleDrop(memory)
-            return .Error(failed)
-        }
-    }
+    return launchInfoCreateFields(reason, arguments, .None)
 }
 
 // The tags a parent may fill itself.
 function startupTagFromParent(tag: StartupTag) -> Bool {
     if tag.raw >= StartupTag.firstApp.raw { return true }
+    if tag == StartupTag.document { return true }
     return tag == StartupTag.containerData || tag == StartupTag.containerCache || tag == StartupTag.containerTemp
         || tag == StartupTag.bundle || tag == StartupTag.stdIn || tag == StartupTag.stdOut || tag == StartupTag.stdErr
 }
@@ -90,20 +74,28 @@ function launchInfoArguments(given: borrow Handle?) -> Result<[String], TesseraE
     let object = try resolveObject(arguments, .Memory, Rights.read)
     let memory = try memoryOf(object)
     let size = memory.size
-    if size < U64(16) { return .Error(failure(.InvalidArgument)) }
+    // LaunchInfo is supplied through a transferable startup Memory handle.
+    // Never trust its argument count or allocate from unbounded backing bytes.
+    if size < U64(16) || size > U64(65536) {
+        return .Error(failure(.InvalidArgument))
+    }
     let blockBytes = zeroedBlock(count: Number(size + U64(8)), alignment: 16)
     let block = blockBytes.pointer()
     let backing = try backingOf(object)
     try kernelReadAt(backing, block, size, memory.offset)
     let count = heapLoad<U64>(block, 8)
+    if count > U64(512) { return .Error(failure(.InvalidArgument)) }
     var at = U64(16)
     for _ in 0..Number(count) {
         if at + U64(8) > size { return .Error(failure(.InvalidArgument)) }
         let length = heapLoad<U64>(block, at)
         at += U64(8)
-        if at + length > size { return .Error(failure(.InvalidArgument)) }
+        if length > U64(4096) || length > size - at {
+            return .Error(failure(.InvalidArgument))
+        }
         argv.append(stringFromCBytes(heapOffset(block, at), length))
         at += ((length + U64(7)) & ~U64(7))
+        if at > size { return .Error(failure(.InvalidArgument)) }
     }
     return .Ok(argv)
 }
@@ -154,7 +146,15 @@ public function processLaunch(
         launchConsume(entries)
         return checked
     }
-    let portObject = try resolveObject(port, .Port, Rights.none)
+    let portObject = match resolveObject(port, .Port, Rights.none) {
+        Ok(value) -> value
+        Error(failed) -> {
+            // Launch owns its initial handles even if its reply Port is bad.
+            // Never strand a transferred document grant on an early refusal.
+            launchConsume(entries)
+            return .Error(failed)
+        }
+    }
     let resolved = match launchResolve(executable, options, entries) {
         Ok(value) -> value
         Error(failed) -> {
@@ -326,15 +326,37 @@ function launchCheck(
         }
         None -> {}
     }
+    var documents = 0
     for index in 0..options.initialHandles.count {
-        if !startupTagFromParent(options.initialHandles[index].tag) {
+        let entry = options.initialHandles[index]
+        if !startupTagFromParent(entry.tag) {
             return .Error(failure(.InvalidArgument))
         }
-        let slot = try handleSlotOf(options.initialHandles[index].handle) otherwise return .Error(
+        let slot = try handleSlotOf(entry.handle) otherwise return .Error(
             failure(.InvalidHandle)
         )
         if !library.handles[slot].rights.has(Rights.transfer) {
             return .Error(failure(.AccessDenied))
+        }
+        if entry.tag == StartupTag.document {
+            documents += 1
+            if documents > 1 || !options.flags.has(LaunchFlags.confined) {
+                return .Error(failure(.InvalidArgument))
+            }
+            // Only a File can be a document grant, not a directory Node or a
+            // privileged service. Explicit narrowing is required so a
+            // sender cannot pass its full handle authority accidentally.
+            try resolveObject(entry.handle, .File, Rights.read)
+            let rights = try entry.rights otherwise return .Error(failure(.InvalidArgument))
+            let permitted = Rights.read | Rights.write | Rights.inspect
+            if !rights.has(Rights.read) || (rights.raw & ~permitted.raw) != U64(0) {
+                return .Error(failure(.InvalidArgument))
+            }
+            // A writable grant is possible only when the parent already has
+            // the corresponding right; narrowing cannot create it.
+            if rights.has(Rights.write) {
+                try resolveObject(entry.handle, .File, Rights.write)
+            }
         }
     }
     if library.objects[node].backing.isNone() { return .Error(failure(.BadState)) }

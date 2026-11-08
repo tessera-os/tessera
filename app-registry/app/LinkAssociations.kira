@@ -1,0 +1,191 @@
+//! Explicit Open Link defaults for non-web application URL schemes.
+//! This is a routing preference, not proof of ownership of a domain, a
+//! permission to receive private data, or an application launch request.
+//! The trusted dispatcher must check the current registration and pass a
+//! typed activation to the selected application, not a shell command.
+import Foundation
+
+public struct LinkAssociation {
+    let scheme: String
+    let application: AppIdentity
+}
+
+public struct LinkAssociations {
+    var defaults: [LinkAssociation] = []
+}
+
+public enum LinkAssociationFailure {
+    InvalidScheme
+    ApplicationNotInstalled
+    SchemeNotDeclared
+}
+
+public enum LinkRoute {
+    ChooseApplication
+    OpenAccepted(AppIdentity)
+    DefaultUnavailable(AppIdentity)
+}
+
+/// Immutable input for a trusted launcher. `address` remains opaque link
+/// data, not an executable path or a command-line argument. A dispatcher must
+/// check that the accepted image still matches before opening anything.
+public struct LinkActivation {
+    let application: AppIdentity
+    let imageDigest: String
+    let version: Number
+    let address: String
+}
+
+public enum LinkActivationDecision {
+    ChooseApplication
+    Unavailable(AppIdentity)
+    Ready(LinkActivation)
+}
+
+public namespace LinkAssociationLimits {
+    let maxDefaults: Number = 128
+    let maxSchemeBytes: Number = 64
+    let maxLinkBytes: Number = 4096
+}
+
+/// The initial model accepts only conventional custom schemes. Web URLs and
+/// system protocols need separate verified-domain or built-in handling.
+public function validCustomLinkScheme(scheme: borrow String) -> Bool {
+    if scheme.count < 2 || scheme.count > LinkAssociationLimits.maxSchemeBytes {
+        return false
+    }
+    // These routes belong to system services or require more proof than a
+    // preference. Never let an installed app become their default here.
+    for reserved in [
+        "http", "https", "file", "data", "javascript", "about", "blob",
+        "ftp", "ftps", "ws", "wss", "mailto", "tel", "sms", "urn",
+        "tessera"
+    ] {
+        if scheme == reserved { return false }
+    }
+    for index in 0..scheme.count {
+        let code = Number(scheme.charAt(index))
+        let letter = code >= 97 && code <= 122
+        let digit = code >= 48 && code <= 57
+        if !letter && !(index > 0 && (digit || code == 43 || code == 45 || code == 46)) {
+            return false
+        }
+    }
+    return true
+}
+
+/// Returns the lowercase custom scheme only for a well-formed input with a
+/// bounded length and no raw whitespace or control characters. No URL is
+/// fetched, decoded, or executed by this parser.
+public function customLinkScheme(address: borrow String) -> String? {
+    if address.count == 0 || address.count > LinkAssociationLimits.maxLinkBytes {
+        return .None
+    }
+    var colon: Number = -1
+    for index in 0..address.count {
+        let code = Number(address.charAt(index))
+        if code <= 32 || code == 127 { return .None }
+        if code == 58 && colon < 0 { colon = index }
+        if (code == 47 || code == 63 || code == 35) && colon < 0 { return .None }
+    }
+    if colon < 0 || colon == address.count - 1 { return .None }
+    let scheme = address.substring(0, colon).lowercased()
+    return validCustomLinkScheme(scheme) ? .Some(scheme) : .None
+}
+
+extend LinkAssociations {
+    /// A person's preference may name only an accepted, publisher-bound app
+    /// that declared the scheme in its verified image's manifest.
+    function chooseDefault(
+        borrow mut self,
+        scheme: borrow String,
+        identity: borrow AppIdentity,
+        registry: borrow ApplicationRegistry
+    ) -> Result<Void, LinkAssociationFailure> {
+        let normalized = scheme.lowercased()
+        if !validCustomLinkScheme(normalized) { return .Error(.InvalidScheme) }
+        let accepted = try registry.accepted(identity) otherwise return .Error(.ApplicationNotInstalled)
+        if !accepted.candidate.linkSchemes.contains(normalized) {
+            return .Error(.SchemeNotDeclared)
+        }
+        var kept: [LinkAssociation] = []
+        for entry in defaults {
+            if entry.scheme != normalized { kept.append(copy entry) }
+        }
+        if kept.count >= LinkAssociationLimits.maxDefaults { return .Error(.InvalidScheme) }
+        kept.append(LinkAssociation { scheme: normalized, application: copy identity })
+        defaults = move kept
+        return .Ok
+    }
+
+    function forgetDefault(borrow mut self, scheme: borrow String) {
+        let normalized = scheme.lowercased()
+        var kept: [LinkAssociation] = []
+        for entry in defaults {
+            if entry.scheme != normalized { kept.append(copy entry) }
+        }
+        defaults = move kept
+    }
+
+    /// A removed app, or one whose accepted update no longer declares this
+    /// scheme, is unavailable rather than falling through to a new publisher.
+    function route(borrow self, address: borrow String, registry: borrow ApplicationRegistry) -> LinkRoute {
+        let scheme = match customLinkScheme(address) {
+            Some(found) -> found
+            None -> return .ChooseApplication
+        }
+        for entry in defaults {
+            if entry.scheme != scheme { continue }
+            let accepted = match registry.accepted(entry.application) {
+                Some(found) -> found
+                None -> return .DefaultUnavailable(copy entry.application)
+            }
+            return accepted.candidate.linkSchemes.contains(scheme)
+                ? .OpenAccepted(copy entry.application)
+                : .DefaultUnavailable(copy entry.application)
+        }
+        return .ChooseApplication
+    }
+
+    /// Bind the selected default to the *currently* accepted image. A staged
+    /// update is never a dispatch target. No access grant is created here.
+    function activation(
+        borrow self,
+        address: borrow String,
+        registry: borrow ApplicationRegistry
+    ) -> LinkActivationDecision {
+        return match self.route(address, registry) {
+            ChooseApplication -> LinkActivationDecision.ChooseApplication
+            DefaultUnavailable(identity) -> LinkActivationDecision.Unavailable(identity)
+            OpenAccepted(identity) -> {
+                let app = match registry.accepted(identity) {
+                    Some(accepted) -> accepted
+                    None -> return LinkActivationDecision.Unavailable(identity)
+                }
+                LinkActivationDecision.Ready(LinkActivation {
+                    application: copy identity,
+                    imageDigest: copy app.candidate.imageDigest,
+                    version: app.candidate.version,
+                    address: copy address
+                })
+            }
+        }
+    }
+
+    /// Recheck at dispatch time, after any update, uninstall or Settings
+    /// change. Reject stale tickets even if another app claims the scheme.
+    function activationIsCurrent(
+        borrow self,
+        ticket: borrow LinkActivation,
+        registry: borrow ApplicationRegistry
+    ) -> Bool {
+        let active = match self.route(ticket.address, registry) {
+            OpenAccepted(identity) -> identity
+            ChooseApplication, DefaultUnavailable -> return false
+        }
+        if !sameApp(active, ticket.application) { return false }
+        let installed = try registry.accepted(ticket.application) otherwise return false
+        return installed.candidate.version == ticket.version
+            && installed.candidate.imageDigest == ticket.imageDigest
+    }
+}

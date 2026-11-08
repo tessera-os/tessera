@@ -2,6 +2,7 @@ import Foundation
 import HomeLayout
 import LibTessera
 import KiraUI
+import KCoreAnimation
 import TesseraUI
 import PlatformUI
 
@@ -63,8 +64,15 @@ construct HomeScreen(applications: [Application], notice: String?) extends Widge
     @State var folderFocus: Number = 0
     // Whether system search is open over Home.
     @State var searching: Bool = false
+    // Home pull-to-search follows the finger in points, then settles on a
+    // spring. Search only takes keyboard focus once that motion has landed.
+    @State var searchPull: Number = 0
+    @State var searchTracking: Bool = false
+    @State var searchSettling: Bool = false
+    @State var searchSpring: MotionSpringState = MotionSpringState {}
 
     body {
+        self.advanceSearchPull()
         let metrics = launcherMetrics()
         let space = homeSpace(metrics)
         let arrangement = arrangedHome(applications, space)
@@ -123,7 +131,8 @@ construct HomeScreen(applications: [Application], notice: String?) extends Widge
                     Spacer()
                     homePageDots(screens.count, index, editing, { in overview = true })
                     FixedGap(width = 0, height = HomePaging.aboveDock)
-                    homeDock(editing)
+                    // The root Dock is drawn once, outside the page strip.
+                    FixedGap(width = 0, height = dockBand())
                 }.width(resolvedLength(width)).fillHeight()
             )
         }
@@ -144,8 +153,27 @@ construct HomeScreen(applications: [Application], notice: String?) extends Widge
         )
         ZStack(alignment = .TopLeading) {
             HStack(spacing = .None, alignment = .Top, children = strip)
-            .offset(x = resolvedLength(-current * width + swipe), y = resolvedLength(0))
-            .animation(swiping ? .Immediate : .Smooth)
+            .offset(x = resolvedLength(-current * width + swipe), y = resolvedLength(
+                searchPull > 0 ? min(searchPull, SpotlightPull.maxIconOffset) : 0
+            ))
+            .blur(radius = resolvedLength(spotlightBlur(searchPull) * SpotlightPull.maxHomeBlur))
+            .animation(swiping || searchTracking || searchSettling ? .Immediate : .Smooth)
+            if searchPull > 0 && !searching {
+                spotlightPullPreview(searchPull)
+            }
+            // SpringBoard has a floating Dock controller separate from its
+            // icon page controller. Keep ours fixed through ordinary page
+            // changes, with a separate visibility track at App Library.
+            if screens.count > 0 && (current < screens.count || swiping) {
+                VStack(spacing = .None, alignment = .Center) {
+                    Spacer()
+                    homeDock(editing)
+                }
+                .fillWidth()
+                .fillHeight()
+                .offset(y = resolvedLength(min(searchPull, SpotlightPull.maxIconOffset)))
+                .opacity(homeDockVisibility(current, swipe, width, screens.count))
+            }
             VStack(spacing = .None, alignment = .Center) {
                 Spacer()
                 hint(notice)
@@ -161,7 +189,7 @@ construct HomeScreen(applications: [Application], notice: String?) extends Widge
             if overview { self.pagesOverview(arrangement) }
             if gallery { self.widgetGallery(arrangement, screens, current, space) }
             if searching {
-                SearchPanel(installed = copy applications, dismiss = { in searching = false })
+                SearchPanel(installed = copy applications, dismiss = { in self.dismissSearch() })
             }
             if libraryFolder.count > 0 {
                 libraryFolderScreen(copy libraryFolder, applications, { in libraryFolder = "" })
@@ -219,7 +247,7 @@ construct HomeScreen(applications: [Application], notice: String?) extends Widge
         .onKeyPress(KeyEquivalent.delete, action = { in self.keyRemove() })
         .onKeyPress("E", modifiers = [.Command], action = { in self.keyEdit() })
         .onKeyPress("G", modifiers = [.Command], action = { in self.keyGroup() })
-        .onKeyPress(" ", modifiers = [.Command], action = { in searching = !editing })
+        .onKeyPress(" ", modifiers = [.Command], action = { in self.keyboardSearch() })
     }
 
     // A press held still long enough edits Home, carrying the item under it.
@@ -282,24 +310,28 @@ construct HomeScreen(applications: [Application], notice: String?) extends Widge
             self.carryToSide(value.location.x, count)
             return
         }
-        // A pull down on a page, as on an iPad, opens system search.
-        if pressMoved && !editing && !folderOpen && current < count - 1 && value.translation.height > HomePaging.searchPull && value.translation.height > abs(
+        // A vertical pull is interactive: the screen follows the finger.
+        // The activation decision is made on release, using projected motion.
+        if searchTracking || pressMoved && !editing && !folderOpen && !overview && !gallery && !askOpen && current < count - 1 && value.translation.height > HomePaging.still && value.translation.height > abs(
             value.translation.width
         ) {
-            searching = true
+            searchTracking = true
+            searchSettling = false
+            searchPull = max(value.translation.height, 0)
             return
         }
         if pressMoved && !folderOpen && !overview && !gallery && !askOpen && abs(
             value.translation.width
         ) > abs(value.translation.height) {
             swiping = true
-            let width = viewportWidth()
-            // Past the first page or the last the strip gives a third as much.
-            let past = current == 0 && value.translation.width > 0 || current == count - 1 && value.translation.width < 0
-            swipe = past ? value.translation.width / 3 : max(
-                min(value.translation.width, width),
-                -width
-            )
+            // Keep the same transition geometry across touch, page indicator,
+            // and App Library instead of duplicating it in the view.
+            swipe = homePageTransition(
+                current,
+                value.translation.width,
+                viewportWidth(),
+                count
+            ).offset
         }
     }
 
@@ -378,15 +410,21 @@ construct HomeScreen(applications: [Application], notice: String?) extends Widge
             commitHome(changed)
             return
         }
+        if searchTracking {
+            self.finishSearchPull(value)
+            return
+        }
         if !swiping {
             self.tappedWhileEditing(screens, current, metrics)
             return
         }
         swiping = false
-        let width = viewportWidth()
-        let flung = value.predictedEndTranslation.width
-        if flung < -width / 2 && current < count - 1 { page = current + 1 }
-        if flung > width / 2 && current > 0 { page = current - 1 }
+        page = homePageDestination(
+            current,
+            value.predictedEndTranslation.width,
+            viewportWidth(),
+            count
+        )
         swipe = 0
     }
 

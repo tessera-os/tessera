@@ -64,10 +64,15 @@ function kernelBuild(
         }
     }
     let series = version.split(".")[0]
-    let devicetree = profile == "dm2q" ? "qcom/sm8550-samsung-dm2q.dtb" : ""
-    let fragment = profile == "dm2q"
-    ? "kernel/config/tessera-dm2q.config"
-    : "\(KernelLayout.configs)/tessera-\(context.architecture.name()).config"
+    let devicetree = match profile {
+        "dm2q" -> "qcom/sm8550-samsung-dm2q.dtb"
+        "akari" -> "qcom/sdm845-sony-xperia-tama-akari.dtb"
+        "akatsuki" -> "qcom/sdm845-sony-xperia-tama-akatsuki.dtb"
+        else -> ""
+    }
+    let fragment = profile == "qemu"
+    ? "\(KernelLayout.configs)/tessera-\(context.architecture.name()).config"
+    : "\(KernelLayout.configs)/tessera-\(profile).config"
     let tarball = graph.download(
         "kernel/linux-\(version).tar.xz",
         "\(KernelLayout.mirror)/v\(series).x/linux-\(version).tar.xz",
@@ -209,7 +214,10 @@ function kernelScript() -> String {
         "fi",
         "if [ \"$(uname -s)\" = Darwin ]; then",
         "    sdk=$(xcrun --show-sdk-path)",
-        "    export HOSTCFLAGS=\"-isysroot $sdk -I$source/scripts/include $HOSTCFLAGS\" HOSTLDFLAGS=\"-isysroot $sdk\"",
+        // Host kbuild tools are macOS executables. The bundled ld64.lld
+        // cannot read macOS 27 SDK TAPI files, so use Apple's ld for these
+        // host tools without changing the linker used for the Linux kernel.
+        "    export HOSTCFLAGS=\"-isysroot $sdk -I$source/scripts/include $HOSTCFLAGS\" HOSTLDFLAGS=\"-isysroot $sdk -fuse-ld=/usr/bin/ld\"",
         "fi",
         "mkdir -p \"$persistent_host_headers\"",
         "for header in elf.h byteswap.h; do",

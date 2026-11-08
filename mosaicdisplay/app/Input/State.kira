@@ -33,6 +33,10 @@ struct Client {
     var homeIcon: DisplayStageBadge? = .None
     // The textures it draws into in turn, imported once (Slots.kira).
     var slots: [Content?] = []
+    // Which slot last failed to import. New clients re-export on the rejected
+    // FrameDone. Legacy clients may keep referencing it; if they do, tear
+    // down that broken session rather than leaving a frozen home indefinitely.
+    var rejectedSlots: [Number] = []
     // The platform took the surface off the screen.
     var hidden: Bool = false
     // How far round its window the client's buffers reach, for the shadow it

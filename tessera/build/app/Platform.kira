@@ -102,7 +102,7 @@ function runtimeDirectory(context: borrow BuildContext) -> String {
 
 // Vulkan, the profile's GPU driver and libdrm, beside the C library where the
 // loader finds them, with an ICD manifest naming Venus for QEMU or Turnip for
-// the dm2q Adreno 740.
+// the phones' Adreno GPUs.
 // The time zones' rules, the host's tz database, where LibTessera's
 // `SystemDirectory.zoneInfo` reads them.
 function platformZoneInfo(graph: borrow mut Graph, context: borrow BuildContext) -> Artifact {
@@ -121,11 +121,11 @@ function platformZoneInfo(graph: borrow mut Graph, context: borrow BuildContext)
 function platformGraphics(
     graph: borrow mut Graph,
     context: borrow BuildContext,
-    dm2qFirmware: Artifact?
+    gpuFirmware: Artifact?
 ) -> Artifact {
     let architecture = context.architecture.name()
     let directory = runtimeDirectory(context)
-    let driver = context.kernelProfile == "dm2q" ? "freedreno" : "virtio"
+    let driver = context.kernelProfile == "qemu" ? "virtio" : "freedreno"
     let libraries = librariesFrom(
         graph,
         "\(architecture)/graphics/libraries",
@@ -154,8 +154,8 @@ function platformGraphics(
         [.Place(TreePlace { path: manifest, artifact: icd, mode: FileMode.data })]
     )
     var parts = [libraries, placed]
-    if context.kernelProfile == "dm2q" {
-        match dm2qFirmware {
+    if context.kernelProfile != "qemu" {
+        match gpuFirmware {
             Some(firmware) -> parts.append(firmware)
             None -> {}
         }
@@ -192,6 +192,84 @@ function dm2qGpuFirmware(graph: borrow mut Graph, context: borrow BuildContext) 
             )
         ]
     )
+}
+
+// Adreno 630 on the Xperia XZ2. The SQE and GMU are redistributable
+// linux-firmware files; Sony's signed zap shader should come from this phone's
+// stock vendor firmware. The DT specifically asks for the Sony/tama path.
+// A Qualcomm generic SDM845 zap is available from linux-firmware but its
+// signature has NOT been validated against Sony's boot chain. It can only
+// serve as a clearly identified experimental fallback, not as proof that
+// the GPU works on the handset.
+function akariGpuFirmware(graph: borrow mut Graph, context: borrow BuildContext) -> Artifact {
+    let architecture = context.architecture.name()
+    let sqe = graph.download(
+        "firmware/qcom/a630_sqe.fw",
+        "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/qcom/a630_sqe.fw?h=main",
+        "1c21b527d9183487cc550dabbb3f43e555df5a977a461934fc61f0635a9aa90c"
+    )
+    let gmu = graph.download(
+        "firmware/qcom/a630_gmu.bin",
+        "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/qcom/a630_gmu.bin?h=main",
+        "da8d9b1b1f5c1a0b311f32567093b4828f3c80031dd8435f91ac13c664e173a6"
+    )
+    var parts: [TreePart] = [
+        .Place(TreePlace { path: "lib/firmware/qcom/a630_sqe.fw", artifact: sqe }),
+        .Place(TreePlace { path: "lib/firmware/qcom/a630_gmu.bin", artifact: gmu })
+    ]
+    let zapPath = context.host.akariFirmware() + "/a630_zap.mbn"
+    let genericZapPath = context.host.akariFirmware() + "/linux-firmware/a630_zap.mbn"
+    if fileExists(zapPath) {
+        parts.append(
+            .Place(
+                TreePlace {
+                    path: "lib/firmware/qcom/sdm845/Sony/tama/a630_zap.mbn",
+                    artifact: graph.source(zapPath)
+                }
+            )
+        )
+    } else if fileExists(genericZapPath) {
+        // Preserve the DT-mandated firmware name, but disclose the source:
+        // this is NOT the Sony-signed image and may be rejected by secure boot.
+        log warn(
+            "using generic Qualcomm SDM845 zap firmware for Sony akari; GPU authentication is UNTESTED",
+            path: genericZapPath
+        )
+        parts.append(
+            .Place(
+                TreePlace {
+                    path: "lib/firmware/qcom/sdm845/Sony/tama/a630_zap.mbn",
+                    artifact: graph.source(genericZapPath)
+                }
+            )
+        )
+    } else {
+        log warn("the Sony akari GPU firmware is missing; the Adreno cannot start", path: zapPath)
+    }
+    return graph.tree("\(architecture)/graphics/akari-firmware", parts)
+}
+
+// The WCN3990 driver requests a generic patch and the Sony-specific NVM.
+// Both files must come from the XZ3's own firmware; they are not redistributed
+// by this build definition.
+function akatsukiBluetoothFirmware(graph: borrow mut Graph, context: borrow BuildContext) -> Artifact? {
+    let directory = context.host.akatsukiBluetoothFirmware()
+    let patch = directory + "/crbtfw21.tlv"
+    let nvm = directory + "/crnv21.bin"
+    if !fileExists(patch) || !fileExists(nvm) {
+        log warn("XZ3 Bluetooth firmware is missing", path: directory)
+        return .None
+    }
+    let patchFile = graph.source(patch)
+    let nvmFile = graph.source(nvm)
+    let tree = graph.tree(
+        "\(context.architecture.name())/akatsuki-bluetooth-firmware",
+        [
+            .Place(TreePlace { path: "lib/firmware/qca/crbtfw21.tlv", artifact: patchFile }),
+            .Place(TreePlace { path: "lib/firmware/qca/Sony/tama/crnv21.bin", artifact: nvmFile })
+        ]
+    )
+    return .Some(tree)
 }
 
 // The dm2q firmware Linux's remoteproc loads for the ADSP, which runs the

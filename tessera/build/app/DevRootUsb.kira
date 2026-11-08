@@ -11,6 +11,59 @@ namespace UsbDevRoot {
     let pollMillis: Number = 100
 }
 
+// Copies only the named update files onto an empty exchange directory. The
+// phone checks their digests and stages them; this never writes partitions.
+function stageUpdateUsb(host: borrow Host, source: borrow String) -> Result<Void, String> {
+    if !host.darwin { return .Error("the USB dev root transport requires macOS") }
+    let names = ["SHA256SUMS", "boot.img", "init_boot.img", "vendor_boot.img", "dtbo.img", "system.img"]
+    var total = UNumber(0)
+    for name in names {
+        let status = match fileStatus(source + "/" + name) {
+            Ok(value) -> value
+            Error(failed) -> return .Error("cannot inspect update file \(name): \(traceText(failed))")
+        }
+        if status.kind != .File { return .Error("update entry is not a file: \(name)") }
+        if status.size > UNumber(UsbDevRoot.imageBytes - UsbDevRoot.reserveBytes) - total {
+            return .Error("the update exceeds the USB exchange capacity; chunked transfer is required")
+        }
+        total += status.size
+    }
+    try awaitUsbMountOnHost(UsbDevRoot.mountPoint, 3000)
+    let destination = UsbDevRoot.mountPoint + "/update"
+    if pathExists(destination) {
+        return .Error("the USB exchange already holds an update directory; remove it after checking its contents")
+    }
+    match makePathTree(destination) {
+        Ok -> {}
+        Error(failed) -> return .Error("cannot create USB update directory: \(traceText(failed))")
+    }
+    var bytes = 0
+    for name in names {
+        match copyFile(source + "/" + name, destination + "/" + name) {
+            Ok(length) -> bytes += Number(length)
+            Error(failed) -> return .Error("cannot copy \(name): \(traceText(failed))")
+        }
+        if bytes + UsbDevRoot.reserveBytes > UsbDevRoot.imageBytes {
+            return .Error("the update exceeds the USB exchange capacity")
+        }
+    }
+    let id = String(floor(unixMillis()))
+    let request = "id \(id)\nstage-update \(id)\n"
+    // Remove only the old protocol files, not an unrelated root archive.
+    try removeUsbFile(UsbDevRoot.mountPoint + "/response")
+    match writeFile(UsbDevRoot.mountPoint + "/request", request) {
+        Ok -> {}
+        Error(failed) -> return .Error("cannot write USB update request: \(traceText(failed))")
+    }
+    try runUsbHostCommand(host, ["eject", UsbDevRoot.mountPoint])
+    try awaitUsbUnmountOnHost(UsbDevRoot.mountPoint, 300)
+    let expected = "dev root request done: id \(id) with 0 failures"
+    let response = try awaitUsbResponse(UsbDevRoot.mountPoint, expected, 3000)
+    if !response.contains(expected) { return .Error("update staging failed: \(response.trim())") }
+    log info("staged the USB update", id)
+    return .Ok
+}
+
 function carryOutUsbDevRoot(
     host: borrow Host,
     architecture: Architecture,

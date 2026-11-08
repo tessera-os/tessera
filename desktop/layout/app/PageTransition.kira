@@ -1,0 +1,101 @@
+//! Home page-transition geometry, independent of touch views or the display
+//! compositor. Inspired by the recovered SpringBoardHome
+//! `SBRootFolderController` page-transition callbacks: begin, update, and
+//! complete/cancel. These are Tessera's own APIs, not Apple source code.
+//!
+//! Home's final screen is App Library; it participates in horizontal paging
+//! but is not an icon page and must never accept an icon drop.
+
+import Foundation
+
+/// The type of Home screen at the given screen index.
+public enum HomeScreenKind {
+    IconPage
+    AppLibrary
+}
+
+/// A snapshot of one horizontal drag, suitable for sending to icon, wallpaper
+/// and page-indicator animations without recalculating gesture geometry.
+public struct HomePageTransition {
+    let source: Number
+    let destination: Number
+    let progress: Number
+    let offset: Number
+    let kind: HomeScreenKind
+}
+
+public namespace HomePageMotion {
+    // Elastic dragging past either end, as opposed to switching pages.
+    let boundaryResistance: Number = 3
+    // A swipe projected past half the screen commits to the adjacent page.
+    // This is Tessera's current threshold, NOT a recovered Apple constant.
+    let commitFraction: Number = 0.5
+}
+
+/// Identifies the trailing App Library screen without inventing an icon page.
+public function homeScreenKind(index: Number, iconPageCount: Number) -> HomeScreenKind {
+    return index >= iconPageCount ? .AppLibrary : .IconPage
+}
+
+/// The entire Home screen paging gesture in one immutable model snapshot.
+/// Index 0..(screenCount - 2) are icon pages, then App Library. The visual
+/// offset is rubber-banded at both edges; progress always stays in [0,1].
+public function homePageTransition(
+    current: Number,
+    translation: Number,
+    width: Number,
+    screenCount: Number
+) -> HomePageTransition {
+    let last = max(screenCount - 1, 0)
+    let source = min(max(current, 0), last)
+    let size = max(width, 1)
+    let past = source == 0 && translation > 0 || source == last && translation < 0
+    let offset = past
+    ? translation / HomePageMotion.boundaryResistance
+    : min(max(translation, -size), size)
+    let direction = translation < 0 ? 1 : (translation > 0 ? -1 : 0)
+    let target = past ? source : min(max(source + direction, 0), last)
+    let progress = past ? 0 : min(max(abs(offset) / size, 0), 1)
+    return HomePageTransition {
+        source: source,
+        destination: target,
+        progress: progress,
+        offset: offset,
+        kind: homeScreenKind(target, max(screenCount - 1, 0))
+    }
+}
+
+/// Where the pager settles after the finger lifts. Call this with the gesture
+/// recognizer's projected translation to incorporate release velocity.
+public function homePageDestination(
+    current: Number,
+    predictedTranslation: Number,
+    width: Number,
+    screenCount: Number
+) -> Number {
+    let snapshot = homePageTransition(current, predictedTranslation, width, screenCount)
+    if snapshot.progress < HomePageMotion.commitFraction { return snapshot.source }
+    return snapshot.destination
+}
+
+/// The Dock belongs to the root Home presentation, not to individual icon
+/// pages. It stays fixed while icon pages scroll, but fades as App Library
+/// becomes visible. This is Tessera's layout policy, informed by the separate
+/// SpringBoard `SBFloatingDockViewController`, not a recovered Apple curve.
+public function homeDockVisibility(
+    current: Number,
+    translation: Number,
+    width: Number,
+    iconPageCount: Number
+) -> Number {
+    if iconPageCount <= 0 { return 0 }
+    let size = max(width, 1)
+    // On every icon page before the last, the Dock does not move with icons.
+    if current < iconPageCount - 1 { return 1 }
+    // The last icon page is adjacent to App Library on its trailing edge.
+    if current == iconPageCount - 1 {
+        return min(max(1 + min(translation, 0) / size, 0), 1)
+    }
+    // A reverse drag back from App Library reveals the Dock progressively.
+    return min(max(translation / size, 0), 1)
+}

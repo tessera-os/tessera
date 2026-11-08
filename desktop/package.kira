@@ -9,6 +9,12 @@ construct DesktopApp extends Package {
     let moduleRoot: String = "Desktop"
     let dependencies: [Dependency] = [
         Dependency { name: "HomeLayout", path: "layout" },
-        Dependency { name: "FileOperations", path: "../inlay/operations" }
+        Dependency { name: "FileOperations", path: "../inlay/operations" },
+        Dependency { name: "KCoreAnimation", path: "../../kira-packages/kcoreanimation" },
+        Dependency { name: "KiraUI", path: "../../kira-packages/kira-ui" },
+        Dependency { name: "LibTessera", path: "../libtessera" },
+        Dependency { name: "PlatformKit", path: "../platform-kit" },
+        Dependency { name: "PlatformUI", path: "../platform-ui" },
+        Dependency { name: "TesseraUI", path: "../tessera-ui" }
     ]
 }

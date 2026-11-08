@@ -1,0 +1,167 @@
+//! Public-only, independently signed v3 app fixture for document types.
+//! Test certificate and signature are committed, not the signing key.
+import Foundation
+import AppRegistry
+
+function signedDocumentCert() -> [UN8] {
+    return [
+        48, 130, 1, 71, 48, 129, 250, 160, 3, 2, 1, 2, 2, 20, 88, 165, 119, 193,
+        27, 131, 213, 184, 207, 130, 194, 76, 42, 113, 248, 123, 45, 24, 63, 216, 48, 5,
+        6, 3, 43, 101, 112, 48, 42, 49, 40, 48, 38, 6, 3, 85, 4, 3, 12, 31,
+        84, 101, 115, 115, 101, 114, 97, 32, 83, 105, 103, 110, 101, 100, 32, 68, 111, 99,
+        117, 109, 101, 110, 116, 32, 70, 105, 120, 116, 117, 114, 101, 48, 30, 23, 13, 50,
+        54, 49, 49, 48, 54, 50, 51, 51, 54, 51, 52, 90, 23, 13, 51, 54, 49, 49,
+        48, 51, 50, 51, 51, 54, 51, 52, 90, 48, 42, 49, 40, 48, 38, 6, 3, 85,
+        4, 3, 12, 31, 84, 101, 115, 115, 101, 114, 97, 32, 83, 105, 103, 110, 101, 100,
+        32, 68, 111, 99, 117, 109, 101, 110, 116, 32, 70, 105, 120, 116, 117, 114, 101, 48,
+        42, 48, 5, 6, 3, 43, 101, 112, 3, 33, 0, 5, 224, 232, 172, 144, 62, 237,
+        164, 232, 231, 121, 182, 237, 3, 155, 240, 232, 233, 247, 240, 74, 48, 117, 180, 159,
+        71, 68, 181, 61, 212, 224, 51, 163, 50, 48, 48, 48, 29, 6, 3, 85, 29, 14,
+        4, 22, 4, 20, 251, 164, 158, 141, 39, 91, 68, 56, 194, 130, 112, 197, 199, 94,
+        172, 145, 188, 48, 202, 184, 48, 15, 6, 3, 85, 29, 19, 1, 1, 255, 4, 5,
+        48, 3, 1, 1, 255, 48, 5, 6, 3, 43, 101, 112, 3, 65, 0, 139, 125, 105,
+        98, 117, 92, 17, 56, 10, 44, 172, 57, 29, 9, 36, 154, 131, 85, 203, 21, 154,
+        3, 22, 223, 108, 129, 177, 161, 106, 148, 231, 244, 214, 7, 149, 55, 31, 113, 106,
+        244, 53, 63, 107, 189, 215, 117, 24, 130, 249, 176, 7, 25, 131, 195, 113, 187, 149,
+        140, 41, 16, 206, 207, 214, 8,
+    ]
+}
+
+function signedDocumentPin() -> [UN8] {
+    return [
+        213, 81, 127, 50, 14, 124, 73, 4, 57, 145, 95, 32, 52, 151, 16, 217, 165, 154,
+        251, 92, 2, 214, 38, 149, 31, 78, 236, 175, 27, 67, 202, 57,
+    ]
+}
+
+function signedDocumentSignature() -> [UN8] {
+    return [
+        208, 216, 48, 91, 9, 29, 190, 12, 114, 122, 146, 205, 55, 194, 214, 190, 173, 227,
+        250, 13, 186, 158, 184, 153, 84, 53, 110, 42, 238, 59, 173, 225, 62, 151, 97, 150,
+        104, 178, 77, 9, 149, 215, 88, 133, 234, 46, 140, 234, 79, 42, 105, 130, 171, 117,
+        68, 240, 42, 156, 48, 22, 159, 166, 145, 6,
+    ]
+}
+
+function signedDocumentSigner() -> AppImageSigner {
+    return AppImageSigner {
+        certificate: signedDocumentCert(),
+        trustedCertificateSha256: signedDocumentPin()
+    }
+}
+
+function signedDocumentManifest() -> ApplicationManifest {
+    return ApplicationManifest {
+        identifier: "example.notes", name: "Notes", version: 1,
+        executable: "bin", requests: ["display", "data"],
+        linkSchemes: ["demo+notes"], documentTypes: ["txt", "md"]
+    }
+}
+
+@Test
+function signedDocumentTypesAreAuthenticatedAndCanBecomeOpenWithDefaults() {
+    let path = ".tessera-signed-document-v3"
+    match writeFile(path, "abc") {
+        Ok -> {}
+        Error(reason) -> {
+            absorb reason
+            return
+        }
+    }
+    let candidate = match verifyAppImageCandidate(
+        signedDocumentManifest(), path, signedDocumentSigner(), signedDocumentSignature(), .Direct
+    ) {
+        Ok(value) -> value
+        Error(reason) -> {
+            absorb reason
+            expect!(false)
+            return
+        }
+    }
+    expect!(candidate.documentTypes == ["txt", "md"])
+    expect!(candidate.linkSchemes == ["demo+notes"])
+    var registry = ApplicationRegistry {}
+    expect!(registrationSucceeded(registry.prepare(candidate)))
+    expect!(registrationSucceeded(registry.activate(candidate.identity, candidate.imageDigest)))
+    var defaults = DocumentAssociations {}
+    let selected = match defaults.chooseDefault("TXT", candidate.identity, registry) {
+        Ok -> true
+        Error(reason) -> {
+            absorb reason
+            false
+        }
+    }
+    expect!(selected)
+    let ready = match defaults.activation("document.txt", registry) {
+        Ready(ticket) -> defaults.activationIsCurrent(ticket, registry)
+        Unavailable, ChooseApplication -> false
+    }
+    expect!(ready)
+    match removePath(path) {
+        Ok -> {}
+        Error(reason) -> absorb reason
+    }
+}
+
+@Test
+function signedDocumentImageRejectsAddedRemovedAndReplacedTypeClaims() {
+    let path = ".tessera-signed-document-v3-tampered"
+    match writeFile(path, "abc") {
+        Ok -> {}
+        Error(reason) -> {
+            absorb reason
+            return
+        }
+    }
+    let changedType = ApplicationManifest {
+        identifier: "example.notes", name: "Notes", version: 1,
+        executable: "bin", requests: ["display", "data"],
+        linkSchemes: ["demo+notes"], documentTypes: ["txt", "png"]
+    }
+    let removedType = ApplicationManifest {
+        identifier: "example.notes", name: "Notes", version: 1,
+        executable: "bin", requests: ["display", "data"],
+        linkSchemes: ["demo+notes"]
+    }
+    let changedLink = ApplicationManifest {
+        identifier: "example.notes", name: "Notes", version: 1,
+        executable: "bin", requests: ["display", "data"],
+        linkSchemes: ["demo+tasks"], documentTypes: ["txt", "md"]
+    }
+    for forged in [changedType, removedType, changedLink] {
+        let rejected = match verifyAppImageCandidate(
+            forged, path, signedDocumentSigner(), signedDocumentSignature(), .Direct
+        ) {
+            Ok(value) -> {
+                absorb value
+                false
+            }
+            Error(reason) -> {
+                absorb reason
+                true
+            }
+        }
+        expect!(rejected)
+    }
+    match writeFile(path, "abd") {
+        Ok -> {}
+        Error(reason) -> absorb reason
+    }
+    let modified = match verifyAppImageCandidate(
+        signedDocumentManifest(), path, signedDocumentSigner(), signedDocumentSignature(), .Direct
+    ) {
+        Ok(value) -> {
+            absorb value
+            false
+        }
+        Error(reason) -> {
+            absorb reason
+            true
+        }
+    }
+    expect!(modified)
+    match removePath(path) {
+        Ok -> {}
+        Error(reason) -> absorb reason
+    }
+}

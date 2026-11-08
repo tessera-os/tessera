@@ -1,0 +1,223 @@
+//! A granted document is a File capability, not a file path. A caller must
+//! select the app, open the chosen document and explicitly transfer the File.
+//! Ordinary launches continue to use the private Notes store.
+import Foundation
+import Heap
+import LibTessera
+
+namespace ExternalTextLimits {
+    let maxBytes: Number = 1048576
+    let chunkBytes: Number = 65536
+    let callKey: UNumber = 1
+}
+
+class ExternalTextDocument {
+    let file: Handle
+    var text: String
+    let editable: Bool
+    var baseline: FileInfo
+    var changed: Bool = false
+}
+
+struct ExternalTextSnapshot {
+    let content: String
+    let metadata: FileInfo
+}
+
+enum ExternalDocumentStartup {
+    NoDocument
+    Opened(ExternalTextDocument)
+    Refused(String)
+}
+
+function documentFailure(code: ErrorCode) -> TesseraError {
+    return TesseraError {
+        code: code,
+        subsystem: .LibTessera,
+        flags: ErrorFlags.none,
+        detail: UNumber(0)
+    }
+}
+
+function documentAnswer(
+    calls: Handle,
+    asked: borrow Result<Void, TesseraError>
+) -> Result<Completion, TesseraError> {
+    try asked
+    let completions = try portWait(calls, 1, Deadline.infinite)
+    if completions.count != 1 { return .Error(documentFailure(.Internal)) }
+    let answer = completions[0]
+    if answer.error.code != .Ok { return .Error(answer.error) }
+    return .Ok(answer)
+}
+
+/// Bounded read of the one granted file, without looking up its pathname.
+/// Reject control/binary data and malformed UTF-8 rather than displaying it
+/// as editable text. The file may shrink while read, but cannot grow past the
+/// size that was inspected for this request.
+function readGrantedText(file: Handle) -> Result<ExternalTextSnapshot, TesseraError> {
+    let info = try fileInfo(file)
+    if info.size > ExternalTextLimits.maxBytes {
+        return .Error(documentFailure(.OutOfRange))
+    }
+    let calls = try portCreate(.None)
+    let scratch = zeroedBlock(count: ExternalTextLimits.chunkBytes, alignment: 16)
+    var bytes: [UN8] = []
+    var offset: Number = 0
+    while offset < Number(info.size) {
+        let count = min(ExternalTextLimits.chunkBytes, Number(info.size) - offset)
+        let pending = fileReadAt(
+            file, UNumber(offset),
+            [Buffer { address: scratch.pointer(), length: UNumber(count) }],
+            calls, ExternalTextLimits.callKey
+        )
+        let answer = match documentAnswer(calls, pending) {
+            Ok(value) -> value
+            Error(reason) -> {
+                match handleClose(calls) {
+                    Ok -> {}
+                    Error(closed) -> absorb closed
+                }
+                return .Error(reason)
+            }
+        }
+        let received = Number(answer.result0)
+        if received == 0 || received > count {
+            match handleClose(calls) {
+                Ok -> {}
+                Error(closed) -> absorb closed
+            }
+            return .Error(documentFailure(.BadState))
+        }
+        for index in 0..received {
+            bytes.append(heapLoad<U8>(scratch.pointer(), index))
+        }
+        offset += received
+    }
+    match handleClose(calls) {
+        Ok -> {}
+        Error(reason) -> absorb reason
+    }
+    for byte in bytes {
+        let value = Number(byte)
+        if value == 0 || value == 127
+            || (value < 32 && value != 9 && value != 10 && value != 13) {
+            return .Error(documentFailure(.FormatUnsupported))
+        }
+    }
+    let after = try fileInfo(file)
+    if !fileSnapshotMatches(info, after) {
+        return .Error(documentFailure(.BadState))
+    }
+    return match textFromBytes(bytes) {
+        Some(text) -> .Ok(ExternalTextSnapshot { content: text, metadata: info })
+        None -> .Error(documentFailure(.FormatUnsupported))
+    }
+}
+
+/// Save through the exact granted File handle. The broker must have supplied
+/// write rights and an editable open mode. This in-place write is not an
+/// atomic Save As, so a failure must keep the editor's unsaved text available.
+function saveGrantedText(document: borrow ExternalTextDocument) -> Result<Void, TesseraError> {
+    if !document.editable { return .Error(documentFailure(.AccessDenied)) }
+    // A second writer may have changed the file after Notes loaded it. Do
+    // not silently overwrite that version; keep the user's in-memory edits.
+    let current = try fileInfo(document.file)
+    if !fileSnapshotMatches(document.baseline, current) {
+        return .Error(documentFailure(.BadState))
+    }
+    let bytes = document.text.utf8()
+    if bytes.count > ExternalTextLimits.maxBytes {
+        return .Error(documentFailure(.OutOfRange))
+    }
+    let calls = try portCreate(.None)
+    var offset: Number = 0
+    while offset < bytes.count {
+        let count = min(ExternalTextLimits.chunkBytes, bytes.count - offset)
+        let scratch = zeroedBlock(count: count, alignment: 16)
+        for index in 0..count {
+            heapStore<U8>(scratch.pointer(), index, U8(bytes[offset + index]))
+        }
+        let pending = fileWriteAt(
+            document.file, UNumber(offset),
+            [Buffer { address: scratch.pointer(), length: UNumber(count) }],
+            calls, ExternalTextLimits.callKey
+        )
+        let answer = match documentAnswer(calls, pending) {
+            Ok(value) -> value
+            Error(reason) -> {
+                match handleClose(calls) {
+                    Ok -> {}
+                    Error(closed) -> absorb closed
+                }
+                return .Error(reason)
+            }
+        }
+        let written = Number(answer.result0)
+        if written == 0 || written > count {
+            match handleClose(calls) {
+                Ok -> {}
+                Error(closed) -> absorb closed
+            }
+            return .Error(documentFailure(.BadState))
+        }
+        offset += written
+    }
+    match documentAnswer(calls, fileResize(
+        document.file, UNumber(bytes.count), calls, ExternalTextLimits.callKey
+    )) {
+        Ok(value) -> absorb value
+        Error(reason) -> {
+            match handleClose(calls) {
+                Ok -> {}
+                Error(closed) -> absorb closed
+            }
+            return .Error(reason)
+        }
+    }
+    let synced = documentAnswer(calls, fileSync(
+        document.file, .Data, calls, ExternalTextLimits.callKey
+    ))
+    match handleClose(calls) {
+        Ok -> {}
+        Error(reason) -> absorb reason
+    }
+    match synced {
+        Ok(value) -> {
+            absorb value
+            let fresh = try fileInfo(document.file)
+            var saved = document
+            saved.baseline = fresh
+            return .Ok
+        }
+        Error(reason) -> return .Error(reason)
+    }
+}
+
+/// Discover whether this invocation was an Open With activation. A corrupt
+/// grant must not silently drop the user into the private Notes library.
+function incomingDocument() -> ExternalDocumentStartup {
+    let file = match processLaunchDocument() {
+        Ok(given) -> match given {
+            Some(handle) -> handle
+            None -> return .NoDocument
+        }
+        Error(reason) -> return .Refused(errorName(reason))
+    }
+    let info = match handleInfo(file) {
+        Ok(value) -> value
+        Error(reason) -> return .Refused(errorName(reason))
+    }
+    if info.objectType != .File || !info.rights.has(Rights.read) {
+        return .Refused("The selected document was not granted as a readable File")
+    }
+    return match readGrantedText(file) {
+        Ok(snapshot) -> .Opened(ExternalTextDocument {
+            file: file,
+            text: snapshot.content,
+            editable: info.rights.has(Rights.write),
+            baseline: snapshot.metadata
+        })
+        Error(reason) -> .Refused(errorName(reason))
+    }
+}

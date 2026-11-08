@@ -1,0 +1,133 @@
+import Foundation
+import HomeLayout
+import LibTessera
+import KiraUI
+import KCoreAnimation
+import TesseraUI
+import PlatformUI
+
+// Home pull-to-Spotlight. Numeric defaults are from the iPhone18,3 iOS 27.0.1
+// SpringBoardHome -[SBHHomePullToSearchSettings setDefaultValues]. The pull
+// normalization is from -[SBSearchPresenter _searchPresentationProgressForOffset:]
+// and the release threshold from scrollViewWillEndDragging:withVelocity:.
+// These are RE-backed settings, not Apple source or exact visual geometry.
+namespace SpotlightPull {
+    let progressDistance: Number = 24
+    let activationThreshold: Number = 75
+    let visualDistance: Number = 150
+    let maxIconOffset: Number = 75
+    let maxHomeBlur: Number = 12
+    let settleResponse: Number = 0.47
+    let settleDamping: Number = 0.8
+}
+
+// The fast interactive part saturates at the recovered 24-point distance;
+// visual tracks use their own 150-point range, independently of that value.
+function spotlightProgress(pull: Number) -> Number {
+    return min(max(pull / SpotlightPull.progressDistance, 0), 1)
+}
+
+// A normalized animation property across the range [start, end] of the
+// 150-point visual displacement. This is a linear reconstruction of Apple's
+// recovered thresholds; the easing within a track remains unverified.
+function spotlightTrack(pull: Number, start: Number, end: Number) -> Number {
+    let p = min(max(pull / SpotlightPull.visualDistance, 0), 1)
+    if end <= start { return p >= end ? 1 : 0 }
+    return min(max((p - start) / (end - start), 0), 1)
+}
+
+function spotlightBlur(pull: Number) -> Number {
+    return spotlightTrack(pull, 0, 0.75)
+}
+
+// KiraUI's predictedEndTranslation already projects the drag using normal
+// UIKit-style scroll deceleration. Apple also projects velocity and compares
+// an activation threshold; exact device deceleration overrides are unknown.
+function spotlightShouldPresent(predictedPull: Number) -> Bool {
+    return max(predictedPull, 0) >= SpotlightPull.activationThreshold
+}
+
+// Pull-down begins over Home, with the wallpaper and icons behind the
+// search affordance. The native CA material and search-field portal geometry
+// remain separate RE targets: this is the accessible preview before focus.
+function spotlightPullPreview(pull: Number) -> Any Widget {
+    let dim = spotlightBlur(pull)
+    let field = spotlightTrack(pull, 0.4, 1)
+    return ZStack(alignment = .Top) {
+        Rectangle().fill(RGBAColor { r: 0, g: 0, b: 0, a: dim * 0.26 })
+        .fillWidth().fillHeight()
+        VStack(spacing = .None, alignment = .Center) {
+            Spacer()
+            Text("Search")
+            .font(size: resolvedLength(18), weight: .Medium)
+            .foregroundColor(.Primary)
+            .padding(resolvedLength(18))
+            .maxWidth(resolvedLength(520))
+            .glassEffect(shape: .Squircle(26))
+            .opacity(field)
+            .edgePadding(EdgeSet.bottom, resolvedLength(dockBand() + 20))
+        }
+        .fillWidth().fillHeight()
+    }.fillWidth().fillHeight()
+}
+
+extend HomeScreen {
+    // A single spring drives the recovered independent visual tracks. The
+    // sampled displacement, not a boolean search state, controls their look.
+    function beginSearchSettle(present: Bool, velocity: Number) {
+        let target = present ? SpotlightPull.visualDistance : 0
+        searchTracking = false
+        if prefersReducedMotion() {
+            searchPull = target
+            searchSettling = false
+            searching = present
+            return
+        }
+        searchSpring = motionSpringStart(
+            MotionSpring {
+                response: SpotlightPull.settleResponse,
+                damping: SpotlightPull.settleDamping,
+                target: target
+            },
+            searchPull,
+            // A source-like estimate: native velocity-injection gating and
+            // scaling still require instruction-level verification.
+            min(max(velocity, -3000), 3000)
+        )
+        searchSettling = true
+        clockResizing()
+    }
+
+    function advanceSearchPull() {
+        if !searchSettling { return }
+        let sample = motionSpringAdvance(searchSpring, clockDelta())
+        searchPull = min(max(sample.value, 0), SpotlightPull.visualDistance)
+        if motionSpringSettled(searchSpring, sample, MotionSpringLimit.epsilon) {
+            searchPull = searchSpring.spring.target
+            searchSettling = false
+            searching = searchPull > 0
+        } else {
+            clockResizing()
+        }
+    }
+
+    // A 24-point pull can reach full interactive presentation progress, but
+    // release only commits when its projected travel reaches 75 points.
+    function finishSearchPull(value: borrow DragGestureValue) {
+        let show = spotlightShouldPresent(value.predictedEndTranslation.height)
+        self.beginSearchSettle(show, value.velocity.height)
+    }
+
+    function dismissSearch() {
+        searching = false
+        self.beginSearchSettle(false, 0)
+    }
+
+    function keyboardSearch() {
+        if editing { return }
+        searchTracking = false
+        searchSettling = false
+        searchPull = SpotlightPull.visualDistance
+        searching = true
+    }
+}

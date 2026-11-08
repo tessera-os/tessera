@@ -81,6 +81,21 @@ function kernelVolumeMount(
     if options.has(VolumeOptions.bind) || options.has(VolumeOptions.move) {
         return mountOne(source, target, "", flags)
     }
+    // Linux 6.2+ defaults Btrfs to async discard when the backing block
+    // device advertises it. Do not issue UFS UNMAP on Xperia Tama, whose
+    // bootloader storage has historically been damaged by such requests.
+    // The option is harmless for QEMU and non-UFS Tessera volumes.
+    match format {
+        Btrfs -> unsafe {
+            return answerStatus(
+                mount(
+                    cStringFrom(diskNode(source)), cStringFrom(target),
+                    cStringFrom("btrfs"), flags, cStringFrom("nodiscard").address
+                )
+            )
+        }
+        else -> {}
+    }
     match formatName(format) {
         Some(kind) -> return mountOne(diskNode(source), target, kind, flags)
         None -> return .Error(failure(.Unsupported))

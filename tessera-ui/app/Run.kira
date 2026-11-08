@@ -111,9 +111,14 @@ function nextLink(link: borrow DisplayLink, hosting: borrow mut Hosting) -> Disp
         }
     }
     if replacement.clientIndex != link.clientIndex {
-        closeDisplayLink(replacement)
-        log fault("the replacement display link changed the client's identity")
-        return .None
+        // Client IDs are local to a MosaicDisplay instance. A compositor
+        // restart is free to assign a different one; the new handshake and
+        // hostSession() reset the surface and texture-slot state regardless.
+        log info(
+            "the new display server assigned a different client index",
+            previous: link.clientIndex,
+            current: replacement.clientIndex
+        )
     }
     log info("took a replacement display link", client: replacement.clientIndex)
     return .Some(replacement)

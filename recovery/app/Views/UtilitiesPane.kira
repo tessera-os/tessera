@@ -103,6 +103,6 @@ construct UtilitiesPane(pane: Binding<Number>) extends Widget {
         }
         .fillWidth()
         .fillHeight()
-        .scenePadding()
+        .scenePadding(EdgeSet.all)
     }
 }

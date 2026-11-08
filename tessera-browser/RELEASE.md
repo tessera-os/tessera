@@ -5,8 +5,8 @@
 
 ## Highlights
 
-- No source or resource changes recorded for this package since the `26.10.4` baseline.
+- Corrected the browser's engine failure-state reference and confined WebKit/GLib native calls to explicit `unsafe` boundaries. Its Tessera-target compiler check now passes; linking and device execution remain unverified.
 
 ## Validation
 
-- Changes checked against Cairn entries 47–66 (after the `26.10.4` baseline). No build, device test, or publication performed for this note.
+- Checked with the patched Kira frontend using `--target aarch64-unknown-tessera`. No link, device test, or publication performed for this note.

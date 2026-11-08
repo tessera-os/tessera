@@ -14,8 +14,10 @@ function chosen(result: Result<Void, AssociationFailure>) -> Bool {
 @Test
 function openWithRoutesOnlyToTheAcceptedPublisherIdentity() {
     var registry = ApplicationRegistry {}
-    let first = candidate(pubA, 1, digestA)
-    let otherPublisher = candidate(pubB, 1, digestB)
+    var first = candidate(pubA, 1, digestA)
+    var otherPublisher = candidate(pubB, 1, digestB)
+    first.documentTypes = ["txt"]
+    otherPublisher.documentTypes = ["txt"]
     expect!(registrationSucceeded(registry.prepare(first)))
     expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
     var associations = DocumentAssociations {}
@@ -42,7 +44,8 @@ function openWithRoutesOnlyToTheAcceptedPublisherIdentity() {
 function openWithWillNotRegisterAnUninstalledOrUnrequestedApplication() {
     var registry = ApplicationRegistry {}
     var associations = DocumentAssociations {}
-    let first = candidate(pubA, 1, digestA)
+    var first = candidate(pubA, 1, digestA)
+    first.documentTypes = ["txt"]
     expect!(!chosen(associations.chooseDefault("txt", first.identity, registry)))
     expect!(associations.route("notes.txt", registry) == DocumentRoute.ChooseApplication)
     expect!(registrationSucceeded(registry.prepare(first)))
@@ -65,8 +68,10 @@ function openWithExtractsOnlySafeConventionalFinalExtensions() {
 @Test
 function choosingANewDefaultReplacesOnlyTheSelectedExtension() {
     var registry = ApplicationRegistry {}
-    let first = candidate(pubA, 1, digestA)
-    let second = candidate(pubB, 1, digestB)
+    var first = candidate(pubA, 1, digestA)
+    var second = candidate(pubB, 1, digestB)
+    first.documentTypes = ["txt", "md"]
+    second.documentTypes = ["txt"]
     expect!(registrationSucceeded(registry.prepare(first)))
     expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
     expect!(registrationSucceeded(registry.prepare(second)))
@@ -91,4 +96,33 @@ function choosingANewDefaultReplacesOnlyTheSelectedExtension() {
     defaults.forgetDefault("TXT")
     expect!(defaults.route("note.txt", registry) == DocumentRoute.ChooseApplication)
     expect!(defaults.defaults.count == 1)
+}
+
+@Test
+function undeclaredDocumentTypesCannotBecomeDefaultsOrActivate() {
+    var registry = ApplicationRegistry {}
+    var app = candidate(pubA, 1, digestA)
+    app.documentTypes = ["md"]
+    expect!(registrationSucceeded(registry.prepare(app)))
+    expect!(registrationSucceeded(registry.activate(app.identity, digestA)))
+    var defaults = DocumentAssociations {}
+    expect!(!chosen(defaults.chooseDefault("txt", app.identity, registry)))
+    expect!(chosen(defaults.chooseDefault("md", app.identity, registry)))
+    expect!(defaults.route("report.txt", registry) == DocumentRoute.ChooseApplication)
+    var replacement = candidate(pubA, 2, digestB)
+    replacement.documentTypes = ["txt"]
+    expect!(registrationSucceeded(registry.prepare(replacement)))
+    // Staging must not change what the accepted image claims.
+    let before = match defaults.activation("report.md", registry) {
+        Ready(ticket) -> defaults.activationIsCurrent(ticket, registry)
+        Unavailable, ChooseApplication -> false
+    }
+    expect!(before)
+    expect!(registrationSucceeded(registry.activate(app.identity, digestB)))
+    let unavailable = match defaults.activation("report.md", registry) {
+        Unavailable(identity) -> sameApp(identity, app.identity)
+        Ready, ChooseApplication -> false
+    }
+    expect!(unavailable)
+    expect!(!chosen(defaults.chooseDefault("md", app.identity, registry)))
 }

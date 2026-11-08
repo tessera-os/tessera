@@ -1,0 +1,112 @@
+//! File-backed Open With resolution for the trusted document broker.
+//! A filename is used only to select its final extension. It is not an open
+//! path and this service never hands an app an arbitrary filesystem handle.
+import Foundation
+
+public enum StoredDocumentFailure {
+    Registry(RegistryStoreFailure)
+    Preferences(AssociationStoreFailure)
+    Selection(AssociationFailure)
+}
+
+/// Choose an accepted application from persisted user preferences, or ask the
+/// person to choose again when no default exists. Damaged metadata never
+/// becomes an empty preference record.
+public function resolveStoredDocument(
+    registryPath: borrow String,
+    preferencesPath: borrow String,
+    filename: borrow String
+) -> Result<DocumentActivationDecision, StoredDocumentFailure> {
+    let registry = match readRegistryFile(registryPath) {
+        Ok(value) -> value
+        Error(reason) -> return .Error(.Registry(reason))
+    }
+    let defaults = match readAssociationFile(preferencesPath) {
+        Ok(value) -> value
+        Error(reason) -> return .Error(.Preferences(reason))
+    }
+    return .Ok(defaults.activation(filename, registry))
+}
+
+/// List only accepted application identities that declared this document's
+/// extension. The OS chooser can present these without granting file access.
+public function storedDocumentHandlers(
+    registryPath: borrow String,
+    filename: borrow String
+) -> Result<[AppIdentity], StoredDocumentFailure> {
+    let registry = match readRegistryFile(registryPath) {
+        Ok(value) -> value
+        Error(reason) -> return .Error(.Registry(reason))
+    }
+    let extension = match documentExtension(filename) {
+        Some(value) -> value
+        None -> return .Ok([])
+    }
+    var handlers: [AppIdentity] = []
+    for entry in registry.installed {
+        if entry.candidate.documentTypes.contains(extension) {
+            handlers.append(copy entry.candidate.identity)
+        }
+    }
+    return .Ok(handlers)
+}
+
+/// Revalidate after installation/update and immediately before a scoped
+/// document grant. The caller must serialize registry changes with opening
+/// the accepted image and creating the document handle.
+public function storedDocumentActivationIsCurrent(
+    registryPath: borrow String,
+    preferencesPath: borrow String,
+    ticket: borrow DocumentActivation
+) -> Result<Bool, StoredDocumentFailure> {
+    let registry = match readRegistryFile(registryPath) {
+        Ok(value) -> value
+        Error(reason) -> return .Error(.Registry(reason))
+    }
+    let defaults = match readAssociationFile(preferencesPath) {
+        Ok(value) -> value
+        Error(reason) -> return .Error(.Preferences(reason))
+    }
+    return .Ok(defaults.activationIsCurrent(ticket, registry))
+}
+
+/// Save an explicit Open With preference for a currently accepted app. This
+/// does not claim that the app is compatible with the bytes of a document.
+public function chooseStoredDocumentDefault(
+    registryPath: borrow String,
+    preferencesPath: borrow String,
+    extension: borrow String,
+    identity: borrow AppIdentity
+) -> Result<Void, StoredDocumentFailure> {
+    let registry = match readRegistryFile(registryPath) {
+        Ok(value) -> value
+        Error(reason) -> return .Error(.Registry(reason))
+    }
+    var defaults = match readAssociationFile(preferencesPath) {
+        Ok(value) -> value
+        Error(reason) -> return .Error(.Preferences(reason))
+    }
+    match defaults.chooseDefault(extension, identity, registry) {
+        Ok -> {}
+        Error(reason) -> return .Error(.Selection(reason))
+    }
+    return match saveAssociationFile(preferencesPath, defaults) {
+        Ok -> .Ok
+        Error(reason) -> .Error(.Preferences(reason))
+    }
+}
+
+public function forgetStoredDocumentDefault(
+    preferencesPath: borrow String,
+    extension: borrow String
+) -> Result<Void, StoredDocumentFailure> {
+    var defaults = match readAssociationFile(preferencesPath) {
+        Ok(value) -> value
+        Error(reason) -> return .Error(.Preferences(reason))
+    }
+    defaults.forgetDefault(extension)
+    return match saveAssociationFile(preferencesPath, defaults) {
+        Ok -> .Ok
+        Error(reason) -> .Error(.Preferences(reason))
+    }
+}

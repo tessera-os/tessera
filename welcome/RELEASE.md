@@ -5,8 +5,9 @@
 
 ## Highlights
 
-- No source or resource changes recorded for this package since the `26.10.4` baseline.
+- Added a bottom-left **Skip Setup** action on all setup pages before Done. It persists setup completion and closes Welcome without requiring language, keyboard, time-zone, or appearance selections.
+- The setup navigation stays at the bottom of the available height on compact mobile screens.
 
 ## Validation
 
-- Changes checked against Cairn entries 47–66 (after the `26.10.4` baseline). No build, device test, or publication performed for this note.
+- The ARM64 Welcome executable compiled successfully with `--no-optimize` and was installed as dev-root `welcome-skip-20261107` (request 1794012409163, 0 failures). Device logs confirm the restarted Welcome process received focus. Physical interaction with Skip Setup still needs a user test.

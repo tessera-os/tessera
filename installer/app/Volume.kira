@@ -25,13 +25,51 @@ function onVolume(installation: borrow Installation, inside: borrow String) -> S
 }
 
 /// Mounts the volume, formatting it first when it is new: mkfs.btrfs is run without `-f`, so it refuses a disk that carries any file system.
-function mountVolume(installation: borrow Installation) -> Result<Void, String> {
+function mountVolume(
+    installation: borrow Installation,
+    update: Bool,
+    reformat: Bool
+) -> Result<Void, String> {
+    if reformat && update {
+        return .Error("refusing reformat while installing an update")
+    }
+    if reformat {
+        let actualUserdata = match volumePartitionLabelled("userdata") {
+            Ok(device) -> match device {
+                Some(found) -> found
+                None -> return .Error("the userdata GPT partition was not found")
+            }
+            Error(failed) -> return .Error(
+                "the userdata GPT partition could not be resolved: \(errorName(failed))"
+            )
+        }
+        if installation.disk != actualUserdata {
+            return .Error("refusing destructive format outside the resolved userdata partition")
+        }
+    }
+    if reformat {
+        // Never attempt to mount Android ext4 or treat it as a reusable
+        // Tessera Btrfs volume. The image source was preflight-mounted first.
+        match format(installation.disk, VolumeLayout.label, true) {
+            Ok -> {}
+            Error(problem) -> return .Error(problem)
+        }
+        return match mountTop(installation) {
+            Ok -> .Ok
+            Error(failed) -> .Error("new Btrfs userdata would not mount: \(errorName(failed))")
+        }
+    }
     match mountTop(installation) {
         Ok -> {
             log info("mounted the volume", disk: installation.disk)
             return .Ok
         }
-        Error(failed) -> log info("the disk holds no volume yet", error: errorName(failed))
+        Error(failed) -> {
+            if update {
+                return .Error("the existing update volume would not mount: \(errorName(failed))")
+            }
+            log info("the disk holds no volume yet", error: errorName(failed))
+        }
     }
     match format(installation.disk, VolumeLayout.label, false) {
         Ok -> {}
@@ -57,9 +95,12 @@ function mountTop(installation: borrow Installation) -> Result<Void, TesseraErro
     return volumeMount(installation.disk, installation.volume, .Btrfs, VolumeOptions.none)
 }
 
-/// Formats `disk` as a btrfs volume named `name`, with the page size and options the system needs.
+/// Formats `disk` as a btrfs volume named `name`, without issuing TRIM/UNMAP.
+/// Sony Tama internal UFS has a historical bootloader-erasure hazard involving
+/// PURGE/UNMAP. mkfs.btrfs defaults to discarding the entire target; -K
+/// prohibits that optimization. Do not remove this until hardware testing.
 function format(disk: borrow String, name: borrow String, over: Bool) -> Result<Void, String> {
-    var arguments = ["-q", "-L", copy name, "-s", String(memoryPageSize())]
+    var arguments = ["-q", "-K", "-L", copy name, "-s", String(memoryPageSize())]
     if over { arguments.append("-f") }
     arguments.append("/dev/" + disk)
     let command = ProcessCommand { program: formatterPath(), arguments: arguments }
@@ -90,6 +131,42 @@ function format(disk: borrow String, name: borrow String, over: Bool) -> Result<
 /// The path of btrfs-progs's formatter: /bin/mkfs.btrfs in both the installer image and the recovery media.
 function formatterPath() -> String {
     return "/" + SystemDirectory.programs + "/mkfs.btrfs"
+}
+
+/// Fail closed before modifying the destination if the sealed system source
+/// cannot actually be mounted. This is essential for a phone where the
+/// system payload and writable internal userdata are separate devices.
+function verifyInstallationSource(installation: borrow Installation) -> Result<Void, String> {
+    match installation.image {
+        Disk(source) -> if source == installation.disk {
+            return .Error("system source and install destination must be separate devices")
+        }
+        File(source) -> if source.count == 0 {
+            return .Error("the system source image path is empty")
+        }
+    }
+    match makeMissing(installation.imageAt) {
+        Ok -> {}
+        Error(problem) -> return .Error(problem)
+    }
+    let mounted = match installation.image {
+        Disk(source) -> volumeMount(source, installation.imageAt, .Squashfs, VolumeOptions.readOnly)
+        File(source) -> volumeMountImage(
+            source, installation.imageAt, .Squashfs, VolumeOptions.readOnly
+        )
+    }
+    match mounted {
+        Ok -> {}
+        Error(failed) -> return .Error(
+            "the sealed system source is missing or not mountable: \(errorName(failed))"
+        )
+    }
+    match volumeUnmount(installation.imageAt, VolumeUnmountOptions.none) {
+        Ok -> return .Ok
+        Error(failed) -> return .Error(
+            "the system preflight mount could not be released: \(errorName(failed))"
+        )
+    }
 }
 
 /// The data subvolume's directories, made when it is.

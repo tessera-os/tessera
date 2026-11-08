@@ -25,7 +25,7 @@ function manifestFiles(
 }
 
 function cleanupManifest(folder: borrow String) {
-    for name in ["id", "name", "version", "exec", "needs"] {
+    for name in ["id", "name", "version", "exec", "needs", "links", "types"] {
         match removePath(folder + "/" + name) {
             Ok -> {}
             Error(failure) -> absorb failure
@@ -35,6 +35,174 @@ function cleanupManifest(folder: borrow String) {
         Ok -> {}
         Error(failure) -> absorb failure
     }
+}
+
+@Test
+function verifiedManifestLinkDeclarationsReachAcceptedRegistration() {
+    let dir = ".registry-manifest-links"
+    manifestFiles(dir)
+    match writeFile(dir + "/links", "demo+notes demo+task\n") {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    let manifest = try readAppManifest(dir) otherwise return
+    expect!(manifest.linkSchemes == ["demo+notes", "demo+task"])
+    let candidate = try candidateFromManifest(manifest, pubA, digestA, .Direct) otherwise return
+    expect!(candidate.linkSchemes == manifest.linkSchemes)
+    var registry = ApplicationRegistry {}
+    expect!(registrationSucceeded(registry.prepare(candidate)))
+    expect!(registrationSucceeded(registry.activate(candidate.identity, digestA)))
+    expect!((try registry.accepted(candidate.identity) otherwise return).candidate.linkSchemes
+        == ["demo+notes", "demo+task"])
+    cleanupManifest(dir)
+}
+
+@Test
+function malformedOrReservedLinkDeclarationsCannotBeRegistered() {
+    for (name, declaration) in [
+        ("system", "https"),
+        ("uppercase", "Demo+Notes"),
+        ("duplicate", "demo+notes demo+notes"),
+        ("invalid", "demo/notes"),
+        ("tab", "demo+notes\tdemo+task")
+    ] {
+        let dir = ".registry-manifest-links-" + name
+        manifestFiles(dir)
+        match writeFile(dir + "/links", declaration + "\n") {
+            Ok -> {}
+            Error(failure) -> {
+                absorb failure
+                continue
+            }
+        }
+        expect!(manifestRefused(readAppManifest(dir)))
+        cleanupManifest(dir)
+    }
+    var forged = AppCandidate {
+        identity: AppIdentity { identifier: "example.notes", publisher: pubA },
+        name: "Notes", version: 1, imageDigest: digestA, management: .Direct,
+        linkSchemes: ["https"]
+    }
+    expect!(validAppCandidate(forged).isSome())
+    forged.linkSchemes = ["demo+notes", "demo+notes"]
+    expect!(validAppCandidate(forged).isSome())
+    forged.linkSchemes = ["demo+notes"]
+    expect!(validAppCandidate(forged).isNone())
+}
+
+@Test
+function malformedOptionalLinkMetadataIsNotSilentlyIgnored() {
+    let dir = ".registry-manifest-unreadable-links"
+    manifestFiles(dir)
+    // Optional means absent, not a link to an untrusted file.
+    match makeSymbolicLink("name", dir + "/links") {
+        Ok -> {}
+        Error(reason) -> {
+            absorb reason
+            cleanupManifest(dir)
+            return
+        }
+    }
+    expect!(manifestRefused(readAppManifest(dir)))
+    match removePath(dir + "/links") {
+        Ok -> {}
+        Error(reason) -> absorb reason
+    }
+    // A non-regular `links` field must not be interpreted as an empty list.
+    match makeDirectory(dir + "/links") {
+        Ok -> {}
+        Error(reason) -> {
+            absorb reason
+            cleanupManifest(dir)
+            return
+        }
+    }
+    expect!(manifestRefused(readAppManifest(dir)))
+    match removePath(dir + "/links") {
+        Ok -> {}
+        Error(reason) -> absorb reason
+    }
+    // A malformed optional file must fail, not fall back to a v1 signature.
+    match writeFile(dir + "/links", "demo+notes\nother+notes\n") {
+        Ok -> {}
+        Error(reason) -> {
+            absorb reason
+            cleanupManifest(dir)
+            return
+        }
+    }
+    expect!(manifestRefused(readAppManifest(dir)))
+    cleanupManifest(dir)
+}
+
+@Test
+function signedManifestDocumentTypesReachAcceptedRegistration() {
+    let dir = ".registry-manifest-document-types"
+    manifestFiles(dir)
+    match writeFile(dir + "/types", "txt md png\n") {
+        Ok -> {}
+        Error(reason) -> {
+            absorb reason
+            return
+        }
+    }
+    let manifest = try readAppManifest(dir) otherwise return
+    expect!(manifest.documentTypes == ["txt", "md", "png"])
+    let candidate = try candidateFromManifest(manifest, pubA, digestA, .Direct) otherwise return
+    expect!(candidate.documentTypes == manifest.documentTypes)
+    var registry = ApplicationRegistry {}
+    expect!(registrationSucceeded(registry.prepare(candidate)))
+    expect!(registrationSucceeded(registry.activate(candidate.identity, digestA)))
+    expect!((try registry.accepted(candidate.identity) otherwise return).candidate.documentTypes
+        == ["txt", "md", "png"])
+    cleanupManifest(dir)
+}
+
+@Test
+function noncanonicalDocumentTypeDeclarationsAreRejected() {
+    for (name, declaration) in [
+        ("uppercase", "TXT"),
+        ("duplicate", "txt txt"),
+        ("dot", ".txt"),
+        ("wildcard", "*"),
+        ("invalid", "text/plain"),
+        ("tab", "txt\tmd")
+    ] {
+        let dir = ".registry-manifest-types-" + name
+        manifestFiles(dir)
+        match writeFile(dir + "/types", declaration + "\n") {
+            Ok -> {}
+            Error(reason) -> {
+                absorb reason
+                continue
+            }
+        }
+        expect!(manifestRefused(readAppManifest(dir)))
+        cleanupManifest(dir)
+    }
+    let dir = ".registry-manifest-types-symlink"
+    manifestFiles(dir)
+    match makeSymbolicLink("name", dir + "/types") {
+        Ok -> {}
+        Error(reason) -> {
+            absorb reason
+            cleanupManifest(dir)
+            return
+        }
+    }
+    expect!(manifestRefused(readAppManifest(dir)))
+    cleanupManifest(dir)
+    var forged = AppCandidate {
+        identity: AppIdentity { identifier: "example.notes", publisher: pubA },
+        name: "Notes", version: 1, imageDigest: digestA, management: .Direct,
+        documentTypes: ["txt", "txt"]
+    }
+    expect!(validAppCandidate(forged).isSome())
+    forged.documentTypes = ["txt", "md"]
+    expect!(validAppCandidate(forged).isNone())
 }
 
 @Test

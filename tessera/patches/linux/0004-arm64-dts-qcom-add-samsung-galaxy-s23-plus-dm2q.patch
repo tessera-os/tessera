@@ -47,7 +47,7 @@ Samsung's zap shader, and the bootloader IDs from the stock dtbo.
 +	 * overlays carry them. Without them ABL finds no device tree and falls
 +	 * into Odin mode. The image is booted as a DTB appended to the kernel
 +	 * with an invalid dtbo, because ABL's overlay code rejects a mainline
-+	 * base tree (scripts/package-dm2q-odin.py).
++	 * base tree (scripts/package-dm2q-update.py).
 +	 */
 +	qcom,msm-id = <0x218 0x20000>, <0x207 0x20000>, <0x207 0x10000>, <0x218 0x10000>;
 +	qcom,board-id = <0x10008 0x00>, <0x10008 0x01>, <0x10008 0x02>,

@@ -1,0 +1,117 @@
+//! Explicit, bounded filename search in the selected document folder. No
+//! searches run during normal redraws, and previews never read whole files.
+import Foundation
+import KiraUI
+import FileOperations
+
+namespace FolderSearchLimits {
+    let results: Number = 75
+    let depth: Number = 4
+}
+
+construct FolderSearch(root: String) extends Widget {
+    @State var query: String = ""
+    @State var searchedRoot: String = ""
+    @State var searched: Bool = false
+    // KiraUI's exported State ABI only instantiates primitive types across
+    // framework boundaries. Store each hit as <kind><path>\0 (Unix paths
+    // cannot contain NUL), and decode to ordinary local values for the UI.
+    @State var foundPaths: String = ""
+    @State var foundCount: Number = 0
+    @State var scanned: Number = 0
+    @State var truncated: Bool = false
+    @State var previewPath: String = ""
+    @State var problem: String = ""
+
+    body {
+        if !inlayDocumentSearchRoot(root) { return EmptyView() }
+        var rows: [Any Widget] = [
+            HStack(spacing = .Small, alignment = .Center) {
+                TextField(title = "Search names in this folder", text = $query)
+                    .onSubmit({ in self.search() })
+                Button(action = { in self.search() }) { Text("Find") }
+            }
+        ]
+        // A navigated folder may reuse the same widget identity. Never show
+        // hits or previews found under the previously selected root.
+        if searched && searchedRoot == root {
+            if problem.count > 0 {
+                rows.append(Text(copy problem).foregroundColor(.Secondary))
+            } else {
+                rows.append(Text("\(foundCount) matches in \(scanned) folders"
+                    + (truncated ? " (more may exist)" : ""))
+                    .foregroundColor(.Secondary))
+                for encoded in foundPaths.split("\0") {
+                    if encoded.count < 2 { continue }
+                    let place = encoded.substring(1, encoded.count)
+                    rows.append(self.resultRow(place, encoded.substring(0, 1) == "d"))
+                }
+                if foundCount == 0 {
+                    rows.append(Text("No matching names were found.")
+                        .foregroundColor(.Secondary))
+                }
+                if previewPath.count > 0 {
+                    rows.append(Text("Preview: " + lastPathPart(previewPath))
+                        .fontWeight(.SemiBold))
+                    rows.append(boundedDocumentPreview(previewPath))
+                }
+            }
+        }
+        return Section(children: rows, header: Text("Find Documents"),
+            footer: Text("Only names in this folder are searched. "
+                + "Results are limited to 75 and four nested levels."))
+    }
+
+    function search() {
+        searchedRoot = copy root
+        searched = true
+        foundPaths = ""
+        foundCount = 0
+        previewPath = ""
+        scanned = 0
+        truncated = false
+        problem = ""
+        if query.count == 0 || query.count > DocumentSearchLimits.maxQueryBytes
+            || query.contains("/") || query.contains("\0") {
+            problem = "Enter a name of up to 256 bytes, without a slash."
+            return
+        }
+        match searchDocumentsByName(root, query, FolderSearchLimits.results, FolderSearchLimits.depth) {
+            Ok(result) -> {
+                foundCount = result.matches.count
+                var encoded = ""
+                for hit in result.matches {
+                    encoded += (hit.kind == .Folder ? "d" : "f") + hit.path + "\0"
+                }
+                foundPaths = move encoded
+                scanned = result.foldersScanned
+                truncated = result.truncated
+            }
+            Error(failure) -> {
+                absorb failure
+                problem = "The folder could not be searched. Check its availability or access."
+            }
+        }
+    }
+
+    function resultRow(path: borrow String, isFolder: Bool) -> Any Widget {
+        let place = copy path
+        let name = lastPathPart(path)
+        let parent = parentPath(place)
+        return HStack(spacing = .Small, alignment = .Center) {
+            Text(name)
+            Spacer()
+            if !isFolder {
+                Button(action = { in previewPath = copy place }) {
+                    Text("Preview")
+                }
+            }
+            Button(action = { in
+                if isFolder { showFolder(place) }
+                else { showFolder(parent) }
+            }) {
+                Text(isFolder ? "Open Folder" : "Reveal")
+            }
+        }
+    }
+}

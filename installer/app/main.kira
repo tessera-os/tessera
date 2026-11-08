@@ -47,6 +47,20 @@ function main() -> UN8 {
     let image = try requestedDevice(InstallerFlag.image, "vdb") otherwise return stop(
         "the requested system image could not be resolved"
     )
+    // Replacing Android's ext4 userdata requires a separate and explicit
+    // kernel argument, not merely pointing the installer at that partition.
+    let reformat = requestedReformatUserdata()
+    if reformat {
+        // requestedDevice resolves PARTLABEL:userdata to a Linux block-device
+        // name (e.g. sda53). Never compare the resulting name to the literal
+        // GPT label: that would silently reject every real phone install.
+        let userdata = try partitionDevice("userdata") otherwise return stop(
+            "the userdata GPT partition could not be verified"
+        )
+        if target != userdata {
+            return stop("tessera.reformat-userdata does not target the userdata GPT partition")
+        }
+    }
     // The machine's install target, with the volume's top mounted at
     // /volume, and the system image at /image.
     let installation = Installation {
@@ -56,7 +70,7 @@ function main() -> UN8 {
         imageAt: "/image"
     }
     var progress = CopyProgress { channel: .None, done: 0, total: 0 }
-    match install(installation, version, progress, requestedUpdate()) {
+    match install(installation, version, progress, requestedUpdate(), reformat) {
         Ok -> {}
         Error(problem) -> return stop(problem)
     }
@@ -111,6 +125,19 @@ function requestedVersion() -> String? {
     return .None
 }
 
+/// The destructive format option must name the exact Android userdata
+/// partition. In its absence, mkfs.btrfs refuses existing ext4 signatures.
+function requestedReformatUserdata() -> Bool {
+    match processArguments() {
+        Ok(given) -> return given.contains("tessera.reformat-userdata") &&
+            given.contains("tessera.target=PARTLABEL:userdata")
+        Error(failed) -> {
+            absorb failed
+            return false
+        }
+    }
+}
+
 /// The requested block device, or the QEMU default. `PARTLABEL:name` resolves
 /// a GPT partition through its sysfs uevent instead of assuming a device name.
 function requestedDevice(prefix: borrow String, fallback: borrow String) -> Result<String, String> {
@@ -139,19 +166,35 @@ function requestedDevice(prefix: borrow String, fallback: borrow String) -> Resu
     return .Ok(copy fallback)
 }
 
-/// Finds the Linux block-device name for a GPT partition label.
+/// Finds the Linux block-device name for a GPT partition label, allowing the
+/// controller time to discover its disks after PID 1 starts.
 function partitionDevice(label: borrow String) -> String? {
-    match volumePartitionLabelled(label) {
-        Ok(found) -> return found
-        Error(failed) -> {
-            log warn(
-                "the machine's partitions could not be searched",
-                label,
-                error: errorName(failed)
-            )
-            return .None
+    for _ in 0..60 {
+        match volumePartitionLabelled(label) {
+            Ok(found) -> if found.isSome() { return found }
+            Error(failed) -> {
+                log warn(
+                    "the machine's partitions could not be searched",
+                    label,
+                    error: errorName(failed)
+                )
+            }
+        }
+        match timeRead(.Monotonic) {
+            Ok(now) -> match threadSleep(now + 500000000) {
+                Ok -> {}
+                Error(failed) -> {
+                    log warn("could not wait for storage", error: errorName(failed))
+                    return .None
+                }
+            }
+            Error(failed) -> {
+                log warn("could not read the storage wait clock", error: errorName(failed))
+                return .None
+            }
         }
     }
+    return .None
 }
 
 /// Installs the version asked for onto the volume, reporting its progress, and returns the exit status.
@@ -159,9 +202,18 @@ function install(
     installation: borrow Installation,
     version: borrow String,
     progress: borrow mut CopyProgress,
-    update: Bool
+    update: Bool,
+    reformat: Bool
 ) -> Result<Void, String> {
-    match mountVolume(installation) {
+    // On physical installations the SquashFS source may be a separately
+    // staged partition. It MUST be readable before even considering a format
+    // of the target volume: otherwise a missing source could erase data and
+    // then fail to install anything. This is also safe for the QEMU installer.
+    match verifyInstallationSource(installation) {
+        Ok -> {}
+        Error(problem) -> return .Error(problem)
+    }
+    match mountVolume(installation, update, reformat) {
         Ok -> {}
         Error(problem) -> return .Error(problem)
     }

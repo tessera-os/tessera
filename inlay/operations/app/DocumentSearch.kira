@@ -31,6 +31,18 @@ public namespace DocumentSearchLimits {
     let maxQueryBytes: Number = 256
 }
 
+/// Inlay only offers recursive search within a selected user-document or
+/// mounted-volume folder. It does not turn its privileged navigation handle
+/// into a global search of system services or other applications' private
+/// data. The search function below also independently checks path safety.
+public function inlayDocumentSearchRoot(root: borrow String) -> Bool {
+    if unsafeBackupPath(root) { return false }
+    let documents = "/Documents"
+    let volumes = "/Volumes"
+    return root == documents || root.startsWith(documents + "/")
+        || root == volumes || root.startsWith(volumes + "/")
+}
+
 /// Returns filename matches sorted by directory traversal and filename.
 /// `maxDepth = 0` searches only immediate children; deeper recursion is
 /// explicitly bounded and never follows symbolic links or special files.

@@ -1,0 +1,109 @@
+import Foundation
+import Heap
+
+/// A link activation uses the same ABI as other launches but keeps the URL
+/// in the typed URL field. It is the caller's responsibility to authenticate
+/// the chosen app and check the current accepted image before launch.
+public function launchInfoCreateURL(
+    address: borrow String,
+    arguments: borrow [String]
+) -> Result<Handle, TesseraError> {
+    if address.count == 0 || address.count > 4096 { return .Error(failure(.InvalidArgument)) }
+    for index in 0..address.count {
+        let byte = Number(address.charAt(index))
+        if byte <= 32 || byte == 127 { return .Error(failure(.InvalidArgument)) }
+    }
+    let url: String? = .Some(copy address)
+    return launchInfoCreateFields(.Url, arguments, url)
+}
+
+function launchInfoCreateFields(
+    reason: LaunchReason,
+    arguments: borrow [String],
+    url: borrow String?
+) -> Result<Handle, TesseraError> {
+    // Match the bounded reader. Do not allocate an unbounded LaunchInfo or
+    // make a URL launch which its recipient must reject on receipt.
+    if arguments.count > 512 { return .Error(failure(.InvalidArgument)) }
+    var size = 16 + 32
+    for index in 0..arguments.count {
+        let length = arguments[index].count
+        if length > 4096 { return .Error(failure(.InvalidArgument)) }
+        size += 8 + trunc((length + 7) / 8) * 8
+        if size > 65536 { return .Error(failure(.InvalidArgument)) }
+    }
+    match url {
+        Some(address) -> size += 8 + trunc((address.count + 7) / 8) * 8
+        None -> {}
+    }
+    if size > 65536 { return .Error(failure(.InvalidArgument)) }
+    let blockBytes = zeroedBlock(count: size, alignment: 16)
+    let block = blockBytes.pointer()
+    heapStore<U32>(block, 0, code(reason))
+    heapStore<U64>(block, 8, U64(arguments.count))
+    var at = 16
+    for index in 0..arguments.count {
+        heapStore<U64>(block, at, U64(arguments[index].count))
+        copyBytes(heapOffset(block, at + 8), arguments[index].data, arguments[index].count)
+        at += 8 + trunc((arguments[index].count + 7) / 8) * 8
+    }
+    match url {
+        Some(address) -> {
+            heapStore<U64>(block, at, U64(1))
+            heapStore<U64>(block, at + 8, U64(address.count))
+            copyBytes(heapOffset(block, at + 16), address.data, address.count)
+        }
+        None -> {}
+    }
+    let memory = try memoryCreate(memoryPageRound(size), MemoryOptions.none)
+    match memoryWrite(memory, U64(0), Buffer { address: block, length: U64(size) }) {
+        Ok -> return .Ok(memory)
+        Error(failed) -> {
+            handleDrop(memory)
+            return .Error(failed)
+        }
+    }
+}
+
+/// Returns a URL only when this process was started with a typed URL launch.
+/// Malformed or oversized LaunchInfo memory is rejected before allocating or
+/// constructing a string. This grants no access to a target document.
+public function processLaunchURL() -> Result<String?, TesseraError> {
+    let given = try startupHandle(StartupTag.launch) otherwise return .Ok(.None)
+    let object = try resolveObject(given, .Memory, Rights.read)
+    let memory = try memoryOf(object)
+    let size = memory.size
+    if size < U64(48) || size > U64(65536) { return .Error(failure(.InvalidArgument)) }
+    let blockBytes = zeroedBlock(count: Number(size + U64(8)), alignment: 16)
+    let block = blockBytes.pointer()
+    let backing = try backingOf(object)
+    try kernelReadAt(backing, block, size, memory.offset)
+    if heapLoad<U32>(block, 0) != code(LaunchReason.Url) { return .Ok(.None) }
+    let count = heapLoad<U64>(block, 8)
+    if count > U64(512) { return .Error(failure(.InvalidArgument)) }
+    var at = U64(16)
+    for _ in 0..Number(count) {
+        if at + U64(8) > size { return .Error(failure(.InvalidArgument)) }
+        let length = heapLoad<U64>(block, at)
+        at += U64(8)
+        if length > size - at { return .Error(failure(.InvalidArgument)) }
+        at += (length + U64(7)) & ~U64(7)
+        if at > size { return .Error(failure(.InvalidArgument)) }
+    }
+    if at + U64(8) > size { return .Error(failure(.InvalidArgument)) }
+    let present = heapLoad<U64>(block, at)
+    if present == U64(0) { return .Ok(.None) }
+    if present != U64(1) || at + U64(16) > size {
+        return .Error(failure(.InvalidArgument))
+    }
+    let length = heapLoad<U64>(block, at + U64(8))
+    if length == U64(0) || length > U64(4096)
+        || length > size - at - U64(16) { return .Error(failure(.InvalidArgument)) }
+    let address = stringFromCBytes(heapOffset(block, at + U64(16)), length)
+    for index in 0..address.count {
+        let byte = Number(address.charAt(index))
+        if byte <= 32 || byte == 127 { return .Error(failure(.InvalidArgument)) }
+    }
+    return .Ok(.Some(address))
+}
+

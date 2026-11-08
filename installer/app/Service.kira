@@ -290,6 +290,14 @@ function installPayload(
     progress: borrow mut CopyProgress
 ) -> Result<Void, String> {
     if partition.count == 0 || partition.contains("/") { return .Error("no such partition") }
+    let header = match readFileRange(RecoveryPayload.image, 0, 4) {
+        Ok(bytes) -> bytes
+        Error(failure) -> return .Error("the media's system cannot be read: \(traceText(failure))")
+    }
+    if header.count != 4 || header[0] != UN8(104) || header[1] != UN8(115)
+        || header[2] != UN8(113) || header[3] != UN8(115) {
+        return .Error("the media's system is not a SquashFS image")
+    }
     let digest = match readFileRange(RecoveryPayload.digest, 0, 8) {
         Ok(bytes) -> hexText(bytes)
         Error(failure) -> return .Error("the media's system has no digest: \(traceText(failure))")
@@ -305,7 +313,7 @@ function installPayload(
         Ok -> {}
         Error(problem) -> return .Error(problem)
     }
-    let installed = install(installation, digest, progress, false)
+    let installed = install(installation, digest, progress, false, false)
     match volumeUnmount(installation.volume, VolumeUnmountOptions.none) {
         Ok -> {}
         Error(failed) -> log warn("the volume stays mounted", error: errorName(failed))

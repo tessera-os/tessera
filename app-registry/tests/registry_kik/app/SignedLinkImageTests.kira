@@ -1,0 +1,136 @@
+//! Public-only Ed25519 fixture authenticating the v2 link declarations.
+//! The temporary signing key is not checked into the repository.
+import Foundation
+import AppRegistry
+
+function linkedAppCertificate() -> [UN8] {
+    return [
+        48, 130, 1, 57, 48, 129, 236, 160, 3, 2, 1, 2, 2, 20, 99, 197, 191, 183,
+        26, 82, 122, 11, 251, 39, 250, 196, 144, 94, 50, 112, 127, 227, 226, 104, 48, 5,
+        6, 3, 43, 101, 112, 48, 35, 49, 33, 48, 31, 6, 3, 85, 4, 3, 12, 24,
+        84, 101, 115, 115, 101, 114, 97, 32, 65, 112, 112, 32, 76, 105, 110, 107, 32, 70,
+        105, 120, 116, 117, 114, 101, 48, 30, 23, 13, 50, 54, 49, 49, 48, 54, 50, 51,
+        48, 49, 49, 56, 90, 23, 13, 51, 54, 49, 49, 48, 51, 50, 51, 48, 49, 49,
+        56, 90, 48, 35, 49, 33, 48, 31, 6, 3, 85, 4, 3, 12, 24, 84, 101, 115,
+        115, 101, 114, 97, 32, 65, 112, 112, 32, 76, 105, 110, 107, 32, 70, 105, 120, 116,
+        117, 114, 101, 48, 42, 48, 5, 6, 3, 43, 101, 112, 3, 33, 0, 5, 72, 50,
+        70, 204, 181, 11, 246, 128, 125, 209, 123, 36, 233, 189, 249, 254, 93, 135, 221, 213,
+        210, 106, 91, 131, 34, 126, 230, 85, 178, 190, 58, 163, 50, 48, 48, 48, 29, 6,
+        3, 85, 29, 14, 4, 22, 4, 20, 135, 178, 193, 133, 192, 237, 240, 176, 151, 220,
+        185, 102, 144, 96, 127, 5, 246, 34, 140, 140, 48, 15, 6, 3, 85, 29, 19, 1,
+        1, 255, 4, 5, 48, 3, 1, 1, 255, 48, 5, 6, 3, 43, 101, 112, 3, 65,
+        0, 135, 91, 179, 237, 215, 172, 177, 91, 97, 188, 132, 242, 237, 100, 128, 220, 70,
+        252, 132, 25, 124, 80, 142, 5, 97, 36, 30, 231, 150, 244, 8, 217, 182, 90, 11,
+        76, 238, 165, 214, 48, 210, 118, 35, 157, 255, 60, 101, 221, 74, 214, 75, 141, 239,
+        184, 82, 12, 74, 136, 14, 21, 208, 188, 185, 12,
+    ]
+}
+
+function linkedAppPin() -> [UN8] {
+    return [
+        51, 61, 34, 87, 185, 229, 91, 198, 82, 111, 97, 146, 179, 21, 11, 198, 2, 101,
+        95, 236, 168, 119, 234, 2, 245, 254, 2, 145, 139, 248, 96, 231,
+    ]
+}
+
+function linkedAppSignature() -> [UN8] {
+    return [
+        6, 133, 90, 127, 212, 1, 125, 130, 160, 94, 189, 171, 213, 119, 140, 76, 243, 177,
+        79, 17, 236, 248, 188, 124, 83, 228, 212, 128, 130, 106, 127, 221, 218, 187, 183, 40,
+        40, 224, 14, 51, 44, 62, 50, 141, 81, 233, 147, 178, 10, 148, 193, 40, 227, 137,
+        67, 62, 50, 89, 41, 25, 98, 246, 194, 12,
+    ]
+}
+
+function linkedTestManifest() -> ApplicationManifest {
+    return ApplicationManifest {
+        identifier: "example.notes", name: "Notes", version: 1,
+        executable: "bin", requests: ["display", "data"],
+        linkSchemes: ["demo+notes"]
+    }
+}
+
+function linkedTestSigner() -> AppImageSigner {
+    return AppImageSigner {
+        certificate: linkedAppCertificate(),
+        trustedCertificateSha256: linkedAppPin()
+    }
+}
+
+@Test
+function signedCustomSchemeIsVerifiedAndCanBeActivated() {
+    let path = ".tessera-signed-link-image-test"
+    match writeFile(path, "abc") {
+        Ok -> {}
+        Error(reason) -> {
+            absorb reason
+            return
+        }
+    }
+    let app = match verifyAppImageCandidate(
+        linkedTestManifest(), path, linkedTestSigner(), linkedAppSignature(), .Direct
+    ) {
+        Ok(value) -> value
+        Error(failure) -> {
+            absorb failure
+            expect!(false)
+            return
+        }
+    }
+    expect!(app.linkSchemes == ["demo+notes"])
+    var registry = ApplicationRegistry {}
+    expect!(registrationSucceeded(registry.prepare(app)))
+    expect!(registrationSucceeded(registry.activate(app.identity, app.imageDigest)))
+    var defaults = LinkAssociations {}
+    let selected = match defaults.chooseDefault("demo+notes", app.identity, registry) {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+    expect!(selected)
+    let ready = match defaults.activation("demo+notes:123", registry) {
+        Ready(ticket) -> defaults.activationIsCurrent(ticket, registry)
+        ChooseApplication, Unavailable -> false
+    }
+    expect!(ready)
+    match removePath(path) { Ok -> {} Error(reason) -> absorb reason }
+}
+
+@Test
+function signedLinkDeclarationsCannotBeAddedRemovedOrSubstituted() {
+    let path = ".tessera-signed-link-image-tamper"
+    match writeFile(path, "abc") {
+        Ok -> {}
+        Error(reason) -> {
+            absorb reason
+            return
+        }
+    }
+    let different = ApplicationManifest {
+        identifier: "example.notes", name: "Notes", version: 1,
+        executable: "bin", requests: ["display", "data"],
+        linkSchemes: ["demo+task"]
+    }
+    let removed = ApplicationManifest {
+        identifier: "example.notes", name: "Notes", version: 1,
+        executable: "bin", requests: ["display", "data"]
+    }
+    for changed in [different, removed] {
+        let rejected = match verifyAppImageCandidate(
+            changed, path, linkedTestSigner(), linkedAppSignature(), .Direct
+        ) {
+            Ok(value) -> {
+                absorb value
+                false
+            }
+            Error(failure) -> {
+                absorb failure
+                true
+            }
+        }
+        expect!(rejected)
+    }
+    match removePath(path) { Ok -> {} Error(reason) -> absorb reason }
+}

@@ -1,0 +1,46 @@
+import KiraUI
+import TesseraAuth
+import TesseraSignIn
+
+// This is a human-operable sample, not an account-token store. It discards
+// tokens after confirming the sign-in callback fired. Real apps must securely
+// store the returned session and revoke it on logout.
+construct TesseraLoginExampleView() extends Widget {
+    @State var authenticated: Bool = false
+
+    body {
+        self.page()
+    }
+
+    function page() -> Any Widget {
+        if authenticated {
+            return VStack(spacing = .Medium, alignment = .Center) {
+                Text("Signed in to Tessera")
+                .font(size = scaledMetric(30, relativeTo: .largeTitle), weight = .Bold)
+                Text("This example does not retain tokens or create a persistent session.")
+                .foregroundColor(.Secondary)
+                Button(action = { in authenticated = false }) {
+                    Text("Return to Sign In")
+                }.buttonStyle(.Bordered)
+            }
+            .padding(resolvedLength(24))
+            .frame(maxWidth = .Infinity)
+        }
+        return TesseraSignInView(
+            config: TesseraAuthConfig {
+                region: "us-east-1",
+                clientId: "1for95pl6ud3s2c4sscntn4tol"
+            },
+            application: "Tessera Example",
+            onSignedIn: { tokens in
+                absorb tokens
+                authenticated = true
+            }
+        )
+    }
+}
+
+@Main
+function main() {
+    RunKiraWindowApp("Tessera Sign In", 800, 680, { in return TesseraLoginExampleView() })
+}

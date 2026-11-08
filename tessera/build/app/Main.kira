@@ -31,17 +31,17 @@ function main() -> Number {
     let kernelProfile = graph.option(
         Choice {
             name: "kernel-profile",
-            summary: "the kernel's hardware profile: QEMU virt, or the experimental Galaxy S23+ SM8550 profile",
-            values: ["qemu", "dm2q"],
+            summary: "the kernel hardware profile: QEMU, Galaxy S23+, Xperia XZ2 or Xperia XZ3",
+            values: ["qemu", "dm2q", "akari", "akatsuki"],
             fallback: "qemu"
         }
     )
-    if kernelProfile == "dm2q" && architecture != .Aarch64 {
-        log fault("the Galaxy S23+ kernel profile requires -arch aarch64")
+    if kernelProfile != "qemu" && architecture != .Aarch64 {
+        log fault("phone kernel profiles require -arch aarch64")
         return 2
     }
-    if kernelProfile == "dm2q" && graph.requested("boot") {
-        log fault("the Galaxy S23+ kernel profile cannot be booted by the QEMU boot step")
+    if kernelProfile != "qemu" && graph.requested("boot") {
+        log fault("phone kernel profiles cannot be booted by the QEMU boot step")
         return 2
     }
     let valgrind = graph.option(

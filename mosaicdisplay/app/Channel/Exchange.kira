@@ -171,17 +171,55 @@ function commitFrame(
         Shown(value) -> value
         // The client is told the frame is done, and draws the next.
         Skipped(reason) -> {
+            // Keep failures per texture slot: the client may successfully
+            // commit another slot between the failure and its next attempt.
+            server.clients[index].rejectedSlots.append(Number(attached.slot))
             log warn(
-                "a client's surface would not import; its frame is skipped",
+                "a client's surface would not import; asking it to re-export its textures",
                 error: errorName(reason)
             )
+            // A FrameDone with no surface means the frame was NOT displayed.
+            // The client must invalidate all its cached texture-slot bindings
+            // before the next frame. Without this, an expired one-use DeviceKit
+            // token leaves the slot empty, and the next slot-only frame kills
+            // the client with UnknownTextureSlot.
             tell(
                 server.clients[index].channel,
-                .FrameDone(DisplayFrame { surface: committed.surface, serial: committed.serial })
+                .FrameDone(DisplayFrame { surface: DisplaySurfaceId.none, serial: committed.serial })
             )
             return .Ok
         }
-        Broken(reason) -> return .Error(reason)
+        Broken(reason) -> match reason {
+            UnknownTextureSlot(slot) -> {
+                // Modern TesseraUI re-exports after the rejected FrameDone.
+                // Older apps may ignore that signal and retry the same empty
+                // slot forever. Close that session after one retry so PID 1
+                // can start a clean instance instead of leaving Home frozen.
+                for missing in server.clients[index].rejectedSlots {
+                    if missing == slot {
+                        log warn("client did not re-export the missing texture; ending stale session", slot: slot)
+                        return .Error(.UnknownTextureSlot(slot))
+                    }
+                }
+                server.clients[index].rejectedSlots.append(slot)
+                log warn("a client reused a missing texture slot", slot: slot)
+                tell(
+                    server.clients[index].channel,
+                    .FrameDone(DisplayFrame { surface: DisplaySurfaceId.none, serial: committed.serial })
+                )
+                return .Ok
+            }
+            else -> return .Error(reason)
+        }
+    }
+    // A successful fresh import replaces the failed texture slot, even when
+    // other slots were successfully committed in between attempts.
+    if attached.fresh {
+        var remaining: [Number] = []
+        for missing in server.clients[index].rejectedSlots {
+            if missing != Number(attached.slot) { remaining.append(missing) }
+        }
+        server.clients[index].rejectedSlots = remaining
     }
     // A client's earlier frame still owed is shown first, so what it
     // replaced is never let go of before the screen moved past it.

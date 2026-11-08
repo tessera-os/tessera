@@ -1,0 +1,93 @@
+import Foundation
+
+@Test
+function onlyRegionalCognitoHostsCanBeBuilt() {
+    expect!(validAuthRegion("us-east-1"))
+    expect!(validAuthRegion("eu-west-1"))
+    expect!(!validAuthRegion("us-east-1.attacker.net"))
+    expect!(!validAuthRegion("-us-east-1"))
+    expect!(validPublicClientId("1for95pl6ud3s2c4sscntn4tol"))
+    expect!(!validPublicClientId("bad.client"))
+}
+
+@Test
+function aPasswordLoginCanReturnAuthenticatedTokens() {
+    let value: JsonValue = .Object([
+        authField("AuthenticationResult", .Object([
+            authField("AccessToken", .Text("test-access")),
+            authField("IdToken", .Text("test-id")),
+            authField("RefreshToken", .Text("test-refresh")),
+            authField("ExpiresIn", .Number(3600))
+        ]))
+    ])
+    let result = match parseSignInResult(value) {
+        Ok(value) -> value
+        Error(failure) -> {
+            log fault("unexpected token parsing error", failure)
+            expect!(false)
+            return
+        }
+    }
+    match result {
+        SignedIn(tokens) -> {
+            expect!(tokens.accessToken == "test-access")
+            expect!(tokens.expiresIn == 3600)
+            let refresh: String? = .Some("test-refresh")
+            expect!(tokens.refreshToken == refresh)
+        }
+        Challenge(_) -> expect!(false)
+    }
+}
+
+@Test
+function passwordLoginMustNotSilentlySkipMfa() {
+    let value: JsonValue = .Object([
+        authField("ChallengeName", .Text("SOFTWARE_TOKEN_MFA")),
+        authField("Session", .Text("opaque-cognito-session")),
+        authField("ChallengeParameters", .Object([]))
+    ])
+    let result = match parseSignInResult(value) {
+        Ok(value) -> value
+        Error(failure) -> {
+            log fault("unexpected challenge parsing error", failure)
+            expect!(false)
+            return
+        }
+    }
+    match result {
+        Challenge(challenge) -> {
+            expect!(challenge.name == "SOFTWARE_TOKEN_MFA")
+            expect!(challenge.session == "opaque-cognito-session")
+        }
+        SignedIn(_) -> expect!(false)
+    }
+}
+
+@Test
+function missingTokensNeverIndicateSuccessfulLogin() {
+    let value: JsonValue = .Object([
+        authField("AuthenticationResult", .Object([
+            authField("AccessToken", .Text("missing-id")),
+            authField("ExpiresIn", .Number(3600))
+        ]))
+    ])
+    let parsed = parseSignInResult(value)
+    expect!(match parsed {
+        Ok(result) -> false
+        Error(failure) -> {
+            log debug("expected missing id token", failure)
+            true
+        }
+    })
+}
+
+@Test
+function cognitoErrorResponsesAreClassifiedWithoutDisplayingMessages() {
+    let unconfirmed = "{\"__type\":\"com.amazon.coral.service#UserNotConfirmedException\",\"message\":\"secret details\"}"
+    let errorType = cognitoErrorType(unconfirmed.utf8())
+    expect!(errorType == "UserNotConfirmedException")
+    expect!(cognitoError(errorType) == .Unconfirmed)
+    expect!(cognitoError("TooManyRequestsException") == .RateLimited)
+    expect!(cognitoError("ExpiredCodeException") == .ExpiredCode)
+    expect!(cognitoError("UnknownException") == .Rejected)
+}

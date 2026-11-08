@@ -9,6 +9,10 @@ public struct ApplicationManifest {
     /// A relative executable path within the mounted, read-only image.
     let executable: String
     let requests: [String] = []
+    /// Whitespace-separated custom schemes in the `links` manifest field.
+    let linkSchemes: [String] = []
+    /// Whitespace-separated conventional extensions in the `types` field.
+    let documentTypes: [String] = []
 }
 
 public enum ManifestFailure {
@@ -16,6 +20,8 @@ public enum ManifestFailure {
     InvalidField
     InvalidExecutable
     InvalidCapability
+    InvalidLinkScheme
+    InvalidDocumentType
 }
 
 /// Loads the manifest with one file per field, as in roadmap/12-apps.md.
@@ -30,7 +36,10 @@ public function readAppManifest(
     let executable = try manifestField(folder, "exec") otherwise return .Error(.MissingField)
     let version = try versionText.toNumber() otherwise return .Error(.InvalidField)
     var requests: [String] = []
-    let needs = try manifestField(folder, "needs") otherwise ""
+    let needs = match optionalManifestField(folder, "needs") {
+        Ok(field) -> field
+        Error(failure) -> return .Error(failure)
+    }
     for word in needs.split(" ") {
         if word.count == 0 { continue }
         if !recognizedCapability(word) || requests.contains(word) {
@@ -38,12 +47,42 @@ public function readAppManifest(
         }
         requests.append(copy word)
     }
+    var linkSchemes: [String] = []
+    let links = match optionalManifestField(folder, "links") {
+        Ok(field) -> field
+        Error(failure) -> return .Error(failure)
+    }
+    for word in links.split(" ") {
+        if word.count == 0 { continue }
+        // Files in verified images must spell schemes canonically. Do not
+        // convert malformed declarations into authoritative registrations.
+        if !validCustomLinkScheme(word) || word != word.lowercased()
+            || linkSchemes.contains(word) || linkSchemes.count >= 32 {
+            return .Error(.InvalidLinkScheme)
+        }
+        linkSchemes.append(copy word)
+    }
+    var documentTypes: [String] = []
+    let types = match optionalManifestField(folder, "types") {
+        Ok(field) -> field
+        Error(failure) -> return .Error(failure)
+    }
+    for word in types.split(" ") {
+        if word.count == 0 { continue }
+        if !validDocumentExtension(word) || word != word.lowercased()
+            || documentTypes.contains(word) || documentTypes.count >= 64 {
+            return .Error(.InvalidDocumentType)
+        }
+        documentTypes.append(copy word)
+    }
     let manifest = ApplicationManifest {
         identifier: id,
         name: name,
         version: version,
         executable: executable,
-        requests: requests
+        requests: requests,
+        linkSchemes: linkSchemes,
+        documentTypes: documentTypes
     }
     if !validExecutablePath(manifest.executable) { return .Error(.InvalidExecutable) }
     // The candidate validator checks the remaining fields after an accepted
@@ -72,7 +111,9 @@ public function candidateFromManifest(
         version: manifest.version,
         imageDigest: copy verifiedImageDigest,
         management: management,
-        requests: copy manifest.requests
+        requests: copy manifest.requests,
+        linkSchemes: copy manifest.linkSchemes,
+        documentTypes: copy manifest.documentTypes
     }
     match validAppCandidate(candidate) {
         Some(failure) -> {
@@ -112,4 +153,29 @@ function manifestField(folder: borrow String, name: borrow String) -> String? {
     let field = content.endsWith("\n") ? content.substring(0, content.count - 1) : content
     if field.contains("\n") || field.contains("\r") || field.contains("\0") { return .None }
     return .Some(field)
+}
+
+/// Missing optional fields mean no declaration; malformed or linked files do
+/// not. In particular an invalid `links` file must never silently downgrade
+/// a signed manifest to the legacy (no-link) signature format.
+function optionalManifestField(
+    folder: borrow String,
+    name: borrow String
+) -> Result<String, ManifestFailure> {
+    let path = folder + "/" + name
+    match linkStatus(path) {
+        Ok(status) -> {
+            if status.kind != .File || status.size > 4096 {
+                return .Error(.InvalidField)
+            }
+        }
+        Error(failure) -> match failure {
+            Missing -> return .Ok("")
+            else -> return .Error(.InvalidField)
+        }
+    }
+    return match manifestField(folder, name) {
+        Some(value) -> .Ok(value)
+        None -> .Error(.InvalidField)
+    }
 }

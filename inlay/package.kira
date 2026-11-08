@@ -12,5 +12,10 @@ construct InlayApp extends Package {
     // application is.
     let assets: [String] = ["Resources/AppIcon.tessicon"]
     let moduleRoot: String = "Inlay"
-    let dependencies: [Dependency] = [Dependency { name: "FileOperations", path: "operations" }]
+    let dependencies: [Dependency] = [
+        Dependency { name: "FileOperations", path: "operations" },
+        Dependency { name: "LibTessera", path: "../libtessera" },
+        Dependency { name: "TesseraUI", path: "../tessera-ui" },
+        Dependency { name: "KiraUI", path: "../../kira-packages/kira-ui" }
+    ]
 }

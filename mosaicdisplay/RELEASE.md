@@ -5,7 +5,8 @@
 
 ## Highlights
 
-- Display composition, output, dead zones, cursor rendering, and client channel handling changed in 21 tracked package file(s) since the `26.10.4` baseline.
+- The Galaxy S23+ (dm2q) now uses a 2x output scale, giving its 1080-pixel portrait width 540 points.
+- Display composition, output, dead zones, cursor rendering, and client channel handling changed in 22 tracked package file(s) since the `26.10.4` baseline.
 
 ## Changed
 
@@ -18,6 +19,7 @@
 - `app/Display/Cursor.kira`
 - `app/Display/CursorShapes.kira`
 - `app/Display/DeadZone.kira`
+- `app/Display/Output.kira`
 - Plus 12 additional changed paths in the same package.
 
 ## Validation

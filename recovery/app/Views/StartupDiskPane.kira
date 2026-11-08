@@ -51,6 +51,6 @@ public construct StartupDiskPane(model: RecoveryModel) extends Widget {
         }
         .fillWidth()
         .fillHeight()
-        .scenePadding()
+        .scenePadding(EdgeSet.all)
     }
 }

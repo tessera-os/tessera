@@ -27,7 +27,9 @@ struct Scanout {
     var height: Number
     // Millihertz.
     var refresh: Number
-    // Pixels a point, along each side (OutputScale).
+    // Physical pixels per logical point. Can be fractional; clients rasterize
+    // at the next integer scale so existing display-protocol peers keep their
+    // integer scale and the compositor downsamples the resulting textures.
     var scale: Number
     // The panel's mode, in pixels: what is set, scanned out and composed into.
     var panelWidth: Number
@@ -52,6 +54,13 @@ extend Scanout {
 
     function pointHeight(borrow self) -> Number {
         return trunc(height / scale)
+    }
+
+    // DisplayOutput.scale is currently an integer protocol word. Supersample
+    // fractional outputs rather than sending a truncated value to clients:
+    // for example, 2.625 physical pixels/point uses 3 rendered pixels/point.
+    function clientScale(borrow self) -> Number {
+        return ceil(scale)
     }
 }
 
@@ -231,8 +240,9 @@ struct Output {
     var widthMm: Number
 }
 
-// How many pixels a point is on an output, as a Mac draws a Retina display at
-// two. dm2q uses its known 3x panel scale. Elsewhere a boot can name the scale
+// How many physical pixels a point is on an output. dm2q uses 2.625x,
+// with 3x supersampled client buffers to keep the integer wire protocol.
+// Elsewhere a boot can name the scale
 // in TESSERA_OUTPUT_SCALE, since a virtual display has no size to measure it
 // from. Otherwise it is two once the panel holds 192 pixels an inch or more,
 // twice the 96 a point stands for, and one when the display does not say its size.
@@ -241,10 +251,10 @@ namespace OutputScale {
     let millimetresAnInch: Number = 25.4
     let variable: String = "TESSERA_OUTPUT_SCALE"
     // dm2q's internal 1080x2340 panel does not report its physical size
-    // through DRM. Its 3x point scale gives it a 360-point portrait width.
+    // through DRM. At 2.625x it has a 411-point portrait width.
     let dm2qWidth: Number = 1080
     let dm2qHeight: Number = 2340
-    let dm2qScale: Number = 3
+    let dm2qScale: Number = 2.625
 }
 
 function outputScale(output: borrow Output) -> Number {
@@ -400,7 +410,8 @@ function chooseScanout(block: borrow ByteBlock) -> Scanout? {
         width: output.width,
         height: output.height,
         refresh: output.refresh,
-        scale: outputScale(output)
+        scale: outputScale(output),
+        rasterScale: ceil(outputScale(output))
     )
     return .Some(
         Scanout {

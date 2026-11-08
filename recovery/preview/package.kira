@@ -5,6 +5,6 @@ construct RecoveryPreview extends Package {
     let kind: PackageKind = .App
     let dependencies: [Dependency] = [Dependency {
         name: "KiraUI",
-        path: "../../kira-ui"
+        path: "../../../kira-packages/kira-ui"
     }]
 }

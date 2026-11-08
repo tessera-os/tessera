@@ -48,6 +48,10 @@ enum RequestAction {
     Sample
     Crashes
     KernelLog
+    StageUpdate
+    StageChunk
+    FinishUpdate
+    DiscardUpdate
 }
 
 struct RequestLine {
@@ -65,6 +69,10 @@ function requestLine(line: borrow String) -> Result<RequestLine, RootFailure> {
         "sample" -> .Sample
         "crashes" -> .Crashes
         "kernel" -> .KernelLog
+        "stage-update" -> .StageUpdate
+        "stage-chunk" -> .StageChunk
+        "finish-update" -> .FinishUpdate
+        "discard-update" -> .DiscardUpdate
         else -> return .Error(.UnknownAction(copy words[0]))
     }
     if action == .Reset || action == .Crashes || action == .KernelLog {
@@ -100,6 +108,10 @@ function carryOut(
         Sample -> return writeSamples(files, line)
         Crashes -> return writeCrashes(files)
         KernelLog -> return writeKernelLog(files)
+        StageUpdate -> return stageUpdate(files, request.root)
+        StageChunk -> return stageUpdateChunk(files, request.root)
+        FinishUpdate -> return finishUpdate(files, request.root)
+        DiscardUpdate -> return discardUpdate(files, request.root)
     }
 }
 

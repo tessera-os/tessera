@@ -236,6 +236,12 @@ struct Files {
         }
     }
 
+    // Removes a file or directory tree under the system root. LibTessera removes
+    // links as entries, without following them.
+    function removeTree(borrow self, path: borrow String) -> Result<Void, TesseraError> {
+        return self.remove(path, DeleteOptions.recursive | DeleteOptions.permanent)
+    }
+
     // The file at `path`, whole.
     function load(borrow self, path: borrow String) -> Result<ByteBlock, TesseraError> {
         let node = try self.lookup(path, Rights.read | Rights.inspect)

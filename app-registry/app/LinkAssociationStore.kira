@@ -1,0 +1,114 @@
+//! Strict persisted Open Link preferences. This file is never a source of
+//! executable trust, entitlement grants, or ownership of web domains.
+import Foundation
+
+public namespace LinkAssociationText {
+    let version: String = "Tessera link associations 1"
+    let maxBytes: Number = 32768
+}
+
+public enum LinkAssociationStoreFailure {
+    Unavailable
+    Damaged
+    UnsafePath
+}
+
+public function encodedLinkAssociations(defaults: borrow LinkAssociations) -> String {
+    var rows: [String] = [LinkAssociationText.version]
+    for item in defaults.defaults {
+        rows.append("L\t" + item.scheme + "\t" + item.application.identifier
+            + "\t" + item.application.publisher)
+    }
+    return joined(rows, "\n") + "\n"
+}
+
+public function decodedLinkAssociations(text: borrow String) -> LinkAssociations? {
+    if text.count > LinkAssociationText.maxBytes { return .None }
+    let rows = text.split("\n")
+    if rows.count < 2 || rows.count > LinkAssociationLimits.maxDefaults + 2
+        || rows[0] != LinkAssociationText.version || rows[rows.count - 1] != "" {
+        return .None
+    }
+    var defaults = LinkAssociations {}
+    for index in 1..rows.count - 1 {
+        let parts = rows[index].split("\t")
+        if parts.count != 4 || parts[0] != "L" || !validCustomLinkScheme(parts[1]) {
+            return .None
+        }
+        let identity = AppIdentity { identifier: copy parts[2], publisher: copy parts[3] }
+        if !validAppIdentity(identity) { return .None }
+        for item in defaults.defaults {
+            if item.scheme == parts[1] { return .None }
+        }
+        defaults.defaults.append(LinkAssociation {
+            scheme: copy parts[1], application: identity
+        })
+    }
+    if encodedLinkAssociations(defaults) != text { return .None }
+    return .Some(defaults)
+}
+
+public function readLinkAssociationFile(
+    path: borrow String
+) -> Result<LinkAssociations, LinkAssociationStoreFailure> {
+    if unsafeAssociationStorePath(path) { return .Error(.UnsafePath) }
+    match linkStatus(path) {
+        Ok(status) -> {
+            if status.kind != .File { return .Error(.UnsafePath) }
+            if status.size > LinkAssociationText.maxBytes { return .Error(.Damaged) }
+        }
+        Error(failure) -> match failure {
+            Missing -> return .Ok(LinkAssociations {})
+            else -> return .Error(.Unavailable)
+        }
+    }
+    let text = match readFile(path) {
+        Ok(contents) -> contents.text
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Unavailable)
+        }
+    }
+    return match decodedLinkAssociations(text) {
+        Some(defaults) -> .Ok(defaults)
+        None -> .Error(.Damaged)
+    }
+}
+
+public function saveLinkAssociationFile(
+    path: borrow String,
+    defaults: borrow LinkAssociations
+) -> Result<Void, LinkAssociationStoreFailure> {
+    let text = encodedLinkAssociations(defaults)
+    if decodedLinkAssociations(text).isNone() { return .Error(.Damaged) }
+    match readLinkAssociationFile(path) {
+        Ok(previous) -> absorb previous
+        Error(failure) -> return .Error(failure)
+    }
+    let staging = path + ".next"
+    match linkStatus(staging) {
+        Ok(status) -> if status.kind != .File { return .Error(.UnsafePath) }
+        Error(failure) -> match failure {
+            Missing -> {}
+            else -> return .Error(.Unavailable)
+        }
+    }
+    match writeFile(staging, text) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return .Error(.Unavailable)
+        }
+    }
+    match renamePath(staging, path) {
+        Ok -> return .Ok
+        Error(failure) -> {
+            absorb failure
+            match removePath(staging) {
+                Ok -> {}
+                Error(cleanup) -> absorb cleanup
+            }
+            return .Error(.Unavailable)
+        }
+    }
+}

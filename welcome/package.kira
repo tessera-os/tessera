@@ -9,4 +9,10 @@ construct WelcomeApp extends Package {
     // application is.
     let assets: [String] = ["Resources/AppIcon.tessicon"]
     let moduleRoot: String = "Welcome"
+    let dependencies: [Dependency] = [
+        Dependency { name: "KiraUI", path: "../../kira-packages/kira-ui" },
+        Dependency { name: "TesseraUI", path: "../tessera-ui" },
+        Dependency { name: "PlatformUI", path: "../platform-ui" },
+        Dependency { name: "LibTessera", path: "../libtessera" }
+    ]
 }

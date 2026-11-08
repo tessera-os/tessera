@@ -1,0 +1,10 @@
+// Private first-party Tessera sign-in kit: KiraUI views backed by TesseraAuth.
+construct TesseraSignIn extends Package {
+    let version: String = "26.11.1"
+    let kind: PackageKind = .Library
+    let moduleRoot: String = "TesseraSignIn"
+    let dependencies: [Dependency] = [
+        Dependency { name: "TesseraAuth", path: "../tessera-auth" },
+        Dependency { name: "KiraUI", path: "../../kira-packages/kira-ui" }
+    ]
+}

@@ -65,4 +65,8 @@ and a base layer holding the files that no root owned before one replaced them.
 After each change the service sends PID 1 the paths it changed, and PID 1
 restarts every process that has one of them mapped.
 
+The system's `/init` can also be installed as a root. It is loaded from the
+persistent dev system at the next boot, so reboot after the request completes;
+the other roots remain installed. This does not update the initramfs or kernel.
+
 Build it with the tessera repository's scripts.

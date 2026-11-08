@@ -213,7 +213,7 @@ function diskOverview(disk: borrow RecoveryDisk, mode: Binding<Number>) -> Any W
             mapBar(disk, 640.0)
             mapLegend(disk)
         }
-        .scenePadding()
+        .scenePadding(EdgeSet.all)
         diskInfo(disk)
     }
 }

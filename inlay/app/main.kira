@@ -13,6 +13,7 @@ function main() {
     RunTesseraApplication(
         "Inlay",
         { in
+            processRecentOpenOutcomes()
             let images = openedDiskImages()
             // Another program asked for a folder: Inlay opens on it.
             if settingsGeneration() != heard {

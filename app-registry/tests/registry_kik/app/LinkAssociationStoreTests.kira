@@ -1,0 +1,150 @@
+import Foundation
+import AppRegistry
+
+function linkPreferencesSaved(result: Result<Void, LinkAssociationStoreFailure>) -> Bool {
+    return match result {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+}
+
+@Test
+function linkDefaultsSurviveReloadWithoutLosingPublisherIdentity() {
+    let path = ".tessera-link-associations-test"
+    if pathExists(path) { match removePath(path) { Ok -> {} Error(reason) -> absorb reason } }
+    var registry = ApplicationRegistry {}
+    var first = candidate(pubA, 1, digestA)
+    first.linkSchemes = ["demo+notes", "demo+task"]
+    expect!(registrationSucceeded(registry.prepare(first)))
+    expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
+    var links = LinkAssociations {}
+    expect!(linkChosen(links.chooseDefault("demo+notes", first.identity, registry)))
+    expect!(linkChosen(links.chooseDefault("demo+task", first.identity, registry)))
+    expect!(linkPreferencesSaved(saveLinkAssociationFile(path, links)))
+    let loaded = try readLinkAssociationFile(path) otherwise return
+    expect!(loaded.defaults.count == 2)
+    expect!(encodedLinkAssociations(loaded) == encodedLinkAssociations(links))
+    let accepted = match loaded.route("demo+notes:open", registry) {
+        OpenAccepted(identity) -> sameApp(identity, first.identity)
+        ChooseApplication, DefaultUnavailable -> false
+    }
+    expect!(accepted)
+    registry.uninstall(first.identity)
+    let unavailable = match loaded.route("demo+notes:open", registry) {
+        DefaultUnavailable(identity) -> sameApp(identity, first.identity)
+        ChooseApplication, OpenAccepted -> false
+    }
+    expect!(unavailable)
+    match removePath(path) { Ok -> {} Error(reason) -> absorb reason }
+}
+
+@Test
+function linkPreferenceCodecRejectsDuplicatesAndForgedSystemSchemes() {
+    let identity = AppIdentity { identifier: "example.notes", publisher: pubA }
+    let row = "L\tdemo+notes\t" + identity.identifier + "\t" + identity.publisher + "\n"
+    let good = LinkAssociationText.version + "\n" + row
+    expect!(decodedLinkAssociations(good).isSome())
+    expect!(decodedLinkAssociations(good + row).isNone())
+    expect!(decodedLinkAssociations(good.substring(0, good.count - 1)).isNone())
+    expect!(decodedLinkAssociations(
+        LinkAssociationText.version + "\nL\tHTTPS\t" + identity.identifier
+            + "\t" + identity.publisher + "\n"
+    ).isNone())
+    expect!(decodedLinkAssociations(
+        LinkAssociationText.version + "\nL\thttps\t" + identity.identifier
+            + "\t" + identity.publisher + "\n"
+    ).isNone())
+    expect!(decodedLinkAssociations(
+        LinkAssociationText.version + "\nL\tdemo+notes\tbad/id\t"
+            + identity.publisher + "\n"
+    ).isNone())
+}
+
+@Test
+function corruptLinkPreferencesCannotBeSilentlyReplaced() {
+    let path = ".tessera-link-associations-corrupt"
+    if pathExists(path) { match removePath(path) { Ok -> {} Error(reason) -> absorb reason } }
+    match writeFile(path, LinkAssociationText.version + "\nL\tpartial\n") {
+        Ok -> {}
+        Error(reason) -> {
+            absorb reason
+            return
+        }
+    }
+    expect!(!linkPreferencesSaved(saveLinkAssociationFile(path, LinkAssociations {})))
+    let saved = try readFile(path) otherwise return
+    expect!(saved.text.contains("partial"))
+    match removePath(path) { Ok -> {} Error(reason) -> absorb reason }
+}
+
+@Test
+function linkedLinkPreferencesAndStagingCannotOverwriteOtherFiles() {
+    let path = ".tessera-link-associations-linked"
+    let target = ".tessera-link-associations-protected"
+    if pathExists(path) { match removePath(path) { Ok -> {} Error(reason) -> absorb reason } }
+    if pathExists(target) { match removePath(target) { Ok -> {} Error(reason) -> absorb reason } }
+    match writeFile(target, "protected") {
+        Ok -> {}
+        Error(reason) -> {
+            absorb reason
+            return
+        }
+    }
+    match makeSymbolicLink(target, path) {
+        Ok -> {}
+        Error(reason) -> {
+            absorb reason
+            return
+        }
+    }
+    expect!(!linkPreferencesSaved(saveLinkAssociationFile(path, LinkAssociations {})))
+    expect!((try readFile(target) otherwise return).text == "protected")
+    match removePath(path) { Ok -> {} Error(reason) -> absorb reason }
+    match makeSymbolicLink(target, path + ".next") {
+        Ok -> {}
+        Error(reason) -> {
+            absorb reason
+            return
+        }
+    }
+    expect!(!linkPreferencesSaved(saveLinkAssociationFile(path, LinkAssociations {})))
+    expect!((try readFile(target) otherwise return).text == "protected")
+    match removePath(path + ".next") { Ok -> {} Error(reason) -> absorb reason }
+    match removePath(target) { Ok -> {} Error(reason) -> absorb reason }
+}
+
+@Test
+function linkedParentDirectoryCannotRedirectLinkPreferences() {
+    let directory = ".tessera-link-associations-parent"
+    let alias = ".tessera-link-associations-parent-link"
+    match makeDirectory(directory) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    match makeSymbolicLink(directory, alias) {
+        Ok -> {}
+        Error(failure) -> {
+            absorb failure
+            return
+        }
+    }
+    let path = alias + "/defaults"
+    expect!(!linkPreferencesSaved(saveLinkAssociationFile(path, LinkAssociations {})))
+    let refused = match readLinkAssociationFile(path) {
+        Ok -> false
+        Error(failure) -> {
+            absorb failure
+            true
+        }
+    }
+    expect!(refused)
+    expect!(!pathExists(directory + "/defaults"))
+    match removePath(alias) { Ok -> {} Error(failure) -> absorb failure }
+    match removePath(directory) { Ok -> {} Error(failure) -> absorb failure }
+}

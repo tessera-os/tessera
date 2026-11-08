@@ -13,7 +13,7 @@ import TesseraIcons
 struct BuildContext {
     let host: Host
     let architecture: Architecture
-    // The hardware profile: QEMU's virtio GPU, or dm2q's Adreno 740.
+    // The hardware profile: QEMU's virtio GPU, dm2q's Adreno 740, or akari's Adreno 630.
     let kernelProfile: String
     // The target's C library, which every compile links against and the
     // release's runtime is taken from.

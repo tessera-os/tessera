@@ -1,0 +1,11 @@
+// Interactive demonstration of the same sign-in UI first-party Tessera apps use.
+construct TesseraSignInExample extends Package {
+    let version: String = "26.11.1"
+    let kind: PackageKind = .App
+    let moduleRoot: String = "TesseraSignInExample"
+    let dependencies: [Dependency] = [
+        Dependency { name: "TesseraSignIn", path: ".." },
+        Dependency { name: "TesseraAuth", path: "../../tessera-auth" },
+        Dependency { name: "KiraUI", path: "../../../kira-packages/kira-ui" }
+    ]
+}

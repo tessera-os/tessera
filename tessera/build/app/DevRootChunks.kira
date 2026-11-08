@@ -1,0 +1,234 @@
+import Foundation
+import Build
+
+// Makes the staging inputs from the system boot package and system image.
+// A new directory is required so an existing package is never overwritten.
+function prepareUpdateInputs(
+    boot: borrow String,
+    system: borrow String,
+    destination: borrow String
+) -> Result<Void, String> {
+    if pathExists(destination) { return .Error("the update destination already exists") }
+    let names = ["boot.img", "init_boot.img", "vendor_boot.img", "dtbo.img", "system.img"]
+    let sources = [boot + "/boot-system.img", boot + "/init_boot-system.img", boot + "/vendor_boot.img", boot + "/dtbo.img", copy system]
+    for source in sources {
+        let status = match fileStatus(source) {
+            Ok(value) -> value
+            Error(failed) -> return .Error("cannot inspect \(source): \(traceText(failed))")
+        }
+        if status.kind != .File || status.size == 0 || status.size > UNumber(64 * 16 * 1048576) {
+            return .Error("invalid or oversized image: \(source)")
+        }
+    }
+    match makePathTree(destination) {
+        Ok -> {}
+        Error(failed) -> return .Error("cannot create update directory: \(traceText(failed))")
+    }
+    var sums = ""
+    for index in 0..names.count {
+        let target = destination + "/" + names[index]
+        match copyFile(sources[index], target) {
+            Ok(_) -> {}
+            Error(failed) -> return .Error("cannot copy \(names[index]): \(traceText(failed))")
+        }
+        let digest = match digestFile(.Sha256, target) {
+            Ok(value) -> value
+            Error(failed) -> return .Error("cannot hash \(names[index]): \(traceText(failed))")
+        }
+        sums += updateDigestHex(digest) + "  " + names[index] + "\n"
+    }
+    match writeFile(destination + "/SHA256SUMS", sums) {
+        Ok -> return .Ok
+        Error(failed) -> return .Error("cannot write SHA256SUMS: \(traceText(failed))")
+    }
+}
+
+// Sends bounded chunks using the devroot USB exchange. This only stages data;
+// it does not mark an update ready or write a device partition.
+function sendUpdateChunks(host: borrow Host, source: borrow String) -> Result<Void, String> {
+    if !host.darwin { return .Error("the USB exchange requires macOS") }
+    let names = ["boot.img", "init_boot.img", "vendor_boot.img", "dtbo.img", "system.img"]
+    let sums = match readFile(source + "/SHA256SUMS") {
+        Ok(value) -> value.text
+        Error(failed) -> return .Error("cannot read SHA256SUMS: \(traceText(failed))")
+    }
+    let lines = sums.trim().split("\n")
+    if lines.count != names.count { return .Error("SHA256SUMS must name all five images") }
+    var expected: [String] = []
+    for index in 0..names.count {
+        let name = names[index]
+        let status = match fileStatus(source + "/" + name) {
+            Ok(value) -> value
+            Error(failed) -> return .Error("cannot inspect \(name): \(traceText(failed))")
+        }
+        if status.kind != .File || status.size == 0 { return .Error("invalid image: \(name)") }
+        if status.size > UNumber(64 * 16 * 1048576) {
+            return .Error("\(name) exceeds the receiver's 1 GiB image limit")
+        }
+        let line = lines[index].trim()
+        let suffix = "  " + name
+        if line.count != 64 + suffix.count || !line.endsWith(suffix) {
+            return .Error("invalid SHA256SUMS entry for \(name)")
+        }
+        let wanted = line.substring(0, 64)
+        let digest = match digestFile(.Sha256, source + "/" + name) {
+            Ok(value) -> value
+            Error(failed) -> return .Error("cannot hash \(name): \(traceText(failed))")
+        }
+        if updateDigestHex(digest) != wanted { return .Error("digest mismatch: \(name)") }
+        expected.append(wanted)
+    }
+    try awaitUsbMountOnHost(UsbDevRoot.mountPoint, 3000)
+    let exchange = UsbDevRoot.mountPoint + "/update"
+    var update = ""
+    if pathExists(exchange) {
+        let saved = match readFile(exchange + "/session") {
+            Ok(value) -> value.text
+            Error(failed) -> return .Error("the USB exchange holds an unrecognised update: \(traceText(failed))")
+        }
+        let newline = try saved.indexOf("\n") otherwise return .Error("invalid USB update session")
+        update = saved.substring(0, newline)
+        if update.count == 0 || saved.substring(newline + 1, saved.count).trim() != sums.trim() {
+            return .Error("the USB exchange holds a different update")
+        }
+        for character in update.utf8() {
+            if character < UN8(48) || character > UN8(57) { return .Error("invalid USB update session") }
+        }
+    } else {
+        match makePathTree(exchange) {
+            Ok -> {}
+            Error(failed) -> return .Error("cannot create USB update directory: \(traceText(failed))")
+        }
+        update = String(floor(unixMillis()))
+        match writeFile(exchange + "/session", update + "\n" + sums.trim() + "\n") {
+            Ok -> {}
+            Error(failed) -> return .Error("cannot write USB update session: \(traceText(failed))")
+        }
+    }
+    let runId = String(floor(unixMillis()))
+    var sequence = 0
+    var manifest = ""
+    for index in 0..names.count {
+        let name = names[index]
+        let status = match fileStatus(source + "/" + name) {
+            Ok(value) -> value
+            Error(failed) -> return .Error("cannot inspect \(name): \(traceText(failed))")
+        }
+        var offset = 0
+        var ordinal = 0
+        while offset < Number(status.size) {
+            let count = min(16 * 1048576, Number(status.size) - offset)
+            let chunk = match readFileRange(source + "/" + name, offset, count) {
+                Ok(value) -> value
+                Error(failed) -> return .Error("cannot read \(name): \(traceText(failed))")
+            }
+            if chunk.count != count { return .Error("\(name) changed while being read") }
+            let hash = match digest(.Sha256, chunk) {
+                Ok(value) -> value
+                Error(failed) -> return .Error("cannot hash \(name): \(traceText(failed))")
+            }
+            let hex = updateDigestHex(hash)
+            match writeFileBytes(exchange + "/chunk", chunk) {
+                Ok -> {}
+                Error(failed) -> return .Error("cannot write USB chunk: \(traceText(failed))")
+            }
+            match writeFile(exchange + "/chunk.info", "\(name) \(ordinal) \(hex)\n") {
+                Ok -> {}
+                Error(failed) -> return .Error("cannot write USB chunk metadata: \(traceText(failed))")
+            }
+            try removeUsbFile(UsbDevRoot.mountPoint + "/response")
+            let requestId = "\(update)-\(runId)-\(sequence)"
+            match writeFile(UsbDevRoot.mountPoint + "/request", "id \(requestId)\nstage-chunk \(update)\n") {
+                Ok -> {}
+                Error(failed) -> return .Error("cannot write USB request: \(traceText(failed))")
+            }
+            try runUsbHostCommand(host, ["eject", UsbDevRoot.mountPoint])
+            try awaitUsbUnmountOnHost(UsbDevRoot.mountPoint, 300)
+            let expected = "dev root request done: id \(requestId) with 0 failures"
+            let response = try awaitUsbResponse(UsbDevRoot.mountPoint, expected, 3000)
+            if !response.contains(expected) { return .Error("chunk refused: \(response.trim())") }
+            offset += count
+            ordinal += 1
+            sequence += 1
+        }
+        manifest += "\(name) \(ordinal) \(expected[index])\n"
+    }
+    match writeFile(exchange + "/finalize.info", manifest) {
+        Ok -> {}
+        Error(failed) -> return .Error("cannot write final manifest: \(traceText(failed))")
+    }
+    try removeUsbFile(UsbDevRoot.mountPoint + "/response")
+    let requestId = "\(update)-\(runId)-\(sequence)"
+    match writeFile(UsbDevRoot.mountPoint + "/request", "id \(requestId)\nfinish-update \(update)\n") {
+        Ok -> {}
+        Error(failed) -> return .Error("cannot write final request: \(traceText(failed))")
+    }
+    try runUsbHostCommand(host, ["eject", UsbDevRoot.mountPoint])
+    try awaitUsbUnmountOnHost(UsbDevRoot.mountPoint, 300)
+    let expected = "dev root request done: id \(requestId) with 0 failures"
+    let response = try awaitUsbResponse(UsbDevRoot.mountPoint, expected, 3000)
+    if !response.contains(expected) { return .Error("update verification failed: \(response.trim())") }
+    for name in ["chunk", "chunk.info", "finalize.info", "session"] {
+        try removeUsbFile(exchange + "/" + name)
+    }
+    match removePath(exchange) {
+        Ok -> {}
+        Error(failed) -> log warn("the completed USB exchange directory remains", error: traceText(failed))
+    }
+    log info("staged and verified an update", update)
+    return .Ok
+}
+
+// Removes one explicitly named staged update; this never writes a partition.
+function discardStagedUpdate(host: borrow Host, id: borrow String) -> Result<Void, String> {
+    if !host.darwin { return .Error("the USB exchange requires macOS") }
+    if id.count == 0 || id.count > 32 { return .Error("invalid update identifier") }
+    for character in id.utf8() {
+        if character < UN8(48) || character > UN8(57) {
+            return .Error("invalid update identifier")
+        }
+    }
+    let mount = UsbDevRoot.mountPoint
+    try awaitUsbMountOnHost(mount, 3000)
+    try removeUsbFile(mount + "/response")
+    let requestId = "\(id)-\(String(floor(unixMillis())))"
+    match writeFile(mount + "/request", "id \(requestId)\ndiscard-update \(id)\n") {
+        Ok -> {}
+        Error(failed) -> return .Error("cannot write discard request: \(traceText(failed))")
+    }
+    try runUsbHostCommand(host, ["eject", mount])
+    try awaitUsbUnmountOnHost(mount, 300)
+    let expected = "dev root request done: id \(requestId) with 0 failures"
+    let response = try awaitUsbResponse(mount, expected, 3000)
+    if !response.contains(expected) { return .Error("update discard failed: \(response.trim())") }
+    let exchange = mount + "/update"
+    if pathExists(exchange) {
+        let saved = match readFile(exchange + "/session") {
+            Ok(value) -> value.text
+            Error(failed) -> return .Error("cannot identify the stale USB exchange: \(traceText(failed))")
+        }
+        let newline = try saved.indexOf("\n") otherwise return .Error("invalid USB update session")
+        if saved.substring(0, newline) == id {
+            for name in ["chunk", "chunk.info", "finalize.info", "session"] {
+                try removeUsbFile(exchange + "/" + name)
+            }
+            match removePath(exchange) {
+                Ok -> {}
+                Error(failed) -> log warn("the discarded USB exchange directory remains", error: traceText(failed))
+            }
+        }
+    }
+    log info("discarded a staged update", id)
+    return .Ok
+}
+
+function updateDigestHex(bytes: borrow [UN8]) -> String {
+    let digits = "0123456789abcdef"
+    var hex = ""
+    for byte in bytes {
+        let value = Number(byte)
+        let high = trunc(value / 16)
+        hex += digits.substring(high, high + 1) + digits.substring(value % 16, value % 16 + 1)
+    }
+    return hex
+}

@@ -76,15 +76,172 @@ The GPU needs Samsung's signed zap shader, which cannot be downloaded. Extract
 put it in `~/.tessera-build/device/dm2q/firmware/` (`Host.dm2qFirmware`). The
 SQE and GMU images come from linux-firmware.
 
-`scripts/package-dm2q-odin.py` creates an installer archive and a system
-archive with Android boot header v4 images. Both carry `BOOT`, `INIT_BOOT`, a
-`VENDOR_BOOT` holding the dm2q DTB, and a `DTBO` of empty overlays that match
-the board. The installer archive also carries the Tessera system image for
-`CACHE`; its initramfs formats the `SUPER` partition and installs the image
-there. The system archive boots with `tessera.system`, so PID 1 hands over to
-the installed system. The script checks image sizes against the partition
-capacities from the device PIT and only writes local files. The boot path
-still needs validation on the S23+.
+The experimental `akari` profile targets the **regular Sony Xperia XZ2**
+(Snapdragon 845, Adreno 630), not the XZ2 Compact (`apollo`) or Premium. Build
+its kernel and upstream device tree with:
+
+```sh
+cd tessera-packages/tessera
+kira build kernel devicetrees -arch aarch64 -kernel-profile akari
+```
+
+It uses 4 KB pages, the `qcom/sdm845-sony-xperia-tama-akari.dtb` already in
+Linux 7.2, the Sony TD4353 JDI panel driver, Synaptics RMI4 touch driver and
+Mesa Turnip. The GPU's `a630_sqe.fw` and `a630_gmu.bin` come from linux-firmware
+with SHA-256 checks. Sony Tama firmware is available as proprietary split
+`a630_zap.{mdt,b00,b01,b02}` files in TheMuppets' LineageOS vendor repository.
+Keep the four files locally under
+`~/.tessera-build/device/akari/firmware/sony-stock/` and reconstruct the ELF
+under the DT-required firmware path by running:
+
+```sh
+python3 scripts/assemble-akari-zap.py
+```
+
+This validates the vendor file digests and produces the unmodified Qualcomm
+ELF at `~/.tessera-build/device/akari/firmware/a630_zap.mbn` (SHA-256
+`9e5c3828fecc98fef87c8a7c841618f28a3d258c35981d1189ac03d85b547479`).
+Do not commit proprietary firmware. Tessera prefers this Sony image to the
+generic SDM845 linux-firmware blob; Sony GPU startup is not hardware-tested.
+
+**This is an experimental kernel profile, not a flashable release.**
+Upstream Tama warned that UFS PURGE/UNMAP could erase the bootloader partitions.
+The profile now carries Shujath Mohd's September 2026 UFS power/reset patch
+(`patches/linux/0021-...`) enabling the Qualcomm UFS host/PHY with GPIO 150
+reset and the regulator supplies. The author's reported boot tests do not
+establish its safety on this Tessera device. The installer uses `mkfs.btrfs -K`
+and mounts Btrfs with `nodiscard` to avoid the UFS discard path; this is risk
+mitigation, not proof that the UFS controller or firmware is safe. The upstream
+DT also enables removable microSD. Tessera's internal UFS, microSD and Btrfs
+storage paths have not been physically tested on an Xperia.
+
+### Xperia XZ2 first-device fastboot test
+
+`scripts/package-akari-fastboot-test.py` prepares a separate **temporary RAM
+boot-test ZIP**, not an Android `fastboot update` ZIP or a complete Tessera
+installer. For this test, Linux 7.2 was recompiled in an isolated build
+directory with `CONFIG_SCSI_UFSHCD` and `CONFIG_PHY_QCOM_QMP_UFS` disabled,
+and both UFS DT nodes are disabled. This keeps the UFS driver unavailable even
+if the Sony bootloader applies DTBO overrides. The image contains the Tessera
+initramfs with Sony Adreno 630 firmware, but it cannot install Tessera or
+mount its system/data volumes on internal UFS.
+
+```sh
+python3 scripts/package-akari-fastboot-test.py
+# Extract the ZIP to an empty directory before running these helpers there.
+sh akari-boot-once.sh --probe
+# Only after verifying the phone and a recovery strategy:
+sh akari-boot-once.sh --boot-once
+```
+
+The verified ZIP is at
+`~/.tessera-build/out/Tessera-XZ2-akari-FASTBOOT-RAM-TEST-UFS-OFF-20261107.zip`
+(SHA-256 `125d2e8d409d39bc33aad2cac096b91599360d3d98eeab1e21e6f3b458c18cfd`).
+The script requires exactly one identified and unlocked Xperia XZ2, an A/B
+boot slot, the phone's actual boot partition size, matching ZIP member hashes,
+and explicit serial-number confirmation before attempting `fastboot boot`.
+It **never** runs `fastboot flash`, erase, unlock, or any partition write.
+Actual bootloader/DTBO acceptance, GPU startup and screen output are untested.
+
+Do not rename Tessera's SquashFS volume to Android `system.img` or run
+`fastboot update` on these archives: that would not install Tessera and could
+damage Android partitions. The separate UFS-enabled installer bundle is for
+offline engineering only until the Sony UFS-card quirks and recovery path are
+validated on hardware.
+The phone's stock boot image format, slot layout, bootloader command line,
+firmware compatibility, display, USB console and recovery still need to be
+verified on physical hardware. Do not flash the generated kernel or use the
+dm2q update packager on the Xperia. The QEMU `boot` step rejects `akari`.
+
+`scripts/package-akari-diagnostic.py` builds a **local, non-flashable** boot
+image for inspection with an Android v1 header (the Sony Tama format), a
+gzip-compressed kernel with appended Akari DTB, and a Tessera zstd initramfs.
+By default it verifies the effective kernel configuration and parses the DTB
+with both UFS nodes disabled. `--experimental-ufs` explicitly permits the
+UFS-enabled profile, requiring GPIO 150 reset, regulator properties, matching
+kernel drivers and microSD still enabled. It requires an explicit
+boot-partition size, refuses overwrites and writes
+`DIAGNOSTIC-NOT-FLASHABLE-boot.img` (or
+`EXPERIMENTAL-UFS-NOT-FLASHABLE-boot.img`), `DO-NOT-FLASH.txt` and `SHA256SUMS`.
+Neither the script nor its nine tests touches a phone. Bootloader DTBO
+processing remains unverified; **do not flash this image**. Run tests with
+`python3 scripts/test-package-akari-diagnostic.py -v`.
+
+The Akari offline installer staging package includes the separate Tessera
+installer initramfs, recovery system, sealed system payload and experimentally
+enabled UFS with checked Sony GPU firmware:
+
+```sh
+cd tessera-packages/tessera
+kira build initramfs system-volume installer-image recovery-image -arch aarch64 \
+  -kernel-profile akari -symbols none -lldb off -icons skip
+python3 scripts/package-akari-diagnostic.py --experimental-ufs \
+  --kernel "$HOME/.tessera-build/out/aarch64/kernel/akari/arch/arm64/boot/Image" \
+  --dtb "$HOME/.tessera-build/out/aarch64/kernel/akari/arch/arm64/boot/dts/qcom/sdm845-sony-xperia-tama-akari.dtb" \
+  --config "$HOME/.tessera-build/out/aarch64/kernel/akari/.config" \
+  --initramfs "$HOME/.tessera-build/out/initramfs/initramfs.cpio.zst" \
+  --boot-partition-bytes 0x4000000 \
+  --out-dir "$HOME/.tessera-build/out/aarch64/akari-ufs-gpu-boot-nodiscard-candidate"
+python3 scripts/package-akari-installer.py \
+  --experimental-ufs --boot-candidate \
+  "$HOME/.tessera-build/out/aarch64/akari-ufs-gpu-boot-nodiscard-candidate/EXPERIMENTAL-UFS-NOT-FLASHABLE-boot.img" \
+  --output "$HOME/.tessera-build/out/Tessera-XZ2-akari-UFS-GPU-experimental.zip"
+python3 scripts/test-package-akari-installer.py -v
+```
+
+The `0x4000000` diagnostic capacity is taken from Sony's archived board
+configuration, *not measured from this particular phone*. Verify the actual
+phone's partition size, DTBO handling and recovery strategy before even
+considering a physical boot test. Neither script writes to a device.
+
+Publish `system-volume` and `recovery-image` in **the same build**: recovery
+embeds `system.img` at `System/Installation/system.img`. The package validates
+that those images' SHA-256 checksums match, checks the embedded fs-verity digest
+and installer service, checks the Akari DTB and selected UFS kernel config, and
+ships a `MANIFEST.json`, `SHA256SUMS`, and a full ZIP checksum. It refuses to
+overwrite an existing output. The installer carries `/init`, the Btrfs
+formatter and its libraries. It creates `boot/`, a writable `data` subvolume
+and a sealed read-only `system/<version>` snapshot on a new Btrfs target.
+In experimental UFS mode, it additionally verifies the Sony blob and both
+linux-firmware files inside the initramfs, and the Android-v1 boot candidate's
+exact kernel, appended DTB, initramfs and image ID.
+
+**Do not flash any file from this ZIP.** `install/system.img` and
+`install/recovery-system.img` are Tessera SquashFS payloads, not Android
+`system.img` or `recovery.img` partitions. The installer requires separate
+readable system-image and empty writable Btrfs target block devices; those
+devices, physical microSD layout and a safe boot path have not been established
+for the Xperia XZ2. The package is offline staging, not a ready-to-use installer.
+
+An offline Akari ARM64 userland build can be requested with
+`kira build initramfs system-volume -arch aarch64 -kernel-profile akari
+-symbols none -lldb off -icons skip`. On the macOS 27 host used on
+2026-11-07, prefix that command with
+`KLF_USE_SYSTEM_LINKER=1 TESSERA_LLVM=$HOME/.kira/toolchains/llvm/23.1.0/aarch64-macos`.
+The resulting `~/.tessera-build/out/initramfs/initramfs.cpio.zst` and
+`~/.tessera-build/out/system-volume/system.img` were created and their
+published SHA-256 digests verified, but **neither makes the phone bootable**.
+The offline engineering archive
+`~/.tessera-build/out/aarch64/tessera-akari-engineering-20261107.tar.zst`
+includes these, the compiled kernel, DTB and a marked non-flashable boot-image
+diagnostic. It is for inspection only. Its 37.6 MB diagnostic image fits the
+64 MiB boot image limit in Sony's archived Akari BoardConfig.mk; no phone's
+actual boot partition was read or checked.
+
+To call an Akari build ready to install, the kernel, DTB, matching initramfs,
+and sealed system volume must all build; Sony's matching GPU firmware must be
+staged; a connected Xperia must boot a verified safe boot image with a reliable
+recovery method; and the display, touch, USB diagnostics and microSD system
+and data volume must be tested across a reboot without accessing internal UFS.
+
+`scripts/package-dm2q-update.py` creates a native update directory containing
+`boot.img`, `init_boot.img`, `vendor_boot.img`, `dtbo.img`, `system.img`, and
+their `SHA256SUMS`. It checks boot-image sizes against the device PIT and only
+writes local files. `kira build devroot stage-chunks <directory> -usb`
+transfers bounded chunks and asks the device to verify the stored images. It
+does not write partitions. Native apply and reboot are not implemented: the
+dm2q PIT has one `BOOT` partition, and Tessera has no validated recovery path
+for an interrupted boot-image update.
 
 ## Building
 

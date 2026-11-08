@@ -173,3 +173,70 @@ fingerprint. Certificate renewal will therefore change the identity even when
 the underlying Ed25519 key is unchanged. An owner-approved, authenticated
 certificate-rotation/migration protocol must be implemented before calling
 this a stable production publisher identity across certificate renewals.
+
+### Open Link default model (2026-11-06)
+
+`AppRegistry.LinkAssociations` adds user-selected defaults for conventional
+custom URL schemes. Like Open With document extensions, each default names an
+accepted app ID **and publisher fingerprint**, not its display name or process
+path. An uninstalled app leaves an unavailable default rather than silently
+passing its links to a similarly named app from another publisher. Preferences
+use a strict, bounded, versioned file format; damaged files and linked file
+paths are refused. Host tests cover parsing, replacement, identity isolation,
+persistence and unsafe metadata paths.
+
+This model deliberately refuses `http`, `https`, `file`, `data`, `javascript`,
+`mailto`, `tel` and other reserved/system schemes. Verified domain associations
+and built-in handlers require separate trusted policy; this file cannot
+authorize them. A caller-provided URL is inert data, never a shell command.
+**Implemented extension:** an optional `links` field in the application image
+manifest now declares canonical custom URL schemes. A declaration is covered by
+the version-2 Ed25519 app signature statement; images without link declarations
+retain the original version-1 signature format. The registry persists accepted,
+staged and rollback link declarations in its version-3 format, reading older
+version-1/2 files without inventing claims. Default selection checks both the
+accepted publisher identity and that image's verified scheme declaration.
+`StoredLinkActivation` loads the persisted registry and preferences, lists
+eligible accepted handlers, selects defaults and creates an activation ticket
+bound to the accepted image digest and version. A caller can revalidate that
+ticket before dispatch; changed defaults, removed apps and image updates
+invalidate stale tickets. Damaged persisted preferences refuse routing.
+
+`LibTessera.launchInfoCreateURL` creates a bounded, typed `LaunchInfo` URL
+payload without putting the link in argv, and `processLaunchURL` reads it from
+startup memory. The pure registry and persistence API still cannot itself
+launch a process, grant a document or validate domain ownership. A **trusted
+launcher**, protected image resolution, serialized ticket-check + image-open,
+running-app RIDL delivery, and OS-owned activation service remain required for
+the end-to-end Open Link checkpoint. No full boot/open checkpoint is claimed.
+
+### Document compatibility and typed startup integration (2026-11-07)
+
+The optional signed `types` manifest field and application registry v4 record
+types are now implemented. Signed app statement v3 binds both links and types;
+legacy signed v1/v2 images cannot gain document claims without a new signature.
+Persisted Open With choices require a declared extension in the current
+accepted application. The file-backed resolver returns an accepted image
+version/digest ticket or a chooser/unavailable state, and exposes a separate
+revalidation operation. LibTessera can transfer a selected File capability to
+a newly launched confined process under `StartupTag.document`, with an explicit
+read-only or read/write grant. A directory, unrestricted right set or ordinary
+unconfined launch cannot use that reserved tag.
+
+No component currently joins privileged image opening, document selection,
+ticket validation and File handle transfer into one atomic operation. PID 1,
+Inlay, the app picker and running-app RIDL activation still need that work;
+the existing chapter checkpoint is unchanged.
+
+### Built-in document launcher integration (2026-11-07)
+
+The explicit Inlay → workspace request → PID 1 → confined Notes flow now
+exists in source. The selected File is sent as a capability, not a document
+pathname in a launch command. PID 1 refuses document-open requests from every
+service except the sealed Inlay instance and uses a fixed trusted Notes
+executable. It launches a new process because the running-app document RIDL
+protocol is not yet implemented. The child narrows away the Transfer right.
+
+The generic signed-registry image resolver, picker and atomic registry +
+image-opening transaction are **not** part of this built-in route. Those and
+the guest boot validation remain open for the chapter checkpoint.

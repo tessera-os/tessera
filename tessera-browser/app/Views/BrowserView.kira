@@ -54,7 +54,7 @@ construct BrowserView(engine: WebEngine, model: BrowserModel) extends Widget {
 }
 
 function pageView(engine: WebEngine, model: BrowserModel) -> Any Widget {
-    if engine.failed {
+    if engine.startFailure.isSome() {
         return ContentUnavailableView(title = "The web engine did not start", systemImage = .Xmark)
     }
     return GestureTextureView(

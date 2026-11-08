@@ -13,6 +13,7 @@ enum InlayPlace {
     Image(String)
     Folder(String)
     Trash
+    Recents
 }
 
 namespace InlayRouteKey {
@@ -20,6 +21,7 @@ namespace InlayRouteKey {
     let imagePrefix: String = "image/"
     let folderPrefix: String = "folder:"
     let trash: String = "trash"
+    let recents: String = "recents"
 }
 
 // The installed applications, as a value of the navigation path. The split
@@ -67,10 +69,16 @@ construct TrashRoute() extends NavigationRoute {
     }
 }
 
+construct RecentsRoute() extends NavigationRoute {
+    function routeKey() -> String { return InlayRouteKey.recents }
+    function destination() -> Any Widget { return EmptyView() }
+}
+
 // The place a route's key names, if it names one of Inlay's.
 function placeOf(key: borrow String) -> InlayPlace? {
     if key == InlayRouteKey.applications { return .Some(.Applications) }
     if key == InlayRouteKey.trash { return .Some(.Trash) }
+    if key == InlayRouteKey.recents { return .Some(.Recents) }
     if key.startsWith(InlayRouteKey.imagePrefix) {
         return .Some(.Image(key.substring(InlayRouteKey.imagePrefix.count, key.count)))
     }
@@ -87,6 +95,7 @@ function routeOf(place: borrow InlayPlace) -> Any NavigationRoute {
         Image(name) -> ImageRoute(name: copy name)
         Folder(path) -> FolderRoute(path: copy path)
         Trash -> TrashRoute()
+        Recents -> RecentsRoute()
     }
 }
 
@@ -128,7 +137,7 @@ function selectChosenPlace(images: borrow [DiskImage]) {
 // still a folder, or the installed applications.
 function placeExists(images: borrow [DiskImage], place: borrow InlayPlace) -> Bool {
     return match place {
-        Applications, Trash -> true
+        Applications, Trash, Recents -> true
         Image -> chosenImage(images, place).isSome()
         Folder(path) -> isDirectory(path)
     }
@@ -138,7 +147,7 @@ function placeExists(images: borrow [DiskImage], place: borrow InlayPlace) -> Bo
 function chosenImage(images: borrow [DiskImage], place: borrow InlayPlace) -> DiskImage? {
     let name = match place {
         Image(named) -> copy named
-        Applications, Folder, Trash -> return .None
+        Applications, Folder, Trash, Recents -> return .None
     }
     for image in images {
         if image.name == name { return .Some(copy image) }

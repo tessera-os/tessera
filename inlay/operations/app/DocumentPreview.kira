@@ -62,7 +62,9 @@ public function previewDocument(
             return .Error(.ChangedDuringRead)
         }
     }
-    if after.kind != .File || after.size != before.size || after.modified != before.modified {
+    if after.kind != .File || after.size != before.size || after.modified != before.modified
+        || after.inode != before.inode || after.device != before.device
+        || hasLinkedPathAncestor(path) {
         return .Error(.ChangedDuringRead)
     }
     let truncated = Number(before.size) > bytes.count

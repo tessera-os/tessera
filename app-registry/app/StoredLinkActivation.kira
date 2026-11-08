@@ -1,0 +1,117 @@
+//! Persistent entry point for selecting and resolving custom-link handlers.
+//! The caller is a trusted single-writer service in control of the parent
+//! directory. These functions do not start a process or grant access.
+import Foundation
+
+public enum StoredLinkFailure {
+    Registry(RegistryStoreFailure)
+    Preferences(LinkAssociationStoreFailure)
+    Selection(LinkAssociationFailure)
+}
+
+/// Resolve an address against the *current* accepted installations and the
+/// person's persisted default. Broken registry or preferences data is fatal,
+/// never interpreted as permission to choose an arbitrary different handler.
+public function resolveStoredLink(
+    registryPath: borrow String,
+    preferencesPath: borrow String,
+    address: borrow String
+) -> Result<LinkActivationDecision, StoredLinkFailure> {
+    let registry = match readRegistryFile(registryPath) {
+        Ok(value) -> value
+        Error(failure) -> return .Error(.Registry(failure))
+    }
+    let defaults = match readLinkAssociationFile(preferencesPath) {
+        Ok(value) -> value
+        Error(failure) -> return .Error(.Preferences(failure))
+    }
+    return .Ok(defaults.activation(address, registry))
+}
+
+/// Return the installed app identities that explicitly declared this custom
+/// scheme. These are chooser candidates, not a default or a launch grant.
+/// Staged, removed and unrelated applications are excluded.
+public function storedLinkHandlers(
+    registryPath: borrow String,
+    address: borrow String
+) -> Result<[AppIdentity], StoredLinkFailure> {
+    let registry = match readRegistryFile(registryPath) {
+        Ok(value) -> value
+        Error(failure) -> return .Error(.Registry(failure))
+    }
+    let scheme = match customLinkScheme(address) {
+        Some(value) -> value
+        None -> return .Ok([])
+    }
+    var handlers: [AppIdentity] = []
+    for entry in registry.installed {
+        if entry.candidate.linkSchemes.contains(scheme) {
+            handlers.append(copy entry.candidate.identity)
+        }
+    }
+    return .Ok(handlers)
+}
+
+/// A caller must perform this check after choosing the image and immediately
+/// before launching. An intervening uninstall, update, changed preference or
+/// corrupt record rejects the old ticket rather than silently redirecting it.
+/// The trusted caller must serialize the check and image opening with writes.
+public function storedLinkActivationIsCurrent(
+    registryPath: borrow String,
+    preferencesPath: borrow String,
+    ticket: borrow LinkActivation
+) -> Result<Bool, StoredLinkFailure> {
+    let registry = match readRegistryFile(registryPath) {
+        Ok(value) -> value
+        Error(failure) -> return .Error(.Registry(failure))
+    }
+    let defaults = match readLinkAssociationFile(preferencesPath) {
+        Ok(value) -> value
+        Error(failure) -> return .Error(.Preferences(failure))
+    }
+    return .Ok(defaults.activationIsCurrent(ticket, registry))
+}
+
+/// Record an explicit Settings/Open With selection, but only after loading
+/// the current accepted app and confirming it signed the scheme declaration.
+/// Never save a default for an uninstalled, staged, or undeclared handler.
+public function chooseStoredLinkDefault(
+    registryPath: borrow String,
+    preferencesPath: borrow String,
+    scheme: borrow String,
+    identity: borrow AppIdentity
+) -> Result<Void, StoredLinkFailure> {
+    let registry = match readRegistryFile(registryPath) {
+        Ok(value) -> value
+        Error(failure) -> return .Error(.Registry(failure))
+    }
+    var defaults = match readLinkAssociationFile(preferencesPath) {
+        Ok(value) -> value
+        Error(failure) -> return .Error(.Preferences(failure))
+    }
+    match defaults.chooseDefault(scheme, identity, registry) {
+        Ok -> {}
+        Error(failure) -> return .Error(.Selection(failure))
+    }
+    return match saveLinkAssociationFile(preferencesPath, defaults) {
+        Ok -> .Ok
+        Error(failure) -> .Error(.Preferences(failure))
+    }
+}
+
+/// Explicitly remove a link default from Settings. An invalid/corrupt file
+/// is not replaced with a fresh empty file; the user can recover it separately.
+public function forgetStoredLinkDefault(
+    preferencesPath: borrow String,
+    scheme: borrow String
+) -> Result<Void, StoredLinkFailure> {
+    var defaults = match readLinkAssociationFile(preferencesPath) {
+        Ok(value) -> value
+        Error(failure) -> return .Error(.Preferences(failure))
+    }
+    defaults.forgetDefault(scheme)
+    return match saveLinkAssociationFile(preferencesPath, defaults) {
+        Ok -> .Ok
+        Error(failure) -> .Error(.Preferences(failure))
+    }
+}

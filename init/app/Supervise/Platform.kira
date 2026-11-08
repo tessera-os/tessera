@@ -20,10 +20,10 @@ namespace PlatformChoice {
     let tablets: [String] = ["30", "31", "32"]
 }
 
-// An explicit boot profile wins, then `platform.dynamic`, remaining boot
-// words, and finally the chassis.
+// `platform.dynamic` wins, then the boot words, and finally the chassis. The
+// setting is per-device state; boot words supply the device's default when it
+// has not been chosen yet.
 function chosenPlatform(calls: Handle, bootArguments: borrow [String]) -> String {
-    if bootFlag(bootArguments, "tessera.adaptive-mobile") { return PlatformSetting.adaptiveMobile }
     match settingOnDisk(calls, PlatformSetting.key) {
         Some(value) -> {
             if platformSettingValid(value) { return value }
@@ -32,7 +32,10 @@ function chosenPlatform(calls: Handle, bootArguments: borrow [String]) -> String
         // Not chosen: the boot and the chassis decide.
         None -> {}
     }
+    // These words select a default for a device without a saved choice. Keep
+    // the same order as LibTessera.chosenPlatform.
     if bootFlag(bootArguments, "tessera.media") { return PlatformSetting.media }
+    if bootFlag(bootArguments, "tessera.adaptive-mobile") { return PlatformSetting.adaptiveMobile }
     match nodeExists(calls, PlatformChoice.chassisPath) {
         Ok(exists) -> if exists {
             match readWholeFile(calls, PlatformChoice.chassisPath) {

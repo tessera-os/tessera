@@ -35,9 +35,11 @@ struct DevRootSelection {
     let left: [String]
 }
 
-// PID 1, what it starts before the dev root service, and the service itself.
+// Components whose changes require an image rather than a running dev root.
+// The system's /init is in the persistent dev snapshot and takes effect after
+// reboot; the initramfs's own copy remains unchanged.
 function imageOnlyComponent(name: borrow String) -> Bool {
-    return ["init", "installer", "bootstrap", "devicekitd", "devroot", "recovery"].contains(name)
+    return ["installer", "bootstrap", "devicekitd", "recovery"].contains(name)
 }
 
 // The request after `devroot`, when the command line names that step.

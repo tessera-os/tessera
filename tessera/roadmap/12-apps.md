@@ -4,6 +4,11 @@ The one place foreign code runs on Tessera. Everything else in the system is
 Tessera's own ([01](01-principles.md)); an application is not, and the whole of
 this document is about what follows from that.
 
+Application identities and user-selected Open With / custom-link defaults are
+modeled in `app-registry` ([36](36-app-lifecycle.md)). They are not yet wired
+to PID 1's image-based launcher. A saved association cannot confer image trust,
+filesystem access or permission to claim a web domain.
+
 ## The definition
 
 **An application is a signed, read-only image that a person installed, mounted

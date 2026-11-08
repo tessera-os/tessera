@@ -1,0 +1,55 @@
+//! Persistent recent-open events for Inlay's user document locations. This
+//! library accepts an event only after the caller has received an explicit
+//! successful launcher acknowledgement; it never opens a path as a side effect.
+import Foundation
+
+public enum ConfirmedRecentFailure {
+    OutsideDocuments
+    Cache(RecentStoreFailure)
+    Invalid(RecentFailure)
+}
+
+/// An Inlay recent entry must be a user document or a file on a mounted
+/// volume. A forged cache containing an app-private or system path must not
+/// turn Inlay's recent-items UI into a preview of that path.
+public function inlayRecentDocumentPath(path: borrow String) -> Bool {
+    return validRecentPath(path) && inlayDocumentSearchRoot(path)
+}
+
+/// Record a successfully acknowledged document launch in a strict, durable
+/// cache. A damaged cache is preserved; a corrected wall clock cannot reorder
+/// older events backward. The caller chooses the cache's trusted location.
+public function recordConfirmedRecentOpen(
+    cachePath: borrow String,
+    documentPath: borrow String,
+    now: Number
+) -> Result<Void, ConfirmedRecentFailure> {
+    if !inlayRecentDocumentPath(documentPath) { return .Error(.OutsideDocuments) }
+    var recent = match readRecentDocumentsFile(cachePath) {
+        Ok(value) -> value
+        Error(failure) -> return .Error(.Cache(failure))
+    }
+    var timestamp = now
+    if recent.items.count > 0 && timestamp <= recent.items[0].openedAt {
+        timestamp = recent.items[0].openedAt + 1
+    }
+    match recent.noteOpened(documentPath, timestamp) {
+        Ok -> {}
+        Error(failure) -> return .Error(.Invalid(failure))
+    }
+    return match saveRecentDocumentsFile(cachePath, recent) {
+        Ok -> .Ok
+        Error(failure) -> .Error(.Cache(failure))
+    }
+}
+
+/// Forget only the explicitly selected history entry. A malformed cache is
+/// not recreated; stored paths remain references, never standing access.
+public function forgetConfirmedRecentOpen(
+    cachePath: borrow String,
+    documentPath: borrow String
+) -> Result<Void, RecentStoreFailure> {
+    var recent = try readRecentDocumentsFile(cachePath)
+    recent.forget(documentPath)
+    return saveRecentDocumentsFile(cachePath, recent)
+}

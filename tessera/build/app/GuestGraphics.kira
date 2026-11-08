@@ -4,8 +4,8 @@ import Kten
 
 // The guest half of Tessera's GPU stack: the Vulkan a program inside the
 // machine calls, and the driver that forwards it out. QEMU uses Mesa's Venus
-// driver to forward Vulkan calls to the host renderer; dm2q uses Turnip on the
-// Adreno 740.
+// driver to forward Vulkan calls to the host renderer; dm2q and akari use
+// Turnip on their Adreno GPUs.
 // libdrm talks to the kernel's DRM device; zlib and expat are what Mesa's
 // shared code reaches for whatever driver is built. Turnip also needs the
 // target C++ runtime, which platformRuntime places beside the Vulkan loader.
@@ -182,8 +182,9 @@ function guestCrossFile(
 
 // Each project configured, built and installed in turn.
 function guestBuildStages(build: borrow CrossBuild) -> [CommandStage] {
-    let freedreno = build.kernelProfile == "dm2q" ? "enabled" : "disabled"
-    let vulkan = build.kernelProfile == "dm2q" ? "freedreno" : "virtio"
+    let hardware = build.kernelProfile != "qemu"
+    let freedreno = hardware ? "enabled" : "disabled"
+    let vulkan = hardware ? "freedreno" : "virtio"
     var stages = zlibStages(build)
     stages.appendAll(
         cmakeStages(
@@ -208,8 +209,8 @@ function guestBuildStages(build: borrow CrossBuild) -> [CommandStage] {
             ]
         )
     )
-    // QEMU uses Venus over virtio-gpu. dm2q uses Turnip over DRM/MSM on the
-    // Adreno 740. Both are Vulkan-only: no Gallium/OpenGL, window system or
+    // QEMU uses Venus over virtio-gpu. The phones use Turnip over DRM/MSM.
+    // Both are Vulkan-only: no Gallium/OpenGL, window system or
     // LLVM, and no shader cache on a disk the guest lacks.
     stages.appendAll(
         mesonStages(
@@ -317,6 +318,7 @@ function cmakeStages(
 ) -> [CommandStage] {
     let output: Argument = .Joined([.Workspace, .Text("/\(directory)")])
     var arguments: [Argument] = [
+        .Text("--fresh"),
         .Text("-S"),
         upstreamSource(directory),
         .Text("-B"),
@@ -328,7 +330,13 @@ function cmakeStages(
         CommandStage { tool: "cmake", arguments: arguments },
         CommandStage {
             tool: "cmake",
-            arguments: [.Text("--build"), copy output, .Text("--target"), .Text("install")]
+            arguments: [.Text("--build"), copy output]
+        },
+        CommandStage {
+            tool: "cmake",
+            arguments: [
+                .Text("--install"), copy output, .Text("--prefix"), copy build.installed
+            ]
         }
     ]
 }

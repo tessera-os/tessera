@@ -1,0 +1,51 @@
+From 71647532f5d4010c4a81db9bfb423963f1127682 Mon Sep 17 00:00:00 2001
+From: Tessera OS <engineering@localhost>
+Date: Sat, 7 Nov 2026 20:35:00 +0100
+Subject: [PATCH] ufs: block PURGE UPIU queries on Sony Xperia XZ3
+
+The Sony Tama UFS workaround blocks PURGE queries independently of SCSI
+UNMAP because PURGE flags and attributes bypass queuecommand. Include
+both official Sony and mainline root compatibles for Akatsuki.
+
+---
+diff --git a/drivers/ufs/core/ufshcd.c b/drivers/ufs/core/ufshcd.c
+--- a/drivers/ufs/core/ufshcd.c
++++ b/drivers/ufs/core/ufshcd.c
+@@ -3463,6 +3463,20 @@
+ 
+ 	BUG_ON(!hba);
+ 
++	/*
++	 * Xperia Tama bootloader corruption was traced to UFS PURGE support.
++	 * Unlike SCSI UNMAP, PURGE is a UPIU query flag that bypasses the SCSI
++	 * queuecommand/discard path entirely. Block it here before the device
++	 * management lock or any UPIU transaction, including reads and toggles.
++	 * Cover Sony's mainline and original vendor root compatibles alike.
++	 */
++	if (idn == QUERY_FLAG_IDN_PURGE_ENABLE &&
++	    (of_machine_is_compatible("sony,akatsuki-row") ||
++	     of_machine_is_compatible("somc,akatsuki-row"))) {
++		dev_warn_once(hba->dev, "XZ3 UFS PURGE flag query blocked\n");
++		return -EPERM;
++	}
++
+ 	ufshcd_dev_man_lock(hba);
+ 
+ 	ufshcd_init_query(hba, &request, &response, opcode, idn, index,
+@@ -3530,6 +3544,16 @@
+ 	int err;
+ 
+ 	BUG_ON(!hba);
++
++	/* Prevent the companion PURGE status attribute transaction as well.
++	 * Some Sony Tama UFS revisions cannot safely process these requests.
++	 */
++	if (idn == QUERY_ATTR_IDN_PURGE_STATUS &&
++	    (of_machine_is_compatible("sony,akatsuki-row") ||
++	     of_machine_is_compatible("somc,akatsuki-row"))) {
++		dev_warn_once(hba->dev, "XZ3 UFS PURGE status query blocked\n");
++		return -EPERM;
++	}
+ 
+ 	if (!attr_val) {
+ 		dev_err(hba->dev, "%s: attribute value required for opcode 0x%x\n",

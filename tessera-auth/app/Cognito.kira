@@ -1,0 +1,482 @@
+import Foundation
+import Network as Net
+
+// Direct user-pool authentication for Tessera-controlled apps. UI belongs to
+// the app; this library never stores passwords, tokens, or Cognito sessions.
+// Client IDs are public. Never embed AWS IAM credentials or a client secret.
+
+public struct TesseraAuthConfig {
+    let region: String
+    let clientId: String
+}
+
+public enum TesseraAuthFailure {
+    InvalidInput
+    Rejected
+    Unconfirmed
+    AlreadyRegistered
+    InvalidCode
+    ExpiredCode
+    WeakPassword
+    RateLimited
+    Unavailable
+    UnexpectedResponse
+}
+
+public struct TesseraTokens {
+    let accessToken: String
+    let idToken: String
+    let refreshToken: String?
+    let expiresIn: Number
+}
+
+public struct TesseraAuthChallenge {
+    let name: String
+    let session: String
+    let parameters: JsonValue
+}
+
+// The secret is shown once, only during enrollment; do not persist or log it.
+public struct TesseraMfaEnrollment {
+    let secret: String
+    let session: String
+}
+
+public enum TesseraSignInResult {
+    SignedIn(TesseraTokens)
+    Challenge(TesseraAuthChallenge)
+}
+
+function authField(key: String, value: JsonValue) -> JsonMember {
+    return JsonMember { name: key, value: value }
+}
+
+function authText(json: borrow JsonValue, name: borrow String) -> String? {
+    return match json.field(name) {
+        Some(value) -> value.text()
+        None -> .None
+    }
+}
+
+function validAuthRegion(region: borrow String) -> Bool {
+    if region.count < 5 || region.count > 32 { return false }
+    if region.startsWith("-") || region.endsWith("-") { return false }
+    for ch in region.utf8() {
+        let code = Number(ch)
+        if !((code >= 97 && code <= 122) || (code >= 48 && code <= 57)
+            || code == 45) { return false }
+    }
+    return true
+}
+
+function validPublicClientId(client: borrow String) -> Bool {
+    if client.count < 8 || client.count > 128 { return false }
+    for ch in client.utf8() {
+        let code = Number(ch)
+        if !((code >= 97 && code <= 122) || (code >= 48 && code <= 57)) {
+            return false
+        }
+    }
+    return true
+}
+
+// Cognito commonly reports user-pool errors with HTTP 400, including rate
+// limits and unconfirmed accounts. Decode only its exception *type*: never
+// display Cognito's response message, which may reveal account information.
+function cognitoErrorType(bytes: borrow [UN8]) -> String {
+    if bytes.count > 8192 { return "" }
+    let payload = match textFromBytes(bytes) {
+        Some(value) -> value
+        None -> return ""
+    }
+    let json = match parseJson(payload) {
+        Ok(value) -> value
+        Error(failure) -> {
+            log debug("invalid Cognito error document", failure)
+            return ""
+        }
+    }
+    let typeName = match authText(json, "__type") {
+        Some(value) -> value
+        None -> match authText(json, "code") {
+            Some(value) -> value
+            None -> return ""
+        }
+    }
+    let pieces = typeName.split("#")
+    return pieces.count == 0 ? "" : copy pieces[pieces.count - 1]
+}
+
+function cognitoError(kind: borrow String) -> TesseraAuthFailure {
+    if kind == "UserNotConfirmedException" { return .Unconfirmed }
+    if kind == "UsernameExistsException" { return .AlreadyRegistered }
+    if kind == "CodeMismatchException" { return .InvalidCode }
+    if kind == "ExpiredCodeException" { return .ExpiredCode }
+    if kind == "InvalidPasswordException" { return .WeakPassword }
+    if kind == "TooManyRequestsException" || kind == "LimitExceededException" {
+        return .RateLimited
+    }
+    return .Rejected
+}
+
+// Cognito's public user-pools API accepts these calls without SigV4/IAM.
+// Restrict the origin to the regional Cognito API, never a caller-chosen host.
+function cognitoOperation(
+    network: borrow mut Net.Network,
+    config: borrow TesseraAuthConfig,
+    action: borrow String,
+    payload: borrow JsonValue
+) -> Result<JsonValue, TesseraAuthFailure> {
+    if !validAuthRegion(config.region) || !validPublicClientId(config.clientId) {
+        return .Error(.InvalidInput)
+    }
+    let endpoint = "https://cognito-idp." + config.region + ".amazonaws.com/"
+    let target = match Net.targetOf(endpoint) {
+        Some(value) -> value
+        None -> return .Error(.InvalidInput)
+    }
+    var request = Net.Request { method: .Post, target: target }
+    request.fields.add("content-type", "application/x-amz-json-1.1")
+    request.fields.add("x-amz-target", "AWSCognitoIdentityProviderService." + action)
+    request.fields.add("accept", "application/json")
+    // The request body can contain a password, OTP, or refresh token.
+    // Network debug logs must never capture HTTP bodies for this module.
+    request.body = .Bytes(writeJson(payload).utf8())
+    let deadline = network.now().plus(10000000)
+    let response = match network.fetch(move request, deadline) {
+        Ok(value) -> value
+        Error(failure) -> {
+            log warn("Cognito authentication transport failed", failure)
+            return .Error(.Unavailable)
+        }
+    }
+    if response.status == .TooManyRequests { return .Error(.RateLimited) }
+    if response.status == .BadRequest || response.status == .Unauthorized
+        || response.status == .Forbidden || response.status == .Conflict {
+        return match response.body {
+            Bytes(bytes) -> .Error(cognitoError(cognitoErrorType(bytes)))
+            Empty -> .Error(.Rejected)
+        }
+    }
+    if response.status != .Ok { return .Error(.Unavailable) }
+    let bytes = match response.body {
+        Bytes(value) -> value
+        Empty -> return .Error(.UnexpectedResponse)
+    }
+    if bytes.count > 32768 { return .Error(.UnexpectedResponse) }
+    let text = match textFromBytes(bytes) {
+        Some(value) -> value
+        None -> return .Error(.UnexpectedResponse)
+    }
+    return match parseJson(text) {
+        Ok(value) -> .Ok(value)
+        Error(failure) -> {
+            log warn("Cognito returned invalid authentication JSON", failure)
+            .Error(.UnexpectedResponse)
+        }
+    }
+}
+
+function readTesseraTokens(response: borrow JsonValue) -> TesseraTokens? {
+    let access = match authText(response, "AccessToken") {
+        Some(value) -> value
+        None -> return .None
+    }
+    let id = match authText(response, "IdToken") {
+        Some(value) -> value
+        None -> return .None
+    }
+    let seconds = match response.field("ExpiresIn") {
+        Some(value) -> match value.number() {
+            Some(value) -> value
+            None -> return .None
+        }
+        None -> return .None
+    }
+    if access.count == 0 || id.count == 0 || seconds <= 0 { return .None }
+    return .Some(TesseraTokens {
+        accessToken: access,
+        idToken: id,
+        refreshToken: authText(response, "RefreshToken"),
+        expiresIn: seconds
+    })
+}
+
+// Successful sign-in gets tokens; MFA, password changes and other user-pool
+// challenges return the opaque Cognito Session to be completed by the app.
+function parseSignInResult(json: borrow JsonValue) -> Result<TesseraSignInResult, TesseraAuthFailure> {
+    match json.field("AuthenticationResult") {
+        Some(result) -> {
+            let tokens = match readTesseraTokens(result) {
+                Some(value) -> value
+                None -> return .Error(.UnexpectedResponse)
+            }
+            return .Ok(.SignedIn(tokens))
+        }
+        None -> {}
+    }
+    let challenge = match authText(json, "ChallengeName") {
+        Some(value) -> value
+        None -> return .Error(.UnexpectedResponse)
+    }
+    let session = match authText(json, "Session") {
+        Some(value) -> value
+        None -> return .Error(.UnexpectedResponse)
+    }
+    if challenge.count == 0 || session.count == 0 { return .Error(.UnexpectedResponse) }
+    let parameters = match json.field("ChallengeParameters") {
+        Some(value) -> value
+        None -> .Object([])
+    }
+    return .Ok(.Challenge(TesseraAuthChallenge {
+        name: challenge, session: session, parameters: parameters
+    }))
+}
+
+// The app's email/password screen calls this; Cognito owns password checking.
+// Successful response tokens must be stored in OS secure storage, not logs or
+// unencrypted settings. For web frontends, use your platform's secure design
+// (prefer a first-party BFF with HttpOnly, Secure, SameSite cookies).
+public function tesseraSignIn(
+    network: borrow mut Net.Network,
+    config: borrow TesseraAuthConfig,
+    email: borrow String,
+    password: borrow String
+) -> Result<TesseraSignInResult, TesseraAuthFailure> {
+    if email.count == 0 || email.count > 320 || password.count == 0 {
+        return .Error(.InvalidInput)
+    }
+    let request: JsonValue = .Object([
+        authField("ClientId", .Text(copy config.clientId)),
+        authField("AuthFlow", .Text("USER_AUTH")),
+        authField("AuthParameters", .Object([
+            authField("USERNAME", .Text(copy email)),
+            authField("PREFERRED_CHALLENGE", .Text("PASSWORD")),
+            authField("PASSWORD", .Text(copy password))
+        ]))
+    ])
+    let result = try cognitoOperation(network, config, "InitiateAuth", request)
+    return parseSignInResult(result)
+}
+
+// Complete a password, software-TOTP, or force-password-change challenge.
+// MFA_SETUP requires AssociateSoftwareToken/VerifySoftwareToken setup before
+// this step; do not silently skip a Cognito challenge.
+public function tesseraAnswerChallenge(
+    network: borrow mut Net.Network,
+    config: borrow TesseraAuthConfig,
+    email: borrow String,
+    challenge: borrow TesseraAuthChallenge,
+    answer: borrow String
+) -> Result<TesseraSignInResult, TesseraAuthFailure> {
+    if email.count == 0 || answer.count == 0 || challenge.session.count == 0 {
+        return .Error(.InvalidInput)
+    }
+    let responseField = match challenge.name {
+        "PASSWORD" -> "PASSWORD"
+        "SOFTWARE_TOKEN_MFA" -> "SOFTWARE_TOKEN_MFA_CODE"
+        "NEW_PASSWORD_REQUIRED" -> "NEW_PASSWORD"
+        "EMAIL_OTP" -> "EMAIL_OTP_CODE"
+        "SMS_MFA" -> "SMS_MFA_CODE"
+        "SMS_OTP" -> "SMS_OTP_CODE"
+        else -> return .Error(.InvalidInput)
+    }
+    let request: JsonValue = .Object([
+        authField("ClientId", .Text(copy config.clientId)),
+        authField("ChallengeName", .Text(copy challenge.name)),
+        authField("Session", .Text(copy challenge.session)),
+        authField("ChallengeResponses", .Object([
+            authField("USERNAME", .Text(copy email)),
+            authField(copy responseField, .Text(copy answer))
+        ]))
+    ])
+    let result = try cognitoOperation(network, config, "RespondToAuthChallenge", request)
+    return parseSignInResult(result)
+}
+
+// Continue the MFA_SETUP challenge. The user copies the secret into a TOTP
+// authenticator app, then provides the current six-digit code.
+public function tesseraBeginMfaEnrollment(
+    network: borrow mut Net.Network,
+    config: borrow TesseraAuthConfig,
+    session: borrow String
+) -> Result<TesseraMfaEnrollment, TesseraAuthFailure> {
+    if session.count == 0 || session.count > 4096 { return .Error(.InvalidInput) }
+    let request: JsonValue = .Object([
+        authField("Session", .Text(copy session))
+    ])
+    let data = try cognitoOperation(network, config, "AssociateSoftwareToken", request)
+    let secret = match authText(data, "SecretCode") {
+        Some(value) -> value
+        None -> return .Error(.UnexpectedResponse)
+    }
+    let nextSession = match authText(data, "Session") {
+        Some(value) -> value
+        None -> return .Error(.UnexpectedResponse)
+    }
+    if secret.count < 16 || nextSession.count == 0 { return .Error(.UnexpectedResponse) }
+    return .Ok(TesseraMfaEnrollment { secret: secret, session: nextSession })
+}
+
+public function tesseraFinishMfaEnrollment(
+    network: borrow mut Net.Network,
+    config: borrow TesseraAuthConfig,
+    email: borrow String,
+    session: borrow String,
+    code: borrow String
+) -> Result<TesseraSignInResult, TesseraAuthFailure> {
+    if email.count == 0 || session.count == 0 || code.count != 6 {
+        return .Error(.InvalidInput)
+    }
+    for byte in code.utf8() {
+        if byte < 48 || byte > 57 { return .Error(.InvalidInput) }
+    }
+    let verify: JsonValue = .Object([
+        authField("Session", .Text(copy session)),
+        authField("UserCode", .Text(copy code)),
+        authField("FriendlyDeviceName", .Text("Tessera"))
+    ])
+    let checked = try cognitoOperation(network, config, "VerifySoftwareToken", verify)
+    if authText(checked, "Status") != .Some("SUCCESS") { return .Error(.InvalidCode) }
+    let nextSession = match authText(checked, "Session") {
+        Some(value) -> value
+        None -> return .Error(.UnexpectedResponse)
+    }
+    let challenge: JsonValue = .Object([
+        authField("ClientId", .Text(copy config.clientId)),
+        authField("ChallengeName", .Text("MFA_SETUP")),
+        authField("Session", .Text(nextSession)),
+        authField("ChallengeResponses", .Object([
+            authField("USERNAME", .Text(copy email))
+        ]))
+    ])
+    let completed = try cognitoOperation(network, config, "RespondToAuthChallenge", challenge)
+    return parseSignInResult(completed)
+}
+
+// Cognito sends the verification email; no Tessera password table exists.
+public function tesseraSignUp(
+    network: borrow mut Net.Network,
+    config: borrow TesseraAuthConfig,
+    email: borrow String,
+    password: borrow String
+) -> Result<Void, TesseraAuthFailure> {
+    if email.count == 0 || email.count > 320 || password.count == 0 {
+        return .Error(.InvalidInput)
+    }
+    let request: JsonValue = .Object([
+        authField("ClientId", .Text(copy config.clientId)),
+        authField("Username", .Text(copy email)),
+        authField("Password", .Text(copy password)),
+        authField("UserAttributes", .Array([.Object([
+            authField("Name", .Text("email")), authField("Value", .Text(copy email))
+        ])]))
+    ])
+    let ignored = try cognitoOperation(network, config, "SignUp", request)
+    return .Ok
+}
+
+public function tesseraConfirmEmail(
+    network: borrow mut Net.Network,
+    config: borrow TesseraAuthConfig,
+    email: borrow String,
+    code: borrow String
+) -> Result<Void, TesseraAuthFailure> {
+    if email.count == 0 || code.count == 0 { return .Error(.InvalidInput) }
+    let request: JsonValue = .Object([
+        authField("ClientId", .Text(copy config.clientId)),
+        authField("Username", .Text(copy email)),
+        authField("ConfirmationCode", .Text(copy code))
+    ])
+    let ignored = try cognitoOperation(network, config, "ConfirmSignUp", request)
+    return .Ok
+}
+
+// Request another verification code from Cognito when a message has expired.
+public function tesseraResendConfirmation(
+    network: borrow mut Net.Network,
+    config: borrow TesseraAuthConfig,
+    email: borrow String
+) -> Result<Void, TesseraAuthFailure> {
+    if email.count == 0 || email.count > 320 { return .Error(.InvalidInput) }
+    let request: JsonValue = .Object([
+        authField("ClientId", .Text(copy config.clientId)),
+        authField("Username", .Text(copy email))
+    ])
+    let ignored = try cognitoOperation(network, config, "ResendConfirmationCode", request)
+    return .Ok
+}
+
+public function tesseraForgotPassword(
+    network: borrow mut Net.Network,
+    config: borrow TesseraAuthConfig,
+    email: borrow String
+) -> Result<Void, TesseraAuthFailure> {
+    if email.count == 0 || email.count > 320 { return .Error(.InvalidInput) }
+    let request: JsonValue = .Object([
+        authField("ClientId", .Text(copy config.clientId)),
+        authField("Username", .Text(copy email))
+    ])
+    let ignored = try cognitoOperation(network, config, "ForgotPassword", request)
+    return .Ok
+}
+
+public function tesseraResetPassword(
+    network: borrow mut Net.Network,
+    config: borrow TesseraAuthConfig,
+    email: borrow String,
+    code: borrow String,
+    newPassword: borrow String
+) -> Result<Void, TesseraAuthFailure> {
+    if email.count == 0 || code.count == 0 || newPassword.count == 0 {
+        return .Error(.InvalidInput)
+    }
+    let request: JsonValue = .Object([
+        authField("ClientId", .Text(copy config.clientId)),
+        authField("Username", .Text(copy email)),
+        authField("ConfirmationCode", .Text(copy code)),
+        authField("Password", .Text(copy newPassword))
+    ])
+    let ignored = try cognitoOperation(network, config, "ConfirmForgotPassword", request)
+    return .Ok
+}
+
+public function tesseraRefresh(
+    network: borrow mut Net.Network,
+    config: borrow TesseraAuthConfig,
+    refreshToken: borrow String
+) -> Result<TesseraTokens, TesseraAuthFailure> {
+    if refreshToken.count == 0 { return .Error(.InvalidInput) }
+    let request: JsonValue = .Object([
+        authField("ClientId", .Text(copy config.clientId)),
+        authField("AuthFlow", .Text("REFRESH_TOKEN_AUTH")),
+        authField("AuthParameters", .Object([
+            authField("REFRESH_TOKEN", .Text(copy refreshToken))
+        ]))
+    ])
+    let result = try cognitoOperation(network, config, "InitiateAuth", request)
+    let auth = match result.field("AuthenticationResult") {
+        Some(value) -> value
+        None -> return .Error(.UnexpectedResponse)
+    }
+    return match readTesseraTokens(auth) {
+        Some(value) -> .Ok(value)
+        None -> .Error(.UnexpectedResponse)
+    }
+}
+
+// Sign out this session and revoke the refresh token. Discard all local
+// tokens even if Cognito is unavailable; never retain them after logout.
+public function tesseraRevokeSession(
+    network: borrow mut Net.Network,
+    config: borrow TesseraAuthConfig,
+    refreshToken: borrow String
+) -> Result<Void, TesseraAuthFailure> {
+    if refreshToken.count == 0 { return .Error(.InvalidInput) }
+    let request: JsonValue = .Object([
+        authField("ClientId", .Text(copy config.clientId)),
+        authField("Token", .Text(copy refreshToken))
+    ])
+    let ignored = try cognitoOperation(network, config, "RevokeToken", request)
+    return .Ok
+}

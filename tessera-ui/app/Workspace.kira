@@ -13,6 +13,11 @@ import LibTessera
 /// The requests not sent yet, and the sentence PID 1 answered with last.
 struct WorkspaceInbox {
     var pending: [WorkspaceRequest] = []
+    // Document-open results are emitted only after PID 1's reply closes
+    // silently (success), or a send/reply explicitly fails. This is not a
+    // prediction based on a request merely having been queued.
+    var documentPending: Number = 0
+    var documentOutcomes: [DocumentOpenOutcome] = []
     // The icon the last application asked for is opened from, not yet told
     // to the display.
     var launchIcon: LaunchIcon? = .None
@@ -22,6 +27,11 @@ struct WorkspaceInbox {
     var notice: String? = .None
     // Whether /Applications changed since the application last asked.
     var applicationsChanged: Bool = false
+}
+
+public enum DocumentOpenOutcome {
+    Opened
+    Failed
 }
 
 /// The persistent slot that holds the workspace's inbox for the application's life.
@@ -54,6 +64,48 @@ function queueWorkspaceRequest(request: WorkspaceRequest) {
 /// Asks PID 1 to open `application`.
 public function openApplication(application: borrow Application) {
     queueWorkspaceRequest(application.openRequest())
+}
+
+/// Queues a single selected File for the sealed system Notes app. Ownership
+/// of `file` transfers to the workspace request; callers must not use or
+/// close it after queuing. The trusted launcher will only grant read/write
+/// when `editable` was explicitly requested and the File has that right.
+public function openDocumentInNotes(file: Handle, editable: Bool) -> Bool {
+    unsafe {
+        var waiting = nativeRecover<WorkspaceInbox>(workspaceInbox())
+        // `Waits` tracks a single reply channel. Do not allow two document
+        // opens to race and give the earlier document the later reply.
+        if waiting.documentPending > 0 { return false }
+        waiting.documentPending = 1
+        waiting.pending.append(.OpenDocument(DocumentOpenRequest {
+            file: file, editable: editable
+        }))
+        waiting.notice = .None
+    }
+    return true
+}
+
+function noteDocumentOpenOutcome(outcome: DocumentOpenOutcome) {
+    unsafe {
+        var waiting = nativeRecover<WorkspaceInbox>(workspaceInbox())
+        if waiting.documentPending == 0 {
+            log fault("a document-open reply was not expected")
+            return
+        }
+        waiting.documentPending -= 1
+        waiting.documentOutcomes.append(outcome)
+    }
+}
+
+/// A document-open outcome is consumed by the application that made the
+/// request. No filename is sent to PID 1 or put into an answer message.
+public function takeDocumentOpenOutcomes() -> [DocumentOpenOutcome] {
+    unsafe {
+        var waiting = nativeRecover<WorkspaceInbox>(workspaceInbox())
+        let recorded = move waiting.documentOutcomes
+        waiting.documentOutcomes = []
+        return recorded
+    }
 }
 
 /// Where on the window an application's icon stands, in points from its top
@@ -193,12 +245,37 @@ function showWorkspaceNotice(notice: String) {
 /// as PID 1 would say why it failed.
 function sendWorkspaceRequests(waits: borrow mut Waits) {
     for request in takeWorkspaceRequests() {
+        let documentRequest = match request {
+            OpenDocument -> true
+            Open, Install, Uninstall, SwitchPlatform -> false
+        }
         match askWorkspace(request) {
             Ok(channel) -> {
-                waits.awaitAnswer(channel)
+                // A different request may supersede an unanswered document
+                // request. That earlier open is not a confirmed success.
+                if waits.answerDocument { noteDocumentOpenOutcome(.Failed) }
+                waits.awaitAnswer(channel, documentRequest)
                 log info("asked PID 1", request: request)
             }
             Error(failure) -> {
+                if documentRequest { noteDocumentOpenOutcome(.Failed) }
+                // A failed send did not transfer the document handle; a
+                // queued request owns it and must not leave it open forever.
+                match request {
+                    OpenDocument(selected) -> {
+                        // Channel.write consumes handles even when the send
+                        // fails after transfer checks. An early failure,
+                        // however, leaves the selected File with us.
+                        match handleInfo(selected.file) {
+                            Ok(info) -> {
+                                absorb info
+                                closeHandle(selected.file)
+                            }
+                            Error(reason) -> absorb reason
+                        }
+                    }
+                    Open, Install, Uninstall, SwitchPlatform -> {}
+                }
                 log warn("could not ask PID 1", request: request, failure: failure)
                 showWorkspaceNotice(WorkspaceNotice.unsent)
             }
@@ -208,12 +285,24 @@ function sendWorkspaceRequests(waits: borrow mut Waits) {
 
 /// Shows what PID 1 answered, if it said anything.
 function takeWorkspaceAnswer(waits: borrow mut Waits) {
+    let documentRequest = waits.answerDocument
     match waits.readAnswer() {
         Ok(answered) -> match answered {
-            Said(sentence) -> showWorkspaceNotice(move sentence)
+            Said(sentence) -> {
+                if documentRequest { noteDocumentOpenOutcome(.Failed) }
+                showWorkspaceNotice(move sentence)
+            }
             // Not here yet, or nothing to say: the request did what it asked.
-            NotYet, Silent -> {}
+            NotYet -> {}
+            DocumentOpened -> {
+                if documentRequest { noteDocumentOpenOutcome(.Opened) }
+                else { log fault("unexpected document-open acknowledgement") }
+            }
+            Silent -> if documentRequest { noteDocumentOpenOutcome(.Failed) }
         }
-        Error(failure) -> log warn("PID 1's answer could not be read", failure: failure)
+        Error(failure) -> {
+            if documentRequest { noteDocumentOpenOutcome(.Failed) }
+            log warn("PID 1's answer could not be read", failure: failure)
+        }
     }
 }

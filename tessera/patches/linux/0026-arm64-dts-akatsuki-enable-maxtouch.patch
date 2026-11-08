@@ -1,0 +1,33 @@
+From: Marijn Suijten <marijn.suijten@somainline.org>
+Subject: [PATCH] arm64: dts: qcom: enable Xperia XZ3 maXTouch touchscreen
+
+Based on the postmarketOS XZ3 port, adapted for Linux 7.2.
+Based-on: https://gitlab.com/postmarketOS/pmaports/-/merge_requests/4183
+
+diff --git a/arch/arm64/boot/dts/qcom/sdm845-sony-xperia-tama-akatsuki.dts b/arch/arm64/boot/dts/qcom/sdm845-sony-xperia-tama-akatsuki.dts
+--- a/arch/arm64/boot/dts/qcom/sdm845-sony-xperia-tama-akatsuki.dts
++++ b/arch/arm64/boot/dts/qcom/sdm845-sony-xperia-tama-akatsuki.dts
+@@ -25,6 +25,23 @@
+ 		gpio = <&tlmm 133 GPIO_ACTIVE_HIGH>;
+ 		enable-active-high;
+ 		regulator-boot-on;
++		pinctrl-names = "default";
++		pinctrl-0 = <&ts_vddio_en>;
++	};
++};
++
++&i2c5 {
++	touchscreen@4a {
++		compatible = "atmel,maxtouch";
++		reg = <0x4a>;
++		interrupt-parent = <&tlmm>;
++		interrupts = <125 IRQ_TYPE_LEVEL_LOW>;
++		reset-gpios = <&tlmm 99 GPIO_ACTIVE_LOW>;
++		vdda-supply = <&vreg_l28a_2p8>;
++		vdd-supply = <&ts_vddio_supply>;
++		pinctrl-names = "default", "sleep";
++		pinctrl-0 = <&ts_default>;
++		pinctrl-1 = <&ts_sleep>;
+ 	};
+ };
+ 

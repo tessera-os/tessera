@@ -15,12 +15,29 @@ public struct DocumentAssociations {
 public enum AssociationFailure {
     InvalidExtension
     ApplicationNotInstalled
+    TypeNotDeclared
 }
 
 public enum DocumentRoute {
     ChooseApplication
     OpenAccepted(AppIdentity)
     DefaultUnavailable(AppIdentity)
+}
+
+/// A document-opening selection tied to an accepted app image. This ticket
+/// carries only the extension, not a filesystem path, document bytes or a
+/// capability: the trusted document broker must grant an explicit handle.
+public struct DocumentActivation {
+    let application: AppIdentity
+    let imageDigest: String
+    let version: Number
+    let extension: String
+}
+
+public enum DocumentActivationDecision {
+    ChooseApplication
+    Unavailable(AppIdentity)
+    Ready(DocumentActivation)
 }
 
 public namespace AssociationLimits {
@@ -67,7 +84,10 @@ extend DocumentAssociations {
     ) -> Result<Void, AssociationFailure> {
         let normalized = extension.lowercased()
         if !validDocumentExtension(normalized) { return .Error(.InvalidExtension) }
-        if registry.accepted(identity).isNone() { return .Error(.ApplicationNotInstalled) }
+        let app = try registry.accepted(identity) otherwise return .Error(.ApplicationNotInstalled)
+        if !app.candidate.documentTypes.contains(normalized) {
+            return .Error(.TypeNotDeclared)
+        }
         var kept: [DocumentAssociation] = []
         for entry in defaults {
             if entry.extension != normalized { kept.append(copy entry) }
@@ -100,10 +120,61 @@ extend DocumentAssociations {
         }
         for entry in defaults {
             if entry.extension != extension { continue }
-            return registry.accepted(entry.application).isSome()
-            ? .OpenAccepted(copy entry.application)
-            : .DefaultUnavailable(copy entry.application)
+            let accepted = match registry.accepted(entry.application) {
+                Some(value) -> value
+                None -> return .DefaultUnavailable(copy entry.application)
+            }
+            return accepted.candidate.documentTypes.contains(extension)
+                ? .OpenAccepted(copy entry.application)
+                : .DefaultUnavailable(copy entry.application)
         }
         return .ChooseApplication
+    }
+
+    /// Resolve a default without granting document access. Even a ready
+    /// ticket needs a separately approved, scoped document handle.
+    function activation(
+        borrow self,
+        filename: borrow String,
+        registry: borrow ApplicationRegistry
+    ) -> DocumentActivationDecision {
+        let extension = match documentExtension(filename) {
+            Some(value) -> value
+            None -> return .ChooseApplication
+        }
+        return match self.route(filename, registry) {
+            ChooseApplication -> .ChooseApplication
+            DefaultUnavailable(identity) -> .Unavailable(identity)
+            OpenAccepted(identity) -> {
+                let installed = match registry.accepted(identity) {
+                    Some(value) -> value
+                    None -> return DocumentActivationDecision.Unavailable(identity)
+                }
+                DocumentActivationDecision.Ready(DocumentActivation {
+                    application: copy identity,
+                    imageDigest: copy installed.candidate.imageDigest,
+                    version: installed.candidate.version,
+                    extension: extension
+                })
+            }
+        }
+    }
+
+    /// Recheck the accepted app and default before the trusted broker mints
+    /// a document-scoped handle; a stale version cannot inherit the request.
+    function activationIsCurrent(
+        borrow self,
+        ticket: borrow DocumentActivation,
+        registry: borrow ApplicationRegistry
+    ) -> Bool {
+        if !validDocumentExtension(ticket.extension) { return false }
+        let chosen = match self.route("document." + ticket.extension, registry) {
+            OpenAccepted(identity) -> identity
+            ChooseApplication, DefaultUnavailable -> return false
+        }
+        if !sameApp(chosen, ticket.application) { return false }
+        let installed = try registry.accepted(ticket.application) otherwise return false
+        return installed.candidate.version == ticket.version
+            && installed.candidate.imageDigest == ticket.imageDigest
     }
 }

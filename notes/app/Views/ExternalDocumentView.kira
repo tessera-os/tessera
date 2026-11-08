@@ -1,0 +1,85 @@
+//! A document from Open With, backed only by its explicitly transferred File.
+//! It cannot browse neighbouring files and keeps edits in memory on failure.
+import Foundation
+import KiraUI
+import LibTessera
+
+construct ExternalDocumentView(document: ExternalTextDocument) extends Widget {
+    @State var message: String = ""
+    @State var editorText: String = ""
+    @State var editorReady: Bool = false
+
+    body {
+        if !editorReady {
+            editorText = copy document.text
+            editorReady = true
+        }
+        VStack(spacing = .Medium, alignment = .Leading) {
+            Text("Opened Document")
+            .typography(.largeTitle)
+            .fontWeight(.Bold)
+
+            if document.editable {
+                TextField(title = "Document text", text = $editorText, prompt = "", axis = .Vertical)
+                // The current RIDL export only exposes lineLimit(count:),
+                // not KiraUI's min/max overload. This caps the editor at 24
+                // lines while fillHeight retains a full-height editing area.
+                .lineLimit(24)
+                .fillWidth()
+                .fillHeight()
+
+                HStack(spacing = .Medium, alignment = .Center) {
+                    Button(action = { in
+                        let oldText = copy document.text
+                        var edited = document
+                        edited.text = copy editorText
+                        match saveGrantedText(edited) {
+                            Ok -> {
+                                edited.changed = false
+                                message = "Saved the selected document"
+                            }
+                            Error(reason) -> {
+                                // The editor retains unsaved text, while the
+                                // document keeps its last committed snapshot.
+                                edited.text = move oldText
+                                if reason.code == .BadState {
+                                    message = "The document may have changed outside Notes. "
+                                        + "Save stopped; your edits are still here."
+                                } else {
+                                    message = "Save failed (" + errorName(reason)
+                                        + "). Your edits are still available here."
+                                }
+                            }
+                        }
+                    }) {
+                        Text("Save")
+                    }
+                    if editorText != document.text {
+                        Text("Unsaved changes").foregroundColor(.Secondary)
+                    }
+                }
+            } else {
+                ScrollView {
+                    Text(copy document.text)
+                    .fillWidth()
+                }
+                .fillHeight()
+                Text("Read-only document: no write access was granted")
+                .foregroundColor(.Secondary)
+            }
+
+            if message.count > 0 {
+                Text(copy message).foregroundColor(.Secondary)
+            }
+        }
+        .padding(scaledMetric(20))
+        .navigationTitle("Opened Document")
+    }
+}
+
+construct ExternalDocumentFailureView(why: String) extends Widget {
+    body {
+        ContentUnavailableView(title = "Document Unavailable", systemImage = .Doc)
+        Text(copy why).foregroundColor(.Secondary)
+    }
+}

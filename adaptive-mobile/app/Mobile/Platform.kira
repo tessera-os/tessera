@@ -22,6 +22,13 @@ construct Mobile() extends DisplayPlatform {
     var channel: Handle? = .None
     // The lock screen, closed over the output at start.
     var lock: LockState = LockState {}
+    // Whether this lock requires the device passcode. Read at start and when
+    // the lock closes, not on every frame (which would read the file each time).
+    var passcode: Bool = false
+    // A tap that opened the non-passcode lock screen has already been handled
+    // by the platform. Swallow its matching release as well, so Kira UI never
+    // sees a release for a press it did not receive.
+    var unlockPressPending: Bool = false
     // The surface that takes the keyboard when the lock screen opens.
     var front: DisplaySurfaceId? = .None
     // The platform's own surface, once a session began.

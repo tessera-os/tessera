@@ -1,0 +1,49 @@
+import Foundation
+
+// An Open With activation is a File capability and not a file pathname.
+// The broker first selects and revalidates an accepted application image,
+// opens only the chosen document with the approved mode, then transfers this
+// explicit entry in LaunchOptions.initialHandles for a confined child.
+
+/// Prepare a document grant for a confined new process. The returned entry
+/// deliberately narrows any parent-owned File to read-only unless the person
+/// selected editing. A document Node or directory cannot be passed instead.
+public function launchDocumentEntry(
+    document: Handle,
+    editable: Bool
+) -> Result<StartupEntry, TesseraError> {
+    var rights = Rights.read | Rights.inspect
+    if editable { rights = rights | Rights.write }
+    try resolveObject(document, .File, rights | Rights.transfer)
+    return .Ok(StartupEntry {
+        tag: StartupTag.document,
+        rights: .Some(rights),
+        handle: document
+    })
+}
+
+/// Receive the exact document File transferred at process start. No filename,
+/// directory or persisted grant is implied, and a missing entry is normal for
+/// an ordinary launch. The caller never receives broader rights than it was
+/// explicitly given by the broker.
+public function processLaunchDocument() -> Result<Handle?, TesseraError> {
+    let received = try startupHandle(StartupTag.document) otherwise return .Ok(.None)
+    try resolveObject(received, .File, Rights.read)
+    // Bootstrap transfer needs the Transfer bit, but an application should
+    // not retain that bit on the selected document: it was granted access to
+    // this file, not authority to pass the file to arbitrary other processes.
+    // `handleReplace` narrows even a handle without Duplicate, and we update
+    // the startup slot so a second call does not retrieve a closed handle.
+    let held = try handleInfo(received)
+    let permitted = Rights.read | Rights.write | Rights.inspect
+    let narrowed = held.rights & permitted
+    if narrowed == held.rights { return .Ok(.Some(received)) }
+    let safe = try handleReplace(received, narrowed)
+    for index in 0..library.startupTags.count {
+        if library.startupTags[index] == StartupTag.document {
+            library.startupHandles[index] = safe
+            break
+        }
+    }
+    return .Ok(.Some(safe))
+}

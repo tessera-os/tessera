@@ -5,4 +5,20 @@
 
 ## Highlights
 
-No changes to this package's source files have landed since the `26.10.4` release baseline. This weekly source release updates version metadata only where the package declares a version; it does not claim new functionality or fresh build validation.
+- Added `openDocumentInNotes` to queue a selected File capability through the
+  existing workspace request flow. Failed sends close handles that remained
+  with the caller. This does not grant other applications document-picker
+  authority.
+- Added source-checked wire regression tests for opcode 12, the fixed Notes
+  executable payload, and independent read/edit modes. Ordinary launch
+  encoding remains unchanged.
+- Document-open requests now expose a distinct confirmed/failed result, rather
+  than interpreting a closed PID 1 reply channel as successful. Only one
+  document launch may await acknowledgement at a time, preventing histories
+  from being assigned to the wrong request. Other workspace requests retain
+  their existing UI behavior.
+
+## Validation
+
+- Tessera-target Kira source validation printed `Check: Ok`.
+- No guest boot or running-app document activation was verified.

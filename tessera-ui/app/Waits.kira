@@ -61,6 +61,7 @@ struct Waits {
     // whether a wait on it is armed.
     var answer: Handle? = .None
     var answerArmed: Bool = false
+    var answerDocument: Bool = false
     // An application's System channel, which settings changes arrive on,
     // and whether a wait on it is armed. A platform reads its own.
     var system: Handle? = .None
@@ -235,9 +236,10 @@ extend Waits {
 
     /// Waits for the answer on `channel`, the one a request was just sent
     /// with. An answer still awaited for an earlier request is given up.
-    function awaitAnswer(borrow mut self, channel: Handle) {
+    function awaitAnswer(borrow mut self, channel: Handle, document: Bool = false) {
         forgetAnswer()
         answer = .Some(channel)
+        answerDocument = document
     }
 
     /// Closes the awaited answer's channel and stops awaiting it.
@@ -249,6 +251,7 @@ extend Waits {
         }
         answer = .None
         answerArmed = false
+        answerDocument = false
     }
 
     /// Arms the wait for the answer unless none is awaited or it is armed
@@ -271,7 +274,7 @@ extend Waits {
                 match answered {
                     // Still to come: wait for it again.
                     NotYet -> answerArmed = false
-                    Said, Silent -> forgetAnswer()
+                    Said, Silent, DocumentOpened -> forgetAnswer()
                 }
                 return .Ok(answered)
             }

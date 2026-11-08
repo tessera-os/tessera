@@ -19,6 +19,7 @@ enum DesktopAsk {
     Launch
     Install
     Uninstall
+    OpenDocument
     // Only the platform asks it; the path is the platform to switch to.
     SwitchPlatform
 }
@@ -30,6 +31,7 @@ function desktopAsk(raw: UN32) -> DesktopAsk? {
         6 -> return .Some(.Install)
         7 -> return .Some(.Uninstall)
         11 -> return .Some(.SwitchPlatform)
+        12 -> return .Some(.OpenDocument)
         else -> return .None
     }
 }
@@ -39,6 +41,53 @@ struct LaunchRequest {
     var path: String
     // The channel the desktop waits for an answer on, or `Handle.invalid`.
     var reply: Handle
+    // Only OpenDocument carries this second handle. Other operations never
+    // gain access to arbitrary transferred Files.
+    var document: Handle = Handle.invalid
+    var editable: Bool = false
+}
+
+// A reply endpoint must really be a channel. A deliberately malformed
+// transferred handle is never a valid reason to launch a process.
+function validLaunchReply(handle: Handle) -> Bool {
+    let info = match handleInfo(handle) {
+        Ok(value) -> value
+        Error(failed) -> {
+            absorb failed
+            return false
+        }
+    }
+    return info.objectType == .Channel && info.rights.has(Rights.write)
+}
+
+// The second handle of an OpenDocument packet is exactly one readable File;
+// editing requires a write right already present on the received handle.
+function validDocumentRequestHandle(handle: Handle, editable: Bool) -> Bool {
+    let info = match handleInfo(handle) {
+        Ok(value) -> value
+        Error(failed) -> {
+            absorb failed
+            return false
+        }
+    }
+    if info.objectType != .File
+        || !info.rights.has(Rights.read | Rights.inspect | Rights.transfer | Rights.duplicate)
+        || (editable && !info.rights.has(Rights.write)) { return false }
+    let opened = match fileInfo(handle) {
+        Ok(value) -> value
+        Error(reason) -> {
+            absorb reason
+            return false
+        }
+    }
+    let kind = match openedFileKind(handle) {
+        Ok(value) -> value
+        Error(reason) -> {
+            absorb reason
+            return false
+        }
+    }
+    return eligibleNotesDocument(opened, kind, editable)
 }
 
 // What one read of the desktop's channel found.
@@ -67,30 +116,57 @@ function receiveLaunchRequest(channel: Handle) -> ReceivedRequest {
             return .Nothing
         }
     }
-    // The first handle is the channel to answer on; there is no use for more.
+    // One reply channel, plus one document File for the dedicated opcode.
+    // Unknown handles are always released, including malformed requests.
     var reply = Handle.invalid
+    var document = Handle.invalid
     for index in 0..received.handles.count {
-        if index == 0 { reply = received.handles[0] } else { release(received.handles[index]) }
+        match index {
+            0 -> reply = received.handles[index]
+            1 -> document = received.handles[index]
+            else -> release(received.handles[index])
+        }
     }
     let count = Number(received.bytes)
     let length = Number(heapLoad<U32>(body, 12))
     let ask = count >= ServiceMessage.headerBytes ? desktopAsk(heapLoad<U32>(body, 0)) : .None
+    let mode = workspaceDocumentMode(heapLoad<U32>(body, 8))
+    let editable = match mode {
+        Some(value) -> value == WorkspaceDocumentMode.Edit
+        None -> false
+    }
     match ask {
         Some(asked) -> {
             if length > 0 && ServiceMessage.headerBytes + length == count {
-                return .Asked(
-                    LaunchRequest {
-                        ask: asked,
-                        path: textOf(heapOffset(body, ServiceMessage.headerBytes), length),
-                        reply: reply
-                    }
-                )
+                let selectedPath = textOf(heapOffset(body, ServiceMessage.headerBytes), length)
+                var valid = false
+                if asked == .OpenDocument {
+                    valid = received.handles.count == 2 && validLaunchReply(reply)
+                        && validDocumentRequestHandle(document, editable)
+                        && selectedPath == WorkspaceDocument.notesExecutable
+                        && mode.isSome()
+                } else {
+                    valid = received.handles.count == 1 && validLaunchReply(reply)
+                        && mode.isSome() && !editable
+                }
+                if valid {
+                    return .Asked(
+                        LaunchRequest {
+                            ask: asked,
+                            path: selectedPath,
+                            reply: reply,
+                            document: document,
+                            editable: editable
+                        }
+                    )
+                }
             }
         }
         None -> {}
     }
     log warn("a service sent a request that is not one", bytes: count)
     if reply != Handle.invalid { release(reply) }
+    if document != Handle.invalid { release(document) }
     return .Nothing
 }
 
@@ -102,6 +178,9 @@ function receiveLaunchRequest(channel: Handle) -> ReceivedRequest {
 // Nothing that climbs out of those counts.
 function isApplicationExecutable(path: borrow String) -> Result<Bool, TesseraError> {
     if path.contains("..") || path.contains("//") { return .Ok(false) }
+    // Desktop is a sealed system CoreService, not a user application, but it
+    // may be requested as mobile home after the platform has already started.
+    if path == desktopExecutable() { return .Ok(true) }
     var rest = ""
     let system = "/" + SystemDirectory.systemApplications + "/"
     let installed = "/" + SystemDirectory.applications + "/"
@@ -316,13 +395,16 @@ function openApplication(
         }
     }
     ensureApplicationData(calls, nameOf(path))
+    // Desktop is the persistent surface beneath applications on every
+    // platform, including when a platform requests it after boot.
+    let desktop = path == desktopExecutable()
     fleet.services.append(
         Service {
             name: nameOf(path),
             path: copy path,
             arguments: [],
-            restart: false,
-            displayRole: DisplayRole.Application,
+            restart: desktop,
+            displayRole: desktop ? DisplayRole.Desktop : DisplayRole.Application,
         }
     )
     fleet.processes.append(Handle.invalid)
@@ -342,6 +424,49 @@ function openApplication(
     }
     log info("opened an application", application: fleet.services[slot].name, path)
     return .Ok(.Started(slot))
+}
+
+// Opens an explicitly chosen document in a *new* confined Notes process.
+// This request can only originate from Inlay; PID 1 chooses the executable
+// from its sealed system volume, not from any path provided by the caller.
+// Running Notes instances are never reused: there is no live-document RIDL
+// activation channel yet, and bringing one to the front would lose the grant.
+function startNotesDocument(
+    calls: Handle,
+    document: Handle,
+    editable: Bool,
+    fleet: borrow mut Fleet
+) -> Result<Number, OpenFailure> {
+    let path = WorkspaceDocument.notesExecutable
+    match isApplicationExecutable(path) {
+        Ok(valid) -> if !valid { return .Error(.NotAnApplication) }
+        Error(failed) -> return .Error(.ExecutableCheck(failed))
+    }
+    let service = Service {
+        name: "Notes",
+        path: path,
+        arguments: [],
+        restart: false,
+        displayRole: .Application
+    }
+    let started = match startDocument(calls, service, document, editable) {
+        Ok(value) -> value
+        Error(failed) -> return .Error(.Start(failed))
+    }
+    // Only add a fleet slot after the File grant and image launch succeeded.
+    // It is supervised like another app but never restarted on failure.
+    let slot = fleet.services.count
+    fleet.services.append(service)
+    fleet.processes.append(started.process)
+    fleet.channels.append(started.channel)
+    fleet.outputs.append(started.output)
+    fleet.jobs.append(started.job)
+    fleet.partial.append("")
+    fleet.starts.append(1)
+    fleet.deaths.append(Deaths {})
+    greet(calls, started.channel, "Notes")
+    log info("opened a document in a new confined Notes instance", editable: editable)
+    return .Ok(slot)
 }
 
 // Makes the application's data folder, `/data/appdata/<Name>`, unless it is

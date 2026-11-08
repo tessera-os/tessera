@@ -68,6 +68,7 @@ function began(mobile: borrow mut Mobile, opened: borrow DynamicPlatformSession)
     let channel = copy opened.channel
     mobile.channel = .Some(copy channel)
     mobile.own = .Some(copy opened.surface)
+    mobile.unlockPressPending = false
     // A new display server holds no glass for the platform: ask for all of it again.
     mobile.glass = PlatformGlassClaim {}
     mobile.output = SurfaceFrame {
@@ -246,7 +247,32 @@ function goHome(mobile: borrow mut Mobile) {
         Some(value) -> value
         None -> return
     }
+    // PID 1 starts Desktop as an application on mobile, so PlatformKit also
+    // includes its surface in shownApplicationSurfaces(). It is our home,
+    // not a window to put away. Never hide everything if it has not arrived.
+    let home = match mobile.home {
+        Some(value) -> value
+        None -> {
+            log warn("cannot go home before the Desktop surface arrives")
+            return
+        }
+    }
+    // Restore Desktop first, including when an earlier home gesture hid it.
+    // Keeping it visible also lets the compositor put it behind the departing
+    // application for the swipe-home animation.
+    match sendSetHidden(copy channel, home, false) {
+        Ok -> {}
+        Error(failed) -> {
+            log warn("could not show the home screen", error: errorName(failed))
+            return
+        }
+    }
+    match mobile.state.setSurfaceVisibility(PlatformSurfaceId(home.raw), .Visible) {
+        Ok -> {}
+        Error(failure) -> log warn("the home screen was not tracked", failure)
+    }
     for surface in mobile.state.shownApplicationSurfaces() {
+        if surface.raw == home.raw { continue }
         match sendSetHidden(copy channel, DisplaySurfaceId(surface.raw), true) {
             Ok -> {}
             Error(failed) -> log warn("could not put an application away", error: errorName(failed))
@@ -256,12 +282,9 @@ function goHome(mobile: borrow mut Mobile) {
             Error(failure) -> log warn("the platform lost track of a window", failure)
         }
     }
-    mobile.front = copy mobile.home
+    mobile.front = .Some(home)
     mobile.peeking = false
-    match mobile.home {
-        Some(home) -> focus(mobile, home)
-        None -> {}
-    }
+    focus(mobile, home)
     keepDock(mobile)
     log info("went home")
 }
@@ -353,12 +376,21 @@ function key(mobile: borrow mut Mobile, pressed: borrow DisplayKey) -> Bool {
     return true
 }
 
-/// A click on the lock screen opens it, as a key does; on touch the lock screen
-/// takes the finger itself and opens when it is swiped up. Anywhere else the
-/// press is the interface's.
+/// The compositor gives the locked platform pointer presses before the widget
+/// tree. A touchscreen that reports taps but not a usable drag must still be
+/// able to open a lock screen without a passcode. The original swipe-up gesture
+/// remains available; a click or tap also works, including with a USB mouse.
+/// Never use this shortcut when a passcode is configured.
 function press(mobile: borrow mut Mobile, button: borrow DisplayPointerButton) -> Bool {
-    if !mobile.lock.locked || navigation() == .Touch { return false }
-    if button.state == .Pressed { unlock(mobile) }
+    if mobile.unlockPressPending && button.state == .Released {
+        mobile.unlockPressPending = false
+        return true
+    }
+    if !mobile.lock.locked || mobile.passcode { return false }
+    if button.button != UNumber(1) || button.state != .Pressed { return false }
+    mobile.unlockPressPending = true
+    log info("a primary press opened the non-passcode lock screen")
+    unlock(mobile)
     return true
 }
 
@@ -368,6 +400,7 @@ function press(mobile: borrow mut Mobile, button: borrow DisplayPointerButton) -
 function lockScreen(mobile: borrow mut Mobile) {
     if mobile.lock.locked { return }
     if mobile.controls.open { controlCenterAct(mobile, .Close) }
+    mobile.passcode = passcodeRequired()
     mobile.lock.lock()
     keepBar(mobile)
     match holdInput(mobile, true) {
@@ -464,6 +497,7 @@ function platformRoot(
                 navigation = navigation(),
                 phase = phase,
                 status = copy status,
+                passcode = mobile.passcode,
                 open = move unlocked,
                 notifications = notificationHistory().groups(),
                 notificationActions = move history
@@ -542,7 +576,7 @@ function glassOf(mobile: borrow Mobile) -> [PlatformGlass] {
 // starts its first display session.
 function requestMobileHome(mobile: borrow mut Mobile) {
     mobile.homeRequested = true
-    match askWorkspace(.Open("/System/Applications/Desktop.app/Contents/MacOS/Desktop")) {
+    match askWorkspace(.Open("/" + SystemDirectory.coreServices + "/Desktop.app/Contents/MacOS/Desktop")) {
         Ok(answer) -> {
             mobile.homeAnswer = .Some(answer)
             log info("asked PID 1 to open the mobile home")
@@ -561,12 +595,18 @@ function pollMobileHomeAnswer(mobile: borrow mut Mobile) {
         Some(channel) -> channel
         None -> return
     }
-    match readWorkspaceAnswer(copy answer) {
-        Ok(NotYet) -> return
-        Ok(Silent) -> log info("PID 1 opened the mobile home")
-        Ok(Said(reason)) -> {
-            mobile.homeRequested = false
-            log warn("PID 1 refused the mobile home", reason)
+    let answerResult = readWorkspaceAnswer(copy answer)
+    match answerResult {
+        Ok(spoken) -> {
+            match spoken {
+                NotYet -> return
+                Silent -> log info("PID 1 opened the mobile home")
+                DocumentOpened -> log info("PID 1 acknowledged the mobile home")
+                Said(reason) -> {
+                    mobile.homeRequested = false
+                    log warn("PID 1 refused the mobile home", reason)
+                }
+            }
         }
         Error(failure) -> {
             mobile.homeRequested = false
@@ -590,8 +630,11 @@ function main() {
     let bridge = makeBridgeHandle()
     var mobile = Mobile(state: emptyPlatformState(.AdaptiveMobile))
     mobile.bridge = copy bridge
+    mobile.passcode = passcodeRequired()
     requestMobileHome(mobile)
-    // Switched in by a person at the machine: they are past the lock screen.
+    // Switching platforms intentionally starts unlocked; a normal cold boot
+    // still shows the lock screen, now with a reliable primary-press unlock
+    // when the device has no passcode.
     if startsUnlocked() { mobile.lock.locked = false }
     mobile.zone = currentTimeZone()
     log info(

@@ -3,7 +3,7 @@ construct AboutUITests extends Package {
     let version: String = "26.10.4"
     let kind: PackageKind = .App
     let dependencies: [Dependency] = [
-        Dependency { name: "KiraUI", path: "../../kira-ui" },
-        Dependency { name: "KiraUITesting", path: "../../kira-ui/UITesting" }
+        Dependency { name: "KiraUI", path: "../../../kira-packages/kira-ui" },
+        Dependency { name: "KiraUITesting", path: "../../../kira-packages/kira-ui/UITesting" }
     ]
 }

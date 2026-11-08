@@ -1,0 +1,121 @@
+//! Inlay's private recent-document history. A path is recorded only after
+//! PID 1 confirms that the selected Notes launch succeeded. Merely queuing
+//! an OpenDocument request is not a successful open event.
+import Foundation
+import FileOperations
+import KiraUI
+import LibTessera
+import TesseraUI
+
+namespace InlayRecentCache {
+    let directory: String = "/" + SystemDirectory.applicationData + "/Inlay"
+    let file: String = "/" + SystemDirectory.applicationData + "/Inlay/RecentDocuments"
+}
+
+/// Inlay is an unconfined, sealed system tool, so PID 1 does not create an
+/// appdata container for it. Create this one directory, but refuse linked
+/// parents and existing non-directories rather than writing elsewhere.
+function recentCacheDirectoryAvailable() -> Bool {
+    for parent in ["/data", "/data/appdata"] {
+        let status = match linkStatus(parent) {
+            Ok(found) -> found
+            Error(reason) -> {
+                absorb reason
+                return false
+            }
+        }
+        if status.kind != .Directory { return false }
+    }
+    match linkStatus(InlayRecentCache.directory) {
+        Ok(found) -> return found.kind == .Directory
+        Error(reason) -> match reason {
+            Missing -> {}
+            else -> return false
+        }
+    }
+    match makeDirectory(InlayRecentCache.directory) {
+        Ok -> {}
+        Error(reason) -> {
+            absorb reason
+            return false
+        }
+    }
+    return match linkStatus(InlayRecentCache.directory) {
+        Ok(found) -> found.kind == .Directory
+        Error(reason) -> {
+            absorb reason
+            false
+        }
+    }
+}
+
+struct PendingRecentOpens {
+    var paths: [String] = []
+}
+
+namespace PendingRecentSlot {
+    let key: PersistentStateKey = PersistentStateKey { name: "inlay.recent.pending" }
+}
+
+function pendingRecentOpens() -> RawPtr {
+    if !ambientStateHas(PendingRecentSlot.key) {
+        ambientStatePut(PendingRecentSlot.key, nativeUserData(nativeState(PendingRecentOpens {})))
+    }
+    return ambientStateGet(PendingRecentSlot.key)
+}
+
+/// Queue only local history metadata, after the system request was accepted
+/// into TesseraUI's queue. The document pathname never goes to PID 1.
+function recentOpenRequested(path: borrow String) {
+    unsafe {
+        var state = nativeRecover<PendingRecentOpens>(pendingRecentOpens())
+        state.paths.append(copy path)
+    }
+}
+
+function takePendingRecentPath() -> String? {
+    unsafe {
+        var state = nativeRecover<PendingRecentOpens>(pendingRecentOpens())
+        if state.paths.count == 0 { return .None }
+        let first = copy state.paths[0]
+        var kept: [String] = []
+        for index in 1..state.paths.count { kept.append(copy state.paths[index]) }
+        state.paths = move kept
+        return .Some(first)
+    }
+}
+
+/// Called after TesseraUI has processed workspace replies. Failure events
+/// consume the pending path but never touch persisted history. The cache is
+/// data, not an access grant; every reopen goes through Inlay's File checks.
+function processRecentOpenOutcomes() {
+    for outcome in takeDocumentOpenOutcomes() {
+        let path = match takePendingRecentPath() {
+            Some(value) -> value
+            None -> {
+                log warn("a document-open answer had no local history request")
+                continue
+            }
+        }
+        match outcome {
+            Failed -> {}
+            Opened -> {
+                // System-only paths and app-private data must never appear
+                // in the person's user-document history.
+                if !inlayRecentDocumentPath(path) { continue }
+                if !recentCacheDirectoryAvailable() {
+                    log warn("Inlay's recent-documents directory is unavailable")
+                    continue
+                }
+                match recordConfirmedRecentOpen(InlayRecentCache.file, path, unixMillis()) {
+                    Ok -> {}
+                    Error(failure) -> log warn("could not keep recent document", failure)
+                }
+            }
+        }
+    }
+}
+
+function forgetRecentDocument(path: borrow String) -> Result<Void, RecentStoreFailure> {
+    return forgetConfirmedRecentOpen(InlayRecentCache.file, path)
+}

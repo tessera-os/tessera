@@ -1,0 +1,102 @@
+//! Recent document launches, persisted separately from the private Notes
+//! library. Missing volumes remain listed but are never silently reopened.
+import Foundation
+import FileOperations
+import KiraUI
+import LibTessera
+
+construct RecentPane() extends Widget {
+    @State var problem: String = ""
+    @State var selectedPreview: String = ""
+
+    body {
+        let recent = match readRecentDocumentsFile(InlayRecentCache.file) {
+            Ok(value) -> value
+            Error(failure) -> {
+                absorb failure
+                return Form(children: [
+                    Section(children: [Text("Recent Documents could not be read. "
+                        + "The existing history has not been replaced.")
+                        .foregroundColor(.Secondary)],
+                        header: Text("Recent Documents"))
+                ]).navigationTitle("Recent Documents")
+            }
+        }
+        var rows: [Any Widget] = []
+        for entry in recent.inspected() { rows.append(self.row(entry)) }
+        if rows.count == 0 {
+            rows.append(Text("No documents have been opened in Notes yet.")
+                .foregroundColor(.Secondary))
+        }
+        if problem.count > 0 { rows.append(Text(copy problem).foregroundColor(.Secondary)) }
+        let sections: [Any Widget] = [
+            Section(children: rows, header: Text("Recently Opened"),
+                footer: Text("Missing documents stay here until you choose Forget.")),
+            previewSection(selectedPreview)
+        ]
+        return Form(children: sections).navigationTitle("Recent Documents")
+    }
+
+    function row(entry: borrow RecentEntry) -> Any Widget {
+        let path = copy entry.document.path
+        let name = lastPathPart(path)
+        let allowed = inlayRecentDocumentPath(path)
+        return HStack(spacing = .Small, alignment = .Center) {
+            VStack(spacing = .Small, alignment = .Leading) {
+                Text(name)
+                Text(parentPath(path)).foregroundColor(.Secondary)
+            }
+            Spacer()
+            if !allowed {
+                Text("Outside document locations; cannot reopen")
+                    .foregroundColor(.Secondary)
+            } else { match entry.availability {
+                Available -> {
+                    if isNotesRegularFile(path) {
+                        Button(action = { in self.reopen(path) }) { Text("Open in Notes") }
+                    }
+                    Button(action = { in selectedPreview = copy path }) {
+                        Text("Preview")
+                    }
+                    Button(action = { in showFolder(parentPath(path)) }) {
+                        Text("Reveal")
+                    }
+                }
+                Unavailable -> Text("Volume or file unavailable")
+                    .foregroundColor(.Secondary)
+                UnsafePath -> Text("Unsafe path; cannot reopen")
+                    .foregroundColor(.Secondary)
+            } }
+            Button(action = { in
+                match forgetRecentDocument(path) {
+                    Ok -> {
+                        if selectedPreview == path { selectedPreview = "" }
+                        problem = ""
+                        redrawAfter(0)
+                    }
+                    Error(failure) -> {
+                        absorb failure
+                        problem = "Could not remove this history entry."
+                    }
+                }
+            }) {
+                Text("Forget")
+            }
+        }
+    }
+
+    function reopen(path: borrow String) {
+        // A stored path is never a saved access grant. Check and open the
+        // selected File again through the same no-symlink Notes launch path.
+        if !isNotesRegularFile(path) {
+            problem = "That document is no longer safe to reopen."
+            return
+        }
+        match openSelectedInNotes(path, false) {
+            Ok -> problem = ""
+            Error(reason) -> {
+                problem = "Could not reopen the document in Notes (" + errorName(reason) + ")."
+            }
+        }
+    }
+}

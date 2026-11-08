@@ -122,6 +122,38 @@ function alteringStagedBytesOrManifestInvalidatesSignature() {
             verifyAppImageCandidate(manifest, path, appTestSigner(), appTestSignature(), .Direct)
         )
     )
+    // An old valid signature for an app with no links must NOT authorize a
+    // changed manifest declaring a URL scheme, even with identical image bytes.
+    let withLink = ApplicationManifest {
+        identifier: "example.notes", name: "Notes", version: 1,
+        executable: "bin", requests: ["display", "data"],
+        linkSchemes: ["demo+notes"]
+    }
+    expect!(appSignatureStatement(withLink,
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    ).startsWith("Tessera app image 2\n"))
+    expect!(!appVerified(
+        verifyAppImageCandidate(withLink, path, appTestSigner(), appTestSignature(), .Direct)
+    ))
+    let otherLink = ApplicationManifest {
+        identifier: "example.notes", name: "Notes", version: 1,
+        executable: "bin", requests: ["display", "data"],
+        linkSchemes: ["demo+task"]
+    }
+    expect!(!appVerified(
+        verifyAppImageCandidate(otherLink, path, appTestSigner(), appTestSignature(), .Direct)
+    ))
+    let withTypes = ApplicationManifest {
+        identifier: "example.notes", name: "Notes", version: 1,
+        executable: "bin", requests: ["display", "data"],
+        documentTypes: ["txt"]
+    }
+    expect!(appSignatureStatement(withTypes,
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    ).startsWith("Tessera app image 3\n"))
+    expect!(!appVerified(
+        verifyAppImageCandidate(withTypes, path, appTestSigner(), appTestSignature(), .Direct)
+    ))
     match writeFile(path, "abd") { Ok -> {} Error(reason) -> absorb reason }
     expect!(
         !appVerified(

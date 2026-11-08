@@ -38,7 +38,12 @@ construct SetupView() extends Widget {
             Text(setupTitle(current))
             .font(size = scaledMetric(SetupLook.title, relativeTo: .largeTitle), weight = .Bold)
             self.page(current)
+            Spacer()
             HStack(spacing = .Medium, alignment = .Center) {
+                if step < setupSteps.count - 1 {
+                    Button(action = { in skipSetup() }) { Text("Skip Setup") }
+                    .buttonStyle(.Bordered)
+                }
                 if step > 0 {
                     Button(action = { in step = step - 1 }) { Text("Back") }
                 }
@@ -47,6 +52,7 @@ construct SetupView() extends Widget {
             }
         }
         .maxWidth(resolvedLength(SetupLook.width))
+        .fillHeight()
         .padding(resolvedLength(SetupLook.gap))
     }
 
@@ -219,4 +225,11 @@ function finishSetup() {
     keepSetting(SetupSetting.completed, SetupSetting.yes)
     log info("the first-run setup is complete")
     requestWindowClose()
+}
+
+// Skipping setup has the same durable completion semantics as Get Started:
+// defaults stay in Settings and Welcome does not launch again after reboot.
+function skipSetup() {
+    log info("the first-run setup was skipped")
+    finishSetup()
 }

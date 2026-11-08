@@ -10,4 +10,9 @@ construct NotesApp extends Package {
     // application is.
     let assets: [String] = ["Resources/AppIcon.tessicon"]
     let moduleRoot: String = "Notes"
+    let dependencies: [Dependency] = [
+        Dependency { name: "LibTessera", path: "../libtessera" },
+        Dependency { name: "KiraUI", path: "../../kira-packages/kira-ui" },
+        Dependency { name: "TesseraUI", path: "../tessera-ui" }
+    ]
 }

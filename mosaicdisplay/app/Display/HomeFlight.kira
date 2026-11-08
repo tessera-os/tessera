@@ -669,7 +669,7 @@ function drawHomeFlight(composer: borrow Composer, server: borrow Server) {
         width: flight.card.width,
         height: flight.card.height,
     }
-    let density = server.display.scanout.scale
+    let density = server.display.scanout.clientScale()
     let whole = client.frame
     let scale = max(card.width / max(whole.width, 1), card.height / max(whole.height, 1))
     let drawnWidth = content.width / density * scale

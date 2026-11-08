@@ -1,0 +1,7 @@
+//! Source-checked protocol and file policy regressions without a UI dependency.
+construct DocumentProtocolTests extends Package {
+    let kind: PackageKind = .App
+    let dependencies: [Dependency] = [
+        Dependency { name: "LibTessera", path: "../.." }
+    ]
+}

@@ -10,11 +10,11 @@ construct TesseraUI extends Package {
     let kind: PackageKind = .Library
     let moduleRoot: String = "TesseraUI"
     let dependencies: [Dependency] = [
-        Dependency { name: "KiraUI", path: "../kira-ui" },
+        Dependency { name: "KiraUI", path: "../../kira-packages/kira-ui" },
         Dependency { name: "LibTessera", path: "../libtessera" },
-        Dependency { name: "Ember", path: "../ember" },
-        Dependency { name: "KCoreAnimation", path: "../kcoreanimation" },
-        Dependency { name: "KiraLayout", path: "../kira-layout" },
+        Dependency { name: "Ember", path: "../../kira-packages/ember" },
+        Dependency { name: "KCoreAnimation", path: "../../kira-packages/kcoreanimation" },
+        Dependency { name: "KiraLayout", path: "../../kira-packages/kira-layout" },
         Dependency { name: "TesseraDisplayClient", path: "../display-client" },
         Dependency { name: "AppKit", path: "../appkit" }
     ]

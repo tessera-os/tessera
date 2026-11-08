@@ -4,7 +4,7 @@ construct TesseraUITests extends Package {
     let kind: PackageKind = .App
     let dependencies: [Dependency] = [
         Dependency { name: "TesseraUI", path: ".." },
-        Dependency { name: "KiraUI", path: "../../kira-ui" },
+        Dependency { name: "KiraUI", path: "../../../kira-packages/kira-ui" },
         Dependency { name: "AppKit", path: "../../appkit" },
         Dependency { name: "LibTessera", path: "../../libtessera" }
     ]

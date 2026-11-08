@@ -25,6 +25,35 @@ public enum WorkspaceRequest {
     // The Dynamic Platform to switch to, a `platform.dynamic` value. Only the
     // running platform asks it.
     SwitchPlatform(String)
+    // One explicitly selected File for the system Notes editor. `editable`
+    // requests an additional write grant, never a filesystem path.
+    OpenDocument(DocumentOpenRequest)
+}
+
+public struct DocumentOpenRequest {
+    let file: Handle
+    let editable: Bool
+}
+
+public namespace WorkspaceDocument {
+    let notesExecutable: String = "/System/Applications/Notes.app/Contents/MacOS/Notes"
+}
+
+/// The document-open request reuses the otherwise fixed workspace serial
+/// word. Its wire values are stable: one means read, two means edit.
+@Derive(Copy)
+public enum WorkspaceDocumentMode: U32 {
+    Read = 1
+    Edit = 2
+}
+
+/// Unknown modes never become read or edit grants through numeric fallback.
+public function workspaceDocumentMode(raw: U32) -> WorkspaceDocumentMode? {
+    return match raw {
+        1 -> .Some(.Read)
+        2 -> .Some(.Edit)
+        else -> .None
+    }
 }
 
 // Why a request is not asked at all.
@@ -54,8 +83,24 @@ public enum WorkspaceAnswer {
     NotYet
     // PID 1 had something to say.
     Said(String)
+    // An explicit document-launch acknowledgement from PID 1.
+    DocumentOpened
     // PID 1 closed the channel without a word: the request did what it asked.
     Silent
+}
+
+/// The document-open success acknowledgement has no path or file contents.
+/// Its exact header must match; a generic channel closure is not proof.
+public function validDocumentOpenedReply(
+    opcode: U32,
+    total: Number,
+    serial: U32,
+    detail: Number
+) -> Bool {
+    return opcode == ServiceOpcode.DocumentOpened.rawValue()
+        && total == ServiceMessage.headerBytes
+        && serial == WorkspaceHeader.serial
+        && detail == 0
 }
 
 // Why an answer could not be read.
@@ -73,7 +118,7 @@ namespace WorkspaceHeader {
     let detailAt: Number = 12
     // Each request is answered on a channel of its own, so serials are never
     // told apart.
-    let serial: Number = 1
+    let serial: U32 = WorkspaceDocumentMode.Read.rawValue()
 }
 
 namespace WorkspaceLimit {
@@ -115,6 +160,7 @@ function requestOpcode(request: borrow WorkspaceRequest) -> ServiceOpcode {
         Install -> .Install
         Uninstall -> .Uninstall
         SwitchPlatform -> .SwitchPlatform
+        OpenDocument -> .OpenDocument
     }
 }
 
@@ -124,11 +170,13 @@ function requestPath(request: borrow WorkspaceRequest) -> String {
         Install(path) -> copy path
         Uninstall(path) -> copy path
         SwitchPlatform(name) -> copy name
+        OpenDocument -> WorkspaceDocument.notesExecutable
     }
 }
 
-// The request's bytes on the wire.
-function encodedRequest(
+// The request's bytes on the wire. Exposed for tests and trusted protocol
+// inspectors; the selected File remains an out-of-band capability handle.
+public function encodedRequest(
     request: borrow WorkspaceRequest
 ) -> Result<ByteBlock, WorkspaceRequestFailure> {
     let bytes = requestPath(request).utf8()
@@ -139,10 +187,35 @@ function encodedRequest(
     let body = zeroedBlock(count: total, alignment: 16)
     blockStore<U32>(body, WorkspaceHeader.opcodeAt, requestOpcode(request).rawValue())
     blockStore<U32>(body, WorkspaceHeader.lengthAt, total)
-    blockStore<U32>(body, WorkspaceHeader.serialAt, WorkspaceHeader.serial)
+    // A reply has a private channel, so the serial doubles as the explicit
+    // document mode for this one opcode: 1 = read, 2 = edit.
+    let serial: U32 = match request {
+        OpenDocument(selected) -> selected.editable
+            ? WorkspaceDocumentMode.Edit.rawValue()
+            : WorkspaceDocumentMode.Read.rawValue()
+        Open, Install, Uninstall, SwitchPlatform -> WorkspaceHeader.serial
+    }
+    blockStore<U32>(body, WorkspaceHeader.serialAt, serial)
     blockStore<U32>(body, WorkspaceHeader.detailAt, bytes.count)
     for (index, byte) in bytes.enumerated() { blockStore<U8>(body, header + index, byte) }
     return .Ok(move body)
+}
+
+// Channel.write moves transferred handles after its transfer checks. When
+// the channel or its rights are invalid, it returns before consuming them.
+// Close only the still-owned reply end; the caller retains responsibility
+// for a document File on an unsuccessful request.
+function closeUntransferredReply(handle: Handle) {
+    match handleInfo(handle) {
+        Ok(info) -> {
+            absorb info
+            match handleClose(handle) {
+                Ok -> {}
+                Error(reason) -> absorb reason
+            }
+        }
+        Error(reason) -> absorb reason
+    }
 }
 
 // Asks PID 1 for `request`. The channel its answer comes on, which is the
@@ -158,13 +231,20 @@ public function askWorkspace(
         Ok(value) -> value
         Error(failure) -> return .Error(.NoAnswerChannel(failure))
     }
-    let carried: [Handle] = [pair.second]
+    var carried: [Handle] = [pair.second]
+    match request {
+        OpenDocument(selected) -> carried.append(selected.file)
+        Open, Install, Uninstall, SwitchPlatform -> {}
+    }
     let buffer = Buffer { address: body.pointer(), length: body.count }
     return match channelWrite(channel, buffer, carried) {
         Ok -> .Ok(pair.first)
-        Error(failure) -> match handleClose(pair.first) {
-            Ok -> .Error(.NotSent(failure))
-            Error(closing) -> .Error(.NotClosed(closing))
+        Error(failure) -> {
+            closeUntransferredReply(pair.second)
+            return match handleClose(pair.first) {
+                Ok -> .Error(.NotSent(failure))
+                Error(closing) -> .Error(.NotClosed(closing))
+            }
         }
     }
 }
@@ -186,9 +266,13 @@ public function readWorkspaceAnswer(
     let count = message.bytes
     let header = ServiceMessage.headerBytes
     if count < header { return .Error(.Malformed(count)) }
-    let opcode: Number = blockLoad<U32>(body, WorkspaceHeader.opcodeAt)
+    let opcode: U32 = blockLoad<U32>(body, WorkspaceHeader.opcodeAt)
     let length: Number = blockLoad<U32>(body, WorkspaceHeader.detailAt)
-    if opcode != Number(ServiceOpcode.Answer.rawValue()) || header + length != count {
+    let serial: U32 = blockLoad<U32>(body, WorkspaceHeader.serialAt)
+    if validDocumentOpenedReply(opcode, count, serial, length) {
+        return .Ok(.DocumentOpened)
+    }
+    if opcode != ServiceOpcode.Answer.rawValue() || header + length != count {
         return .Error(.Malformed(count))
     }
     return .Ok(.Said(stringFromCBytes(heapOffset(body.pointer(), header), length)))

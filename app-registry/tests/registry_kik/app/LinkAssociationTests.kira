@@ -1,0 +1,212 @@
+import Foundation
+import AppRegistry
+
+function linkChosen(result: Result<Void, LinkAssociationFailure>) -> Bool {
+    return match result {
+        Ok -> true
+        Error(failure) -> {
+            absorb failure
+            false
+        }
+    }
+}
+
+@Test
+function customLinksRouteOnlyToTheChosenAcceptedPublisher() {
+    var registry = ApplicationRegistry {}
+    var first = candidate(pubA, 1, digestA)
+    var second = candidate(pubB, 1, digestB)
+    first.linkSchemes = ["example+notes"]
+    second.linkSchemes = ["example+notes"]
+    expect!(registrationSucceeded(registry.prepare(first)))
+    expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
+    var links = LinkAssociations {}
+    expect!(linkChosen(links.chooseDefault("EXAMPLE+NOTES", first.identity, registry)))
+    let active = match links.route("Example+Notes://read/123", registry) {
+        OpenAccepted(identity) -> sameApp(identity, first.identity)
+        ChooseApplication, DefaultUnavailable -> false
+    }
+    expect!(active)
+    registry.uninstall(first.identity)
+    expect!(registrationSucceeded(registry.prepare(second)))
+    expect!(registrationSucceeded(registry.activate(second.identity, digestB)))
+    let removed = match links.route("example+notes:read/123", registry) {
+        DefaultUnavailable(identity) -> sameApp(identity, first.identity)
+        ChooseApplication, OpenAccepted -> false
+    }
+    expect!(removed)
+    expect!(links.defaults.count == 1)
+}
+
+@Test
+function customLinksCannotBecomeDefaultsUntilAnAppIsAccepted() {
+    var registry = ApplicationRegistry {}
+    var first = candidate(pubA, 1, digestA)
+    first.linkSchemes = ["example+notes"]
+    var links = LinkAssociations {}
+    expect!(!linkChosen(links.chooseDefault("example+notes", first.identity, registry)))
+    expect!(registrationSucceeded(registry.prepare(first)))
+    expect!(!linkChosen(links.chooseDefault("example+notes", first.identity, registry)))
+    expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
+    expect!(linkChosen(links.chooseDefault("example+notes", first.identity, registry)))
+    links.forgetDefault("EXAMPLE+NOTES")
+    expect!(links.route("example+notes:1", registry) == LinkRoute.ChooseApplication)
+}
+
+@Test
+function customLinkParserRejectsSystemSchemesAndAmbiguousInputs() {
+    let normalized = try customLinkScheme("Demo+Notes://open?id=7") otherwise return
+    expect!(normalized == "demo+notes")
+    for address in [
+        "https://example.com", "HTTP://example.com", "file:///private/notes",
+        "javascript:alert(1)", "mailto:person@example.com", "tessera:settings",
+        "a:/x", "/path:example", "some/path:example", "demo notes:open",
+        "demo:has\nnewline", "demo:has\ttab", "demo:", ":missing", "no-scheme"
+    ] {
+        expect!(customLinkScheme(address).isNone())
+    }
+    expect!(customLinkScheme("demo:open?id=7").isSome())
+    expect!(customLinkScheme("demo://open#fragment").isSome())
+    var tooLong = "demo:"
+    for index in 0..LinkAssociationLimits.maxLinkBytes {
+        tooLong += "a"
+    }
+    expect!(customLinkScheme(tooLong).isNone())
+}
+
+@Test
+function linkDefaultReplacementDoesNotChangeOtherSchemes() {
+    var registry = ApplicationRegistry {}
+    var first = candidate(pubA, 1, digestA)
+    var second = candidate(pubB, 1, digestB)
+    first.linkSchemes = ["demo+notes", "demo+task"]
+    second.linkSchemes = ["demo+notes"]
+    expect!(registrationSucceeded(registry.prepare(first)))
+    expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
+    expect!(registrationSucceeded(registry.prepare(second)))
+    expect!(registrationSucceeded(registry.activate(second.identity, digestB)))
+    var links = LinkAssociations {}
+    expect!(linkChosen(links.chooseDefault("demo+notes", first.identity, registry)))
+    expect!(linkChosen(links.chooseDefault("demo+task", first.identity, registry)))
+    expect!(linkChosen(links.chooseDefault("DEMO+NOTES", second.identity, registry)))
+    expect!(links.defaults.count == 2)
+    let replaced = match links.route("demo+notes:one", registry) {
+        OpenAccepted(identity) -> sameApp(identity, second.identity)
+        ChooseApplication, DefaultUnavailable -> false
+    }
+    let unchanged = match links.route("demo+task:one", registry) {
+        OpenAccepted(identity) -> sameApp(identity, first.identity)
+        ChooseApplication, DefaultUnavailable -> false
+    }
+    expect!(replaced)
+    expect!(unchanged)
+    expect!(!linkChosen(links.chooseDefault("https", first.identity, registry)))
+}
+
+@Test
+function undeclaredSchemesCannotBeSelectedOrOpened() {
+    var registry = ApplicationRegistry {}
+    let app = candidate(pubA, 1, digestA)
+    expect!(registrationSucceeded(registry.prepare(app)))
+    expect!(registrationSucceeded(registry.activate(app.identity, digestA)))
+    var defaults = LinkAssociations {}
+    expect!(!linkChosen(defaults.chooseDefault("demo+notes", app.identity, registry)))
+    expect!(defaults.defaults.count == 0)
+    let found = match defaults.activation("demo+notes:open", registry) {
+        ChooseApplication -> true
+        Unavailable, Ready -> false
+    }
+    expect!(found)
+}
+
+@Test
+function removingADeclaredSchemeOnUpdateBlocksPreviouslySelectedDefault() {
+    var registry = ApplicationRegistry {}
+    var first = candidate(pubA, 1, digestA)
+    first.linkSchemes = ["demo+notes"]
+    expect!(registrationSucceeded(registry.prepare(first)))
+    expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
+    var defaults = LinkAssociations {}
+    expect!(linkChosen(defaults.chooseDefault("demo+notes", first.identity, registry)))
+    let original = match defaults.activation("DEMO+NOTES:open/1", registry) {
+        Ready(ticket) -> ticket
+        ChooseApplication, Unavailable -> return
+    }
+    expect!(defaults.activationIsCurrent(original, registry))
+    var update = candidate(pubA, 2, digestB)
+    update.linkSchemes = []
+    expect!(registrationSucceeded(registry.prepare(update)))
+    // A staged image must not change the accepted handler.
+    expect!(defaults.activationIsCurrent(original, registry))
+    expect!(registrationSucceeded(registry.activate(first.identity, digestB)))
+    expect!(!defaults.activationIsCurrent(original, registry))
+    let noHandler = match defaults.activation("demo+notes:open/1", registry) {
+        Unavailable(identity) -> sameApp(identity, first.identity)
+        ChooseApplication, Ready -> false
+    }
+    expect!(noHandler)
+    expect!(defaults.defaults.count == 1)
+    // A rollback must be independently approved and verified; only then can
+    // the now-accepted old image handle its declared scheme again.
+    expect!(registrationSucceeded(registry.rollBack(first.identity, digestA, true)))
+    let reopened = match defaults.activation("demo+notes:open/2", registry) {
+        Ready(ticket) -> ticket.imageDigest == digestA && ticket.version == 1
+        ChooseApplication, Unavailable -> false
+    }
+    expect!(reopened)
+}
+
+@Test
+function linkActivationTicketsAreBoundToChosenPublisherAndImageVersion() {
+    var registry = ApplicationRegistry {}
+    var first = candidate(pubA, 1, digestA)
+    var other = candidate(pubB, 1, digestB)
+    first.linkSchemes = ["demo+notes"]
+    other.linkSchemes = ["demo+notes"]
+    expect!(registrationSucceeded(registry.prepare(first)))
+    expect!(registrationSucceeded(registry.activate(first.identity, digestA)))
+    expect!(registrationSucceeded(registry.prepare(other)))
+    expect!(registrationSucceeded(registry.activate(other.identity, digestB)))
+    var defaults = LinkAssociations {}
+    expect!(linkChosen(defaults.chooseDefault("demo+notes", first.identity, registry)))
+    let ticket = match defaults.activation("demo+notes:open/123", registry) {
+        Ready(value) -> value
+        ChooseApplication, Unavailable -> return
+    }
+    expect!(ticket.address == "demo+notes:open/123")
+    expect!(ticket.imageDigest == digestA)
+    expect!(sameApp(ticket.application, first.identity))
+    expect!(defaults.activationIsCurrent(ticket, registry))
+    expect!(linkChosen(defaults.chooseDefault("demo+notes", other.identity, registry)))
+    expect!(!defaults.activationIsCurrent(ticket, registry))
+    let next = match defaults.activation("demo+notes:open/123", registry) {
+        Ready(value) -> value
+        ChooseApplication, Unavailable -> return
+    }
+    expect!(next.imageDigest == digestB)
+    expect!(defaults.activationIsCurrent(next, registry))
+    registry.uninstall(other.identity)
+    expect!(!defaults.activationIsCurrent(next, registry))
+}
+
+@Test
+function pendingImageCannotSilentlyChangeItsDeclaredSchemesOrRequests() {
+    var registry = ApplicationRegistry {}
+    var candidateOne = candidate(pubA, 1, digestA)
+    candidateOne.linkSchemes = ["demo+notes"]
+    expect!(registrationSucceeded(registry.prepare(candidateOne)))
+    // Identical staging is idempotent, but the same digest cannot silently
+    // rewrite the accepted registration data or its declared capabilities.
+    expect!(registrationSucceeded(registry.prepare(candidateOne)))
+    var tampered = copy candidateOne
+    tampered.linkSchemes = ["demo+tasks"]
+    expect!(!registrationSucceeded(registry.prepare(tampered)))
+    tampered = copy candidateOne
+    tampered.requests = []
+    expect!(!registrationSucceeded(registry.prepare(tampered)))
+    tampered = copy candidateOne
+    tampered.documentTypes = ["txt"]
+    expect!(!registrationSucceeded(registry.prepare(tampered)))
+    expect!((try registry.staged(candidateOne.identity) otherwise return).candidate.linkSchemes
+        == ["demo+notes"])
+}

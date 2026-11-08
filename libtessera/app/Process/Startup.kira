@@ -50,8 +50,9 @@ public struct StartupInfo {
 }
 
 // What a handle in the Startup message is for. 15 is Tessera's addition:
-// the root Node, given to system processes only. 16 to 4095 are reserved for
-// Tessera, and 4096 and up are free for an app's own helper protocols.
+// the root Node, given to system processes only. 16 is a scoped document File
+// grant for an explicitly selected Open With activation. 17 to 4095 are
+// reserved for Tessera; 4096 and up are free for app helper protocols.
 @Derive(Copy)
 public distinct StartupTag = UNumber
 
@@ -71,6 +72,7 @@ public namespace StartupTag {
     let job: StartupTag = StartupTag(13)
     let executable: StartupTag = StartupTag(14)
     let systemRoot: StartupTag = StartupTag(15)
+    let document: StartupTag = StartupTag(16)
     // The first tag an app may give its own meaning.
     let firstApp: StartupTag = StartupTag(4096)
 }

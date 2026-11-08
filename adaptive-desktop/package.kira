@@ -6,7 +6,7 @@ construct AdaptiveDesktop extends Package {
         Dependency { name: "ArgumentParser", path: "../../kira-packages/argument-parser" },
         Dependency { name: "LibTessera", path: "../libtessera" },
         Dependency { name: "TesseraDisplayClient", path: "../display-client" },
-        Dependency { name: "KiraUI", path: "../kira-ui" },
+        Dependency { name: "KiraUI", path: "../../kira-packages/kira-ui" },
         Dependency { name: "TesseraUI", path: "../tessera-ui" },
         Dependency { name: "PlatformUI", path: "../platform-ui" },
         Dependency { name: "PlatformKit", path: "../platform-kit" },

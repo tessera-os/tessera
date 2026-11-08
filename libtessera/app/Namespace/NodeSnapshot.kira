@@ -1,0 +1,41 @@
+//! Typed snapshot of a Node's own identity and content metadata. A caller
+//! opening a selected document can compare this to FileInfo after File.open
+//! instead of trusting a second pathname lookup or raw structure offsets.
+import Foundation
+
+@Derive(Copy)
+public struct NodeSnapshot {
+    let kind: NodeKind
+    let nodeId: UNumber
+    let volumeId: UNumber
+    let size: UNumber
+    let modified: UNumber
+}
+
+/// Inspect the *opened Node handle*, not the pathname from which it came.
+/// The identity remains meaningful when the name is renamed or replaced.
+public function nodeSnapshot(node: Handle) -> Result<NodeSnapshot, TesseraError> {
+    let object = try resolveObject(node, .Node, Rights.inspect)
+    let backing = try backingOf(object)
+    let stat = try kernelNodeStat(backing)
+    return .Ok(NodeSnapshot {
+        kind: stat.kind,
+        nodeId: stat.identity,
+        volumeId: stat.volume,
+        size: stat.size,
+        modified: stat.modified
+    })
+}
+
+/// LibTessera stores Linux statx device IDs as (major << 32) | minor, while
+/// Foundation's `linkStatus` returns the Linux `st_dev` word. Convert to the
+/// Linux device encoding before comparing a selected path with an opened
+/// Node. This is a Linux-target API, not a generic cross-platform dev_t.
+public function linuxDeviceIdFromVolumeId(volume: UNumber) -> UNumber {
+    let major = volume >> UNumber(32)
+    let minor = volume & UNumber(0xFFFFFFFF)
+    return (minor & UNumber(0xFF))
+        | ((major & UNumber(0xFFF)) << UNumber(8))
+        | ((minor & ~UNumber(0xFF)) << UNumber(12))
+        | ((major & ~UNumber(0xFFF)) << UNumber(32))
+}

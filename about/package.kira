@@ -9,7 +9,7 @@ construct AboutApp extends Package {
     let assets: [String] = ["Resources/AppIcon.tessicon"]
     let moduleRoot: String = "About"
     let dependencies: [Dependency] = [
-        Dependency { name: "KiraUI", path: "../kira-ui" },
+        Dependency { name: "KiraUI", path: "../../kira-packages/kira-ui" },
         Dependency { name: "TesseraUI", path: "../tessera-ui" },
         Dependency { name: "LibTessera", path: "../libtessera" },
         Dependency { name: "ReleaseText", path: "ReleaseText" }

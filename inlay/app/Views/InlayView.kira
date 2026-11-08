@@ -183,6 +183,9 @@ construct InlaySidebar(images: [DiskImage], volumes: [Volume]) extends Widget {
                 NavigationLink(value = TrashRoute()) {
                     Label(title = "Trash", systemImage = .Trash)
                 }
+                NavigationLink(value = RecentsRoute()) {
+                    Label(title = "Recent Documents", systemImage = .Clock)
+                }
             } header: {
                 Text("Favorites")
             }
@@ -251,6 +254,7 @@ function placeDetail(images: borrow [DiskImage], installed: borrow [Application]
     match place {
         Folder(path) -> return FolderPane(path = copy path, writable = folderWritable(path))
         Trash -> return TrashPane()
+        Recents -> return RecentPane()
         Applications, Image -> {}
     }
     match chosenImage(images, place) {

@@ -32,6 +32,13 @@ public struct AppCandidate {
     let management: AppManagement
     /// Declarations are not grants: a newly requested capability stays off.
     var requests: [String] = []
+    /// Custom URL schemes declared by this verified image. Unlike a user
+    /// default, this list is app-controlled and grants no right to intercept
+    /// web URLs or another app's links.
+    var linkSchemes: [String] = []
+    /// Canonical filename extensions the verified image declared it can open.
+    /// This is a compatibility claim, never an authorization to read files.
+    var documentTypes: [String] = []
 }
 
 /// An image that the system may launch, after explicit commit.
@@ -133,6 +140,21 @@ public function validAppCandidate(candidate: borrow AppCandidate) -> Registratio
             return .Some(.InvalidCapability)
         }
         seen.append(copy request)
+    }
+    if candidate.linkSchemes.count > 32 { return .Some(.InvalidMetadata) }
+    var declared: [String] = []
+    for scheme in candidate.linkSchemes {
+        // Canonical lowercase spelling prevents duplicate/case-alias claims.
+        if !validCustomLinkScheme(scheme) || scheme != scheme.lowercased()
+            || declared.contains(scheme) { return .Some(.InvalidMetadata) }
+        declared.append(copy scheme)
+    }
+    if candidate.documentTypes.count > 64 { return .Some(.InvalidMetadata) }
+    var types: [String] = []
+    for extension in candidate.documentTypes {
+        if !validDocumentExtension(extension) || extension != extension.lowercased()
+            || types.contains(extension) { return .Some(.InvalidMetadata) }
+        types.append(copy extension)
     }
     return .None
 }

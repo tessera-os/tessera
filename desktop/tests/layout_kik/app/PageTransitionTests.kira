@@ -1,0 +1,78 @@
+import Foundation
+import HomeLayout
+
+@Test
+function homePagerReportsInteractiveProgressAndDestination() {
+    let moving = homePageTransition(1, -50, 100, 4)
+    expect!(moving.source == 1)
+    expect!(moving.destination == 2)
+    expect!(moving.progress == 0.5)
+    expect!(moving.offset == -50)
+}
+
+@Test
+function homePagerRecognisesAppLibraryWithoutCallingItAnIconPage() {
+    let library = homePageTransition(2, -100, 100, 4)
+    expect!(library.destination == 3)
+    let isLibrary = match library.kind {
+        AppLibrary -> true
+        IconPage -> false
+    }
+    expect!(isLibrary)
+    let icons = homeScreenKind(2, 3)
+    let isIconPage = match icons {
+        IconPage -> true
+        AppLibrary -> false
+    }
+    expect!(isIconPage)
+}
+
+@Test
+function homePagerRubberBandsAtEitherEdgeWithoutChangingPage() {
+    let left = homePageTransition(0, 90, 120, 4)
+    expect!(left.source == 0)
+    expect!(left.destination == 0)
+    expect!(left.progress == 0)
+    expect!(left.offset == 30)
+    let right = homePageTransition(3, -90, 120, 4)
+    expect!(right.source == 3)
+    expect!(right.destination == 3)
+    expect!(right.progress == 0)
+    expect!(right.offset == -30)
+}
+
+@Test
+function homePagerUsesProjectedReleaseInsteadOfCurrentDragOnly() {
+    expect!(homePageDestination(1, -49, 100, 4) == 1)
+    expect!(homePageDestination(1, -51, 100, 4) == 2)
+    expect!(homePageDestination(2, 51, 100, 4) == 1)
+    expect!(homePageDestination(0, 500, 100, 4) == 0)
+    expect!(homePageDestination(3, -500, 100, 4) == 3)
+}
+
+@Test
+function homePagerHandlesZeroWidthAndEmptyPageCounts() {
+    let empty = homePageTransition(5, -5, 0, 0)
+    expect!(empty.source == 0)
+    expect!(empty.destination == 0)
+    expect!(empty.progress == 0)
+    expect!(homePageDestination(5, -5, 0, 0) == 0)
+}
+
+@Test
+function floatingDockStaysAnchoredAcrossIconPages() {
+    expect!(homeDockVisibility(0, -95, 100, 3) == 1)
+    expect!(homeDockVisibility(1, -95, 100, 3) == 1)
+    expect!(homeDockVisibility(2, 60, 100, 3) == 1)
+}
+
+@Test
+function floatingDockFadesBetweenLastIconPageAndAppLibrary() {
+    expect!(homeDockVisibility(2, 0, 100, 3) == 1)
+    expect!(homeDockVisibility(2, -50, 100, 3) == 0.5)
+    expect!(homeDockVisibility(2, -200, 100, 3) == 0)
+    expect!(homeDockVisibility(3, 0, 100, 3) == 0)
+    expect!(homeDockVisibility(3, 50, 100, 3) == 0.5)
+    expect!(homeDockVisibility(3, 200, 100, 3) == 1)
+    expect!(homeDockVisibility(0, 0, 100, 0) == 0)
+}
