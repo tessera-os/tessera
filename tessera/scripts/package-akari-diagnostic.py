@@ -241,6 +241,39 @@ def align(size: int) -> int:
     return (size + PAGE_SIZE - 1) // PAGE_SIZE * PAGE_SIZE
 
 
+def android_v0_boot(
+    kernel: bytes, ramdisk: bytes, *, cmdline: str,
+    ramdisk_address: int = RAMDISK_ADDRESS,
+) -> bytes:
+    """Build the legacy Android boot image used by the Akatsuki PMOS port."""
+    if not 0 < ramdisk_address < 0x100000000:
+        raise PackageError("Android boot ramdisk address is outside 32-bit physical memory")
+    encoded = cmdline.encode("ascii")
+    if len(encoded) >= 512:
+        raise PackageError("kernel command line exceeds Android v0 limit")
+
+    sha = hashlib.sha1()
+    for payload in (kernel, ramdisk, b""):
+        sha.update(payload)
+        sha.update(struct.pack("<I", len(payload)))
+
+    header = bytearray(PAGE_SIZE)
+    header[:8] = BOOT_MAGIC
+    struct.pack_into(
+        "<10I", header, 8,
+        len(kernel), KERNEL_ADDRESS, len(ramdisk), ramdisk_address,
+        0, 0, TAGS_ADDRESS, PAGE_SIZE, 0, 0,
+    )
+    header[64:576] = encoded.ljust(512, b"\0")
+    header[576:608] = sha.digest().ljust(32, b"\0")
+
+    image = bytearray(header)
+    for payload in (kernel, ramdisk):
+        image.extend(payload)
+        image.extend(b"\0" * (align(len(payload)) - len(payload)))
+    return bytes(image)
+
+
 def android_v1_boot(
     kernel: bytes, ramdisk: bytes, *, cmdline: str = KERNEL_CMDLINE,
     device: str = "akari", ramdisk_address: int = RAMDISK_ADDRESS,

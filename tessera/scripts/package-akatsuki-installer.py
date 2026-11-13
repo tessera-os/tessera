@@ -35,7 +35,9 @@ RECOVERY = OUT / "recovery-image/recovery.img"
 BOOT_REFERENCE = HERE.parent / ".kira-build/akatsuki-boot-a-reference.img"
 OUTPUT = OUT / "Tessera-XZ3-H8416-FASTBOOT-INSTALLER-CANDIDATE-20261107.zip"
 PAGE = 4096
-MAX_BOOT = 64 * 1024 * 1024  # measured on H8416 boot_{a,b} via fastboot
+# H8416 boot_{a,b} are 64 MiB. Fill the partition on flash: Sony's stock boot
+# has an AVB footer and embedded vbmeta at the end, which a short write leaves behind.
+MAX_BOOT = 64 * 1024 * 1024
 
 
 class InstallImageError(Exception):
@@ -68,17 +70,17 @@ def check_published(path: Path, staging) -> str:
 
 
 def installation_commandline(
-    version: str, installer: bool, target_slot: str, stock_cmdline: str = ""
+    version: str, installer: bool, target_slot: str
 ) -> str:
-    serial = "console=ttyMSM0,115200n8 console=ttyGS0,115200n8 "
+    # Match the Akatsuki postmarketOS deviceinfo boot arguments.
+    base = "earlycon console=serial0,115200n8"
     if installer:
-        return (stock_cmdline + " " + serial + "printk.time=1 panic=0 -- "
+        return (base + " -- "
                 f"tessera.version={version} "
                 "tessera.target=PARTLABEL:userdata "
                 f"tessera.image=PARTLABEL:system_{target_slot} "
                 "tessera.reformat-userdata")
-    return (stock_cmdline + " " + serial
-            + "printk.time=1 panic=0 -- tessera.system tessera.adaptive-mobile")
+    return base + " -- tessera.system tessera.adaptive-mobile"
 
 
 def build(args: argparse.Namespace) -> Path:
@@ -91,10 +93,6 @@ def build(args: argparse.Namespace) -> Path:
     stock_boot = args.boot_reference.read_bytes()
     if stock_boot[:8] != b"ANDROID!" or struct.unpack_from("<I", stock_boot, 40)[0] != 1:
         raise InstallImageError("stock boot reference must be an Android v1 image")
-    stock_cmdline = (
-        stock_boot[64:576].split(b"\0", 1)[0]
-        + stock_boot[608:1632].split(b"\0", 1)[0]
-    ).decode("ascii", errors="strict")
     config = args.config.read_text()
     for required in (
         "CONFIG_SCSI_UFSHCD=y", "CONFIG_SCSI_UFS_QCOM=y",
@@ -140,19 +138,15 @@ def build(args: argparse.Namespace) -> Path:
 
     kernel_bytes = args.kernel.read_bytes()
     zipped_kernel = gzip.compress(kernel_bytes, compresslevel=9, mtime=0) + tree
-    installer_boot = diagnose.android_v1_boot(
+    installer_boot = diagnose.android_v0_boot(
         zipped_kernel, args.installer.read_bytes(),
-        cmdline=installation_commandline(version, installer=True, target_slot=target_slot,
-                                         stock_cmdline=stock_cmdline),
-        device="akatsuki", ramdisk_address=0x01000000,
-        reference_header=stock_boot,
+        cmdline=installation_commandline(version, installer=True, target_slot=target_slot),
+        ramdisk_address=0x01000000,
     )
-    system_boot = diagnose.android_v1_boot(
+    system_boot = diagnose.android_v0_boot(
         zipped_kernel, args.initramfs.read_bytes(),
-        cmdline=installation_commandline(version, installer=False, target_slot=target_slot,
-                                         stock_cmdline=stock_cmdline),
-        device="akatsuki", ramdisk_address=0x01000000,
-        reference_header=stock_boot,
+        cmdline=installation_commandline(version, installer=False, target_slot=target_slot),
+        ramdisk_address=0x01000000,
     )
     if len(installer_boot) > MAX_BOOT or len(system_boot) > MAX_BOOT:
         raise InstallImageError("XZ3 boot image exceeds the measured boot partition size")
@@ -166,10 +160,14 @@ def build(args: argparse.Namespace) -> Path:
             image.write_bytes(contents)
             staging.check_boot_candidate(
                 image, args.kernel, args.dtb, ramdisk,
-                expected_ramdisk_address=0x01000000
+                expected_ramdisk_address=0x01000000,
+                expected_header_version=0,
             )
             if contents[48:64] != stock_boot[48:64]:
                 raise InstallImageError("Android boot header does not preserve Sony's stock name field")
+
+    installer_boot = installer_boot.ljust(MAX_BOOT, b"\0")
+    system_boot = system_boot.ljust(MAX_BOOT, b"\0")
 
     installer_script = (HERE / "akatsuki-install.ps1").read_bytes()
     notice = f"""Tessera Xperia XZ3 H8416 — installation candidate
@@ -218,7 +216,7 @@ Never use this file as an Android fastboot update package.
     manifest = {
         "format": "tessera.akatsuki.fastboot-installer-candidate.v1",
         "device": "Sony Xperia XZ3 H8416 / akatsuki",
-        "architecture": "arm64", "boot_header": 1, "page_size": PAGE,
+        "architecture": "arm64", "boot_header": 0, "page_size": PAGE,
         "installer": "Tessera PID1 Btrfs installer",
         "source_partition": f"system_{target_slot}", "target_partition": "userdata",
         "target_fs": "btrfs", "overwrite_userdata": "explicit opt-in only",

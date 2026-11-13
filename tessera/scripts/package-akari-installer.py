@@ -133,17 +133,20 @@ def check_kernel(path: Path) -> None:
 
 def check_boot_candidate(
     boot: Path, kernel: Path, dtb: Path, initramfs: Path,
-    *, expected_ramdisk_address: int = 0x1000000
+    *, expected_ramdisk_address: int = 0x1000000,
+    expected_header_version: int = 1,
 ) -> None:
-    """Verify v1 Android boot geometry and exact matching Tessera payloads."""
+    """Verify Android boot geometry and exact matching Tessera payloads."""
     image = boot.read_bytes()
     if len(image) < 4096 or image[:8] != b"ANDROID!":
         raise BundleError("boot candidate is not an Android boot image")
     kernel_size, kernel_address, ramdisk_size, ramdisk_address = struct.unpack_from("<4I", image, 8)
     page_size, version = struct.unpack_from("<II", image, 36)
-    if (kernel_address, ramdisk_address, page_size, version) != (0x8000, expected_ramdisk_address, 4096, 1):
-        raise BundleError("boot candidate does not match Xperia Tama Android v1 geometry")
-    if struct.unpack_from("<I", image, 1644)[0] != 1648:
+    if (kernel_address, ramdisk_address, page_size, version) != (
+        0x8000, expected_ramdisk_address, 4096, expected_header_version
+    ):
+        raise BundleError("boot candidate does not match the expected Xperia Tama geometry")
+    if version == 1 and struct.unpack_from("<I", image, 1644)[0] != 1648:
         raise BundleError("boot candidate has an invalid v1 header size")
     aligned = lambda n: (n + 4095) // 4096 * 4096
     ramdisk_offset = 4096 + aligned(kernel_size)
@@ -160,11 +163,14 @@ def check_boot_candidate(
     if embedded_ramdisk != initramfs.read_bytes():
         raise BundleError("boot candidate initramfs differs from the published Tessera build")
     sha = hashlib.sha1()
-    for payload in (embedded_kernel, embedded_ramdisk, b"", b""):
+    hashed_payloads = (embedded_kernel, embedded_ramdisk, b"")
+    if version == 1:
+        hashed_payloads += (b"",)
+    for payload in hashed_payloads:
         sha.update(payload)
         sha.update(struct.pack("<I", len(payload)))
     if sha.digest() != image[576:596]:
-        raise BundleError("boot candidate Android v1 kernel/ramdisk ID is invalid")
+        raise BundleError("boot candidate Android kernel/ramdisk ID is invalid")
 
 
 def squashfs_reader() -> str:
