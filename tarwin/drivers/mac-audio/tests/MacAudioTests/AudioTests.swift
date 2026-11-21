@@ -1,0 +1,227 @@
+import Dispatch
+import Foundation
+import XCTest
+import HostedDeviceWire
+import MacAudioWire
+import MacAudioHost
+import MacAudioDriver
+import TarwinArchHosted
+
+final class AudioTests: XCTestCase {
+  func testHostedDeviceRegistryAndEndpoint() throws {
+    let (host, channel) = LoopbackChannel.pair()
+    let driver = MacAudioDriver(channel: channel)
+    let registry = HostDeviceRegistry()
+    let provider = try MacAudioDeviceProvider(driver: driver)
+    registry.register(provider)
+    let registered = try XCTUnwrap(registry.lookup(kind: "audio"))
+    let port = try registered.open(slot: 0)
+    XCTAssertEqual(port.kind, .send)
+    XCTAssertThrowsError(try { let bad = try registered.open(slot: .max); _ = bad.rawName }())
+    let received = expectation(description: "Mach endpoint ping reaches audio driver")
+    host.onReceive = { if FrameView($0)?.kind == Wire.pong { received.fulfill() } }
+    var bytes = [UInt8](repeating: 0, count: 32)
+    try bytes.withUnsafeMutableBytes { out in
+      _ = FrameView.encode(family: 2, kind: Wire.ping, sequence: 1, timestampNs: 2,
+        payload: .init(start: nil,count: 0), into: out)
+      try HostedDriverEndpoint.send(frame: UnsafeRawBufferPointer(out), to: port)
+    }
+    wait(for: [received], timeout: 2)
+    withExtendedLifetime((registry,provider,host)) {}
+  }
+  func config(_ format: PCMFormat = .f32, channels: UInt32 = 2) -> AudioConfiguration {
+    AudioConfiguration(sampleRate: 48000, channels: channels, format: format)!
+  }
+  func testConversionAndConfiguration() {
+    XCTAssertEqual(PCMConversion.toFloat(-32768), -1)
+    XCTAssertEqual(PCMConversion.toInt16(-1), -32768)
+    XCTAssertEqual(PCMConversion.toInt16(1), 32767)
+    XCTAssertEqual(PCMConversion.toInt16(.nan), 0)
+    XCTAssertEqual(PCMConversion.toInt16(.infinity), 0)
+    for value in stride(from: Int16(-32000), through: 32000, by: 1000) {
+      XCTAssertEqual(PCMConversion.toInt16(PCMConversion.toFloat(value)), value)
+    }
+    for rate: UInt32 in [44100,48000] { for ch: UInt32 in [1,2] {
+      XCTAssertNotNil(AudioConfiguration(sampleRate: rate, channels: ch, format: .i16))
+    } }
+    XCTAssertNil(AudioConfiguration(sampleRate: 96000, channels: 2, format: .f32))
+    XCTAssertNil(AudioConfiguration(sampleRate: 48000, channels: 3, format: .f32))
+  }
+  func testRingWrapAndSharedView() {
+    for format: PCMFormat in [.f32,.i16] {
+      let ring = AudioRing(capacity: 4, configuration: config(format))!
+      let view = AudioRing(region: ring.region, byteCount: ring.byteCount)!
+      let input: [Float] = [-1,0.5,0.25,-0.25,0.75,0,0.125,-0.5]
+      var output = [Float](repeating: 99, count: 12)
+      input.withUnsafeBufferPointer { XCTAssertEqual(ring.write($0, frames: 4), 4) }
+      XCTAssertEqual(view.availableFrames, 4)
+      input.withUnsafeBufferPointer { XCTAssertEqual(ring.write($0, frames: 1), 0) }
+      XCTAssertEqual(view.overruns, 1)
+      output.withUnsafeMutableBufferPointer { XCTAssertEqual(view.read(into: $0, frames: 3), 3) }
+      XCTAssertEqual(Array(output.prefix(6)), Array(input.prefix(6)))
+      input.withUnsafeBufferPointer { XCTAssertEqual(ring.write($0, frames: 3), 3) }
+      output.withUnsafeMutableBufferPointer { XCTAssertEqual(view.read(into: $0, frames: 6), 4) }
+      XCTAssertEqual(Array(output.prefix(8)), Array(input.suffix(2)) + Array(input.prefix(6)))
+      XCTAssertEqual(Array(output.suffix(4)), [0,0,0,0]); XCTAssertEqual(ring.underruns, 1)
+      XCTAssertEqual(ring.latencyNs, 0)
+      XCTAssertNil(AudioRing(region: ring.region, byteCount: 63))
+    }
+    XCTAssertNil(AudioRing(capacity: 3, configuration: config()))
+    XCTAssertNil(AudioRing(capacity: 0, configuration: config()))
+    let invalid = UnsafeMutableRawPointer.allocate(byteCount: 64, alignment: 64)
+    defer { invalid.deallocate() }
+    invalid.initializeMemory(as: UInt8.self, repeating: 0, count: 64)
+    XCTAssertNil(AudioRing(region: invalid, byteCount: 64))
+  }
+  func testConcurrentProducerConsumer() {
+    let ring = AudioRing(capacity: 64, configuration: config(channels: 1))!
+    let group = DispatchGroup(); group.enter()
+    DispatchQueue.global().async {
+      for i in 0..<10000 {
+        var sample = Float(i)
+        withUnsafePointer(to: &sample) { p in
+          while ring.write(UnsafeBufferPointer(start: p, count: 1), frames: 1) == 0 {}
+        }
+      }
+      group.leave()
+    }
+    for i in 0..<10000 {
+      var sample: Float = -1
+      withUnsafeMutablePointer(to: &sample) { p in
+        while ring.read(into: UnsafeMutableBufferPointer(start: p, count: 1), frames: 1) == 0 {}
+      }
+      XCTAssertEqual(sample, Float(i))
+    }
+    group.wait()
+  }
+  func testOfflineRenderCaptureAndPosition() throws {
+    let (driverChannel, hostChannel) = LoopbackChannel.pair()
+    let playback = AudioRing(capacity: 1024, configuration: config())!
+    let capture = AudioRing(capacity: 1024, configuration: config(.i16))!
+    let host = MacAudioHost(channel: hostChannel, playback: playback, capture: capture,
+      useHAL: false, automaticPositions: false)
+    defer { host.shutdown() }
+    let driver = MacAudioDriver(channel: driverChannel)
+    XCTAssertThrowsError(try driver.start(.playback))
+    for endpoint in AudioEndpoint.allCases {
+      try driver.open(endpoint); try driver.configure(endpoint, ring: endpoint == .playback ? playback : capture)
+      try driver.start(endpoint)
+    }
+    let input = [Float](repeating: 0.5, count: 960)
+    input.withUnsafeBufferPointer { XCTAssertEqual(playback.write($0, frames: 480), 480) }
+    try driver.setVolume(0.5)
+    var output = [Float](repeating: 99, count: 960)
+    output.withUnsafeMutableBufferPointer { XCTAssertEqual(host.playback!.render(into: $0, frames: 480, timestampNs: 123), 480) }
+    XCTAssertTrue(output.allSatisfy { $0 == 0.25 })
+    XCTAssertEqual(host.playback!.ring.latencyNs, 0)
+    host.flushPositions(); XCTAssertEqual(driver.playbackPosition, 480)
+    input.withUnsafeBufferPointer { XCTAssertEqual(host.capture!.capture($0, frames: 480, timestampNs: 124), 480) }
+    host.flushPositions(); XCTAssertEqual(driver.capturePosition, 480); XCTAssertEqual(driver.hostTimeNs, 124)
+    XCTAssertEqual(driver.latencyNs, 10_000_000)
+    output.withUnsafeMutableBufferPointer { XCTAssertEqual(capture.read(into: $0, frames: 480), 480) }
+    XCTAssertTrue(output.allSatisfy { $0 == 0.5 })
+    var gap = false
+    driver.onGap = { endpoint, _, under in if endpoint == .playback && under > 0 { gap = true } }
+    try driver.setMuted(true)
+    output.withUnsafeMutableBufferPointer { XCTAssertEqual(host.playback!.render(into: $0, frames: 480, timestampNs: 125), 0) }
+    XCTAssertTrue(output.allSatisfy { $0 == 0 }); host.flushPositions(); XCTAssertTrue(gap)
+    try driver.drain()
+    output.withUnsafeMutableBufferPointer { _ = host.playback!.render(into: $0, frames: 480, timestampNs: 126) }
+    host.flushPositions(); XCTAssertEqual(driver.snapshot(.playback).state, .stopped)
+    try driver.stop(.capture)
+    XCTAssertThrowsError(try driver.drain(.capture))
+    XCTAssertThrowsError(try driver.setVolume(.nan))
+    driver.close(.capture); XCTAssertEqual(driver.snapshot(.capture).state, .closed)
+  }
+  func testRestartRestoresStream() throws {
+    let (a,b) = LoopbackChannel.pair()
+    let ring = AudioRing(capacity: 1024, configuration: config())!
+    let driver = MacAudioDriver(channel: a)
+    let original = MacAudioHost(channel: b, playback: ring, capture: nil, useHAL: false, automaticPositions: false)
+    try driver.open(.playback); try driver.configure(.playback, ring: ring)
+    try driver.setVolume(0.25); try driver.setMuted(true); try driver.start(.playback)
+    original.shutdown()
+    let (c,d) = LoopbackChannel.pair()
+    let replacement = MacAudioHost(channel: d, playback: ring, capture: nil, useHAL: false, automaticPositions: false)
+    defer { replacement.shutdown() }
+    try driver.restore(on: c)
+    XCTAssertEqual(driver.snapshot(.playback).configuration, config())
+    XCTAssertEqual(driver.snapshot(.playback).state, .running)
+    XCTAssertTrue(replacement.playback!.muted.load(ordering: .relaxed))
+    XCTAssertEqual(Float(bitPattern: replacement.playback!.gainBits.load(ordering: .relaxed)), 0.25)
+  }
+  func testMalformedFramesAndPing() {
+    let (a,b) = LoopbackChannel.pair()
+    let ring = AudioRing(capacity: 8, configuration: config())!
+    let host = MacAudioHost(channel: b, playback: ring, capture: nil, useHAL: false, automaticPositions: false)
+    defer { host.shutdown() }
+    var kind: UInt16 = 0, status: UInt16 = 0
+    a.onReceive = { bytes in
+      let frame = FrameView(bytes)!; kind = frame.kind
+      if frame.kind == AudioKind.status { status = UInt16(Wire.read(frame.payload,6,2)) }
+    }
+    AudioWire.send(a, kind: Wire.ping, payloadSize: 0) { _ in }
+    XCTAssertEqual(kind, Wire.pong)
+    AudioWire.send(a, kind: AudioKind.configure, payloadSize: 4) {
+      Wire.write(1, to: $0, at: 0, width: 4)
+    }
+    XCTAssertEqual(status, 1)
+    AudioWire.send(a, kind: AudioKind.start, payloadSize: 4) { Wire.write(1,to:$0,at:0,width:4) }
+    XCTAssertEqual(status, 3)
+    AudioWire.send(a, kind: AudioKind.open, payloadSize: 4) { Wire.write(1,to:$0,at:0,width:4) }
+    XCTAssertEqual(status, 0)
+    AudioWire.send(a, kind: AudioKind.configure, payloadSize: 20) { p in
+      Wire.write(1,to:p,at:0,width:4); Wire.write(96000,to:p,at:4,width:4)
+      Wire.write(2,to:p,at:8,width:4); Wire.write(1,to:p,at:12,width:4)
+      Wire.write(8,to:p,at:16,width:4)
+    }
+    XCTAssertEqual(status, 2)
+    [UInt8](repeating: 0, count: 5).withUnsafeBytes { a.send(frame: $0) }
+    XCTAssertFalse(host.playback!.running.load(ordering: .relaxed))
+  }
+  func testCaptureMuteAndOverrun() {
+    let ring = AudioRing(capacity: 4, configuration: config(.i16, channels: 1))!
+    let processor = AudioProcessor(ring: ring)
+    processor.running.store(true, ordering: .releasing)
+    processor.muted.store(true, ordering: .releasing)
+    let input = [Float](repeating: 0.5, count: 8)
+    input.withUnsafeBufferPointer { XCTAssertEqual(processor.capture($0, frames: 8, timestampNs: 77), 4) }
+    XCTAssertEqual(ring.overruns, 1)
+    XCTAssertEqual(processor.position.load(ordering: .relaxed), 4)
+    var output = [Float](repeating: 99, count: 4)
+    output.withUnsafeMutableBufferPointer { XCTAssertEqual(ring.read(into:$0,frames:4), 4) }
+    XCTAssertTrue(output.allSatisfy { $0 == 0 })
+    processor.running.store(false, ordering: .releasing)
+    input.withUnsafeBufferPointer { XCTAssertEqual(processor.capture($0, frames: 8, timestampNs: 78), 0) }
+  }
+  func testHALSmokeOrOfflineCallback() throws {
+    guard ProcessInfo.processInfo.environment["TARWIN_AUDIO_HAL"] == "1" else {
+      let ring = AudioRing(capacity: 1024, configuration: config())!
+      let processor = AudioProcessor(ring: ring)
+      processor.running.store(true, ordering: .releasing)
+      var output = [Float](repeating: 1, count: 960)
+      output.withUnsafeMutableBufferPointer { XCTAssertEqual(processor.render(into:$0,frames:480,timestampNs:1), 0) }
+      XCTAssertTrue(output.allSatisfy { $0 == 0 }); return
+    }
+    let (a,b) = LoopbackChannel.pair()
+    let playback = AudioRing(capacity: 4096, configuration: config())!
+    let capture = AudioRing(capacity: 4096, configuration: config())!
+    let host = MacAudioHost(channel: b, playback: playback, capture: capture)
+    defer { host.shutdown(); withExtendedLifetime(a) {} }
+    var started = 0
+    for endpoint in AudioEndpoint.allCases {
+      guard MacAudioHost.hasDefaultDevice(endpoint) else {
+        print("HAL: no default \(endpoint) device"); continue
+      }
+      try host.startHardware(endpoint)
+      let elapsed = expectation(description: "HAL \(endpoint) callbacks")
+      DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(150)) { elapsed.fulfill() }
+      wait(for: [elapsed], timeout: 2)
+      let processor = endpoint == .playback ? host.playback! : host.capture!
+      XCTAssertGreaterThan(processor.hostTimeNs.load(ordering: .acquiring), 0)
+      host.stopHardware(endpoint); started += 1
+      print("HAL: \(endpoint) started and callback observed")
+    }
+    if started == 0 { throw XCTSkip("No default Core Audio input or output device") }
+  }
+}
