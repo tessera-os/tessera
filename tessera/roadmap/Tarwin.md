@@ -486,6 +486,12 @@ There is no `fork`. The Launcher service creates processes with its `Launch` res
 2. The Launcher returns a `Process` handle and a private channel to the parent (LibTessera.md section 11.1).
 3. Each process has fresh random pointer-authentication keys (aarch64: IA, IB, DA, DB, GA), shared by its threads.
 
+**AArch64 first entry to EL0.** In the authorized executable, ELF `e_entry` selects the runtime entry `_tarwin_process_start`, of canonical TIR type `fn(i64) -> never abi(c)`. The entry is 16-byte aligned in RX, with TVISA §17.2 tag `0x4d3e7643` at E−4 and `bti c` at E. It does not return. This is neither a kernel boot entry nor an exported LibTessera RIDL function.
+
+- `x0` is the **sole initial handle**: the nonzero name of a channel in this process's handle table, not a descriptor or pointer. Other startup handles travel in the bootstrap channel's Startup message (LibTessera §11.4). For the first init, the kernel supplies this message under the signed launch policy; a missing channel or message confers no authority.
+- `SP_EL0` points to a 16-byte-aligned user stack with the guard from §11.3; `TPIDR_EL0` points to its initialized user TCB. The kernel selects the verified user entry and EL0 execution state, installs the process keys and guarded control stack, and clears all other user GPRs (including LR) and FP/vector state except architecturally required initial state. No kernel pointers or boot-block address are passed.
+- These rules construct a **first-entry** frame, not a return from a system call; they do not apply to an existing saved frame or define an entry ABI for x64 or rv64.
+
 ### 11.3 Threads
 
 1. Threads are created suspended by `Thread.create` with an entry, an argument, a stack (a LibTessera Memory mapping with a guard region of at least 64 KiB below it), and a thread control block address (TVISA.md section 19); `Thread.start` runs them.
