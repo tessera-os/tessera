@@ -54,7 +54,7 @@ exit_host:
   mov x0, #0x20
   hlt #0xf000
   b .
-ok: .asciz "VHE-COPY-READ-ABORT-DENY\\n"
+ok: .asciz "VHE-COPY-READ-WRITE-ABORT-DENY\\n"
 bad: .asciz "VHE-COPY-FAILED\\n"
 .p2align 3
 exit_ok: .quad 0x20026,0
@@ -82,7 +82,7 @@ for i in 34..<128 {
 }
 print("""
 .p2align 14
-user: .quad 0x0060000040200fc3,0,0x0060000040204783
+user: .quad 0x0060000040200fc3,0,0x0060000040204783,0x0060000040208f43
 .p2align 14
   .space 65536
 stack_top:

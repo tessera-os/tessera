@@ -56,32 +56,47 @@
     add sp, sp, #\(F.size)
     eret
 
-    // Only recover a current-EL read abort on this specific LDTR. Any
-    // unrelated fault, including a store to broken kernel scratch, stops.
+    // Match the fault PC and its access direction. In particular a store
+    // to broken kernel scratch after a successful LDTR is not recoverable.
     .Lcopy_abort:
     stp x9, x10, [sp, #-16]!
     mrs x9, elr_el2
     adr x10, .Luser_load
     cmp x9, x10
+    b.eq .Lread_abort
+    adr x10, .Luser_store
+    cmp x9, x10
     b.ne .Lhalt
     mrs x9, esr_el2
+    tbz x9, #6, .Lhalt
+    b .Lcheck_abort
+    .Lread_abort:
+    mrs x9, esr_el2
+    tbnz x9, #6, .Lhalt
+    .Lcheck_abort:
     ubfx x10, x9, #26, #6
     cmp x10, #0x25
     b.ne .Lhalt
-    tst x9, #0x3c0
+    tst x9, #0x380
     b.ne .Lhalt
     and x10, x9, #63
     cmp x10, #0x11
     b.eq 2f
     cmp x10, #15
     b.hi .Lhalt
-    2: adr x9, .Lload_failed
+    2: adr x9, .Lcopy_failed
     msr elr_el2, x9
     ldp x9, x10, [sp], #16
     eret
 
     .global tarwin_w1_load_user_word
     tarwin_w1_load_user_word:
+    mov w5, #0
+    b .Luser_access
+    .global tarwin_w1_store_user_word
+    tarwin_w1_store_user_word:
+    mov w5, #1
+    .Luser_access:
     mrs x2, CurrentEL
     cmp x2, #8
     b.ne .Lbad_mode
@@ -100,11 +115,14 @@
     mrs x3, tco
     msr tco, #0
     4:
+    cbnz w5, .Luser_store
     .Luser_load: ldtr x4, [x0]
     str x4, [x1]
-    mov w0, #1
+    b .Lcopied
+    .Luser_store: sttr x1, [x0]
+    .Lcopied: mov w0, #1
     b 5f
-    .Lload_failed: mov w0, #0
+    .Lcopy_failed: mov w0, #0
     5: cmp x2, #2
     b.lo 6f
     msr tco, x3
