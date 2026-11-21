@@ -188,6 +188,33 @@ _start:
   ldr x0, [x19]
   cmp x0, #0x739
   b.ne failed
+  // In this diagnostic no user runs. Round-trip the first-thread controls
+  // only after the CPU selected the exact private root carrying its GCS.
+  mrs x9, ttbr0_el2
+  ldp x10, x11, [x19, #32]
+  cmp x9, x10
+  b.ne failed
+  ldr x12, [x19, #48]
+  mrs x13, gcspr_el0
+  mrs x14, gcscre0_el1
+  gcsb dsync
+  msr gcspr_el0, x11
+  msr gcscre0_el1, x12
+  isb
+  mrs x9, gcspr_el0
+  mrs x10, gcscre0_el1
+  cmp x9, x11
+  ccmp x10, x12, #0, eq
+  cset w15, eq
+  msr gcscre0_el1, x14
+  msr gcspr_el0, x13
+  isb
+  cbz w15, failed
+  mrs x9, gcspr_el0
+  mrs x10, gcscre0_el1
+  cmp x9, x13
+  ccmp x10, x14, #0, eq
+  b.ne failed
   adr x1, gcs_ok
   mov x0, #4
   hlt #0xf000
@@ -369,7 +396,7 @@ hex_digit:
   ret
 ok: .asciz "VHE-COPY-READ-WRITE-ABORT-DENY\\nVHE-HIGH-HOST-PRIVATE-ROOT-SWITCH\\n"
 bad: .asciz "VHE-COPY-FAILED\\n"
-gcs_ok: .asciz "VHE-GCS-STORE-ORDINARY-WRITE-DENIED\\nVHE-PRIVATE-PIE-RELRO-GUARD\\n"
+gcs_ok: .asciz "VHE-GCS-STORE-ORDINARY-WRITE-DENIED\\nVHE-PRIVATE-PIE-RELRO-GUARD\\nVHE-FIRST-GCS-REGS-RESTORED\\n"
 wrong_ok: .asciz "VHE-REFUSED-MISMATCHED-PIE-BANK\\n"
 pac_ok: .asciz "VHE-IMPORT-IA-HOST-KEY-RESTORED\\n"
 stopped: .asciz "VHE-STOP-ON-SEPARATE-SCHEDULER-STACK\\n"

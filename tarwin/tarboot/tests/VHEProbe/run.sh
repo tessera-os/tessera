@@ -53,6 +53,7 @@ if grep -Fxq 'VHE-CPU-GCS-S1PIE-TCRX=111' "$d/log"; then
   run_guest gcs
   grep -Fx 'VHE-GCS-STORE-ORDINARY-WRITE-DENIED' "$d/log"
   grep -Fx 'VHE-PRIVATE-PIE-RELRO-GUARD' "$d/log"
+  grep -Fx 'VHE-FIRST-GCS-REGS-RESTORED' "$d/log"
   "$bin/clang" -target aarch64-none-none-elf -march=armv9.4-a+gcs -DTEST_GCS -DTEST_WRONG_BANK -c "$d/start.S" -o "$d/wrong.o"
   "$bin/ld.lld" --gc-sections -T "$d/sections" "$d/wrong.o" "$d/host.o" "$d/gcs-probe.o" -o "$d/wrong.elf"
   run_guest wrong

@@ -58,8 +58,14 @@ public func buildRoots(
       q.mapsControlPage(shadow, physical: sample + 3 * page),
       q.insert(virtual: ro, physical: sample + 4 * page, write: true, execute: false),
       q.sealReadOnly(ro..<ro + page),
-      q.insert(virtual: ro + page, physical: sample + 5 * page, write: true, execute: false)
+      q.insert(virtual: ro + page, physical: sample + 5 * page, write: true, execute: false),
+      let gcs = ArmInitialControlStack(tables: q, shadow: shadow..<shadow + page,
+        physical: sample + 3 * page, stackBytes: 8 * page)
     else { return 5 }
+    let bank = UnsafeMutablePointer<UInt64>(bitPattern: UInt(context + 32))!
+    bank[0] = gcs.root
+    bank[1] = gcs.pointer
+    bank[2] = ArmInitialControlStack.control
   #endif
   guard k.insert(virtual: high + context, physical: context, write: true, execute: false),
     p.insert(virtual: base, physical: sample, write: false, execute: false),

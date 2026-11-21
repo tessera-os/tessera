@@ -42,8 +42,10 @@ different PIRE0 refuses the same root without changing TTBR0.
 
 Only the indirect layout maps the staged user's shadow pages as GCS.
 The upper layout supports kernel RX and RW, and rejects ordinary kernel
-RO rather than treating it as RW. No thread's GCSPR or GCSCR is
-installed; all these accesses execute at EL2, not EL0.
+RO rather than treating it as RW. On the matching root the test writes
+the checked first-thread pointer and mode to GCSPR_EL0 and GCSCRE0_EL1,
+reads them back, and restores both old registers. No real thread runs:
+the test does not execute a user call or return, or switch supervisor GCS.
 
 The baseline guest then feeds the vector's post-dispatch continuation a
 stop action on a synthetic private frame. The checked upper root maps two

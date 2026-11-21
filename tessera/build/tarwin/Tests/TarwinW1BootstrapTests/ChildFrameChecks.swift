@@ -1,3 +1,4 @@
+import TarwinArchAarch64
 import TarwinIPCChannels
 import TarwinObject
 import Testing
@@ -127,6 +128,38 @@ func checkStartupFrame(
   let boot = try #require(token)
   let frame = images.initialFrame(boot, child: child, tree: tree, channel: pair)
   #expect((frame != nil) == accepted)
+  let backing = UnsafeMutableRawBufferPointer.allocate(
+    byteCount: ArmTrapLayout.size + 32, alignment: 16)
+  defer { backing.deallocate() }
+  let count = ArmTrapLayout.size
+  func stage(_ offset: Int, _ n: Int) -> ArmInitialControlStack? {
+    images.stageGuardedFirstFrame(
+      boot, child: child, tree: tree, channel: pair,
+      into: .init(rebasing: backing[offset..<offset + n]))
+  }
+  backing.initializeMemory(as: UInt8.self, repeating: 0xa5)
+  #expect(stage(1, count) == nil && stage(16, count - 1) == nil)
+  #expect(backing.allSatisfy { $0 == 0xa5 })
+  let gcs = stage(16, count)
+  #expect((gcs != nil) == (accepted && images.tables.layout == .guarded))
+  if let gcs, let frame, let thread = images.initialThread {
+    #expect(gcs.pointer == thread.shadow.upperBound - 8 && gcs.root == child.initialMap)
+    for off in stride(from: 0, to: count, by: 8) {
+      let expected: UInt64
+      switch off {
+      case 0: expected = frame.gpr[0]
+      case ArmTrapLayout.elr: expected = frame.elr
+      case ArmTrapLayout.sp: expected = frame.sp
+      case ArmTrapLayout.tpidr: expected = frame.tpidr
+      default: expected = 0
+      }
+      #expect(backing.load(fromByteOffset: off + 16, as: UInt64.self) == expected)
+    }
+    #expect(
+      backing.prefix(16).allSatisfy { $0 == 0xa5 } && backing.suffix(16).allSatisfy { $0 == 0xa5 })
+  } else {
+    #expect(backing.allSatisfy { $0 == 0xa5 })
+  }
   guard accepted, let frame, let thread = images.initialThread else { return }
   #expect(
     frame.elr == images.processEntry && frame.tpidr == thread.tcb
@@ -137,5 +170,7 @@ func checkStartupFrame(
   try checkPinnedReceive(images, stack: stack, child: &child, pair: &pair, tree: tree)
   let consumed = images.initialFrame(boot, child: child, tree: tree, channel: pair)
   #expect(consumed == nil)
+  backing.initializeMemory(as: UInt8.self, repeating: 0xa5)
+  #expect(stage(16, count) == nil && backing.allSatisfy { $0 == 0xa5 })
   try checkStopAcknowledgment(child: &child, tree: tree, ids: ids)
 }

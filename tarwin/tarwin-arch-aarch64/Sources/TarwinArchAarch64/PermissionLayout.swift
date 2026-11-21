@@ -1,6 +1,6 @@
 /// The encoding is fixed for the lifetime of both roots. W1 indirection
 /// uses 64-bit descriptors, TCR2_EL2.PIE only and no hardware dirty updates.
-public enum ArmPermissionLayout {
+public enum ArmPermissionLayout: Sendable {
   case direct, guarded
 
   // PIIndex uses {UXN, PXN, DBM, AP[1]}. All unspecified entries deny.

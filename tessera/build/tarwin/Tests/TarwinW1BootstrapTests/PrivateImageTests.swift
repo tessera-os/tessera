@@ -11,17 +11,18 @@ import Testing
 
 // Loader interoperability corpus only. No signing identity, enrollment,
 // PCR, address-space switch, PAC instruction or user execution in this test.
-@Test func stageBothInteropMembersOrEraseEveryPrivatePage() throws {
+@Test(arguments: [ArmPermissionLayout.direct, .guarded])
+func stageBothInteropMembersOrEraseEveryPrivatePage(_ layout: ArmPermissionLayout) throws {
   let base: UInt64 = 0x100000
   let ids = KoidSource()
   try withTestChild(root: base, ids: ids) { child, tree in
-    try stageImages(child: &child, tree: tree, ids: ids, base: base)
+    try stageImages(child: &child, tree: tree, ids: ids, base: base, layout: layout)
   }
 }
 
 private func stageImages(
   child: inout ProcessExecution, tree: borrowing JobTree, ids: borrowing KoidSource,
-  base: UInt64
+  base: UInt64, layout: ArmPermissionLayout
 ) throws {
   let dir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent(
     "../../../../../tarwin/tarwin-loader/w0/Tests/TarwinW0Tests/InteropW1")
@@ -114,7 +115,7 @@ private func stageImages(
     signSlot(plan.targetAddress, plan.storageModifier, root: base + 16384, child: child, tree: tree)
       == nil)
   #expect(signedCalls == 0)
-  func build(_ size: Int, layout: ArmPermissionLayout = .direct) -> W1PrivateImages? {
+  func build(_ size: Int) -> W1PrivateImages? {
     calls = 0
     let thread = W1ThreadPlacement(stackBytes: 81920, draw: { .max })
     return preparePrivateW1Images(
@@ -142,18 +143,6 @@ private func stageImages(
   sign = true
   #expect(denied(tableBytes + page) && calls == 1)
   #expect(denied(tableBytes + 5 * page) && calls == 2)
-  func checkGuardedThread() {
-    guard let protected = build(ram.count, layout: .guarded), let t = protected.initialThread else {
-      Issue.record("guarded staging refused")
-      return
-    }
-    let isControl = protected.tables.mapsControlPage(t.shadow.lowerBound, physical: t.shadowPhysical)
-    let isData = protected.tables.mapsPrivateDataPage(t.shadow.lowerBound, physical: t.shadowPhysical)
-    #expect(isControl && !isData)
-    #expect(leaf(t.shadow.lowerBound - UInt64(page)) == 0 && leaf(t.shadow.upperBound) == 0)
-    #expect(leaf(plan.slotAddress) & (1 << 51) != 0)
-  }
-  checkGuardedThread()
   guard let images = build(ram.count) else {
     Issue.record("private image set rejected")
     return
@@ -180,7 +169,8 @@ private func stageImages(
   for (i, va) in [plan.processEntry, plan.slotAddress, plan.targetAddress].enumerated() {
     let pa = base + UInt64(tableBytes + i * page)
     let expect =
-      armUserPage(pa, write: false, execute: i != 1, lpa2: false) | (i == 1 ? 0 : 1 << 50)
+      armUserPage(pa, write: false, execute: i != 1, lpa2: false)
+      | (i == 1 ? (layout == .guarded ? 1 << 51 : 0) : 1 << 50)
     #expect(leaf(va) == expect)
   }
   let slot = tableBytes + page + Int(plan.slotAddress & 16383)
@@ -200,7 +190,12 @@ private func stageImages(
   #expect(thread.shadowPhysical == base + UInt64(tcb + page))
   #expect(leaf(thread.stack.lowerBound - 1) == 0 && leaf(thread.stack.upperBound) == 0)
   #expect(leaf(thread.shadow.lowerBound - 1) == 0 && leaf(thread.shadow.upperBound) == 0)
-  #expect(leaf(thread.shadow.lowerBound) == 0)
+  #expect((leaf(thread.shadow.lowerBound) == 0) == (layout == .direct))
+  let isControl = images.tables.mapsControlPage(
+    thread.shadow.lowerBound, physical: thread.shadowPhysical)
+  let isData = images.tables.mapsPrivateDataPage(
+    thread.shadow.lowerBound, physical: thread.shadowPhysical)
+  #expect(isControl == (layout == .guarded) && !isData)
   #expect(
     leaf(thread.tcb) == armUserPage(base + UInt64(tcb), write: true, execute: false, lpa2: false))
   let stack = UnsafeMutableRawBufferPointer(rebasing: ram[start..<tcb])
