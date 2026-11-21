@@ -20,6 +20,7 @@ let package = Package(
         "TarwinNetWire", .product(name: "TarwinIPC", package: "tarwin-ipc"),
         .product(name: "TarwinIoCompletion", package: "tarwin-device"),
         .product(name: "TarwinObject", package: "tarwin-object"),
+        .product(name: "TarwinABI", package: "tarwin-syscall"),
         .product(name: "TarwinSyscall", package: "tarwin-syscall"),
       ]),
     .testTarget(

@@ -28,7 +28,7 @@ struct AcceptPorts: IoPorts, ~Copyable {
   }
 }
 private enum Outcome {
-  case accepted, receive, send, cancelled, closed, reset, quota, denied, withdrawn
+  case accepted, receive, send, shutdown, cancelled, closed, reset, quota, denied, withdrawn
 }
 private func acceptScenario(_ outcome: Outcome, v6: Bool = false) {
   let ids = KoidSource()
@@ -36,7 +36,8 @@ private func acceptScenario(_ outcome: Outcome, v6: Bool = false) {
   let jobs = UnsafeMutableBufferPointer<JobNode>.allocate(capacity: 1)
   let members = UnsafeMutableBufferPointer<JobMember>.allocate(capacity: 1)
   let slots = UnsafeMutableBufferPointer<ThreadSlot>.allocate(capacity: 1)
-  let cells = UnsafeMutableBufferPointer<HandleCell>.allocate(capacity: 4)
+  let capacity = outcome == .shutdown ? 5 : 4
+  let cells = UnsafeMutableBufferPointer<HandleCell>.allocate(capacity: capacity)
   let packets = UnsafeMutableBufferPointer<PortSlot>.allocate(capacity: 1)
   let mem = UnsafeMutableRawBufferPointer.allocate(byteCount: 34, alignment: 1)
   for i in mem.indices { mem[i] = 0xcd }
@@ -58,7 +59,8 @@ private func acceptScenario(_ outcome: Outcome, v6: Bool = false) {
         source: ids, ownerJob: i == 0 ? 0 : root.pointee.koid, kind: k, maximumRights: 15)!)
   }
   let limits = JobLimits(
-    processes: 1, threadsPerProcess: 1, handlesPerProcess: 4, footprint: 1024, cpuShare: 1,
+    processes: 1, threadsPerProcess: 1, handlesPerProcess: UInt32(capacity), footprint: 1024,
+    cpuShare: 1,
     maxQos: 2, jetsamBand: 1, ioRank: 1, entitlements: 0, denials: 0, killOnClose: false)
   let tree = JobTree(jobs: jobs, members: members, root: root.pointee, limits: limits)!
   var caller = ProcessExecution(
@@ -91,7 +93,8 @@ private func acceptScenario(_ outcome: Outcome, v6: Bool = false) {
     }
     return n
   }
-  let e = install(.init(listener), rights: outcome == .send ? 12 : 4)
+  let rights: UInt64 = outcome == .send || outcome == .shutdown ? 12 : 4
+  let e = install(.init(listener), rights: rights)
   let p = install(.init(sink), rights: 8)
   let denied = install(.init(listener), rights: 0)
   let local: [UInt8] = v6 ? [0xfe, 0x80] + Array(repeating: 0, count: 13) + [2] : [192, 0, 2, 2]
@@ -165,7 +168,7 @@ private func acceptScenario(_ outcome: Outcome, v6: Bool = false) {
     XCTAssertNil(result)
     XCTAssertEqual(ports.wakes, 0)
   }
-  if outcome == .accepted || outcome == .receive || outcome == .send {
+  if outcome == .accepted || outcome == .receive || outcome == .send || outcome == .shutdown {
     XCTAssertEqual(result?.error, 0)
     XCTAssertEqual(service.ready, 0)
     guard let name = result?.result0,
@@ -173,9 +176,14 @@ private func acceptScenario(_ outcome: Outcome, v6: Bool = false) {
         name, kind: TarwinKind.endpoint, need: 4)
     else { return XCTFail() }
     XCTAssertEqual(g.header, UnsafePointer(child))
-    XCTAssertEqual(g.rights, outcome == .send ? 12 : 4)
+    XCTAssertEqual(g.rights, rights)
     g.drop(retire: { _ in XCTFail() })
-    if outcome == .send {
+    if outcome == .shutdown {
+      let ro = install(.init(child), rights: 4)
+      checkShutdown(
+        caller: &caller, name: name, readonly: ro, port: p, ports: &ports,
+        child: .init(child), stream: payload!, incoming: incoming)
+    } else if outcome == .send {
       checkSend(
         caller: &caller, name: name, denied: denied, port: p, ports: &ports, child: .init(child),
         stream: payload!, incoming: incoming)
@@ -264,6 +272,10 @@ final class EndpointAcceptTests: XCTestCase {
   func testStreamSendThroughAcceptedHandle() {
     acceptScenario(.send)
     acceptScenario(.send, v6: true)
+  }
+  func testShutdownPreservesAcceptedBytesAndIndependentStreamHalves() {
+    acceptScenario(.shutdown)
+    acceptScenario(.shutdown, v6: true)
   }
   func testCancellationAndClosedPortNeverPublish() {
     for o in [Outcome.cancelled, .withdrawn, .closed] { acceptScenario(o) }

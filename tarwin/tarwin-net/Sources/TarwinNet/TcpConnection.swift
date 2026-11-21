@@ -136,6 +136,8 @@ public struct TcpConnection: ~Copyable {
   private var rto: UInt64 = 1_000_000_000, srtt: UInt64?, rttvar: UInt64 = 0
   private var deferred: DeferredSend?, persist: PersistTimer?
   private var output: ArraySlice<UInt8> = [], corkUntil: UInt64?
+  private var readShut = false
+  private(set) var writeShut = false
   private let timestampOffset: UInt32?, offeredShift: UInt8
   private var recent: UInt32?, recentAt: UInt64 = 0, lastAckSent: UInt32 = 0
   private var sendShift: UInt8 = 0, receiveShift: UInt8 = 0, maxPeerWindow = 0
@@ -191,8 +193,8 @@ public struct TcpConnection: ~Copyable {
     clock = now
   }
   public var readable: Int { state == .reset || state == .timedOut ? 0 : rx.readable }
-  public var endOfInput: Bool { rx.atEnd }
-  var inputFinished: Bool { rx.finished }
+  public var endOfInput: Bool { readShut || rx.atEnd }
+  var inputFinished: Bool { readShut || rx.finished }
   var inputLimit: Int { rx.capacity }
   func peek(upTo: Int, copy: (ArraySlice<UInt8>) -> Void) -> Int {
     guard state != .reset, state != .timedOut else { return 0 }
@@ -258,7 +260,7 @@ public struct TcpConnection: ~Copyable {
   public mutating func write(_ bytes: ArraySlice<UInt8>, at now: UInt64, emit: ([UInt8]) -> Bool)
     -> Int
   {
-    guard output.isEmpty, state == .established || state == .closeWait, flight == nil,
+    guard !writeShut, output.isEmpty, state == .established || state == .closeWait, flight == nil,
       deferred == nil, stamp(now)
     else { return 0 }
     let payload = min(peerMss, path.mss) - (recent == nil ? 0 : 12)
@@ -286,6 +288,19 @@ public struct TcpConnection: ~Copyable {
     }
     state = state == .established ? .finWait1 : .lastAck
     return true
+  }
+  mutating func shutdown(_ how: StreamShutdown) {
+    if how != .write {
+      readShut = true
+      discardShutInput()
+    }
+    if how != .read {
+      writeShut = true
+      corkUntil = nil
+    }
+  }
+  private mutating func discardShutInput() {
+    if rx.read(upTo: rx.readable, copy: { _ in true }) > 0 { ackPending = true }
   }
   public mutating func read(upTo: Int, copy: (ArraySlice<UInt8>) -> Bool) -> Int {
     guard state != .reset, state != .timedOut else { return 0 }
@@ -441,6 +456,7 @@ public struct TcpConnection: ~Copyable {
     updatePersist(now)
     if len > 0 {
       _ = rx.receive(p) { _ in true }
+      if readShut { discardShutInput() }
       ackPending = true
       if rx.acknowledgement.finished {
         if state == .established {
@@ -479,7 +495,8 @@ public struct TcpConnection: ~Copyable {
   }
   /// Called only at send commit under the stream lock. No transport callback
   /// runs while the client's completion port is locked.
-  mutating func enqueueOutput(_ bytes: [UInt8], flags: UInt32, at now: UInt64) {
+  mutating func enqueueOutput<C: Collection>(_ bytes: C, flags: UInt32, at now: UInt64)
+  where C.Element == UInt8 {
     precondition(bytes.count <= outputRoom)
     if bytes.isEmpty { return }
     let fresh = output.isEmpty
@@ -552,6 +569,11 @@ public struct TcpConnection: ~Copyable {
         consumeOutput(n)
         return true
       }
+    }
+    if writeShut, output.isEmpty, flight == nil, deferred == nil,
+      state == .established || state == .closeWait
+    {
+      return finish(at: now, emit: emit)
     }
     guard ackPending, publish(next, 16, [], emit) else { return false }
     ackPending = false

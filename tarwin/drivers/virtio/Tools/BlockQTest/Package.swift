@@ -20,6 +20,7 @@ let package = Package(
         .product(name: "TarwinNet", package: "tarwin-net"),
         .product(name: "TarwinObject", package: "tarwin-object"),
         .product(name: "TarwinSyscall", package: "tarwin-syscall"),
+        .product(name: "TarwinABI", package: "tarwin-syscall"),
         .product(name: "KCore", package: "kcore"),
         .product(name: "TarwinBlock", package: "tarwin-block"),
         .product(name: "TarwinIoCompletion", package: "tarwin-device"),

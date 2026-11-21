@@ -91,8 +91,16 @@ func passiveInterop(
       }
     },
     flush: { c in
-      _ = c.pump(at: now, emit: emit)
-      if let txError { throw txError }
+      for _ in 0..<8 {
+        _ = c.pump(at: now, emit: emit)
+        if let txError { throw txError }
+        let p = try next()
+        guard c.input(p, at: now, admit: { _ in true }) else {
+          throw Failure("Peer reply to write shutdown was rejected")
+        }
+        if c.state == .finWait2 || c.state == .timeWait { return }
+      }
+      throw Failure("Peer did not acknowledge FIN after the staged reply")
     })
   var got: [UInt8] = []
   while got.count < response.count {
@@ -104,4 +112,9 @@ func passiveInterop(
     got += buf.prefix(n)
   }
   guard got == response else { throw Failure("Private peer bytes differ") }
+  var eof = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+  var extra: UInt8 = 0
+  guard poll(&eof, 1, 3000) > 0, Darwin.read(fd, &extra, 1) == 0 else {
+    throw Failure("Private peer did not observe EOF after the exact reply")
+  }
 }

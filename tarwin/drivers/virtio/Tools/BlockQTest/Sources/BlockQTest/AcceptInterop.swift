@@ -1,7 +1,19 @@
+import TarwinABI
 import TarwinIPC
 import TarwinNet
 import TarwinObject
 import TarwinSyscall
+
+private struct ShutdownClient: StreamShutdownContext {
+  let table: HandleReadView, object: UnsafePointer<ObjectHeader>, stream: TcpAcceptedStream
+  func pinCaller(_ visit: (HandleReadView) -> PinResult) -> PinResult { visit(table) }
+  mutating func withStream(
+    _ header: UnsafePointer<ObjectHeader>, _ visit: (TcpAcceptedStream) -> CallResult
+  ) -> CallResult {
+    header == object ? visit(stream) : CallResult(status: syscallStatus(23, 6))
+  }
+  mutating func retire(_ object: UnsafePointer<ObjectHeader>) { preconditionFailure() }
+}
 
 /// Hosted process and port storage. The network worker receives a checksum-
 /// validated handshake, and the client can only use the returned type-13 handle.
@@ -140,7 +152,7 @@ func withAcceptedEndpoint(
     guard
       case .ready(var send) = EndpointSend.begin(
         call: TarwinCall.endpointSend, caller: caller,
-        name: completion.result0, port: dest, key: 46, flags: 1, sources: parts, maxVectors: 4,
+        name: completion.result0, port: dest, key: 46, flags: 2, sources: parts, maxVectors: 4,
         ports: &ports,
         permitted: true, resolve: { $0 == UnsafePointer(child) ? payload : nil },
         retire: { _ in preconditionFailure() })
@@ -158,5 +170,11 @@ func withAcceptedEndpoint(
       ports.references == 0, released == 2
     else { throw Failure("Incomplete accepted endpoint response") }
   }
+  var shutdown = EndpointShutdown(
+    ShutdownClient(table: caller.handleReader, object: .init(child), stream: payload))
+  let status = [completion.result0, StreamShutdown.write.rawValue].withUnsafeBufferPointer {
+    shutdown.invoke(number: TarwinCall.endpointShutdown, words: $0).status
+  }
+  guard status == 0 else { throw Failure("Cannot shut down accepted endpoint output") }
   try flush(&payload.connection)
 }

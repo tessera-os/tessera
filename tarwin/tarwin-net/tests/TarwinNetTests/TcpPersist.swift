@@ -40,6 +40,46 @@ final class TcpPersistTests: XCTestCase {
       XCTAssertEqual(sent, [21, 22, 23])
     }
   }
+  func testLocalWriteShutdownKeepsInputAndPersistsFinAcrossAClosedWindow() {
+    var c = opened(0, false)
+    c.shutdown(.write)
+    c.shutdown(.write)
+    XCTAssertEqual(
+      c.write([1][...], at: 2) { _ in
+        XCTFail()
+        return false
+      }, 0)
+    var packets: [TcpSegment] = []
+    func emit(_ b: [UInt8]) -> Bool {
+      packets.append(tcpSegment(b)!)
+      return true
+    }
+    XCTAssertTrue(c.pump(at: 2, emit: emit))
+    XCTAssertTrue(packets.isEmpty)
+    XCTAssertEqual(c.state, .finWait1)
+    XCTAssertTrue(
+      c.input(tcpSegment(wire(71, [4, 5, 6], flags: 24, ack: .max, window: 0))!, at: 3) { _ in true
+      })
+    var received: [UInt8] = []
+    XCTAssertEqual(
+      c.read(upTo: 8) {
+        received += $0
+        return true
+      }, 3)
+    XCTAssertEqual(received, [4, 5, 6])
+    XCTAssertTrue(c.pump(at: 3, emit: emit))
+    XCTAssertEqual(packets.last?.flags, 16)
+    XCTAssertTrue(c.pump(at: 1_000_000_002, emit: emit))
+    XCTAssertEqual(packets.last?.flags, 17)
+    XCTAssertEqual(packets.last?.sequence, .max)
+    XCTAssertEqual(packets.last?.ack, 74)
+    XCTAssertTrue(
+      c.input(tcpSegment(wire(74, [], flags: 16, ack: 0, window: 12))!, at: 1_000_000_003) { _ in
+        true
+      })
+    XCTAssertEqual(c.state, .finWait2)
+    XCTAssertFalse(c.pump(at: 1_000_000_004, emit: emit))
+  }
   func testOneNewBytePersistsUntilPeerOpensEvenAfterManyReplies() {
     for v6 in [false, true] {
       var c = opened(0, v6)

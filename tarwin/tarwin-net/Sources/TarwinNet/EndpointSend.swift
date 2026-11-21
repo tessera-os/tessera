@@ -60,20 +60,14 @@ public struct EndpointSend: ~Copyable {
       error = 25
     } else if state == .reset {
       error = 61
-    } else if state != .established && state != .closeWait {
+    } else if stream.connection.writeShut || (state != .established && state != .closeWait) {
       error = 27
     } else {
       error = 0
     }
     let n = error == 0 ? min(count, stream.connection.outputRoom) : 0
     if error == 0 && count > 0 && n == 0 { return .waiting }
-    var prefix: [UInt8] = []
-    prefix.reserveCapacity(n)
-    for b in sources {
-      let remaining = n - prefix.count
-      if remaining == 0 { break }
-      prefix.append(contentsOf: b.prefix(remaining))
-    }
+    let sources = self.sources
     let flags = self.flags
     grant.finish(at: now, ports: &ports, releasePins: releasePins, retire: retire) {
       var p = PortPacket()
@@ -81,7 +75,13 @@ public struct EndpointSend: ~Copyable {
         p.error = error
         p.subsystem = 6
       } else {
-        stream.connection.enqueueOutput(prefix, flags: flags, at: now)
+        var left = n
+        for b in sources {
+          if left == 0 { break }
+          let prefix = b.prefix(left)
+          stream.connection.enqueueOutput(prefix, flags: flags, at: now)
+          left -= prefix.count
+        }
         p.result0 = UInt64(n)
       }
       return p
