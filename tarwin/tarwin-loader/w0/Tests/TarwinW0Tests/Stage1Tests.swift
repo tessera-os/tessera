@@ -6,6 +6,27 @@ import XCTest
 @testable import TarwinW0Verify
 
 final class Stage1Tests: XCTestCase {
+  func testFirmwareMeasurementLimitsAndExactRanges() throws {
+    let limit = 1 << 20
+    var archive = Data(repeating: 0x41, count: limit)
+    func digest(_ range: Range<Int>) throws -> Data {
+      let result = try archive.withUnsafeBytes { bytes in
+        try XCTUnwrap(firmwareMeasurementSHA256(.init(rebasing: bytes[range])))
+      }
+      return withUnsafeBytes(of: result) { Data($0) }
+    }
+    let full = try digest(0..<limit)
+    let end = try digest(limit - 1..<limit)
+    XCTAssertEqual(full, Data(SHA256.hash(data: archive)))
+    XCTAssertEqual(end, Data(SHA256.hash(data: archive.suffix(1))))
+    archive[0] ^= 1
+    XCTAssertNotEqual(try digest(0..<limit), full)
+    XCTAssertEqual(try digest(limit - 1..<limit), end)
+    archive.append(0)
+    XCTAssertNil(archive.withUnsafeBytes(firmwareMeasurementSHA256))
+    XCTAssertNil(firmwareMeasurementSHA256(.init(start: nil, count: 0)))
+  }
+
   func testBankDigestAgainstSystemSHA256() {
     var old = InlineArray<32, UInt8>(repeating: 0)
     var event = InlineArray<32, UInt8>(repeating: 0)

@@ -11,6 +11,13 @@ public func replaySHA256PCR(previous: InlineArray<32, UInt8>, event: InlineArray
   return withUnsafeBytes(of: &block) { measurementDigest($0) }
 }
 
+/// Hash the exact retained archive or configuration bytes, up to 1 MiB.
+/// A digest is an event input, not signature verification or a live PCR value.
+public func firmwareMeasurementSHA256(_ bytes: UnsafeRawBufferPointer) -> InlineArray<32, UInt8>? {
+  guard (1...(1 << 20)).contains(bytes.count) else { return nil }
+  return measurementDigest(bytes)
+}
+
 /// SHA-256, FIPS 180-4. The SHA-256 constants are the high halves of the
 /// first 64 SHA-512 constants. W1 input sizes are bounded by archive authorization.
 func measurementDigest(_ bytes: UnsafeRawBufferPointer) -> InlineArray<32, UInt8> {
