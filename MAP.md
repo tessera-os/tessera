@@ -10,7 +10,7 @@ services, drivers, tools and apps.
 | --- | --- |
 | `tessera/` | The OS build: `kernel/`, `patches/`, `sysroot/`, `scripts/`, `build/`, `roadmap/` and `ROADMAP.md`. `HANDOFF.md` tracks work in progress |
 | `tarwin/` | Native Swift Tarwin kernel and boot loader under development, separate from the Linux build. Platform packages: `kcore`, `tarboot`, `tarwin-boot`, `tarwin-mm`, `tarwin-time`, and `tarwin-arch-{aarch64,x64,rv64}` |
-| `tessera/build/tarwin/` | Tarwin bootstrap composition: boot CPU run queue and deadlines, image preflight, and a separate W1 adapter binding verified init bytes to post-exit PCR 10 measurement |
+| `tessera/build/tarwin/` | Tarwin bootstrap composition: boot CPU run queue and deadlines, image preflight, W1 authorized-init PCR 10 measurement and paired process/library address reservations |
 | `tessera/build/tarwin-profile/` | Hosted KLF Swift kernel-profile preflight; rejects app-profile output instead of relabeling it |
 | `tessera/build/tarwin-stage0/` | Non-allocating Embedded Swift W0 kernel and hosted A12 image packaging; unsigned signing input, not a release |
 | `system/` | The system volume's package: the init Tessera runs from its read-only system volume |
