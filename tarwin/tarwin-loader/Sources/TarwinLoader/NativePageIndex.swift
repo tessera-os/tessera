@@ -65,6 +65,11 @@ public struct NativePageIndex {
     self.nodeCount = n
   }
 
+  func covers(offset: UInt64, pageSize: UInt64) -> Bool {
+    (pageSize == 4096 || pageSize == 16384) && offset % pageSize == 0
+      && imageContains(unchangedPrefix, offset, pageSize)
+  }
+
   /// Emit sibling CVs in verifyFilePage order. Only complete, unchanged
   /// file pages before the notes qualify; segment permissions, offset and
   /// zero-fill of segment padding are separate checks by the fault path.
@@ -72,8 +77,7 @@ public struct NativePageIndex {
     offset: UInt64, pageSize: UInt64, nodes: UnsafeBufferPointer<BlakeCv>,
     into output: UnsafeMutableRawBufferPointer
   ) -> Int? {
-    guard nodes.count >= nodeCount, pageSize == 4096 || pageSize == 16384,
-      offset % pageSize == 0, imageContains(unchangedPrefix, offset, pageSize)
+    guard nodes.count >= nodeCount, covers(offset: offset, pageSize: pageSize)
     else { return nil }
     var used = 0
     let first = Int(offset / 1024)

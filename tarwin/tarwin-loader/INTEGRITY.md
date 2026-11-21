@@ -11,7 +11,11 @@ Supply caller-owned storage sized by `capacity(fileBytes:)`; at page-in, use
 Always pass the emitted prefix to `verifyFilePage` with the index's canonical
 size and root. A cache hit is not an integrity decision. After verification
 expose only file bytes belonging to the authorized executable segment and
-zero any remaining bytes of its last page.
+zero any remaining bytes of its last page. Capture a `NativeExecutableSegment`
+for each file-backed RX PT_LOAD at load time. On fault, its `fileOffset` uses
+the page RVA to select the storage page; its `prepare` checks the exact private
+frame against that RVA and the authenticated root, then zeroes segment padding.
+It neither installs a PTE nor accepts a page from another RVA.
 
 The pager must capture the build ID and canonical byte-stream extent from authenticated metadata, read into private pinned storage, and supply exactly those bytes as little-endian blocks (zero-pad the final block). For each 1 KiB chunk of the requested page, consume its sibling chaining values from leaf to root and pass the proof to the page check. A cache of sibling values need not be trusted. The page check requires every chunk, in order, including a partial chunk at EOF. Zero-fill any part of the mapping beyond the file; do not reuse bytes from the page's prior owner.
 

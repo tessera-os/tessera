@@ -41,7 +41,15 @@ func checkExecutablePages(_ kernel: W0Kernel, machine: UInt16) throws {
     func u64(_ p: Int) -> UInt64 {
       UInt64(littleEndian: k.loadUnaligned(fromByteOffset: at + p, as: UInt64.self))
     }
-    guard u32(0) == 1, u32(4) == 5 else { continue }
+    let descriptor = NativeExecutableSegment(
+      file: k, image: kernel.image, programHeader: at, index: index)
+    guard u32(0) == 1, u32(4) == 5 else {
+      XCTAssertNil(descriptor)
+      continue
+    }
+    let rx = try XCTUnwrap(descriptor)
+    XCTAssertNil(rx.fileOffset(pageRVA: rx.rva + 1))
+    XCTAssertNil(rx.fileOffset(pageRVA: rx.rva + ((rx.fileBytes + size - 1) / size * size)))
     let start = u64(8)
     let end = start + u64(32)
     for offset in stride(from: start, to: end, by: Int(size)) {
@@ -61,6 +69,31 @@ func checkExecutablePages(_ kernel: W0Kernel, machine: UInt16) throws {
         }
       }
       XCTAssertTrue(verify())
+      let fault = rx.rva + (offset - start)
+      XCTAssertEqual(rx.fileOffset(pageRVA: fault), offset)
+      func prepare(_ buffer: inout [UInt8], _ address: UInt64) -> Bool {
+        buffer.withUnsafeMutableBufferPointer { target in
+          output.withUnsafeBufferPointer {
+            rx.prepare(
+              pageRVA: address, frame: target,
+              witnesses: UnsafeBufferPointer(rebasing: $0.prefix(used)))
+          }
+        }
+      }
+      var prepared = frame
+      XCTAssertTrue(prepare(&prepared, fault))
+      let valid = Int(min(size, end - offset))
+      XCTAssertEqual(prepared.prefix(valid), frame.prefix(valid))
+      XCTAssertTrue(prepared.dropFirst(valid).allSatisfy { $0 == 0 })
+      XCTAssertFalse(prepare(&prepared, 0))
+      if valid < frame.count {
+        var altered = frame
+        altered[valid] ^= 1
+        XCTAssertFalse(prepare(&altered, fault))
+      }
+      if offset > start {
+        XCTAssertFalse(prepare(&frame, fault - size))
+      }
       frame[0] ^= 1
       XCTAssertFalse(verify())
       frame[0] ^= 1
