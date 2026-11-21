@@ -16,6 +16,7 @@ extension QEMUW1Evidence {
     reader: inout R, into storage: UnsafeMutableRawBufferPointer,
     enrollment: UnsafeRawBufferPointer, systemEnrollment: UnsafeRawBufferPointer,
     policy: W0Policy, contract: EarlyRIDLContract, scratch: UnsafeMutableRawBufferPointer,
+    afterFence: () -> W1HandoffProfile? = { .ordinary },
     onRefusal: (VirtBootFenceResult) -> Void
   ) -> W1BootSet? {
     func span(_ bytes: UnsafeRawBufferPointer) -> DeviceRange {
@@ -40,9 +41,10 @@ extension QEMUW1Evidence {
         protected: $0.bindMemory(to: DeviceRange.self), layout: layout, bus: &bus)
     }
     guard result == .streamsDenied else { onRefusal(result); return nil }
-    return verify(block: block, at: span(block).base, map: map, at: span(map).base,
+    guard let handoff = afterFence() else { return nil }
+    return verifyAfterExclusion(block: block, at: span(block).base, map: map, at: span(map).base,
       archive: archive, at: a.base, reader: &reader, into: storage, enrollment: enrollment,
-      systemEnrollment: systemEnrollment, policy: policy, contract: contract, scratch: scratch)
+      systemEnrollment: systemEnrollment, policy: policy, contract: contract, scratch: scratch, handoff: handoff)
   }
 }
 #endif

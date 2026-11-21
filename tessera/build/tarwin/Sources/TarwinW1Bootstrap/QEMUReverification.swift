@@ -2,6 +2,34 @@ import Tarboot
 import TarwinBoot
 import TarwinLoader
 import TarwinW0Verify
+#if TARWIN_NON_RESTORABLE_DEBUG
+import TarwinKernelRandom
+#endif
+
+/// Never select a handoff decoder using the revision supplied by the guest.
+public struct W1HandoffProfile {
+  private let expected: DebugQEMUFixedGeneration?
+  public static var ordinary: Self { Self(expected: nil) }
+  private init(expected: DebugQEMUFixedGeneration?) { self.expected = expected }
+
+  #if TARWIN_NON_RESTORABLE_DEBUG
+  public init?(nonRestorable launch: borrowing FixedDebugRandomLaunch) {
+    guard case .fixedDebugQEMU(let lo, let hi) = launch.generation,
+      let id = DebugQEMUFixedGeneration(low: lo, high: hi) else { return nil }
+    expected = id
+  }
+  #endif
+
+  func decode(_ block: UnsafeRawBufferPointer, at address: UInt64, map: UnsafeRawBufferPointer,
+    at mapAddress: UInt64) -> BootInfo? {
+    if let expected {
+      guard let result = readFixedDebugQEMUHandoff(block: block, at: address, map: map, at: mapAddress),
+        result.generation == expected else { return nil }
+      return result.boot
+    }
+    return readHandoff(block: block, at: address, map: map, at: mapAddress)
+  }
+}
 
 public enum QEMUW1Evidence {
   public static let fileName: StaticString = "opt/org.tessera/tarwin/w1.sig"
@@ -43,13 +71,28 @@ public enum QEMUW1Evidence {
     enrollment: UnsafeRawBufferPointer, systemEnrollment: UnsafeRawBufferPointer,
     policy: W0Policy, contract: EarlyRIDLContract, scratch: UnsafeMutableRawBufferPointer
   ) -> W1BootSet? {
+    verifyAfterExclusion(block: block, at: blockAddress, map: map, at: mapAddress,
+      archive: archive, at: archiveAddress, reader: &reader, into: storage,
+      enrollment: enrollment, systemEnrollment: systemEnrollment, policy: policy,
+      contract: contract, scratch: scratch, handoff: .ordinary)
+  }
+
+  @unsafe static func verifyAfterExclusion<R: QEMUFileReader>(
+    block: UnsafeRawBufferPointer, at blockAddress: UInt64,
+    map: UnsafeRawBufferPointer, at mapAddress: UInt64,
+    archive: UnsafeRawBufferPointer, at archiveAddress: UInt64,
+    reader: inout R, into storage: UnsafeMutableRawBufferPointer,
+    enrollment: UnsafeRawBufferPointer, systemEnrollment: UnsafeRawBufferPointer,
+    policy: W0Policy, contract: EarlyRIDLContract, scratch: UnsafeMutableRawBufferPointer,
+    handoff: W1HandoffProfile
+  ) -> W1BootSet? {
     func outsideHandoff(_ input: UnsafeRawBufferPointer) -> Bool {
       apart(block, input) && apart(map, input)
     }
     guard outsideHandoff(.init(storage)), outsideHandoff(.init(scratch)), outsideHandoff(archive),
       outsideHandoff(enrollment), outsideHandoff(systemEnrollment), outsideHandoff(contract.uuid),
       outsideHandoff(contract.symbol), outsideHandoff(contract.textSHA256),
-      let info = readHandoff(block: block, at: blockAddress, map: map, at: mapAddress),
+      let info = handoff.decode(block, at: blockAddress, map: map, at: mapAddress),
       info.security & 2 != 0, info.bootSet == archiveAddress,
       info.bootSetSize == UInt64(archive.count)
     else { return nil }
