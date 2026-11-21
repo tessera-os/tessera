@@ -123,3 +123,23 @@ define i64 @tarboot_test_translation(i64 %root, i64 %va, ptr %results, i64 %kroo
   unreachable
 }
 """)
+
+// Boot-CPU-only EL2 diagnostic. Sign or authenticate without branching to the
+// address. Save the current IA key and control state entirely in registers.
+for (name, instruction) in [("sign", "pacia"), ("auth", "autia")] {
+  let ops = [
+    ".arch_extension pauth", "mrs x4, daif", "msr daifset, #15",
+    "mrs x5, APIAKeyLo_EL1", "mrs x6, APIAKeyHi_EL1", "mrs x7, sctlr_el2",
+    "msr APIAKeyLo_EL1, x2", "msr APIAKeyHi_EL1, x3",
+    "orr x8, x7, #(1 << 31)", "msr sctlr_el2, x8", "isb",
+    "\(instruction) x0, x1", "msr APIAKeyLo_EL1, x5", "msr APIAKeyHi_EL1, x6",
+    "msr sctlr_el2, x7", "isb", "mov x2, xzr", "mov x3, xzr",
+    "mov x5, xzr", "mov x6, xzr", "msr daif, x4", "ret",
+  ]
+  print("""
+  define i64 @tarboot_test_\(name)_ia(i64 %ptr, i64 %modifier, i64 %lo, i64 %hi) naked nounwind {
+    call void asm sideeffect "\(ops.joined(separator: "\\0A"))", "~{memory}"()
+    unreachable
+  }
+  """)
+}

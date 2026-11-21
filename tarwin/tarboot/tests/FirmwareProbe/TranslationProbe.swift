@@ -1,6 +1,11 @@
 #if TARBOOT_TEST_TRANSLATION
   import TarwinArchAarch64
 
+  @_extern(c, "tarboot_test_sign_ia")
+  private func signIA(_ target: UInt64, _ modifier: UInt64, _ lo: UInt64, _ hi: UInt64) -> UInt64
+  @_extern(c, "tarboot_test_auth_ia")
+  private func authIA(_ signed: UInt64, _ modifier: UInt64, _ lo: UInt64, _ hi: UInt64) -> UInt64
+
   @_extern(c, "tarboot_test_translation")
   private func walk(
     _ root: UInt64, _ va: UInt64, _ par: UnsafeMutablePointer<UInt64>,
@@ -21,8 +26,19 @@
     let rw = rx + 16384
     guard tables.insert(virtual: va, physical: rx, write: false, execute: true),
       tables.insert(virtual: va + 16384, physical: rw, write: true, execute: false),
-      tables.insert(virtual: va + 32768, physical: root + 12 * 16384, write: true, execute: false),
-      tables.sealReadOnly(va + 32768..<va + 49152)
+      tables.insert(virtual: va + 32768, physical: root + 12 * 16384, write: true, execute: false)
+    else { return false }
+    let target = va + 16, slot = va + 32776
+    let modifier = slot | (0x5678 << 48)
+    let frame = UnsafeMutableRawBufferPointer(start: p + 12 * 16384, count: 16384)
+    frame.storeBytes(of: UInt64(0), toByteOffset: 8, as: UInt64.self)
+    // Public test constants, NOT process keys or a signed framework image.
+    let lo: UInt64 = 0x1318_faec_4190_9843, hi: UInt64 = 0xd46c_d810_33b4_9281
+    guard tables.bindPrivateImport(slot: slot, target: target, modifier: modifier,
+      libraryCode: va..<va+20, relro: va+32768..<va+49152, frame: frame,
+      physical: root + 12 * 16384, sign: { signIA($0, $1, lo, hi) }),
+      frame.load(fromByteOffset: 8, as: UInt64.self) != target,
+      authIA(frame.load(fromByteOffset: 8, as: UInt64.self), modifier, lo, hi) == target
     else { return false }
     let kva: UInt64 = 0xffff_8000_0000_0000
     let kernel = root + 6 * 16384

@@ -17,6 +17,7 @@ let package = Package(
     .package(path: "../../../tarwin/tarwin-boot"),
     .package(path: "../../../tarwin/tarwin-loader/w0"),
     .package(path: "../../../tarwin/tarwin-mm"),
+    .package(path: "../../../tarwin/tarwin-arch-aarch64"),
   ],
   targets: [
     .target(
@@ -36,6 +37,7 @@ let package = Package(
     .testTarget(name: "TarbootPreflightTests", dependencies: ["TarbootPreflight"]),
     .target(
       name: "TarwinW1Bootstrap", dependencies: [
+        .product(name: "TarwinArchAarch64", package: "tarwin-arch-aarch64"),
         .product(name: "TarwinBoot", package: "tarwin-boot"),
         .product(name: "TarwinW0Verify", package: "w0"),
         .product(name: "TarwinMM", package: "tarwin-mm"),

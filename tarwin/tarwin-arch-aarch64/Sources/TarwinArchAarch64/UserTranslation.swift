@@ -79,7 +79,12 @@ private struct ArmPrivateRoot: ~Copyable {
     return leaf == intended | (code ? 1 << 50 : 0)
   }
 
-  mutating func sealUserData(_ range: Range<UInt64>) -> Bool {
+  func privateWritableFrame(_ va: UInt64) -> UInt64? {
+    guard let cell = mutableUserDataCell(va) else { return nil }
+    return words[cell] & 0x0000_ffff_ffff_c000
+  }
+
+  func canSeal(_ range: Range<UInt64>) -> Bool {
     let lo = range.lowerBound, hi = range.upperBound
     guard lo < hi, lo >= 1 << 32, hi <= 1 << 47, (lo | hi) & 16383 == 0,
       (hi - lo) >> 14 <= UInt64(words.count) else { return false }
@@ -88,13 +93,16 @@ private struct ArmPrivateRoot: ~Copyable {
       guard mutableUserDataCell(va) != nil else { return false }
       va += 16384
     }
-    va = lo
-    while va < hi {
+    return true
+  }
+
+  mutating func sealValidated(_ range: Range<UInt64>) {
+    var va = range.lowerBound
+    while va < range.upperBound {
       // The root is exclusively held; only the AP[2] bit of leaves changes.
       words[mutableUserDataCell(va)!] |= 1 << 7
       va += 16384
     }
-    return true
   }
 }
 
@@ -124,11 +132,37 @@ public struct ArmUserTranslation: ~Copyable {
   /// The caller owns the frames and must exclude writable aliases and DMA.
   /// No TLB invalidation: this is not an active address-space edit.
   public mutating func sealReadOnly(_ range: Range<UInt64>) -> Bool {
-    root.sealUserData(range)
+    guard root.canSeal(range) else { return false }
+    root.sealValidated(range)
+    return true
   }
 
   func entryPage(_ va: UInt64, is role: ArmEntryPage) -> Bool {
     va >= 1 << 32 && va < 1 << 47 && root.hasLeaf(va, role)
+  }
+
+  /// Install one process-key-signed pointer, then seal the complete RELRO
+  /// segment. `frame` is the kernel's exclusive writable mapping of precisely
+  /// `physical` (no aliases to the rest of the process, page tables, or DMA).
+  /// Hold that frame and this unpublished root exclusively throughout.
+  @unsafe public mutating func bindPrivateImport(slot: UInt64, target: UInt64, modifier: UInt64,
+    libraryCode: Range<UInt64>, relro: Range<UInt64>, frame: UnsafeMutableRawBufferPointer,
+    physical: UInt64, sign: (UInt64, UInt64) -> UInt64?) -> Bool {
+    let page: UInt64 = 16384
+    guard slot & 7 == 0, target & 3 == 0, libraryCode.contains(target),
+      libraryCode.upperBound - target >= 4, libraryCode.lowerBound >= 1 << 32,
+      libraryCode.upperBound <= 1 << 43, relro.contains(slot), relro.upperBound - slot >= 8,
+      relro.lowerBound >= 1 << 32, relro.upperBound <= 1 << 43,
+      !relro.overlaps(libraryCode), (relro.lowerBound | relro.upperBound) & (page-1) == 0,
+      modifier & 0x0000_ffff_ffff_ffff == slot, frame.count == Int(page),
+      let p = frame.baseAddress, UInt(bitPattern: p) & 7 == 0,
+      root.privateWritableFrame(slot) == physical, entryPage(target, is: .code), root.canSeal(relro),
+      let signed = sign(target, modifier)
+    else { return false }
+    let at = Int(slot & (page-1))
+    p.storeBytes(of: signed.littleEndian, toByteOffset: at, as: UInt64.self)
+    root.sealValidated(relro)
+    return true
   }
 }
 
