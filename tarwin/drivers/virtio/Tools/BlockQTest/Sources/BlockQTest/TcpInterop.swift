@@ -34,11 +34,26 @@ func tcpInterop(
   let gateway = try resolve([10, 0, 2, 2])
   let path = TcpPath(
     local: local, remote: peer, localPort: localPort, remotePort: service, mtu: 1500)!
-  var c = TcpConnection(path: path, initialSequence: initial, receiveBytes: 64)!
+  let offset: UInt32 = 0xb001_0001
+  var c = TcpConnection(
+    path: path, initialSequence: initial, receiveBytes: 131_070,
+    timestampOffset: offset)!
+  var peerTS: UInt32?
+  var peerScale: UInt8?
   var now: UInt64 = 0
   var failure: Error?
   func emit(_ ip: [UInt8]) -> Bool {
     do {
+      guard let p = tcpSegment(ip) else { throw Failure("Invalid outgoing TCP packet") }
+      if p.flags == 2 {
+        guard p.options.timestamp == offset, p.options.scale == 1, p.window == 65535 else {
+          throw Failure("Invalid TCP SYN options")
+        }
+      } else {
+        guard (p.options.timestamp != nil) == (peerTS != nil), p.options.scale == nil else {
+          throw Failure("TCP option negotiation mismatch")
+        }
+      }
       try send(dst + mac + [8, 0] + ip)
       return true
     } catch {
@@ -53,6 +68,10 @@ func tcpInterop(
         b[6..<12].elementsEqual(dst) || b[6..<12].elementsEqual(gateway), b[12] == 8, b[13] == 0,
         let p = tcpSegment(Array(b.dropFirst(14))), c.input(p, at: now, admit: { _ in true })
       {
+        if p.flags & 0x12 == 0x12 {
+          peerTS = p.options.timestamp
+          peerScale = p.options.scale
+        }
         return
       }
       if i != 5 { try post() }
@@ -100,7 +119,17 @@ func tcpInterop(
   else { throw Failure("No initial TCP output") }
   try post()
   now += 2_000_000_000
-  guard c.pump(at: now, emit: { ip in ip == lost && emit(ip) }) else {
+  guard
+    c.pump(
+      at: now,
+      emit: { ip in
+        guard let retry = tcpSegment(ip), retry.sequence == sent.sequence, retry.ack == sent.ack,
+          retry.flags == sent.flags, retry.payload.elementsEqual(sent.payload),
+          retry.options.timestamp == sent.options.timestamp.map({ $0 &+ 2000 })
+        else { return false }
+        return emit(ip)
+      })
+  else {
     throw failure ?? Failure("Missing timer retransmission")
   }
   now += 1
@@ -125,4 +154,7 @@ func tcpInterop(
   guard c.unacknowledged == 0, c.state == .finWait2 || c.state == .timeWait else {
     throw Failure("Peer did not ACK FIN")
   }
+  print(
+    "Peer SYN-ACK: timestamps \(peerTS == nil ? "declined" : "accepted"), window scale \(peerScale.map(String.init) ?? "declined")"
+  )
 }
