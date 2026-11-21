@@ -93,6 +93,9 @@ public enum TrfsNodeKind: UInt8 {
   case symlink = 3
 }
 
+public enum TrfsRenameMode { case noReplace, replace, exchange }
+public enum TrfsResizeResult: Equatable { case ok, busy, outOfRange, failed }
+
 public struct TrfsVolume<M: TrfsMedia>: ~Copyable {
   private let io: M, page: UnsafeMutableRawBufferPointer
   private var state: Anchor?, next: UInt64 = 0, readonly = false, incarnation: UInt64 = 0
@@ -153,9 +156,21 @@ public struct TrfsVolume<M: TrfsMedia>: ~Copyable {
   public mutating func mountSystem(
     expected: TrfsDigest, measure: (TrfsDigest) -> Bool
   ) -> Bool {
+    mountSystem(root: expected, measure: measure)
+  }
+  /// Input from the boot-set verifier, not a disk field or path. Bad length
+  /// consumes this attempt too; a missing root must not select an unpinned mount.
+  public mutating func mountSystem(
+    bootSetRoot bytes: UnsafeRawBufferPointer, measure: (TrfsDigest) -> Bool
+  ) -> Bool {
+    mountSystem(root: TrfsDigest(bytes), measure: measure)
+  }
+  private mutating func mountSystem(
+    root: TrfsDigest?, measure: (TrfsDigest) -> Bool
+  ) -> Bool {
     guard state == nil, !systemAttempted else { return false }
     systemAttempted = true
-    guard let a = select(expected: expected), measure(a.head.digest) else { return false }
+    guard let root, let a = select(expected: root), measure(a.head.digest) else { return false }
     install(a, readonly: true)
     return true
   }
@@ -210,6 +225,9 @@ public struct TrfsVolume<M: TrfsMedia>: ~Copyable {
     case 3:  // data page
       return nameBytes == 0 && page[113] == 0 && p.word(24) == 0 && blob != .empty
         && blob.valid(before: r.block)
+    case 4:  // truncate: older full pages at or above key are holes
+      return nameBytes == 0 && page[113] == 0 && p.word(24) == 0 && blob == .empty
+        && p.word(16) <= (UInt64.max / 4096) + 1
     default: return false
     }
   }
@@ -227,6 +245,9 @@ public struct TrfsVolume<M: TrfsMedia>: ~Copyable {
     var r = root
     while r != .empty {
       guard record(r) else { return nil }
+      if tag == 3 && page[112] == 4 && p.word(8) == id && index >= p.word(16) {
+        return false
+      }
       if page[112] == tag && p.word(8) == id && p.word(16) == index && name.count == Int(page[114])
         && name.indices.allSatisfy({ name[$0] == page[128 + $0] })
       {
@@ -368,14 +389,26 @@ public struct TrfsVolume<M: TrfsMedia>: ~Copyable {
     default: return nil
     }
   }
-  /// Atomic, no-replace move of a file or link without following it.
-  public mutating func moveFile(_ parent: UInt64, name: [UInt8], to dir: UInt64, as dest: [UInt8])
-    -> Bool
-  {
-    guard let a = writable, let id = nonDirectory(lookup(parent, name: name, in: a.head)),
-      lookup(dir, name: dest, in: a.head) == .absent,
-      let removed = append(a.head, tag: 1, id: parent, name: name),
-      let added = append(removed, tag: 1, id: dir, value: id, name: dest)
+  /// The namespace caller checks source Delete, destination Create, and
+  /// destination Delete when displacing an entry. Never follow either link.
+  public mutating func moveFile(
+    _ parent: UInt64, name: [UInt8], to dir: UInt64, as dest: [UInt8],
+    mode: TrfsRenameMode = .noReplace
+  ) -> Bool {
+    guard let a = writable, let id = nonDirectory(lookup(parent, name: name, in: a.head))
+    else { return false }
+    if parent == dir && name == dest { return mode != .noReplace }
+    let other = lookup(dir, name: dest, in: a.head)
+    let replacement: UInt64
+    switch (mode, other) {
+    case (.noReplace, .absent), (.replace, .absent), (.replace, .file), (.replace, .symlink):
+      replacement = 0
+    case (.exchange, .file(let second)), (.exchange, .symlink(let second)):
+      replacement = second
+    default: return false
+    }
+    guard let first = append(a.head, tag: 1, id: parent, value: replacement, name: name),
+      let added = append(first, tag: 1, id: dir, value: id, name: dest)
     else { return false }
     return commit(added, a)
   }
@@ -388,6 +421,38 @@ public struct TrfsVolume<M: TrfsMedia>: ~Copyable {
   public func length(_ file: UInt64, in root: TrfsSnapshot) -> UInt64? {
     guard let (k, n) = inode(file, root), k == .file else { return nil }
     return n
+  }
+  /// Caller holds Write and serializes the VM range lock with publication.
+  /// Check actual live mappings before shrinking, not just active I/O leases.
+  public mutating func resize(
+    _ file: UInt64, to size: UInt64, limit: UInt64, isUnmapped: (Range<UInt64>) -> Bool
+  ) -> TrfsResizeResult {
+    guard size <= limit else { return .outOfRange }
+    guard let a = writable, let old = length(file, in: a.head) else { return .failed }
+    if old == size { return .ok }
+    var head = a.head
+    if size < old {
+      guard isUnmapped(size..<old) else { return .busy }
+      let index = size / 4096, tail = Int(size % 4096)
+      if tail > 0 {
+        guard let found = seek(head, 3, file, index) else { return .failed }
+        if found {
+          guard read(.init(p, 72)), blank(Int(min(4096, old - index * 4096)), 4096)
+          else { return .failed }
+          for i in tail..<4096 { page[i] = 0 }
+          guard let blob = appendPage(p),
+            let map = append(head, tag: 3, id: file, key: index, blob: blob)
+          else { return .failed }
+          head = map
+        }
+      }
+      guard let barrier = append(head, tag: 4, id: file, key: index + (tail == 0 ? 0 : 1))
+      else { return .failed }
+      head = barrier
+    }
+    guard let inode = append(head, tag: 2, id: file, value: size, kind: 1), commit(inode, a)
+    else { return .failed }
+    return .ok
   }
   /// src is private cache memory, disjoint from volume scratch. Bytes past
   /// EOF are always canonical zeros; callers may extend sparsely.

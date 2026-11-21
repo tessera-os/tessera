@@ -459,7 +459,8 @@ func run() throws {
   let intx = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--intx"
   let nvme = CommandLine.arguments.count == 3 && ["--nvme", "--nvme-vtd", "--nvme-discard"].contains(CommandLine.arguments[2])
   let coldPCI = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--cold-virt-pci"
-  let measured = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--trfs-nvme-pcr11"
+  let signed = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--trfs-signed-pcr11"
+  let measured = signed || (CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--trfs-nvme-pcr11")
   let trfs = measured || (CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--trfs-nvme-xts")
   let usb = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--usb-vtd"
   let gpu = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--gpu"
@@ -484,14 +485,45 @@ func run() throws {
   defer { try? FileManager.default.removeItem(at: disk) }
   if trfs {
     guard machine == .x64 else { throw Failure("--trfs-nvme-xts requires q35 VT-d") }
-    let socket = ProcessInfo.processInfo.environment["TARWIN_QTEST_TPM_SOCKET"]
-    if measured && (socket?.hasPrefix("/") != true || socket!.contains(",")) {
-      throw Failure("Supply a private absolute swtpm control socket in TARWIN_QTEST_TPM_SOCKET")
+    let env = ProcessInfo.processInfo.environment
+    var measurement: (socket: String, root: Data)?
+    if measured {
+      guard let socket = env["TARWIN_QTEST_TPM_SOCKET"], socket.hasPrefix("/"),
+        !socket.contains(",") else { throw Failure("Measured fixture needs a private TPM socket") }
+      let root: Data
+      if signed {
+        guard let archive = env["TARWIN_QTEST_SIGNED_SET"], let corpus = env["TARWIN_QTEST_CORPUS"],
+          env["TARWIN_QTEST_ROOT"] == nil else { throw Failure("Signed mode needs a boot set and no raw root override") }
+        root = try signedFixtureRoot(archiveDirectory: URL(fileURLWithPath: archive), corpus: URL(fileURLWithPath: corpus))
+      } else {
+        guard let path = env["TARWIN_QTEST_ROOT"], env["TARWIN_QTEST_SIGNED_SET"] == nil,
+          let bytes = try? Data(contentsOf: URL(fileURLWithPath: path)), bytes.count == 32
+        else { throw Failure("Pinned fixture needs a 32-byte raw root") }
+        root = bytes
+      }
+      measurement = (socket, root)
     }
-    let scenario = NVMeVolumeScenario(tpmSocket: measured ? socket : nil)
+    let input = env["TARWIN_QTEST_DISK_IN"], output = env["TARWIN_QTEST_DISK_OUT"]
+    guard (input == nil && output == nil) || (signed && (input == nil || output == nil))
+    else { throw Failure("Disk handoff needs signed mode and one direction") }
+    let scenario = NVMeVolumeScenario(measurement: measurement, existingSignedDisk: input != nil)
+    if let input {
+      let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: input))
+      defer { try? handle.close() }
+      guard let bytes = try handle.read(upToCount: (1 << 20) + 1), bytes.count == 1 << 20
+      else { throw Failure("Expected a one-MiB fixture disk") }
+      // Present only a private copy to the model. Never format or write the input.
+      try bytes.write(to: disk)
+      try testNVMe(binary: CommandLine.arguments[1], disk: disk, translated: true, volume: scenario)
+      guard try Data(contentsOf: disk) == bytes else { throw Failure("Mounted disk changed") }
+      return
+    }
     try testNVMe(binary: CommandLine.arguments[1], disk: disk, translated: true, volume: scenario)
     try scenario.checkBacking(disk)
     try testNVMe(binary: CommandLine.arguments[1], disk: disk, translated: true, volume: scenario)
+    if let output {
+      try Data(contentsOf: disk).write(to: URL(fileURLWithPath: output), options: .withoutOverwriting)
+    }
     return
   }
   if coldPCI {
@@ -592,7 +624,9 @@ func run() throws {
 do {
   try run()
   print(
-    CommandLine.arguments.last == "--trfs-nvme-pcr11"
+    CommandLine.arguments.last == "--trfs-signed-pcr11"
+      ? "PASS: signed host-test archive authorized; its TRFS head matched encrypted q35 NVMe, PCR 11 replay matched, read-only mount succeeded; no guest launch"
+      : CommandLine.arguments.last == "--trfs-nvme-pcr11"
       ? "PASS: TRFS verified root extended into q35 TPM PCR 11 before encrypted read-only mount; independent SHA-256 replay matched"
       : CommandLine.arguments.last == "--trfs-nvme-xts"
       ? "PASS: TRFS encrypted snapshot written over VT-d NVMe and authenticated after cold controller restart"

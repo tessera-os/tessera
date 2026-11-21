@@ -95,11 +95,15 @@ private final class NVMeCipherDisk: TrfsRetiredBlockIO {
 }
 
 final class NVMeVolumeScenario {
-  private var expected: TrfsSnapshot?
-  private let tpmSocket: String?
-  init(tpmSocket: String? = nil) { self.tpmSocket = tpmSocket }
+  private var written: TrfsDigest?
+  private let existingSignedDisk: Bool
+  private let measurement: (socket: String, root: Data)?
+  init(measurement: (socket: String, root: Data)? = nil, existingSignedDisk: Bool = false) {
+    self.measurement = measurement
+    self.existingSignedDisk = existingSignedDisk
+  }
   var devices: [String] {
-    guard expected != nil, let socket = tpmSocket else { return [] }
+    guard existingSignedDisk || written != nil, let (socket, _) = measurement else { return [] }
     return ["-chardev", "socket,id=root_tpm,path=" + socket, "-tpmdev",
             "emulator,id=measured,chardev=root_tpm", "-device", "tpm-tis,tpmdev=measured"]
   }
@@ -120,12 +124,29 @@ final class NVMeVolumeScenario {
       try withUnsafeMutablePointer(to: &key) { k in
         let media = TrfsEncryptedMedia(io: disk, cipher: k, privatePage: cache, ciphertext: stage)!
         var v = TrfsVolume(media: media, scratch: pages[2])!
-        if let expected {
-          let mounted = tpmSocket == nil ? v.mount(expected: expected.digest)
-            : v.mountSystem(expected: expected.digest) { measureSnapshot($0, on: q) }
-          guard mounted,
-            case .file(let id) = v.lookup(1, name: name, in: expected),
-            v.readPage(id, index: 0, in: expected, into: pages[3]) == payload.count,
+        if existingSignedDisk || written != nil {
+          let mounted: Bool
+          if let (_, root) = measurement {
+            // An independent pin, never a digest from the first run or the drive.
+            let wrong = Data(SHA256.hash(data: Data("unrelated test slot".utf8)))
+            var rejected = TrfsVolume(media: media, scratch: pages[2])!
+            var called = false
+            let accepted = wrong.withUnsafeBytes {
+              rejected.mountSystem(bootSetRoot: $0) { _ in called = true; return false }
+            }
+            guard !accepted, !called, rejected.snapshot == nil, !rejected.mount()
+            else { throw Failure("Wrong boot root reached measurement or mount") }
+            mounted = root.withUnsafeBytes {
+              v.mountSystem(bootSetRoot: $0) { measureSnapshot($0, on: q) }
+            }
+          } else if let written, !existingSignedDisk {
+            mounted = v.mount(expected: written)
+          } else {
+            throw Failure("Existing disk requires a signed root and measurement")
+          }
+          guard mounted, let snapshot = v.snapshot,
+            case .file(let id) = v.lookup(1, name: name, in: snapshot),
+            v.readPage(id, index: 0, in: snapshot, into: pages[3]) == payload.count,
             Data(pages[3]) == payload, v.create(1, name: [97], kind: .file) == nil
           else {
             throw disk.error ?? Failure("Cold NVMe snapshot, content or read-only gate failed")
@@ -138,7 +159,7 @@ final class NVMeVolumeScenario {
             v.formatBlank(), let id = v.create(1, name: name, kind: .file),
             payload.withUnsafeBytes({ v.writePage(id, index: 0, bytes: $0) }), let root = v.snapshot
           else { throw disk.error ?? Failure("NVMe snapshot publication failed") }
-          expected = root
+          written = root.digest
         }
       }
       try q.require(

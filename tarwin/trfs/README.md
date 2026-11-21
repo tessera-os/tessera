@@ -8,7 +8,26 @@ Build the virtio driver's BlockQTest in release mode. From its package directory
 run `sh test-measured-volume.sh /path/to/BlockQTest /path/to/qemu-system-x86_64`
 with `swtpm` on PATH. This verifies the encrypted snapshot after an NVMe cold
 restart, checks the exact TPM event, and compares PCR 11 against independent
-SHA-256 replay. The fixture supplies the expected root, not a signed boot set.
+SHA-256 replay. The wrapper generates a reference image and 32-byte root
+independently of the filesystem writer. To supply another test pin, set
+`TARWIN_QTEST_ROOT` to a raw 32-byte file; a malformed or mismatched value
+fails the test, never falling back to the root on disk. This host file is not
+a boot authority. Kernel composition should pass the verified object's digest
+bytes directly to `mountSystem(bootSetRoot:measure:)`, without reopening a path.
+
+To exercise the signed host regression instead, leave `TARWIN_QTEST_ROOT`
+unset and set `TARWIN_QTEST_SIGNED_SET` to the directory containing Execution's
+`TEST-ONLY.TIR` and matching `TEST-ONLY.SIG`. The same wrapper uses the loader's
+test enrollments, SDK receipt and historical fixture time. It copies only the
+32-byte head returned by the five-member verifier. Signed mode has no raw-root
+fallback. The AArch64 fixture kernel does not execute: q35 supplies the NVMe,
+VT-d and software TPM, not a signed guest launch or hardware attestation.
+
+In signed mode, set `TARWIN_QTEST_DISK_OUT` to a **new file** to retain the
+1 MiB ciphertext image after successful measured remount. On a later run
+set `TARWIN_QTEST_DISK_IN` instead: no writer or formatter runs, the model sees
+only a private copy, and every byte must remain unchanged. The disposable
+image uses the harness's published test-vector cipher, not production keys.
 
 ## VM file-cache binding
 

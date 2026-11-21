@@ -22,4 +22,14 @@ while [ ! -S "$dir/ctrl" ]; do
   i=$((i+1))
   sleep 0.05
 done
+if [ "${TARWIN_QTEST_SIGNED_SET+x}" = x ]; then
+  TARWIN_QTEST_CORPUS=$(dirname "$0")/../../../../tarwin-loader/w0/Tests/TarwinW0Tests/SystemRootCorpus
+  export TARWIN_QTEST_CORPUS
+  TARWIN_QTEST_TPM_SOCKET="$dir/ctrl" "$1" "$2" --trfs-signed-pcr11
+  exit
+elif [ "${TARWIN_QTEST_ROOT+x}" != x ]; then
+  swift "$(dirname "$0")/../../../../trfs/tests/fixtures/make-system-image.swift" "$dir"
+  TARWIN_QTEST_ROOT=$dir/system.trfs.root
+fi
+export TARWIN_QTEST_ROOT
 TARWIN_QTEST_TPM_SOCKET="$dir/ctrl" "$1" "$2" --trfs-nvme-pcr11

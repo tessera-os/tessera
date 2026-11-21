@@ -150,6 +150,136 @@ final class SnapshotVolumeTests: XCTestCase {
     XCTAssertTrue(old && new)
   }
 
+  func testAtomicReplaceAndExchangeOfFileAndLinkAcrossDirectoryCrashCuts() throws {
+    for mode: TrfsRenameMode in [.replace, .exchange] {
+      let disk = Disk()
+      var writer = TrfsVolume(media: disk, scratch: scratch)!
+      XCTAssertTrue(writer.formatBlank())
+      let dir = try XCTUnwrap(writer.create(1, name: b, kind: .directory))
+      let file = try XCTUnwrap(writer.create(1, name: a, kind: .file))
+      let link = try XCTUnwrap(writer.createSymlink(dir, name: b, target: a))
+      let old = try XCTUnwrap(writer.snapshot)
+      XCTAssertFalse(writer.moveFile(1, name: a, to: dir, as: b))
+      XCTAssertFalse(writer.moveFile(1, name: a, to: dir, as: a, mode: .exchange))
+      XCTAssertFalse(writer.moveFile(1, name: a, to: 1, as: b, mode: mode))
+      XCTAssertTrue(writer.moveFile(1, name: a, to: 1, as: a, mode: mode))
+      XCTAssertEqual(writer.snapshot, old)
+      disk.trace = true
+      XCTAssertTrue(writer.moveFile(1, name: a, to: dir, as: b, mode: mode))
+      let new = try XCTUnwrap(writer.snapshot)
+      XCTAssertNotEqual(old, new)
+      var sawOld = false, sawNew = false
+      for cut in disk.cuts {
+        var recovered = TrfsVolume(media: Disk(cut), scratch: scratch)!
+        XCTAssertTrue(recovered.mount())
+        let root = try XCTUnwrap(recovered.snapshot)
+        let source = recovered.lookup(1, name: a, in: root)
+        let target = recovered.lookup(dir, name: b, in: root)
+        if root == old {
+          sawOld = true
+          XCTAssertEqual(source, .file(file))
+          XCTAssertEqual(target, .symlink(link))
+        } else {
+          sawNew = true
+          XCTAssertEqual(root, new)
+          XCTAssertEqual(source, mode == .exchange ? .symlink(link) : .absent)
+          XCTAssertEqual(target, .file(file))
+        }
+      }
+      XCTAssertTrue(sawOld && sawNew)
+      XCTAssertEqual(writer.lookup(dir, name: b, in: old), .symlink(link))
+    }
+  }
+
+  func testReplacePreservesOpenInodeAndFailsClosedOnCorruptDestination() throws {
+    let disk = Disk()
+    var v = TrfsVolume(media: disk, scratch: scratch)!
+    XCTAssertTrue(v.formatBlank())
+    let second = try XCTUnwrap(v.create(1, name: b, kind: .file))
+    XCTAssertTrue(Data([211]).withUnsafeBytes { v.writePage(second, index: 0, bytes: $0) })
+    let first = try XCTUnwrap(v.create(1, name: a, kind: .file))
+    let head = try XCTUnwrap(v.snapshot)
+    disk.unreadable = second + 1
+    XCTAssertEqual(v.lookup(1, name: a, in: head), .file(first))
+    XCTAssertEqual(v.lookup(1, name: b, in: head), .damaged)
+    XCTAssertFalse(v.moveFile(1, name: a, to: 1, as: b, mode: .replace))
+    XCTAssertEqual(v.snapshot, head)
+    disk.unreadable = nil
+    XCTAssertTrue(v.moveFile(1, name: a, to: 1, as: b, mode: .replace))
+    let changed = try XCTUnwrap(v.snapshot)
+    XCTAssertEqual(v.lookup(1, name: b, in: changed), .file(first))
+    XCTAssertEqual(v.readPage(second, index: 0, in: changed, into: out), 1)
+    XCTAssertEqual(out[0], 211)
+    XCTAssertTrue(v.moveFile(1, name: b, to: 1, as: a, mode: .replace))
+  }
+
+  func testResizeIsSparseAndDoesNotResurrectRemovedBytesAfterRemount() throws {
+    let d = Disk()
+    var v = TrfsVolume(media: d, scratch: scratch)!
+    XCTAssertTrue(v.formatBlank())
+    let file = try XCTUnwrap(v.create(1, name: a, kind: .file))
+    let fill = Data(repeating: 0xa5, count: 4096)
+    for i: UInt64 in [0, 2] {
+      XCTAssertTrue(fill.withUnsafeBytes { v.writePage(file, index: i, bytes: $0) })
+    }
+    let full = try XCTUnwrap(v.snapshot)
+    XCTAssertEqual(v.resize(file, to: 5, limit: .max) { range in
+      XCTAssertEqual(range, 5..<12288); return false
+    }, .busy)
+    XCTAssertEqual(v.resize(file, to: 4097, limit: 4096) { _ in XCTFail(); return true }, .outOfRange)
+    XCTAssertEqual(v.snapshot, full)
+    XCTAssertEqual(v.resize(file, to: 5, limit: .max) { _ in true }, .ok)
+    XCTAssertEqual(v.resize(file, to: .max, limit: .max) { _ in XCTFail(); return false }, .ok)
+    var cold = TrfsVolume(media: d, scratch: scratch)!
+    XCTAssertTrue(cold.mount())
+    let root = try XCTUnwrap(cold.snapshot)
+    XCTAssertEqual(cold.readPage(file, index: 0, in: root, into: out), 4096)
+    XCTAssertTrue(out.prefix(5).allSatisfy { $0 == 0xa5 })
+    XCTAssertTrue(out.dropFirst(5).allSatisfy { $0 == 0 })
+    for i: UInt64 in [1, 2, .max / 4096] {
+      XCTAssertEqual(cold.readPage(file, index: i, in: root, into: out), i == .max / 4096 ? 4095 : 4096)
+      XCTAssertTrue(out.allSatisfy { $0 == 0 })
+    }
+    XCTAssertEqual(cold.readPage(file, index: 2, in: full, into: out), 4096)
+    XCTAssertEqual(Data(out), fill)
+    XCTAssertTrue(fill.withUnsafeBytes { cold.writePage(file, index: 2, bytes: $0) })
+    XCTAssertEqual(cold.readPage(file, index: 2, in: cold.snapshot!, into: out), 4096)
+    XCTAssertEqual(Data(out), fill)
+    XCTAssertEqual(cold.resize(file, to: 0, limit: .max) { _ in true }, .ok)
+    XCTAssertEqual(cold.resize(file, to: 12288, limit: .max) { _ in XCTFail(); return false }, .ok)
+    XCTAssertEqual(cold.readPage(file, index: 2, in: cold.snapshot!, into: out), 4096)
+    XCTAssertTrue(out.allSatisfy { $0 == 0 })
+  }
+
+  func testPartialTruncateCrashNeverExposesMixedLengthAndData() throws {
+    let d = Disk()
+    var v = TrfsVolume(media: d, scratch: scratch)!
+    XCTAssertTrue(v.formatBlank())
+    let id = try XCTUnwrap(v.create(1, name: a, kind: .file))
+    XCTAssertTrue(Data(repeating: 29, count: 4096).withUnsafeBytes {
+      v.writePage(id, index: 0, bytes: $0)
+    })
+    let old = try XCTUnwrap(v.snapshot)
+    d.trace = true
+    XCTAssertEqual(v.resize(id, to: 10, limit: 4096) { _ in true }, .ok)
+    let new = try XCTUnwrap(v.snapshot)
+    var before = false, after = false
+    for cut in d.cuts {
+      var cold = TrfsVolume(media: Disk(cut), scratch: scratch)!
+      XCTAssertTrue(cold.mount())
+      let head = try XCTUnwrap(cold.snapshot)
+      let valid = try XCTUnwrap(cold.readPage(id, index: 0, in: head, into: out))
+      if head == old {
+        before = true; XCTAssertEqual(valid, 4096)
+      } else {
+        after = true; XCTAssertEqual(head, new); XCTAssertEqual(valid, 10)
+      }
+      XCTAssertTrue(out.prefix(valid).allSatisfy { $0 == 29 })
+      XCTAssertTrue(out.dropFirst(valid).allSatisfy { $0 == 0 })
+    }
+    XCTAssertTrue(before && after)
+  }
+
   func testWriteCrashCutsPreserveWholeDataAndSize() throws {
     let d = Disk()
     var v = TrfsVolume(media: d, scratch: scratch)!
@@ -289,6 +419,37 @@ final class SnapshotVolumeTests: XCTestCase {
     XCTAssertEqual(extended, [root.digest, root.digest])
     XCTAssertEqual(clean.snapshot, root)
     XCTAssertNil(clean.create(1, name: [99], kind: .file))
+  }
+
+  func testBootSetRootIsExactlyOneDigestAndHasNoUnpinnedFallback() throws {
+    let d = Disk()
+    var writer = TrfsVolume(media: d, scratch: scratch)!
+    XCTAssertTrue(writer.formatBlank())
+    _ = try XCTUnwrap(writer.create(1, name: b, kind: .file))
+    let snapshot = try XCTUnwrap(writer.snapshot)
+    var pin = Data(repeating: 0, count: 32)
+    XCTAssertTrue(pin.withUnsafeMutableBytes { snapshot.digest.encode(into: $0) })
+    var wrong = pin
+    wrong[31] ^= 1
+    for bad in [Data(), pin.dropLast(), pin + Data([0]), Data(repeating: 0, count: 32), wrong] {
+      var boot = TrfsVolume(media: d, scratch: scratch)!
+      XCTAssertFalse(bad.withUnsafeBytes {
+        boot.mountSystem(bootSetRoot: $0) { _ in XCTFail("unverified measurement"); return true }
+      })
+      XCTAssertNil(boot.snapshot)
+      XCTAssertFalse(boot.mount())
+      XCTAssertFalse(pin.withUnsafeBytes {
+        boot.mountSystem(bootSetRoot: $0) { _ in XCTFail("second measurement"); return true }
+      })
+    }
+    var clean = TrfsVolume(media: d, scratch: scratch)!
+    var events = [TrfsDigest]()
+    XCTAssertTrue(pin.withUnsafeBytes {
+      clean.mountSystem(bootSetRoot: $0) { events.append($0); return true }
+    })
+    XCTAssertEqual(events, [snapshot.digest])
+    XCTAssertEqual(clean.snapshot, snapshot)
+    XCTAssertNil(clean.create(1, name: a, kind: .file))
   }
 
   func testRestoringSameRootDoesNotRestoreWritableBinding() throws {
