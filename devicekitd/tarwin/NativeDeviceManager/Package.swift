@@ -3,8 +3,9 @@ import PackageDescription
 
 let package = Package(
   name: "NativeDeviceManager",
+  platforms: [.macOS(.v15)],
   products: [.library(name: "NativeDeviceManager", targets: ["NativeDeviceManager"])],
-  dependencies: [.package(name: "NativeDriverKit", path: "../../../devicekit/tarwin")],
+  dependencies: [.package(name: "NativeDriverKit", path: "../../../devicekit")],
   targets: [
     .target(
       name: "NativeDeviceManager",

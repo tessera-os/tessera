@@ -4,8 +4,13 @@ Tessera's driver interface, below LibTessera's services and Ember. Apps never
 link it. The specification is `roadmap/17-devicekit.md` in the tessera
 repository.
 
-The native Swift package under `tarwin/` tracks ownership of an already
-isolated DMA grant. Adopt the kernel-issued handle and IOVA once, use one
+Run `swift test` from the DeviceKit package root for the native Swift sources
+under `tarwin/`. The package acquires a slot's existing domain
+with `NativeDmaDomain.acquire`. Its `map` method issues the generated
+`DmaBuffer.create` selector through LibTessera and returns a CPU-owned
+buffer on success. The first result is the buffer handle, the second is the
+device address (which may be zero); neither is the VM pin. Close the domain
+handle independently. Adopt each kernel-issued buffer only once, use one
 serial executor, and call `prepareForDevice` before publishing descriptors.
 The scatter helper checks access direction, subrange, alignment, hardware
 segment size, boundary and descriptor budget before publishing any of them.
