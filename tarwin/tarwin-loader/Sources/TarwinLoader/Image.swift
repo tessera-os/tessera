@@ -68,6 +68,7 @@ public struct LoadSegment {
   public func valid(_ machine: UInt16, _ fileSize: UInt64, _ addressLimit: UInt64) -> Bool {
     let page = imagePage(machine)
     if page == 0 || alignment < page || (alignment & (alignment - 1)) != 0 { return false }
+    if fileOffset % page != 0 || virtualAddress % page != 0 { return false }
     if (virtualAddress % alignment) != (fileOffset % alignment) { return false }
     if (flags & 3) == 3 || fileBytes > memoryBytes { return false }
     return imageContains(fileSize, fileOffset, fileBytes)

@@ -46,6 +46,14 @@ struct ELFReader {
     UInt64(littleEndian: bytes.loadUnaligned(fromByteOffset: at, as: UInt64.self))
   }
 
+  func nameEquals(_ name: Range<Int>, _ literal: StaticString) -> Bool {
+    guard name.count == literal.utf8CodeUnitCount else { return false }
+    for i in 0..<name.count where bytes[name.lowerBound + i] != literal.utf8Start[i] {
+      return false
+    }
+    return true
+  }
+
   func readNotes(_ extent: Range<Int>, _ notes: inout ImageNotes) -> Bool {
     var pos = extent.lowerBound
     let end = extent.upperBound
@@ -74,6 +82,20 @@ public func inspectELF(
   _ bytes: UnsafeRawBufferPointer, target: UInt16, addressLimit: UInt64,
   finalized: Bool, requiresEntry: Bool, requiresLoaderRecords: Bool = false
 ) -> InspectedImage? {
+  guard
+    let parsed = inspectLayout(
+      bytes, target: target, addressLimit: addressLimit,
+      finalized: finalized, requiresEntry: requiresEntry,
+      requiresLoaderRecords: requiresLoaderRecords),
+    parsed.notes.signature != nil
+  else { return nil }
+  return parsed
+}
+
+func inspectLayout(
+  _ bytes: UnsafeRawBufferPointer, target: UInt16, addressLimit: UInt64,
+  finalized: Bool, requiresEntry: Bool, requiresLoaderRecords: Bool
+) -> InspectedImage? {
   guard bytes.count >= 64 else { return nil }
   let r = ELFReader(bytes: bytes)
   let header = ImageHeader(
@@ -84,6 +106,7 @@ public func inspectELF(
   guard header.accepts(target, size) else { return nil }
   let entry = r.u64(24)
   var mappedEntry = !requiresEntry && entry == 0
+  var nextFilePage: UInt64 = 0
   var noteBudget = size
   var notes = ImageNotes()
   var order = LoadOrder(afterLastPage: 0, seen: false)
@@ -100,6 +123,11 @@ public func inspectELF(
         fileOffset: offset, fileBytes: length, virtualAddress: r.u64(at + 16),
         memoryBytes: r.u64(at + 40), alignment: r.u64(at + 48), flags: r.u32(at + 4))
       guard order.append(segment, target, size, addressLimit) else { return nil }
+      if length != 0 {
+        guard offset >= nextFilePage else { return nil }
+        let page = imagePage(target)
+        nextFilePage = ((offset + length + page - 1) / page) * page
+      }
       if segment.flags & 1 != 0 && entry >= segment.virtualAddress
         && entry - segment.virtualAddress < length
       {
@@ -113,12 +141,12 @@ public func inspectELF(
     default: break
     }
   }
-  guard order.seen, mappedEntry, notes.buildID != nil, notes.signature != nil,
+  guard order.seen, mappedEntry, notes.buildID != nil,
     notes.entitlements != nil, notes.train != nil, notes.target != nil, notes.profile != nil,
     !finalized || notes.finalizer != nil
   else { return nil }
   let programs = start..<end
-  switch r.findLoaderRecords(programs: programs) {
+  switch r.findMetadataSection(".tirload", programs: programs, unloaded: false) {
   case .invalid: return nil
   case .absent:
     guard !requiresLoaderRecords else { return nil }

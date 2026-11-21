@@ -12,6 +12,8 @@ Use standard ELF note framing: 12-byte namesz/descsz/type, owner, descriptor, fo
 
 For unsigned interchange omit note 2. Carry 3/4/5/7 as explicit image metadata; missing input fails linking. The PT_NOTE may reference non-loaded file bytes with p_vaddr=0. Place note 1 after the end of the last page-rounded PT_LOAD file range even before signing.
 
+Each PT_LOAD starts on a target page boundary in the file and in memory; nonempty file ranges occur in segment order and never share a file page. ELF p_align congruence alone is insufficient. A zero-file-size BSS-only segment consumes no file pages.
+
 | Type | Proposed descriptor bytes |
 | --- | --- |
 | 1 | 32 raw BLAKE3 bytes. No prefix. |
@@ -50,3 +52,7 @@ Header: ASCII `TLD1`, u16 version=1, u16 tableCount=8, u32 totalBytes, u32 reser
 Validate every destination, cross-table overlap, target, section count and binding against the **same immutable image** before any write. RELR/auth/TLS update authorized relocatable data only, never code; import/runtime/dispatch/feature slots obey TVISA A.2 location, type, size and order and become RELRO. The kernel profile allows relative relocations only. No ET_DYN load, boot or signature can pass on the strength of structural validation alone.
 
 Carry UUIDs, module kinds and function tags from the source metadata through the linker; do not infer them from names. Main-executable local-exec TLS constants resolve at link time per TVISA §19.2 and need no record. Shared/framework TLS requiring load-time resolution uses a RELRO slot, never a text patch. An empty feature table is valid only when no feature bytes remain to be filled.
+
+## Producer/consumer check
+
+From the loader package run `swift run inspect-unsigned aarch64 path/to/output.elf` (also `x64`, `rv64`; add `--finalized` if note 6 is present and `--no-entry` for a library). This checks an actual producer artifact without a signing key: notes, TLD1 record structure, and BLAKE3 over the whole file with the ID field zeroed. It never executes the file and is not an alternate launch path.

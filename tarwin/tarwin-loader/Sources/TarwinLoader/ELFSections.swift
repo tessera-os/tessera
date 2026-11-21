@@ -13,7 +13,9 @@ extension ELFReader {
 
   /// Only ordinary ELF64 section numbering is supported. On this path do
   /// not allocate or scan string lengths proportional to attacker input.
-  func findLoaderRecords(programs: Range<Int>) -> LoaderSection {
+  func findMetadataSection(_ sectionName: StaticString, programs: Range<Int>, unloaded: Bool)
+    -> LoaderSection
+  {
     let offset = u64(40)
     let count = Int(u16(60))
     let strings = Int(u16(62))
@@ -32,12 +34,13 @@ extension ELFReader {
     for at in stride(from: table.lowerBound + 64, to: table.upperBound, by: 64) {
       let name = Int(u32(at))
       guard name < names.count else { return .invalid }
-      guard names.count - name >= 9 else { continue }
+      let n = sectionName.utf8CodeUnitCount
+      guard names.count - name > n else { continue }
       let p = names.lowerBound + name
-      // ".tirload" is exactly eight ASCII bytes, followed by NUL.
-      guard u64(p) == 0x6461_6f6c_7269_742e && bytes[p + 8] == 0 else { continue }
+      guard bytes[p + n] == 0, nameEquals(p..<(p + n), sectionName) else { continue }
       let flags = u64(at + 8)
-      guard result == nil, u32(at + 4) == 1, flags & ~2 == 0, let data = extent(at: at + 24),
+      guard result == nil, u32(at + 4) == 1, flags == 0 || (!unloaded && flags == 2),
+        let data = extent(at: at + 24),
         !data.isEmpty, data.lowerBound >= 64, !data.overlaps(table), !data.overlaps(names),
         !data.overlaps(programs)
       else { return .invalid }
@@ -46,7 +49,7 @@ extension ELFReader {
     guard let result else { return .absent }
     for at in stride(from: programs.lowerBound, to: programs.upperBound, by: 56) {
       let kind = u32(at)
-      if kind == 4 || (kind == 1 && u32(at + 4) & 3 != 0) {
+      if kind == 4 || (kind == 1 && (unloaded || u32(at + 4) & 3 != 0)) {
         let file = u64(at + 8)
         let size = u64(at + 32)
         // PT_NOTE and PT_LOAD extents have already passed imageContains.
