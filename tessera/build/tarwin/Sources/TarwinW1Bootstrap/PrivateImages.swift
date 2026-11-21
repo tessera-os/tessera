@@ -14,6 +14,7 @@ public struct W1PrivateImages: ~Copyable {
   let header: UnsafePointer<ObjectHeader>
   let authorized: W1BootSet
   let archive: UnsafeRawBufferPointer
+  let clockHost, clockFrame: UInt64
   func belongs(to child: borrowing ProcessExecution) -> Bool {
     owner == child.member && header == child.header && child.initialMap == tables.physicalRoot
   }
@@ -87,5 +88,7 @@ private func disjoint(_ a: UnsafeRawBufferPointer, _ b: UnsafeRawBufferPointer) 
   return W1PrivateImages(
     tables: consume tables, processCode: process, libraryCode: library,
     processEntry: plan.processEntry, initialThread: installed, owner: child.member,
-    header: child.header, authorized: set, archive: archive, usedBytes: tableBytes + pool.used)
+    header: child.header, authorized: set, archive: archive,
+    clockHost: clockPage.mapping.hostRoot, clockFrame: clockPage.mapping.physical,
+    usedBytes: tableBytes + pool.used)
 }

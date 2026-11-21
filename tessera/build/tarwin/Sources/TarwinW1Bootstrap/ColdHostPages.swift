@@ -5,10 +5,11 @@ import TarwinArchAarch64
 struct W1ColdHostPages: ~Copyable {
   static let page = 16384
   static let tableBytes = 32 * page
-  static let bytes = tableBytes + 5 * page
+  static let bytes = tableBytes + 6 * page
   var tables: ArmKernelTranslation
   let stacks: ArmStopStacks
   let clock: W1ClockReservation
+  let trap: W1TrapFrameReservation
 
   // A private upper-half window for the first CPU. Eight aligned pages
   // per slot so the masked draw is uniform without rejection or division.
@@ -38,10 +39,13 @@ struct W1ColdHostPages: ~Copyable {
       outgoingVA: base + page, outgoingPA: stackPA,
       schedulerVA: base + 4 * page, schedulerPA: stackPA + 2 * page),
       let clock = W1ClockReservation(physical: stackPA + 4 * page, kernelVA: base + 6 * page,
-        host: &host) else { return nil }
+        host: &host),
+      let trap = W1TrapFrameReservation(virtual: base + 7 * page, physical: stackPA + 5 * page,
+        in: &host) else { return nil }
     backing[Self.tableBytes...].initializeMemory(as: UInt8.self, repeating: 0)
     self.tables = consume host
     self.stacks = stacks
     self.clock = consume clock
+    self.trap = consume trap
   }
 }

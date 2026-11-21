@@ -126,7 +126,7 @@ LD
       "$pkgs/tarwin/tarwin-object/Sources/TarwinObject"/*.swift
     "$bin/swiftc" "${flags[@]}" -D TEST_GCS -D TEST_PROCESS -emit-ir \
       "$here/"{Probe,ProcessProbe}.swift "$here/../FirmwareProbe/Memory.swift" \
-      "$pkgs/tessera/build/tarwin/Sources/TarwinW1Bootstrap/TrapDispatch.swift" \
+      "$pkgs/tessera/build/tarwin/Sources/TarwinW1Bootstrap/"{TrapDispatch,TrapFramePage}.swift \
       "$pkgs/tarwin/tarwin-syscall/providers/Sources/TarwinObjectCalls/ProcessCurrentCalls.swift" -o "$d/process.ll"
     "$bin/clang" -target aarch64-none-none-elf -mno-outline-atomics -ffunction-sections -fdata-sections -Oz \
       -c "$d/process.ll" -o "$d/process.o"

@@ -26,6 +26,7 @@ import TarwinSyscall
 public struct W1GuardedExecution: ~Copyable {
   fileprivate enum Phase { case ready, captured, stopped }
   fileprivate let user: ArmFinishedUserRoot
+  fileprivate let hostRoot: UInt64
   fileprivate let task, thread: UnsafePointer<ObjectHeader>
   fileprivate let library, shadow: Range<UInt64>
   fileprivate let frame: UnsafeMutableRawBufferPointer
@@ -43,7 +44,7 @@ public struct W1GuardedExecution: ~Copyable {
     host: borrowing ArmFinishedKernelRoot, stacks: ArmStopStacks
   ) -> Bool {
     guard phase == .ready, child.header == task, selected.header == thread,
-      stacks.root == host.physical, host.layout == .guarded, user.layout == .guarded,
+      stacks.root == host.physical, host.physical == hostRoot, host.layout == .guarded, user.layout == .guarded,
       shadow.contains(cursor), cursor & 7 == 0, let p = frame.baseAddress
     else { return false }
     let root = user.physical
@@ -72,6 +73,7 @@ public struct W1GuardedExecution: ~Copyable {
   ) -> Arm64TrapOutcome {
     guard phase == .captured else { return .invalidKernelFrame }
     phase = .stopped
+    guard host.physical == hostRoot, host.layout == .guarded else { return .invalidKernelFrame }
     #if hasFeature(Embedded) && arch(arm64) && os(none)
       let prior = priorRoot()
       guard switchArmUserRoot(user, host: host) else { return .invalidKernelFrame }
@@ -99,13 +101,17 @@ extension W1PrivateImages {
     _ bootstrap: ChildBootstrap,
     child: inout ProcessExecution, thread: UnsafeMutablePointer<ThreadExecution>,
     tree: borrowing JobTree,
-    channel: borrowing ChannelPair, frame: UnsafeMutableRawBufferPointer,
+    channel: borrowing ChannelPair, framePage: consuming W1TrapFrameReservation,
+    host: borrowing ArmFinishedKernelRoot,
     previousPCR10: InlineArray<32, UInt8>, port: inout P,
     state: inout MeasurementLog, log: UnsafeMutableRawBufferPointer
   ) -> W1GuardedExecution? {
     guard thread.pointee.process == child.member, thread.pointee.phase == .created,
       child.threadCount == 0,
       let storage = initialThread,
+      host.physical == clockHost,
+      let frame = framePage.open(in: host,
+        pool: tables.physicalRoot..<tables.physicalRoot + UInt64(usedBytes), clock: clockFrame),
       let gcs = stageGuardedFirstFrame(
         bootstrap, child: child, tree: tree, channel: channel,
         into: frame)
@@ -119,7 +125,7 @@ extension W1PrivateImages {
       child.start(thread.pointee.header.pointee.koid, tree: tree)
     else { return nil }
     return W1GuardedExecution(
-      user: root, task: child.header, thread: thread.pointee.header,
+      user: root, hostRoot: host.physical, task: child.header, thread: thread.pointee.header,
       library: rx, shadow: storage.shadow, frame: frame, cursor: gcs.pointer)
   }
 }

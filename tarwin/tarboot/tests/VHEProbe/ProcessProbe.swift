@@ -70,7 +70,14 @@ private struct SingleCaller: CurrentProcessContext {
   guard p.pointee.join(t, qos: 0, realtimeEntitled: false, tree: tree.pointee) == .added,
     p.pointee.start(id, tree: tree.pointee) else { return 0 }
   var provider = ProcessCurrentCalls(context: SingleCaller(process: p, tree: .init(tree), thread: id))
-  let frame = context + 1024, bank = (context + 512).assumingMemoryBound(to: UInt64.self)
+  let roots = (context + 128).assumingMemoryBound(to: ProbeRoots.self)
+  let trap = (context + 3072).assumingMemoryBound(to: W1TrapFrameReservation.self).move()
+  let end = trap.physical
+  guard root < end, roots.pointee.host.physical == host,
+    let saved = trap.open(in: roots.pointee.host, pool: root..<end, clock: 0),
+    saved.count == ArmTrapLayout.size, let frame = saved.baseAddress else { return 0 }
+  frame.copyMemory(from: context + 1024, byteCount: saved.count)
+  let bank = (context + 512).assumingMemoryBound(to: UInt64.self)
   let cursor = (context + 256).assumingMemoryBound(to: UInt64.self)
   var returned: UInt64 = 0
   for interval in 0..<2 {

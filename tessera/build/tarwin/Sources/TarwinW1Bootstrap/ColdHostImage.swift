@@ -19,7 +19,7 @@ extension W1ColdHostPages {
     let kernel = set.kernel, bytes = kernel.bytes, headers = kernel.image.programHeaders
     guard set.machine == ElfMachine.aarch64, virtual >= Self.kernelStart,
       virtual - Self.kernelStart < span << 18, virtual & (span - 1) == 0,
-      physical == tables.tableReservation.upperBound + 5 * page, physical <= (1 << 48) - span,
+      physical == tables.physicalRoot + UInt64(Self.bytes), physical <= (1 << 48) - span,
       copy.count == Self.kernelBytes, let destination = copy.baseAddress, let source = bytes.baseAddress,
       UInt(bitPattern: destination) & 7 == 0, exactMember(bytes, in: archive, at: kernel.range, excluding: copy),
       kernel.image.entry < span, headers.lowerBound >= 64, headers.upperBound <= bytes.count,

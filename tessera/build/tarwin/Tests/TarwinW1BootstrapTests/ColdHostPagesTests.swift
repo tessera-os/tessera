@@ -4,7 +4,7 @@ import Testing
 @testable import TarwinW1Bootstrap
 
 @Test(arguments: [UInt64(0), 1, 0x445566, .max])
-func unpublishedColdHostMapsOnlyItsStacksAndSharedClock(_ draw: UInt64) {
+func unpublishedColdHostMapsItsStacksClockAndPrivateTrapFrame(_ draw: UInt64) {
   let total = W1ColdHostPages.bytes, tableBytes = W1ColdHostPages.tableBytes, page = 16384
   let pa: UInt64 = 0x880000, user = pa - UInt64(4 * page)
   let backing = UnsafeMutableRawBufferPointer.allocate(byteCount: total + page, alignment: page)
@@ -43,13 +43,22 @@ func unpublishedColdHostMapsOnlyItsStacksAndSharedClock(_ draw: UInt64) {
   }
   for i: UInt64 in 0..<8 {
     let word = descriptor(backing, base: pa, va: lo + i * page64)
-    if i == 0 || i == 3 || i == 7 { #expect(word == 0) }
+    if i == 0 || i == 3 { #expect(word == 0) }
     else {
       let frame = pa + UInt64(tableBytes) + (i < 3 ? i - 1 : i - 2) * page64
       #expect(word == frame | 0x703 | (1 << 53) | (1 << 54))
     }
   }
   let clock = pa + UInt64(tableBytes + 4 * page), va = TimePageReader.address47
+  let trap = clock + page64
+  #expect(host.trap.virtual == lo + 7 * page64 && host.trap.physical == trap)
+  func matches(_ root: UInt64, _ upper: UInt64, _ frame: UInt64) -> Bool {
+    host.trap.matches(root: root, pool: user..<upper, clock: frame)
+  }
+  #expect(matches(pa, pa, clock))
+  #expect(!matches(user, pa, clock))
+  #expect(!matches(pa, pa, trap))
+  #expect(!matches(pa, trap + 1, clock))
   #expect(descriptor(child, base: user, va: va) ==
     armUserPage(clock, write: false, execute: false, lpa2: false) | (1 << 51))
   #expect(descriptor(child, base: user, va: va - page64) == 0)

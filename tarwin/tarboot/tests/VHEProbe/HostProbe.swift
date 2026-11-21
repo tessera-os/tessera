@@ -601,6 +601,7 @@ slice_after_second:
   .incbin "process-body.bin"
   lib_end:
   .p2align 14
+  .space 16384 // separate privileged register frame
   #endif
   #ifdef TEST_TIME_PAGE
   .space 16384

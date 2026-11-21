@@ -34,8 +34,11 @@ public func buildRoots(
     var q = ArmUserTranslation(backing: arena(b, pages: 10), physical: b, layout: layout)
   else { return 1 }
   #if TEST_PROCESS
-    guard q.insert(virtual: base + 5 * page, physical: sample + 9 * page, write: false, execute: true)
+    let trapPA = sample + 10 * page
+    guard q.insert(virtual: base + 5 * page, physical: sample + 9 * page, write: false, execute: true),
+      let trap = W1TrapFrameReservation(virtual: high + trapPA, physical: trapPA, in: &k)
     else { return 8 }
+    UnsafeMutablePointer<W1TrapFrameReservation>(bitPattern: UInt(context + 3072))!.initialize(to: consume trap)
   #endif
   #if TEST_HIGH_GENID
     let result = installGeneration(in: &k, context: context)
