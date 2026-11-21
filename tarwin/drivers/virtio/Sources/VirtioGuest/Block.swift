@@ -37,6 +37,21 @@ public func submitBlock(
   _ setStatus: (UInt64, UInt8) -> Void, _ descriptor: (Int, UInt64, UInt32, UInt16, UInt16) -> Void,
   _ putAvailable: (Int, UInt16) -> Void, _ releaseAvailable: (UInt16) -> Void
 ) -> Bool {
+  let spans =
+    p.bytes == 0 ? [] : [Segment(iova: p.data, length: p.bytes, deviceWrites: p.op == .read)]
+  return submitBlock(
+    &queue, cookie, p, BlockConfiguration(capacity: capacitySectors, features: features),
+    spans, storeHeader, setStatus, descriptor, putAvailable, releaseAvailable)
+}
+
+package func submitBlock(
+  _ queue: inout SplitQueue, _ cookie: UInt64, _ p: BlockPacket, _ config: BlockConfiguration,
+  _ spans: [Segment], _ storeHeader: (UInt64, UInt32, UInt64) -> Void,
+  _ setStatus: (UInt64, UInt8) -> Void, _ descriptor: (Int, UInt64, UInt32, UInt16, UInt16) -> Void,
+  _ putAvailable: (Int, UInt16) -> Void, _ releaseAvailable: (UInt16) -> Void
+) -> Bool {
+  let features = config.features
+  let capacitySectors = config.capacity
   // The caller reserves independent, exclusive header, data and status
   // DMA spans lasting through completion. storeHeader writes the reserved
   // word as zero and type/sector little-endian.
@@ -60,15 +75,18 @@ public func submitBlock(
   }
   if !validArea(p.header, 16, 1) || !distinctAreas(p.header, 16, p.status, 1) { return false }
   var segments = [Segment(iova: p.header, length: 16, deviceWrites: false)]
-  if p.bytes != 0 {
-    if !validArea(p.data, UInt64(p.bytes), 1)
-      || !distinctAreas(p.header, 16, p.data, UInt64(p.bytes))
-      || !distinctAreas(p.data, UInt64(p.bytes), p.status, 1)
-    {
-      return false
-    }
-    segments.append(Segment(iova: p.data, length: p.bytes, deviceWrites: !write))
+  guard spans.count <= config.maxSegments, spans.count + 2 <= queue.size else { return false }
+  var total: UInt64 = 0
+  for span in spans {
+    let length = UInt64(span.length)
+    guard span.length <= config.maxSegmentBytes, validArea(span.iova, length, 1),
+      span.deviceWrites == (p.op == .read), distinctAreas(span.iova, length, p.status, 1),
+      segments.allSatisfy({ distinctAreas(span.iova, length, $0.iova, UInt64($0.length)) })
+    else { return false }
+    total += length
+    segments.append(span)
   }
+  guard total == UInt64(p.bytes), total <= UInt64(UInt32.max) - 17 else { return false }
   segments.append(Segment(iova: p.status, length: 1, deviceWrites: true))
   storeHeader(p.header, kind, p.sector)
   setStatus(p.status, 255)

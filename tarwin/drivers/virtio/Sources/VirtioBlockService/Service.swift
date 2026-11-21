@@ -8,8 +8,11 @@ public enum DriverRequest {
   case ready(PendingBlockIo)
 }
 public struct PendingBlockIo {
-  public let packet: BlockPacket, id: UInt64, epoch: UInt64, queue: UInt32
+  fileprivate let packet: BlockPacket
+  public let id: UInt64, epoch: UInt64, queue: UInt32
+  public var op: GuestBlockOp { packet.op }
   fileprivate let config: BlockConfiguration
+  fileprivate let spans: [Segment]
   fileprivate let range: BlockRangeLimits?, sectors: UInt32
   public func submit(
     _ queue: inout SplitQueue,
@@ -24,7 +27,7 @@ public struct PendingBlockIo {
         setStatus, descriptor, putAvailable, releaseAvailable)
     }
     return submitBlock(
-      &queue, id, packet, config.capacity, config.features, storeHeader, setStatus, descriptor,
+      &queue, id, packet, config, spans, storeHeader, setStatus, descriptor,
       putAvailable, releaseAvailable)
   }
   public func complete(cookie: UInt64, status: UInt8, written: UInt32) -> BlockCompletion? {
@@ -40,7 +43,7 @@ public struct PendingBlockIo {
   }
 }
 
-/// Baseline service registers one contiguous DMA vector per read/write.
+/// Without a configuration snapshot the service accepts one data vector.
 /// The vector table (u64 IOVA, u32 bytes, u32 zero) is read only through a
 /// validated live grant; it is never treated as a physical or Swift pointer.
 public func prepareBlockIo(
@@ -83,12 +86,13 @@ public func prepareBlockIo(
       PendingBlockIo(
         packet: BlockPacket(
           op: op, sector: r.lba, bytes: 16, header: header, data: scratch, status: status),
-        id: r.id, epoch: r.epoch, queue: queue, config: config, range: limit, sectors: sectors))
+        id: r.id, epoch: r.epoch, queue: queue, config: config, spans: [], range: limit,
+        sectors: sectors))
   default: return .unsupported(unsupported)
   }
   guard
     let limits = BlockLimits(
-      capacity: capacitySectors, blockBytes: 512, maxVectors: 1,
+      capacity: capacitySectors, blockBytes: 512, maxVectors: config.maxSegments,
       flush: features & 512 != 0, fua: false, discard: false, zero: false,
       readOnly: features & 32 != 0)
   else { return .invalid }
@@ -96,24 +100,35 @@ public func prepareBlockIo(
     return .unsupported(unsupported)
   }
   guard limits.supports(r) else { return .invalid }
-  let vector: BlockDmaVector
-  if op == .flush {
-    vector = BlockDmaVector(address: 0, bytes: 0)
-  } else {
-    guard r.payload.vectors == 1, allows(r.payload.list, 16, false),
-      var v = readVector(r.payload.list)
+  var vectors: [BlockDmaVector] = []
+  if op != .flush {
+    let bytes = UInt64(r.payload.vectors) * 16
+    guard r.blocks <= UInt64(UInt32.max - 17) / 512,
+      distinctAreas(r.payload.list, bytes, header, 16),
+      distinctAreas(r.payload.list, bytes, status, 1),
+      allows(r.payload.list, bytes, false)
     else { return .invalid }
-    let valid = withUnsafePointer(to: &v) {
-      limits.checkVectors(r, snapshot: UnsafeBufferPointer(start: $0, count: 1), validate: allows)
+    for i in 0..<r.payload.vectors {
+      guard let v = readVector(r.payload.list + UInt64(i) * 16), v.bytes <= config.maxSegmentBytes,
+        distinctAreas(v.address, UInt64(v.bytes), header, 16),
+        distinctAreas(v.address, UInt64(v.bytes), status, 1),
+        vectors.allSatisfy({
+          distinctAreas(v.address, UInt64(v.bytes), $0.address, UInt64($0.bytes))
+        })
+      else { return .invalid }
+      vectors.append(v)
     }
-    guard valid else { return .invalid }
-    vector = v
+    guard
+      vectors.withUnsafeBufferPointer({ limits.checkVectors(r, snapshot: $0, validate: allows) })
+    else { return .invalid }
   }
+  let spans = vectors.map { Segment(iova: $0.address, length: $0.bytes, deviceWrites: op == .read) }
   return .ready(
     PendingBlockIo(
       packet: BlockPacket(
-        op: op, sector: r.lba, bytes: vector.bytes,
-        header: header, data: vector.address, status: status), id: r.id, epoch: epoch, queue: queue,
-      config: config, range: nil, sectors: 0)
+        op: op, sector: r.lba, bytes: UInt32(r.blocks * 512),
+        header: header, data: vectors.first?.address ?? 0, status: status), id: r.id, epoch: epoch,
+      queue: queue,
+      config: config, spans: spans, range: nil, sectors: 0)
   )
 }

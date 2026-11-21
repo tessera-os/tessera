@@ -59,7 +59,7 @@ func addressPair(_ reg: UInt32, _ addr: UInt64, _ write: (UInt32, UInt32) -> Voi
   write(reg + 4, UInt32(addr >> 32))
 }
 
-func distinctAreas(_ a: UInt64, _ aBytes: UInt64, _ b: UInt64, _ bBytes: UInt64) -> Bool {
+package func distinctAreas(_ a: UInt64, _ aBytes: UInt64, _ b: UInt64, _ bBytes: UInt64) -> Bool {
   if a <= b { return b - a >= aBytes }
   return a - b >= bBytes
 }

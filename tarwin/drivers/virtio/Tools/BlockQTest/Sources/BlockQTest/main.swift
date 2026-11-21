@@ -225,7 +225,7 @@ func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?, encrypted
     count: 8, descriptors: machine.ram + 0x100000, available: machine.ram + 0x101000,
     used: machine.ram + 0x102000)
   let transport = try transport(
-    q, machine, type: 2, supported: dma == nil ? 0x6220 : 0x220,
+    q, machine, type: 2, supported: dma == nil ? 0x6226 : 0x220,
     queues: [
       QueueMemory(
         count: mem.count, descriptors: mem.descriptors + bias, available: mem.available + bias,
@@ -265,8 +265,21 @@ func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?, encrypted
   var scheduler = PortBlockQueue(
     capacity: capacity, blockBytes: 512, queueCount: 1, depth: 1, slots: bindings)!
   let list = machine.ram + 0x113000
+  let scatter = dma == nil
+  let firstBytes = scatter ? 193 : 512
+  let second = machine.ram + 0x115000
+  if scatter {
+    try q.require(
+      config.maxSegments >= 2 && config.maxSegmentBytes >= 319, "Missing scatter/gather capacity")
+    q.write("q", list + 16, second)
+    q.write("l", list + 24, 512 - firstBytes)
+    q.write("l", list + 28, 0)
+    q.write("b", data + UInt64(firstBytes), 0xa7)
+    q.write("b", second - 1, 0x59)
+    q.write("b", second + UInt64(512 - firstBytes), 0xce)
+  }
   q.write("q", list, data + bias)
-  q.write("l", list + 8, 512)
+  q.write("l", list + 8, firstBytes)
   q.write("l", list + 12, 0)
   var ops: [TarwinBlockWire.BlockOp] = [.write, .flush, .read]
   if dma == nil { ops += [.zero, .discard, .flush] }
@@ -288,7 +301,8 @@ func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?, encrypted
       BlockCommand(
         op: operation, lba: lba, blocks: blocks, qos: .interactive, queue: 0),
       object: 2, key: key, port: 1, ports: &user)
-    let payload = hasVector ? BlockPayload(list: list + bias, vectors: 1) : BlockPayload()
+    let payload =
+      hasVector ? BlockPayload(list: list + bias, vectors: scatter ? 2 : 1) : BlockPayload()
     guard cookie != 0,
       case .ring(.transferred) = scheduler.publish(
         queue: 0, payload: { _, _ in payload }, ring: &requests)
@@ -300,8 +314,10 @@ func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?, encrypted
         config: config, header: header + bias, status: status + bias,
         rangeBuffer: dma == nil ? machine.ram + 0x114000 : nil,
         allows: { addr, n, writable in
-          (addr == list + bias && n == 16 && !writable)
-            || (addr == data + bias && n == 512 && writable == (operation == .read))
+          (addr == list + bias && n == (scatter ? 32 : 16) && !writable)
+            || (writable == (operation == .read)
+              && ((addr == data + bias && n == firstBytes)
+                || (scatter && addr == second && n == 512 - firstBytes)))
         },
         readVector: { iova in
           let addr = iova - bias
@@ -309,11 +325,16 @@ func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?, encrypted
           return BlockDmaVector(address: q.read("q", addr), bytes: UInt32(q.read("l", addr + 8)))
         })
     else { throw q.error ?? Failure("Guest driver rejected block request") }
-    let p = pending.packet
-    let op = p.op
-    if op == .write && xts == nil { _ = q.send("write \(data) 512 0x\(pattern)") }
+    let op = pending.op
+    if op == .write && xts == nil {
+      _ = q.send("write \(data) \(firstBytes) 0x\(pattern.prefix(firstBytes*2))")
+      if scatter {
+        _ = q.send("write \(second) \(512-firstBytes) 0x\(pattern.dropFirst(firstBytes*2))")
+      }
+    }
     if op == .read {
-      if xts == nil { _ = q.send("memset \(physicalData) 512 0") }
+      if xts == nil { _ = q.send("memset \(physicalData) \(firstBytes) 0") }
+      if scatter { _ = q.send("memset \(second) \(512-firstBytes) 0") }
       if dma != nil { _ = q.send("memset \(data) 512 0x5a") }
     }
     let submitted = pending.submit(
@@ -375,9 +396,17 @@ func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?, encrypted
           "Retired frame was modified")
       }
       try q.require(
-        q.send("read \(physicalData) 512") == "0x"
-          + (xts == nil ? pattern : String(repeating: "00", count: 512)),
+        q.send("read \(physicalData) \(firstBytes)") == "0x"
+          + (xts == nil
+            ? String(pattern.prefix(firstBytes * 2)) : String(repeating: "00", count: 512)),
         "512-byte disk readback mismatch")
+      if scatter {
+        try q.require(
+          q.send("read \(second) \(512-firstBytes)") == "0x" + pattern.dropFirst(firstBytes * 2)
+            && q.read("b", data + UInt64(firstBytes)) == 0xa7 && q.read("b", second - 1) == 0x59
+            && q.read("b", second + UInt64(512 - firstBytes)) == 0xce,
+          "Scatter/gather bytes or guards differ")
+      }
     }
     transport.acknowledge()
   }
@@ -489,7 +518,7 @@ do {
               ? "PASS: q35 VT-d translated disk DMA, IOTLB drain and same-IOVA remap"
               : CommandLine.arguments.last == "--neighbors"
                 ? "PASS: router advertisement, SLAAC/DAD, ARP and IPv6 neighbor discovery against restricted libslirp"
-                : "PASS: QEMU virtio-blk write/flush/readback, zero/discard extents and paced UDP delivery across isolated NICs"
+                : "PASS: QEMU virtio-blk scatter/gather write/flush/readback, zero/discard extents and paced UDP delivery across isolated NICs"
   )
 } catch {
   FileHandle.standardError.write(Data("\(error)\n".utf8))
