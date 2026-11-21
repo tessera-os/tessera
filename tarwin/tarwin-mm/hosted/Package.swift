@@ -8,6 +8,7 @@ let package = Package(
   dependencies: [
     .package(path: ".."), .package(path: "../../tarwin-task"),
     .package(path: "../../tarwin-arch-hosted"),
+    .package(path: "../../trfs/hosted/trfs-hosted"),
   ],
   targets: [
     .target(name: "TarwinMMHosted", dependencies: [
@@ -19,6 +20,7 @@ let package = Package(
     .testTarget(name: "TarwinMMHostedTests", dependencies: [
       "TarwinMMHosted",
       .product(name: "tarwin-task", package: "tarwin-task"),
+      .product(name: "TRFSHosted", package: "trfs-hosted"),
     ]),
   ]
 )
