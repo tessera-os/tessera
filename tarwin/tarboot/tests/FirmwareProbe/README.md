@@ -285,6 +285,22 @@ modern-only ACCESS_PLATFORM disk and RNG endpoints. The guest and QMP both
 read the actual device's GUID across save/load. This tests generation, not
 DMA containment: a previously established cold fence cannot survive restore.
 
+**Cold post-EFI W1 verification (negative authority).** Use the read-only
+generation fixture above, replace `TARBOOT_TEST_RESTORE=1` with
+`TARBOOT_TEST_COLD_FENCE=1`, and enable `TARBOOT_TEST_W1_EVIDENCE=1`.
+This pins `highmem-mmio=off`, leaving high ECAM enabled, so EDK2 assigns
+both modern endpoints’ BAR4s inside the bounded low PCI window. A single
+CPU reserves two contiguous loader-owned WB pages, exits EFI and calls
+the device provider before the post-exit verifier can copy a signature.
+After the reset, bus-master readback and SMMU synchronization, signature
+transport succeeds but independent authority is absent: no W1 set or
+entry. Repeat with `TARBOOT_TEST_EXTRA_PCI=1` to add an unexpected
+virtio balloon: the launcher must refuse without modifying the copy buffer.
+Register dumps on refusal are public PCI configuration/GICR/SMMU state.
+Do not enable hotplug or restore in this cold machine. The restore probe
+above only tests generation and never calls the cold verifier. This is a
+post-exit verifier in the EFI diagnostic, not a signed kernel launch.
+
 `TARBOOT_TEST_TPM=1 TARBOOT_TEST_FIFO=1 bash run.sh aarch64` binds a single
 QEMU virt platform-bus TIS device to disposable swtpm. After ExitBootServices,
 TarwinBoot requests locality zero and streams the ESP fixture bytes through

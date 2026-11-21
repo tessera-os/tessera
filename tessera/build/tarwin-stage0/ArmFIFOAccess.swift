@@ -10,7 +10,7 @@ for bits in [8, 32, 64] {
   }
   """)
 }
-for bits in [8, 16, 32] {
+for bits in [8, 16, 32, 64] {
   print("""
 define void @tarwin_mmio_write\(bits)(ptr %p, i\(bits) %v) nounwind {
   call void asm sideeffect "dmb osh", "~{memory}"()
@@ -20,3 +20,9 @@ define void @tarwin_mmio_write\(bits)(ptr %p, i\(bits) %v) nounwind {
 }
 """)
 }
+print("""
+define void @tarwin_publish_device_tables() nounwind {
+  call void asm sideeffect "dsb oshst", "~{memory}"()
+  ret void
+}
+""")

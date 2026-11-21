@@ -43,7 +43,7 @@ for isa in "${@:-all}"; do
         modules=()
         entry_source=()
         if [[ ${TARBOOT_TEST_RO_GENID:-0} == 1 ]]; then
-            [[ $arch == aarch64 && ${TARBOOT_TEST_RESTORE:-0} == 1 && ${TARBOOT_TEST_GENERATION:-0} == 1 ]] || exit 2
+            [[ $arch == aarch64 && ${TARBOOT_TEST_GENERATION:-0} == 1 ]] || exit 2
             flags+=(-D TARBOOT_TEST_RO_GENID)
         fi
         if [[ ${TARBOOT_TEST_FIFO:-0} == 1 ]]; then
@@ -71,6 +71,14 @@ for isa in "${@:-all}"; do
             flags+=(-D TARBOOT_TEST_W1_EVIDENCE)
             entry_source+=("$composition/Sources/TarwinW1Bootstrap/QEMUReverification.swift" "$here/W1EvidenceProbe.swift")
             printf '%s' 'not-a-signature' > "$d/esp/BOOT.SIG"
+        fi
+        if [[ ${TARBOOT_TEST_COLD_FENCE:-0} == 1 ]]; then
+            [[ ${TARBOOT_TEST_RO_GENID:-0} == 1 && ${TARBOOT_TEST_RESTORE:-0} == 0 && ${TARBOOT_TEST_W1_EVIDENCE:-0} == 1 ]] || exit 2
+            flags+=(-D TARBOOT_TEST_COLD_FENCE)
+            device="$root/tarwin-device/Sources/TarwinDevice"
+            "$bin/swiftc" "${flags[@]}" -module-name TarwinDevice -emit-module -emit-module-path "$d/TarwinDevice.swiftmodule" \
+                "$device"/{Range,ColdVirtPCI,VirtBootFence}.swift
+            entry_source+=("$composition/Sources/TarwinW1Bootstrap/ColdReverification.swift" "$composition/Sources/TarwinW1Bootstrap/ColdBus.swift" "$here/FenceRegisters.swift")
         fi
         if [[ ${TARBOOT_TEST_PSCI:-0} == 1 ]]; then
             [[ $arch == aarch64 && ${TARBOOT_TEST_CPU:-0} == 1 && ${TARBOOT_TEST_SMP_TABLES:-0} == 1 ]] || exit 2

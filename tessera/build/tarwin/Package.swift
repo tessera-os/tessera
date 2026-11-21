@@ -16,6 +16,7 @@ let package = Package(
     .package(path: "../../../tarwin/tarboot"),
     .package(path: "../../../tarwin/tarwin-loader"),
     .package(path: "../../../tarwin/tarwin-boot"),
+    .package(path: "../../../tarwin/tarwin-device"),
     .package(path: "../../../tarwin/tarwin-loader/w0"),
     .package(path: "../../../tarwin/tarwin-mm"),
     .package(path: "../../../tarwin/tarwin-arch-aarch64"),
@@ -50,7 +51,8 @@ let package = Package(
       name: "TarwinW1Bootstrap", dependencies: [
         "TarwinW1Generation",
         .product(name: "Tarboot", package: "tarboot"),
-        .product(name: "TarwinChannelCalls", package: "channel-calls"),
+      .product(name: "TarwinChannelCalls", package: "channel-calls"),
+      .product(name: "TarwinDevice", package: "tarwin-device"),
         .product(name: "TarwinABI", package: "tarwin-syscall"),
         .product(name: "TarwinArmBootstrap", package: "first-entry"),
         .product(name: "TarwinObject", package: "tarwin-object"),

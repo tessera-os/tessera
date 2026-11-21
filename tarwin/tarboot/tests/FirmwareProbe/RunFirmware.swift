@@ -70,7 +70,11 @@ func check() throws {
   let cpuCheck=ProcessInfo.processInfo.environment["TARBOOT_TEST_CPU"]
   let restore = ProcessInfo.processInfo.environment["TARBOOT_TEST_RESTORE"] == "1"
   let ro = ProcessInfo.processInfo.environment["TARBOOT_TEST_RO_GENID"] == "1"
-  let board = ro ? "virt-11.1,accel=tcg,iommu=smmuv3,default-bus-bypass-iommu=off,msi=off" : (restore ? "virt-11.1,accel=tcg" : "virt")
+  let cold = ProcessInfo.processInfo.environment["TARBOOT_TEST_COLD_FENCE"] == "1"
+  let extraPCI = ProcessInfo.processInfo.environment["TARBOOT_TEST_EXTRA_PCI"] == "1"
+  guard !extraPCI || cold else { throw Failure("extra PCI control requires the cold fixture") }
+  let windows = cold ? ",highmem-mmio=off" : ""
+  let board = ro ? "virt-11.1,accel=tcg,iommu=smmuv3,default-bus-bypass-iommu=off,msi=off" + windows : (restore ? "virt-11.1,accel=tcg" : "virt")
   let armMachine = cpuCheck == "1" || ro ? ["-machine",board + ",gic-version=3,virtualization=on","-cpu","max"]
     : ["-machine",board + ",gic-version=3","-cpu","cortex-a72"]
   let machine =
@@ -129,8 +133,8 @@ func check() throws {
   }
   process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
   let wrongPage = ProcessInfo.processInfo.environment["TARBOOT_TEST_WRONG_PAGE"] == "1"
-  guard !ro || (restore && !wrongPage) else { throw Failure("invalid read-only restore profile") }
-  guard (!wrongPage || restore) && (!restore || (a == "aarch64" && !multiple && !displayEnabled))
+  guard !ro || (restore != cold && !wrongPage) else { throw Failure("invalid read-only generation profile") }
+  guard (!wrongPage || restore) && (!(restore || cold) || (a == "aarch64" && !multiple && !displayEnabled))
     else { throw Failure("restore diagnostic requires one headless ARM vCPU") }
   // Destination policy for this firmware/machine fixture, not from guest RAM or VMState.
   let page = wrongPage ? "0x5c741000" : "0x5c740000"
@@ -138,9 +142,10 @@ func check() throws {
   let limits = ro ? ["-nodefaults", "-no-user-config", "-global", "fw_cfg_mem.dma_enabled=off"] : []
   let generationArgs = restore ? limits + ["-device", genDevice, "-blockdev",
     "driver=file,filename=" + d + "/state.qcow2,node-name=statefile", "-blockdev",
-    "driver=qcow2,file=statefile,node-name=state"] : []
+    "driver=qcow2,file=statefile,node-name=state"] : (cold ? limits + ["-device", genDevice] : [])
   let evidence = ProcessInfo.processInfo.environment["TARBOOT_TEST_W1_EVIDENCE"] == "1"
-  let evidenceArgs = evidence ? ["-fw_cfg", "name=opt/org.tessera/tarwin/w1.sig,string=not-a-signature"] : []
+  let evidenceArgs = (evidence ? ["-fw_cfg", "name=opt/org.tessera/tarwin/w1.sig,string=not-a-signature"] : [])
+    + (extraPCI ? ["-device", "virtio-balloon-pci,addr=3,iommu_platform=on,disable-legacy=on"] : [])
   process.arguments =
     ["qemu-system-" + a] + machine + tpmArgs + displayArgs + rngArgs + generationArgs + evidenceArgs + [
       "-m", "512", "-smp", multiple ? "4" : "1", "-display", "none", "-rtc", "base=utc",
@@ -309,6 +314,20 @@ func check() throws {
     throw Failure("\(a): guest did not shut down normally")
   }
   let uart = try Data(contentsOf: URL(fileURLWithPath: serial))
+  if cold {
+    let log = String(decoding: uart, as: UTF8.self)
+    if let line = log.split(whereSeparator: \.isNewline).first(where: { $0.contains("TARWIN-FENCE-REFUSED-") }) {
+      for row in log.split(whereSeparator: \.isNewline) where row.contains("TARWIN-COLD-") { print(row) }
+      if extraPCI && line.contains("TARWIN-FENCE-REFUSED-PLATFORM") && !log.contains("TARWIN-W1-EVIDENCE-COPIED") {
+        print("aarch64: unexpected PCI endpoint refused before detached signature copy")
+        return
+      }
+      throw Failure("cold W1 closed before signature copy: " + String(line))
+    }
+    guard !extraPCI, log.contains("TARWIN-FENCE-STREAMS-DENIED"), log.contains("TARWIN-COLD-VMGEN-ACCEPTED")
+    else { throw Failure("missing cold generation or device fence") }
+    print("aarch64: post-EFI disk/RNG streams denied before detached signature copy")
+  }
   if evidence {
     guard uart.range(of: Data("TARWIN-W1-FIRMWARE-KERNEL-REFUSED".utf8)) != nil,
       uart.range(of: Data("TARWIN-W1-EVIDENCE-COPIED-UNAUTHORIZED".utf8)) != nil
@@ -414,7 +433,7 @@ func check() throws {
             uart.range(of: Data("TARWIN-VMGEN-RESTORED-REFUSED-RESEEDED".utf8)) != nil
           else { throw Failure("missing snapshot restore and checked reseed") }
           print("\(a): restored guest rejected its previous RNG stream, then reseeded from swtpm")
-        } else {
+        } else if !cold {
           guard uart.range(of: Data("TARWIN-NO-VMGEN-RNG-REFUSED".utf8)) != nil else {
             throw Failure("missing post-exit RNG refusal")
           }

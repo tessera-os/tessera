@@ -171,7 +171,12 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
           return false
         }
       #endif
-      guard case .exited(let n) = boot.finish(map: raw, into: &buffer) else { return false }
+      #if TARBOOT_TEST_COLD_FENCE
+        guard let fencePages = boot.finishForColdBoot(map: raw, into: &buffer) else { return false }
+        let n = fencePages.regions
+      #else
+        guard case .exited(let n) = boot.finish(map: raw, into: &buffer) else { return false }
+      #endif
       #if TARBOOT_TEST_SMP_TABLES
         #if arch(arm64)
           let family = ProcessorFamily.arm64
@@ -276,7 +281,11 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
           guard exerciseGeneration(bootSeed: .init(start: p + 96, count: 64),
             regions: .init(rebasing: buffer[..<n])) else { return false }
         #endif
-        #if TARBOOT_TEST_W1_EVIDENCE
+        #if TARBOOT_TEST_COLD_FENCE
+          guard exerciseColdEvidence(pages: fencePages, block: .init(start: p, count: 4096),
+            map: .init(start: p + 4096, count: Int(storage.length) - 4096),
+            archive: .init(start: archiveBase, count: size)) else { return false }
+        #elseif TARBOOT_TEST_W1_EVIDENCE
           guard exerciseW1Evidence(block: .init(start: p, count: 4096), at: storage.base,
             map: .init(start: p + 4096, count: Int(storage.length) - 4096),
             archive: .init(start: archiveBase, count: size), at: archive.base),

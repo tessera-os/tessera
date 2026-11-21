@@ -79,6 +79,31 @@ public enum FirmwareExit {
       }
     }
 
+    /// Work storage, not evidence that DMA has been stopped. Only the EFI
+    /// instance that reserved it can finish boot services and publish it.
+    public struct ColdWorkspace: ~Copyable {
+      public let table: UInt64
+      public let regions: Int
+      fileprivate init(_ base: UInt64, _ count: Int) { table = base; regions = count }
+    }
+
+    /// Terminal, including on error after an exit attempt. Never call EFI
+    /// boot services again. Keep both pages out of every subsequent allocator.
+    @unsafe public consuming func finishForColdBoot(
+      map: UnsafeMutableRawBufferPointer, into regions: inout UnsafeMutableBufferPointer<FirmwareRegion>
+    ) -> ColdWorkspace? {
+      guard let pages = reserveLoaderPages(2),
+        case .exited(let count) = finish(map: map, into: &regions) else { return nil }
+      for i in 0..<count {
+        let r = regions[i]
+        if r.type == 2, r.ordinaryWritableRAM, r.base <= pages.base,
+          pages.base + pages.length <= r.base + r.length {
+          return ColdWorkspace(pages.base, count)
+        }
+      }
+      return nil
+    }
+
     /// Snapshot firmware directory entries, without following their addresses.
     @unsafe public func locateTables() -> FirmwareTableLocations? { tableLocations(system) }
 

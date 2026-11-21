@@ -29,6 +29,54 @@ import Testing
     bytes.storeBytes(of: ~crc, toByteOffset: 16, as: UInt32.self)
   }
 
+  @Test func coldWorkspaceRequiresActualExitAndReservedWriteBackExtent() {
+    let allocate: Allocate = { method, type, count, address in
+      guard method == 0, type == 2, count == 2 else { return 1 }
+      address.pointee = 0x80000
+      return 0
+    }
+    let map: MapFunction = { size, _, key, stride, version in
+      size.pointee = 40; key.pointee = 7; stride.pointee = 40; version.pointee = 1
+      return 0
+    }
+    let exit: ExitFunction = { image, key in
+      key == 7 ? image.load(as: UInt.self) : 1
+    }
+    let release: Release = { _, _ in 0 }
+    var boot = [UInt64](repeating: 0, count: 30)
+    var system = [UInt64](repeating: 0, count: 15)
+    boot.withUnsafeMutableBytes { services in
+      services.storeBytes(of: allocate, toByteOffset: 40, as: Allocate.self)
+      services.storeBytes(of: release, toByteOffset: 48, as: Release.self)
+      services.storeBytes(of: map, toByteOffset: 56, as: MapFunction.self)
+      services.storeBytes(of: exit, toByteOffset: 232, as: ExitFunction.self)
+      header(services, 0x5652_4553_544f_4f42)
+      system.withUnsafeMutableBytes { st in
+        st.storeBytes(of: services.baseAddress!, toByteOffset: 96, as: UnsafeMutableRawPointer.self)
+        header(st, 0x5453_5953_2049_4249)
+        for (type, pages, attributes, status, ok): (UInt64, UInt64, UInt64, UInt, Bool) in [
+          (2, 2, 8, 0, true), (7, 2, 8, 0, false), (2, 1, 8, 0, false),
+          (2, 2, 0, 0, false), (2, 2, 8, 1, false),
+        ] {
+          var image = status, bytes = [type, 0x80000, 0, pages, attributes]
+          var regions = [FirmwareRegion.empty]
+          withUnsafePointer(to: &image) { image in
+            bytes.withUnsafeMutableBytes { raw in
+              regions.withUnsafeMutableBufferPointer { view in
+                guard let fw = FirmwareBootServices(image: image, system: st.baseAddress!) else {
+                  Issue.record("invalid test firmware"); return
+                }
+                if let work = fw.finishForColdBoot(map: raw, into: &view) {
+                  #expect(ok && work.table == 0x80000 && work.regions == 1)
+                } else { #expect(!ok) }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   @Test func firmwareExitRetries() {
     let map: MapFunction = { size, memory, key, stride, version in
       guard size.pointee >= 64 else { return 0x8000_0000_0000_0005 }

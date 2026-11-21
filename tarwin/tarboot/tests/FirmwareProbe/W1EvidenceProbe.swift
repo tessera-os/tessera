@@ -16,6 +16,40 @@
     .init(uuid: absent, symbol: absent, textSHA256: absent, typeTag: 0)
   }
 
+  #if TARBOOT_TEST_COLD_FENCE
+  import TarwinDevice
+  func exerciseColdEvidence(pages: borrowing FirmwareBootServices.ColdWorkspace,
+    block: UnsafeRawBufferPointer, map: UnsafeRawBufferPointer, archive: UnsafeRawBufferPointer) -> Bool {
+    var bytes = InlineArray<16, UInt8>(repeating: 0xcc)
+    return withUnsafeMutableBytes(of: &bytes) { dest in
+      withUnsafeMutableBytes(of: &work) { scratch in
+        var refusal: VirtBootFenceResult?
+        var cfg = QEMUVirtConfig(mapped: UnsafeRawPointer(bitPattern: 0x0902_0000)!)
+        guard QEMUW1Evidence.coldBootSet(work: pages, block: block, map: map,
+          archive: archive, reader: &cfg, into: dest, enrollment: absent, systemEnrollment: absent,
+          policy: policy, contract: contract, scratch: scratch, onRefusal: { refusal = $0 }) == nil,
+          dest[15] == 0xcc else { return false }
+        if let refusal {
+          let marker: StaticString
+          switch refusal {
+          case .unsupported: marker = "TARWIN-FENCE-REFUSED-PLATFORM\r\n"
+          case .drainFailed: marker = "TARWIN-FENCE-REFUSED-DRAIN\r\n"
+          case .abortFailed: marker = "TARWIN-FENCE-REFUSED-ABORT\r\n"
+          case .syncFailed: marker = "TARWIN-FENCE-REFUSED-SYNC\r\n"
+          case .tableFailed: marker = "TARWIN-FENCE-REFUSED-TABLE\r\n"
+          case .badMemory: marker = "TARWIN-FENCE-REFUSED-PAGES\r\n"
+          case .streamsDenied: return false
+          }
+          for i in dest.indices where dest[i] != 0xcc { return false }
+          return emit(marker) && reportFenceState()
+        }
+        for i in 0..<expected.utf8CodeUnitCount where dest[i] != expected.utf8Start[i] { return false }
+        return emit("TARWIN-FENCE-STREAMS-DENIED\r\n") && emitW1Refusal()
+      }
+    }
+  }
+  #endif
+
   func refusesFirmwareKernel(
     _ archive: UnsafeRawBufferPointer, services: borrowing FirmwareBootServices
   ) -> Bool {
