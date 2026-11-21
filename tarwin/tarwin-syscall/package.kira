@@ -1,4 +1,0 @@
-construct TarwinSyscall extends Package {
-    let kind: PackageKind = .Library
-    let version: String = "26.11.1"
-}

@@ -1,6 +1,6 @@
 # Executable page integrity
 
-`verifyFilePage` takes two KCore `ByteSource` views: the pinned frame and its concatenated sibling records. The frame must have exactly the target page size, with zeros beyond EOF. A malformed, truncated or overlong witness is rejected.
+`verifyFilePage` takes two immutable `UnsafeBufferPointer<UInt8>` views: the pinned frame and its concatenated sibling records. The frame must have exactly the target page size, with zeros beyond EOF. A malformed, truncated or overlong witness is rejected.
 
 The loader validates chunks of the byte stream covered by the signed BLAKE3-256 build ID. It does not trust a separate hash per page. Every leaf incorporates its absolute chunk index, every parent is formed in BLAKE3 order, and only the global root carries the ROOT flag.
 
@@ -8,4 +8,4 @@ The pager must capture the build ID and canonical byte-stream extent from authen
 
 Only after all proofs succeed may the pager publish those same immutable bytes. On failure discard the page and terminate with `CodeSignatureInvalid`; do not retry through an unsigned mapping. These routines neither authenticate signatures nor change a mapping. The signer and loader must agree on the canonical stream (including how the identifier's own note is handled); there is no alternate digest on failure.
 
-The compression routine and known-answer vectors follow [BLAKE3 1.8.2](https://github.com/BLAKE3-team/BLAKE3/tree/1.8.2), used under CC0-1.0. Run the loader host suite via `sh ../tarwin-syscall/tests/execution-host.sh` from this package. Its altered-byte, incomplete/reordered proof and 4 KiB / 16 KiB checks are not a signature, pager, or live kernel conformance result.
+The compression routine and known-answer vectors follow [BLAKE3 1.8.2](https://github.com/BLAKE3-team/BLAKE3/tree/1.8.2), used under CC0-1.0. Run the host tests with `swift test` in this package. Its altered-byte, incomplete/reordered proof and 4 KiB / 16 KiB checks are not a signature, pager, or live kernel conformance result.

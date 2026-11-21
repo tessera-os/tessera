@@ -1,4 +1,0 @@
-construct ObjectCases extends Package {
-    let kind: PackageKind = .App
-    let dependencies: [Dependency] = [Dependency { name: "TarwinObject", path: "../.." }]
-}

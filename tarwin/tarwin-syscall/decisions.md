@@ -7,7 +7,7 @@
 | EX-003 | Use Tarwin §23.3's spellings for VM/vCPU; §27 uses Probe.attach with last-close detach, §28.3 uses PerformanceSession.create/start/stop/read. The latter names are implementation choices. | Probe loading/signing stays with the compile service; counter sessions require ownership or Debug for system scope. Handle.close supplies lifetime. No extension is callable until a provider and its access checks are installed. |
 | EX-005 | Add the §18–19/22 DeviceKit calls in a private bank at 0x10100. An `@base` line in the same extension index starts a new bank; lexical order applies within each. | Preserves both §23 numbers and previously generated execution/VM numbers in this train. DeviceSlot and MMIO/DMA operations require validated slot/domain authority; Fence.wait and Fence.signal require Wait and Signal respectively on private Fence type 32. No Linux token is a handle. |
 
-Run `python3 tools/call_index.py` from this package after changing either input;
+Run `swift run call-index` from this package after changing either input;
 `--check` verifies both generated files without writing. This is a host build
-tool; neither Python nor a parser is linked into the kernel. Numbers are not
+tool; neither Foundation nor a parser is linked into the kernel. Numbers are not
 syscall stubs, a linked entry path, or evidence that a call is implemented.

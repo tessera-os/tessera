@@ -1,4 +1,0 @@
-construct SchedCases extends Package {
-    let kind: PackageKind = .App
-    let dependencies: [Dependency] = [Dependency { name: "TarwinSched", path: "../.." }]
-}
