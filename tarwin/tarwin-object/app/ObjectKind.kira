@@ -1,0 +1,35 @@
+// LibTessera §3.2, then Tarwin §9.2. 17–18 remain unallocated.
+// fence is a Tarwin-private kind, not a DeviceKit wire type.
+public namespace TarwinKind {
+    let none: U32 = 0
+    let port: U32 = 1
+    let event: U32 = 2
+    let eventPair: U32 = 3
+    let timer: U32 = 4
+    let channel: U32 = 5
+    let memory: U32 = 6
+    let thread: U32 = 7
+    let process: U32 = 8
+    let job: U32 = 9
+    let node: U32 = 10
+    let file: U32 = 11
+    let watch: U32 = 12
+    let endpoint: U32 = 13
+    let stream: U32 = 14
+    let wakeLock: U32 = 15
+    let presence: U32 = 16
+    let interrupt: U32 = 19
+    let mmioRange: U32 = 20
+    let dmaBuffer: U32 = 21
+    let iommuDomain: U32 = 22
+    let deviceSlot: U32 = 23
+    let virtualMachine: U32 = 24
+    let virtualCpu: U32 = 25
+    let probe: U32 = 26
+    let resource: U32 = 27
+    let service: U32 = 28
+    let ring: U32 = 29
+    let workInterval: U32 = 30
+    let performanceSession: U32 = 31
+    let fence: U32 = 32
+}
