@@ -159,4 +159,19 @@ namespace TarwinCall {
     let virtualMachineInjectInterrupt: U64 = 65557
     let virtualMachineMap: U64 = 65558
     let virtualMachineUnmap: U64 = 65559
+    let deviceSlotAllocateVectors: U64 = 65792
+    let deviceSlotConfigRead: U64 = 65793
+    let deviceSlotConfigWrite: U64 = 65794
+    let deviceSlotFirmwareCall: U64 = 65795
+    let deviceSlotInterrupts: U64 = 65796
+    let deviceSlotIommuDomain: U64 = 65797
+    let deviceSlotMmioRanges: U64 = 65798
+    let deviceSlotReset: U64 = 65799
+    let deviceSlotSetPowerState: U64 = 65800
+    let dmaBufferCreate: U64 = 65801
+    let fenceSignal: U64 = 65802
+    let fenceWait: U64 = 65803
+    let interruptComplete: U64 = 65804
+    let mmioRangeGrantDoorbell: U64 = 65805
+    let mmioRangeMap: U64 = 65806
 }

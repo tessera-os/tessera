@@ -45,9 +45,21 @@ def public_names(document):
 def catalogue(public, extensions):
     if len(public) >= EXTENSION_BASE:
         raise ValueError("base index reaches extension range")
+    groups = [(1, public), (EXTENSION_BASE, [])]
+    for entry in extensions:
+        if entry.startswith("@"):
+            first = int(entry[1:], 0)
+            previous, names = groups[-1]
+            if not names or first < previous + len(names):
+                raise ValueError("overlapping or empty private range")
+            groups.append((first, []))
+        else:
+            groups[-1][1].append(entry)
     result = []
     symbols = set()
-    for first, names in [(1, public), (EXTENSION_BASE, extensions)]:
+    for first, names in groups:
+        if first + len(names) > 1 << 64:
+            raise ValueError("call number exceeds 64 bits")
         for number, name in enumerate(sorted(names), first):
             if not re.fullmatch(NAME, name):
                 raise ValueError(f"invalid call name {name!r}")

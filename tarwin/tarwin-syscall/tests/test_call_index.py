@@ -37,6 +37,18 @@ class IndexTests(unittest.TestCase):
         for i, output in enumerate(index.OUTPUTS):
             self.assertEqual(output.read_text(), index.render(calls, kernel=i == 0))
 
+    def test_device_bank_preserves_execution_and_public_numbers(self):
+        extra = [s for s in index.EXTENSIONS.read_text().splitlines() if s and s[0] != "#"]
+        public = index.public_names(index.INDEX.read_text())
+        before = index.catalogue(public, extra[:extra.index("@0x10100")])
+        all_calls = index.catalogue(public, extra)
+        self.assertEqual(all_calls[:len(before)], before)
+        self.assertEqual(len(all_calls) - len(before), 15)
+        self.assertTrue(all(n >= 0x10100 for n, _ in all_calls[len(before):]))
+        for malformed in ["@0x10000", "@0xFFFFFFFFFFFFFFFF"]:
+            with self.subTest(malformed=malformed), self.assertRaises(ValueError):
+                index.catalogue([], ["Z.go", malformed, "A.go", "B.go"])
+
 
 if __name__ == "__main__":
     unittest.main()

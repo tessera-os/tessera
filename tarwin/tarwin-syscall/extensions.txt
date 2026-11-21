@@ -26,3 +26,20 @@ PerformanceSession.create
 PerformanceSession.start
 PerformanceSession.stop
 PerformanceSession.read
+# §18.2, §19.2–4, §22.2–3: private DeviceKit bindings
+@0x10100
+DeviceSlot.mmioRanges
+DeviceSlot.interrupts
+DeviceSlot.allocateVectors
+DeviceSlot.iommuDomain
+DeviceSlot.configRead
+DeviceSlot.configWrite
+DeviceSlot.setPowerState
+DeviceSlot.reset
+DeviceSlot.firmwareCall
+MmioRange.map
+MmioRange.grantDoorbell
+DmaBuffer.create
+Interrupt.complete
+Fence.wait
+Fence.signal
