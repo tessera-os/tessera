@@ -3,7 +3,7 @@
 `TarwinTaskProtocol` is shared between the hosted kernel and the task host.
 Each request is one Mach message (`TaskCommand.messageID`) with a
 `COPY_SEND` destination on the command port and a `MAKE_SEND_ONCE` reply
-right in the header. Only `map` is complex: a Mach message body with one
+right in the header. Only the `map` request is complex: a Mach message body with one
 `MACH_MSG_PORT_DESCRIPTOR` (`COPY_SEND` memory-entry right) precedes its
 payload. The payload starts after that descriptor, or immediately after the
 Mach header for simple messages. The receive trailer is not part of it.
@@ -22,6 +22,7 @@ Tarwin thread IDs and register values are u64 unless otherwise noted.
 | 6 | Suspend thread | thread ID |
 | 7 | Resume thread | thread ID |
 | 8 | Terminate | none |
+| 9 | Snapshot | address, size |
 
 The TLS field is a Tarwin virtual address, not a host register selector.
 On macOS 26.6.2, the task-side probe could write `TPIDR_EL0` but did not
@@ -31,9 +32,15 @@ The thread ID is assigned by the hosted kernel, not a Mach port name.
 The hosted kernel maintains the authoritative address map and thread state;
 successful status from the task is not security evidence.
 
-Every request has one simple reply (`TaskCommandReply.messageID`), sent with
+Every request has one reply (`TaskCommandReply.messageID`), sent with
 `MOVE_SEND_ONCE` and no further reply right. Its eight payload bytes are
 version (u32) followed by the Mach return status (i32; zero means success).
+Only a successful `snapshot` has a complex reply: one port descriptor carries
+the copy-on-write memory-entry send right. Pass `reply.memoryEntry` to
+`map(copy: true)` with offset zero, then deallocate the owned send right.
+Snapshot ranges must be nonempty page-aligned readable guest mappings and
+cannot include the gate page. Suspend guest writers before snapshotting
+multiple ranges when they must describe the same point in time.
 `terminate` acknowledges before exiting; process exit is observed separately.
 
 The Swift codecs take exact payload slices and do not allocate or require

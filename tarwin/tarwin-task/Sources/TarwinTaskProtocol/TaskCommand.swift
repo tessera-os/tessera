@@ -8,6 +8,7 @@ public enum TaskCommand: Sendable {
   case suspendThread(id: UInt64)
   case resumeThread(id: UInt64)
   case terminate
+  case snapshot(address: UInt64, size: UInt64)
 
   public enum Opcode: UInt32, Sendable {
     case map = 1
@@ -18,12 +19,13 @@ public enum TaskCommand: Sendable {
     case suspendThread = 6
     case resumeThread = 7
     case terminate = 8
+    case snapshot = 9
 
     public var byteCount: Int {
       switch self {
       case .map: 40
       case .protect: 32
-      case .unmap: 24
+      case .unmap, .snapshot: 24
       case .createThread: 48
       case .setThreadState: 288
       case .suspendThread, .resumeThread: 16
@@ -48,6 +50,7 @@ public enum TaskCommand: Sendable {
     case .suspendThread: .suspendThread
     case .resumeThread: .resumeThread
     case .terminate: .terminate
+    case .snapshot: .snapshot
     }
   }
 
@@ -87,6 +90,8 @@ public enum TaskCommand: Sendable {
       self = .resumeThread(id: read64(bytes, 8))
     case .terminate:
       self = .terminate
+    case .snapshot:
+      self = .snapshot(address: read64(bytes, 8), size: read64(bytes, 16))
     }
   }
 
@@ -109,7 +114,7 @@ public enum TaskCommand: Sendable {
       write(length, bytes, 16)
       write(protection, bytes, 24)
       write(UInt32(0), bytes, 28)
-    case .unmap(let address, let length):
+    case .unmap(let address, let length), .snapshot(let address, let length):
       write(address, bytes, 8)
       write(length, bytes, 16)
     case .createThread(let id, let entry, let argument, let stack, let tls):
@@ -165,12 +170,17 @@ public struct TaskCommandReply: Sendable {
   public static let messageID: Int32 = 0x5457_0102
   public static let byteCount = 8
   public let status: Int32
+  /// An owned send right on a successful snapshot reply. The caller deallocates it.
+  public let memoryEntry: UInt32?
 
-  public init(status: Int32) { self.status = status }
+  public init(status: Int32, memoryEntry: UInt32? = nil) {
+    self.status = status
+    self.memoryEntry = memoryEntry
+  }
 
   public init?(decoding bytes: UnsafeRawBufferPointer) {
     guard bytes.count == Self.byteCount, read32(bytes, 0) == TaskCommand.version else { return nil }
-    status = Int32(bitPattern: read32(bytes, 4))
+    self.init(status: Int32(bitPattern: read32(bytes, 4)))
   }
 
   public func encode(into bytes: UnsafeMutableRawBufferPointer) -> Bool {

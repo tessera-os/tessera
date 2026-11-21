@@ -1,4 +1,5 @@
 import Darwin
+import TarwinTaskProtocol
 import TarwinTaskTransport
 
 guard TaskRuntime.reserveWindow() == KERN_SUCCESS else { _exit(70) }
@@ -13,8 +14,11 @@ guard TaskSandbox.install() else { _exit(74) }
 
 var runtime = TaskRuntime(gate: gate)
 while true {
-  let result = TaskCommandTransport.serveOne(on: ports.commandReceive) { command, entry in
-    runtime.handle(command, memoryEntry: entry)
+  let result = TaskCommandTransport.serveOneReply(on: ports.commandReceive) { command, entry in
+    if case .snapshot(let address, let size) = command {
+      return TaskRuntime.snapshot(address: address, size: size)
+    }
+    return TaskCommandReply(status: runtime.handle(command, memoryEntry: entry))
   }
   switch result {
   case .success(.terminate): _exit(0)

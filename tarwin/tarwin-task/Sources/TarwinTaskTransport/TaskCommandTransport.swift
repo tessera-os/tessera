@@ -26,13 +26,22 @@ public enum TaskCommandTransport {
         head, MACH_SEND_MSG | MACH_RCV_MSG | MACH_SEND_TIMEOUT | MACH_RCV_TIMEOUT,
         head.pointee.msgh_size, UInt32(packet.count), reply, timeout, 0)
       guard status == KERN_SUCCESS else { return .failure(.mach(status)) }
-      guard let bytes = TaskMachMessage.receivedPayload(packet, id: TaskCommandReply.messageID),
-        let reply = TaskCommandReply(decoding: bytes)
+      let descriptors = command.opcode == .snapshot && head.pointee.msgh_bits & MACH_MSGH_BITS_COMPLEX != 0
+        ? 1 : 0
+      guard let bytes = TaskMachMessage.receivedPayload(
+        packet, id: TaskCommandReply.messageID, descriptors: descriptors),
+        let reply = TaskCommandReply(decoding: bytes),
+        (command.opcode == .snapshot && reply.status == KERN_SUCCESS) == (descriptors == 1)
       else {
         mach_msg_destroy(head)
         return .failure(.invalidMessage)
       }
-      return .success(reply)
+      if descriptors == 0 { return .success(reply) }
+      guard let entry = TaskMachMessage.port(packet, 0, MACH_MSG_TYPE_PORT_SEND) else {
+        mach_msg_destroy(head)
+        return .failure(.invalidMessage)
+      }
+      return .success(TaskCommandReply(status: reply.status, memoryEntry: entry))
     }
   }
 
@@ -41,6 +50,16 @@ public enum TaskCommandTransport {
   public static func serveOne(
     on port: mach_port_t, timeout: mach_msg_timeout_t? = nil,
     _ handle: (TaskCommand, mach_port_t) -> kern_return_t
+  ) -> Result<TaskCommand.Opcode, TaskTransportError> {
+    serveOneReply(on: port, timeout: timeout) { command, entry in
+      TaskCommandReply(status: handle(command, entry))
+    }
+  }
+
+  /// As with serveOne, the incoming entry is borrowed; an outgoing entry is consumed.
+  public static func serveOneReply(
+    on port: mach_port_t, timeout: mach_msg_timeout_t? = nil,
+    _ handle: (TaskCommand, mach_port_t) -> TaskCommandReply
   ) -> Result<TaskCommand.Opcode, TaskTransportError> {
     TaskMachMessage.withPacket { packet in
       let status = TaskMachMessage.receive(packet, on: port, timeout: timeout)
@@ -58,17 +77,27 @@ public enum TaskCommandTransport {
         return .failure(.invalidMessage)
       }
       let reply = head.pointee.msgh_remote_port
-      let result = handle(command, entry)
+      var result = handle(command, entry)
       if entry != 0 { TaskMachMessage.releaseSend(entry) }
+      let expectedEntry = command.opcode == .snapshot && result.status == KERN_SUCCESS
+      if expectedEntry != (result.memoryEntry != nil) {
+        if let unexpected = result.memoryEntry { TaskMachMessage.releaseSend(unexpected) }
+        result = TaskCommandReply(status: KERN_FAILURE)
+      }
+      let descriptors = result.memoryEntry == nil ? 0 : 1
       TaskMachMessage.prepare(
         packet, id: TaskCommandReply.messageID, payloadBytes: TaskCommandReply.byteCount,
-        destination: reply, disposition: MACH_MSG_TYPE_MOVE_SEND_ONCE)
-      let offset = TaskMachMessage.headerBytes
-      _ = TaskCommandReply(status: result).encode(into: UnsafeMutableRawBufferPointer(
+        descriptors: descriptors, destination: reply, disposition: MACH_MSG_TYPE_MOVE_SEND_ONCE)
+      if let output = result.memoryEntry {
+        TaskMachMessage.putPort(packet, 0, output, MACH_MSG_TYPE_COPY_SEND)
+      }
+      let offset = TaskMachMessage.payloadOffset(descriptors: descriptors)
+      _ = result.encode(into: UnsafeMutableRawBufferPointer(
         rebasing: packet[offset..<(offset + TaskCommandReply.byteCount)]))
       if TaskMachMessage.send(packet, timeout: timeout ?? 5_000) != KERN_SUCCESS {
         TaskMachMessage.releaseSend(reply)
       }
+      if let output = result.memoryEntry { TaskMachMessage.releaseSend(output) }
       return .success(command.opcode)
     }
   }

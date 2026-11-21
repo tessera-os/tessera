@@ -151,6 +151,102 @@ import Testing
   #expect(status == 0)
 }
 
+@Test func spawnedTaskSnapshotCopiesLivePrivatePagesAndIsolatesLaterWrites() throws {
+  let executable = try builtExecutable("tarwin-task")
+  let parent = try TaskSpawner.spawn(executable: executable)
+  defer { terminateAndReap(parent) }
+  let child = try TaskSpawner.spawn(executable: executable)
+  defer { terminateAndReap(child) }
+
+  let page = TaskWindow.pageSize
+  let code = TaskWindow.base
+  let data = code + page
+  let reportAddress = data + page
+  var backing: UInt64 = 0
+  try #require(mach_vm_allocate(mach_task_self_, &backing, 3 * page, VM_FLAGS_ANYWHERE) == KERN_SUCCESS)
+  defer { _ = mach_vm_deallocate(mach_task_self_, backing, 3 * page) }
+  let instructions = try #require(UnsafeMutablePointer<UInt32>(bitPattern: UInt(backing)))
+  instructions[0] = 0xf900_0001 // str x1, [x0]
+  instructions[1] = 0xf940_0002 // ldr x2, [x0]
+  instructions[2] = 0xf900_0062 // str x2, [x3]
+  instructions[3] = 0x1400_0000 // b .
+  sys_icache_invalidate(instructions, 16)
+  let rx = VM_PROT_READ | VM_PROT_EXECUTE
+  let rw = VM_PROT_READ | VM_PROT_WRITE
+  try #require(mach_vm_protect(mach_task_self_, backing, page, 0, rx) == KERN_SUCCESS)
+  func entry(_ offset: UInt64, _ protection: Int32) throws -> mach_port_t {
+    var size = page
+    var port: mach_port_t = 0
+    try #require(mach_make_memory_entry_64(
+      mach_task_self_, &size, backing + offset, protection, &port, 0) == KERN_SUCCESS)
+    return port
+  }
+  let text = try entry(0, rx)
+  defer { TaskMachMessage.releaseSend(text) }
+  let original = try entry(page, rw)
+  defer { TaskMachMessage.releaseSend(original) }
+  let reporting = try entry(2 * page, rw)
+  defer { TaskMachMessage.releaseSend(reporting) }
+  let report = try #require(UnsafePointer<UInt64>(bitPattern: UInt(backing + 2 * page)))
+  let originalBytes = try #require(UnsafePointer<UInt64>(bitPattern: UInt(backing + page)))
+  func command(_ task: SpawnedTask, _ command: TaskCommand, entry: mach_port_t = 0) throws {
+    try #require(try task.command(command, memoryEntry: entry, timeout: 2_000).get().status == KERN_SUCCESS)
+  }
+  func map(_ task: SpawnedTask, _ address: UInt64, _ entry: mach_port_t, _ protection: Int32,
+    copy: Bool = false) throws {
+    try command(task, .map(TaskMapping(
+      address: address, length: page, offset: 0, protection: UInt32(protection), copy: copy)), entry: entry)
+  }
+  for task in [parent, child] {
+    try map(task, code, text, rx)
+    try map(task, reportAddress, reporting, rw)
+  }
+  try map(parent, data, original, rw, copy: true)
+  let stack = reportAddress + page - 16
+  func run(_ task: SpawnedTask, pc: UInt64, value: UInt64, reportSlot: Int) throws {
+    var registers = InlineArray<31, UInt64>(repeating: 0)
+    registers[0] = data
+    registers[1] = value
+    registers[3] = reportAddress + UInt64(reportSlot * 8)
+    try command(task, .setThreadState(id: 1, state: TaskThreadState(
+      registers: registers, stack: stack, pc: pc, cpsr: 0)))
+    try command(task, .resumeThread(id: 1))
+  }
+  func waitForReport(_ slot: Int, value: UInt64) throws {
+    let deadline = DispatchTime.now() + .seconds(2)
+    while report[slot] != value && DispatchTime.now() < deadline { usleep(1_000) }
+    try #require(report[slot] == value)
+  }
+  try command(parent, .createThread(id: 1, entry: code, argument: 0, stack: stack, tls: 0))
+  try run(parent, pc: code, value: 0x1234, reportSlot: 0)
+  try waitForReport(0, value: 0x1234)
+  try command(parent, .suspendThread(id: 1))
+  #expect(originalBytes.pointee == 0)
+  let denied = try parent.command(.snapshot(address: TaskGatePage.address, size: page)).get()
+  #expect(denied.status == KERN_INVALID_ARGUMENT)
+  #expect(denied.memoryEntry == nil)
+  let snapshot = try parent.command(.snapshot(address: data, size: page)).get()
+  try #require(snapshot.status == KERN_SUCCESS)
+  let saved = try #require(snapshot.memoryEntry)
+  defer { TaskMachMessage.releaseSend(saved) }
+  try map(child, data, saved, rw, copy: true)
+  try command(child, .createThread(id: 1, entry: code, argument: 0, stack: stack, tls: 0))
+  try run(child, pc: code + 4, value: 0, reportSlot: 1)
+  try waitForReport(1, value: 0x1234)
+  try command(child, .suspendThread(id: 1))
+  try run(parent, pc: code, value: 0xabcd, reportSlot: 2)
+  try waitForReport(2, value: 0xabcd)
+  try run(child, pc: code + 4, value: 0, reportSlot: 3)
+  try waitForReport(3, value: 0x1234)
+}
+
+private func terminateAndReap(_ task: SpawnedTask) {
+  if (try? task.command(.terminate, timeout: 1_000).get().status) != KERN_SUCCESS {
+    kill(task.pid, SIGKILL)
+  }
+  while waitpid(task.pid, nil, 0) == -1 && errno == EINTR {}
+}
+
 private func builtExecutable(_ name: String) throws -> String {
   var image = Dl_info()
   try #require(dladdr(#dsohandle, &image) != 0)

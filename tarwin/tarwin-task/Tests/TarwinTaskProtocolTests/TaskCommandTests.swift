@@ -16,6 +16,7 @@ import Testing
     (.suspendThread(id: 17), header(6) + word(17)),
     (.resumeThread(id: 18), header(7) + word(18)),
     (.terminate, header(8)),
+    (.snapshot(address: 19, size: 20), header(9) + word(19) + word(20)),
   ]
   for (command, expected) in cases {
     var bytes = [UInt8](repeating: 0xff, count: expected.count + 1)

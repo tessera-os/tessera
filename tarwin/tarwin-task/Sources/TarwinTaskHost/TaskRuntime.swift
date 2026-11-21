@@ -7,6 +7,22 @@ struct TaskRuntime {
     var port: mach_port_t = 0
   }
 
+  static func snapshot(address: UInt64, size: UInt64) -> TaskCommandReply {
+    guard containsGuestPages(address: address, length: size) else {
+      return TaskCommandReply(status: KERN_INVALID_ARGUMENT)
+    }
+    var entry: mach_port_t = 0
+    var actualSize = size
+    let status = mach_make_memory_entry_64(mach_task_self_, &actualSize, address,
+      MAP_MEM_VM_COPY | VM_PROT_READ | VM_PROT_WRITE, &entry, 0)
+    guard status == KERN_SUCCESS else { return TaskCommandReply(status: status) }
+    guard actualSize == size, entry != 0 else {
+      if entry != 0 { _ = mach_port_deallocate(mach_task_self_, entry) }
+      return TaskCommandReply(status: KERN_FAILURE)
+    }
+    return TaskCommandReply(status: KERN_SUCCESS, memoryEntry: entry)
+  }
+
   private var threads = InlineArray<256, ThreadSlot>(repeating: ThreadSlot())
   private let gate: TaskGateRuntime
 
@@ -97,6 +113,8 @@ struct TaskRuntime {
       return thread_resume(threads[index].port)
     case .terminate:
       return KERN_SUCCESS
+    case .snapshot:
+      return KERN_NOT_SUPPORTED
     }
   }
 
