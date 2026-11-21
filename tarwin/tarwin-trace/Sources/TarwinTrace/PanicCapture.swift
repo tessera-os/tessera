@@ -24,17 +24,26 @@ public func capturePanic(
   mirrorCommitted: (UInt64) -> Bool
 ) -> PanicCaptureResult {
   let cpus = snapshots.cpuCount
-  guard cpus > 0 && cpus <= 512 else { return .unavailable }
+  guard cpus > 0 && cpus <= 4096 else { return .unavailable }
   let limit = min(capacity, PanicLayout.maxBytes)
+  let logs = snapshots.logBytes
+  let traces = snapshots.traceBytes
   var needed = PanicLayout.header + UInt64(cpus) * 18 + 10
-  guard needed <= limit else { return .unavailable }
+  let tailMinimum = min(logs, 1) + min(traces, 1)
+  guard needed + tailMinimum <= limit else { return .unavailable }
+  var extraFrames: UInt64 = 0
   for cpu in 0..<cpus {
     let bytes = snapshots.registerByteCount(cpu: cpu)
     let frames = snapshots.frameCount(cpu: cpu)
     guard bytes > 0, frames <= 256 else { return .unavailable }
-    needed += UInt64(bytes) + UInt64(frames) * 8
-    guard needed <= limit else { return .unavailable }
+    let first = min(frames, 1)
+    needed += UInt64(bytes) + UInt64(first) * 8
+    extraFrames += UInt64(frames - first)
+    guard needed + tailMinimum <= limit else { return .unavailable }
   }
+  let budget = min(extraFrames, (limit - needed - tailMinimum) / 8)
+  var seen: UInt64 = 0
+  var assigned: UInt64 = 0
 
   var writer = PanicWriter(capacity: limit)
   guard writer.begin(put, persist) else { return .unavailable }
@@ -48,7 +57,14 @@ public func capturePanic(
           return snapshots.registerByte(cpu: cpu, offset: UInt32(i - 4))
         }, put)
     else { return .unavailable }
-    let frames = UInt64(snapshots.frameCount(cpu: cpu))
+    // Reserve each nonempty stack's top frame. Distribute the remaining
+    // frame slots proportionally, so one deep stack cannot erase later CPUs.
+    let depth = UInt64(snapshots.frameCount(cpu: cpu))
+    let first = min(depth, 1)
+    seen += depth - first
+    let through = extraFrames == 0 ? 0 : seen * budget / extraFrames
+    let frames = first + (through - assigned)
+    assigned = through
     guard
       writer.section(
         2, 4 + frames * 8,
@@ -60,9 +76,7 @@ public func capturePanic(
     else { return .unavailable }
   }
 
-  let spare = limit - needed
-  let logs = snapshots.logBytes
-  let traces = snapshots.traceBytes
+  let spare = limit - needed - budget * 8
   let traceReserved = min(traces, spare / 2)
   let logTail = min(logs, spare - traceReserved)
   let traceTail = min(traces, spare - logTail)
