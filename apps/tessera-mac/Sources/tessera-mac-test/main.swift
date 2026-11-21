@@ -24,12 +24,14 @@ do {
     guard process.terminationStatus == 0, text.contains("TESSERA READY"), text.contains("FRAME "), text.contains("TASK CHECKED IN") else {
         throw DiskError.io("Boot or frame check failed (exit \(process.terminationStatus))")
     }
-    let stages = ["time", "objects", "syscalls", "scheduler", "ready"]
+    let stages = ["time", "objects", "syscalls", "storage", "network", "scheduler", "ready"]
     guard text.contains("Kernel: TarwindKernel"), !text.contains("Kernel boot failed:"),
           stages.allSatisfy({ text.contains("Stage: \($0)\n") }) else {
         throw DiskError.io("Real kernel did not reach its expected boot stages")
     }
     print("TarwindKernel reached: " + stages.joined(separator: " -> "))
-    _ = try DiskImage.open(at: directory.appendingPathComponent("system.trfsdisk"))
-    print("tessera-mac-test PASS: real kernel ready, IOSurface frame, valid sparse disk, task checked in")
+    guard FileManager.default.fileExists(atPath: directory.appendingPathComponent("system.trfsdisk").path) else {
+        throw DiskError.io("Tarwind did not create the data disk")
+    }
+    print("tessera-mac-test PASS: real kernel ready, IOSurface frame, kernel-created disk, task checked in")
 } catch { print("tessera-mac-test FAIL: \(error)"); exit(1) }

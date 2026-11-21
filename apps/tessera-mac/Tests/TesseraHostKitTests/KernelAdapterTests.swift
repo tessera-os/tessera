@@ -8,7 +8,6 @@ final class KernelAdapterTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let disk = directory.appendingPathComponent("disk")
-        _ = try DiskImage.create(at: disk, size: 1048576)
         return KernelConfig(diskPath: disk.path, systemImagePath: "", panicRecordPath: "", outputs: outputs)
     }
     func testRealBootAndDisplay() throws {
@@ -19,7 +18,7 @@ final class KernelAdapterTests: XCTestCase {
         XCTAssertTrue(kernel is TarwindKernelAdapter)
         kernel.start(config: try configuration(), host: host)
         waitForExpectations(timeout: 8); kernel.shutdown(); kernel.shutdown()
-        XCTAssertEqual(host.stages, ["time", "objects", "syscalls", "scheduler", "ready"])
+        XCTAssertEqual(host.stages, ["time", "objects", "syscalls", "storage", "network", "scheduler", "ready"])
         XCTAssertTrue(host.panics.isEmpty)
         XCTAssertTrue(host.lines.contains("Kernel: TarwindKernel"))
     }

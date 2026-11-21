@@ -21,8 +21,7 @@ final class App: NSObject, NSApplicationDelegate, TesseraHost, NSWindowDelegate 
             if let index = CommandLine.arguments.firstIndex(of: "--disk"), index + 1 < CommandLine.arguments.count {
                 disk = URL(fileURLWithPath: CommandLine.arguments[index + 1]).appendingPathComponent("system.trfsdisk")
             }
-            if !FileManager.default.fileExists(atPath: disk.path) { _ = try DiskImage.create(at: disk) }
-            _ = try DiskImage.open(at: disk)
+            if let backup = try DiskImage.prepareForBoot(at: disk) { console("Legacy disk backed up: \(backup.path)") }
             config = KernelConfig(diskPath: disk.path, systemImagePath: try SystemImage.locate().path,
                 panicRecordPath: disk.deletingLastPathComponent().appendingPathComponent("panic.txt").path,
                 taskExecutablePath: Bundle.main.bundleURL.appendingPathComponent("Contents/XPCServices/com.tessera.tarwind.xpc/Contents/MacOS/tarwin-task").path)

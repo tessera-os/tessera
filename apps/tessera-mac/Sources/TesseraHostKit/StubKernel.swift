@@ -18,10 +18,6 @@ public final class StubKernel: HostedKernel, HIDProvider {
     }
     public func start(config: KernelConfig, host: KernelHost) {
         shutdown(); self.host = host; outputs = config.outputs; tick = 0; frame = 0
-        do {
-            let disk = try DiskImage.open(at: URL(fileURLWithPath: config.diskPath))
-            host.console("TRFS block device: boot #\(try disk.incrementBootCount())")
-        } catch { host.panic(record: Array("Disk error: \(error)".utf8)); return }
         outputs.forEach { devices.display.outputChanged($0) }
         let timer = DispatchSource.makeTimerSource(queue: .main)
         timer.schedule(deadline: .now(), repeating: 1.0 / 30)

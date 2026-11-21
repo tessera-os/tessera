@@ -8,19 +8,28 @@ final class HostTests: XCTestCase {
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: url) }; return url
     }
-    func testDiskCreateOpen() throws {
+    func testMissingDiskIsLeftForKernel() throws {
         let url = try temporary().appendingPathComponent("disk")
-        let disk = try DiskImage.create(at: url, size: 1048576)
-        XCTAssertEqual(try DiskImage.open(at: url).uuid, disk.uuid)
-        XCTAssertEqual(try disk.incrementBootCount(), 1)
-        XCTAssertEqual(try disk.incrementBootCount(), 2)
-        XCTAssertThrowsError(try DiskImage.create(at: url))
+        XCTAssertNil(try DiskImage.prepareForBoot(at: url))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
     }
-    func testBadAndEmptyHeader() throws {
+    func testLegacyDiskBackedUpWithoutReformatting() throws {
         let url = try temporary().appendingPathComponent("disk")
-        try Data().write(to: url); XCTAssertThrowsError(try DiskImage.open(at: url))
-        try Data(repeating: 1, count: 8192).write(to: url); XCTAssertThrowsError(try DiskImage.open(at: url))
-        XCTAssertThrowsError(try DiskImage.create(at: url, size: 1))
+        let legacy = Data("TRFSDISK\n1\nlegacy data".utf8)
+        try legacy.write(to: url)
+        let backup = try XCTUnwrap(DiskImage.prepareForBoot(at: url))
+        XCTAssertEqual(try Data(contentsOf: backup), legacy)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertNil(try DiskImage.prepareForBoot(at: url))
+    }
+    func testOtherDisksUntouchedAndIOErrorsPropagate() throws {
+        let url = try temporary().appendingPathComponent("disk")
+        for bytes in [Data(), Data("TRFSDISK\n2\n".utf8), Data(repeating: 1, count: 8192)] {
+            try bytes.write(to: url)
+            XCTAssertNil(try DiskImage.prepareForBoot(at: url))
+            XCTAssertEqual(try Data(contentsOf: url), bytes)
+        }
+        XCTAssertThrowsError(try DiskImage.prepareForBoot(at: url.appendingPathComponent("child")))
     }
     func testConfigCoding() throws {
         for outputs in [[DisplayOutput()], []] {
@@ -31,7 +40,6 @@ final class HostTests: XCTestCase {
     }
     func testStubBoot() throws {
         let disk = try temporary().appendingPathComponent("disk")
-        _ = try DiskImage.create(at: disk, size: 1048576)
         let host = FakeHost(); let devices = HostDevices(display: host); let kernel = StubKernel(devices: devices)
         host.expectation = expectation(description: "ready")
         kernel.start(config: KernelConfig(diskPath: disk.path, systemImagePath: "", panicRecordPath: ""), host: host)
@@ -39,10 +47,14 @@ final class HostTests: XCTestCase {
         XCTAssertEqual(host.stages, ["firmware", "tarwind", "tessera.init", "services", "MosaicDisplay", "desktop"])
         XCTAssertGreaterThan(host.frames, 0); XCTAssertTrue(host.panics.isEmpty)
     }
-    func testStubDiskFailure() {
-        let host = FakeHost(); let kernel = StubKernel(devices: HostDevices(display: host))
-        kernel.start(config: KernelConfig(diskPath: "/nonexistent/disk", systemImagePath: "", panicRecordPath: ""), host: host)
-        XCTAssertEqual(host.panics.count, 1); XCTAssertEqual(host.frames, 0); kernel.shutdown()
+    func testStubDoesNotTouchDataDisk() throws {
+        let disk = try temporary().appendingPathComponent("disk"), contents = Data("not a stub disk".utf8)
+        try contents.write(to: disk)
+        let host = FakeHost(); host.expectation = expectation(description: "stub ready without disk IO")
+        let kernel = StubKernel(devices: HostDevices(display: host))
+        kernel.start(config: KernelConfig(diskPath: disk.path, systemImagePath: "", panicRecordPath: "", outputs: []), host: host)
+        waitForExpectations(timeout: 8); kernel.shutdown()
+        XCTAssertTrue(host.panics.isEmpty); XCTAssertEqual(try Data(contentsOf: disk), contents)
     }
 }
 private final class FakeHost: KernelHost, DisplayProvider {

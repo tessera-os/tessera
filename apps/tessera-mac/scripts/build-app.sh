@@ -20,7 +20,10 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$SERVICE/Contents/MacO
 cp "$BIN/Tessera" "$APP/Contents/MacOS/Tessera"
 cp "$BIN/tarwind" "$SERVICE/Contents/MacOS/tarwind"
 cp "$TASK_BIN/tarwin-task" "$SERVICE/Contents/MacOS/tarwin-task"
-printf 'TESSERA SYSTEM IMAGE PLACEHOLDER\n' > "$APP/Contents/Resources/system.timg"
+if [[ -f "$APP/Contents/Resources/system.timg" ]] &&
+   [[ "$(head -c 32 "$APP/Contents/Resources/system.timg")" == "TESSERA SYSTEM IMAGE PLACEHOLDER" ]]; then
+    rm "$APP/Contents/Resources/system.timg"
+fi
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>

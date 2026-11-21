@@ -5,14 +5,18 @@ Requires Apple silicon, macOS 26 and Swift 6.3. Regular Swift throughout.
 Build: `scripts/build-app.sh`. Open: `open build/Tessera.app`.
 Test: `scripts/test.sh` (unit tests, signed bundle, headless XPC boot).
 For a separate disk: `build/Tessera.app/Contents/MacOS/Tessera --disk /path/to/directory`.
-The default sparse disk is 64 GiB logical under `~/Library/Application Support/Tessera/Disks/`.
+Tarwind creates and formats its own data disk under `~/Library/Application Support/Tessera/Disks/`.
+The app moves an old TRFSDISK v1 file to a unique `.legacy-<UUID>` backup before boot;
+it does not format, resize or write the data volume. StubKernel never touches it.
 
 TarwindKernel is the default kernel; --stub-kernel selects the original stub.
-The real kernel reports time, objects, syscalls, scheduler, ready and calls ready().
+The real kernel reports time, objects, syscalls, storage, network, scheduler, ready and calls ready().
 The desktop is still our IOSurface/Metal preview, not running Tessera userland or
-a TRFS filesystem. It exercises XPC, disk block I/O and input at 30 fps.
+a guest desktop. Tarwind mounts real TRFS storage; the preview exercises XPC and input at 30 fps.
 Boot errors fall back to StubKernel and remain visible on the console overlay.
-The system image remains a placeholder. The bundle script builds and signs H2's
+No system image is bundled until a signed volume is available; the absent path
+boots the kernel without a system volume. The bundle script removes only the
+old exact placeholder and never suppresses errors for an actual image. It builds and signs H2's
 real sandboxed tarwin-task executable from ../../tarwin/tarwin-task. At ready the
 service launches it, validates check-in, sends a protect command and serves its
 gate port. No image is loaded into that process yet. The Swift gate-demo child
@@ -40,7 +44,7 @@ H1 retains the paths but does not load images yet; the service separately launch
 the sandboxed task host. Its gate handlers remain diagnostic stubs, not H1's
 KernelGate: task-side pinned memory and trap validation still need integration.
 There is no LibTessera app, H5 compositor or loaded guest image in this bundle.
-The bundle test requires real ready and all five stages; fallback is not a pass.
+The bundle test requires real ready, all seven stages and a kernel-created disk; fallback is not a pass.
 KernelConfig carries diskPath, systemImagePath, panicRecordPath and taskExecutablePath;
 KernelHost has the same four callbacks as TarwindHost. Register HostDevices display/HID
 providers in TarwinArchHosted's HostDeviceRegistry before boot. No dependency on those
@@ -49,6 +53,4 @@ uses a separate HIDProvider. XPC control stays independent of the kernel impleme
 
 The app shows the console during boot and reconnects after XPC interruption, preserving
 the panic text in its console overlay before restarting. Start/Shut Down/Restart/Recovery
-are in the app menu. Recovery currently reboots the stub. Disk header version 1 is a
-4096-byte block containing TRFSDISK, version, UUID and Unix creation time on separate
-lines; the boot counter occupies eight little-endian bytes at offset 4096.
+are in the app menu. Recovery currently restarts the selected kernel.
