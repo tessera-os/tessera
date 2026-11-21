@@ -44,9 +44,8 @@ public func udpOutput(_ route: UdpRoute, _ payload: [UInt8]) -> OutputResult {
   let udp = 8 + payload.count
   let total = ip + udp
   if UInt32(total) > route.mtu { return .tooLarge }
-  var bytes: [UInt8] = []
-  for i in 0..<(ip + 8) { bytes.append(0) }
-  for byte in payload { bytes.append(byte) }
+  var bytes = [UInt8](repeating: 0, count: ip + 8)
+  bytes.append(contentsOf: payload)
   var start: Int = 8
   if v4 {
     bytes[0] = 0x45

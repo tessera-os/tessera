@@ -375,7 +375,7 @@ do {
   print(
     CommandLine.arguments.last == "--vtd"
       ? "PASS: q35 VT-d translated disk DMA, IOTLB drain and same-IOVA remap"
-      : "PASS: QEMU virtio-blk write/flush/readback and isolated virtio-net TX/RX")
+      : "PASS: QEMU virtio-blk write/flush/readback and paced UDP delivery across isolated NICs")
 } catch {
   FileHandle.standardError.write(Data("\(error)\n".utf8))
   exit(1)

@@ -1,12 +1,24 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 import PackageDescription
 
 let package = Package(
-  name: "TarwinNet",
-  products: [.library(name: "TarwinNet", targets: ["TarwinNet"])],
-  dependencies: [],
+  name: "TarwinNet", platforms: [.macOS(.v26)],
+  products: [
+    .library(name: "TarwinNetWire", targets: ["TarwinNetWire"]),
+    .library(name: "TarwinNet", targets: ["TarwinNet"]),
+  ],
+  dependencies: [.package(path: "../tarwin-ipc"), .package(path: "../tarwin-device")],
   targets: [
-    .target(name: "TarwinNet", dependencies: []),
-    .testTarget(name: "TarwinNetTests", dependencies: ["TarwinNet"], path: "tests/TarwinNetTests"),
+    .target(
+      name: "TarwinNetWire", dependencies: [.product(name: "TarwinIPC", package: "tarwin-ipc")]),
+    .target(
+      name: "TarwinNet",
+      dependencies: ["TarwinNetWire", .product(name: "TarwinIPC", package: "tarwin-ipc")]),
+    .testTarget(
+      name: "TarwinNetTests",
+      dependencies: [
+        "TarwinNet", "TarwinNetWire", .product(name: "TarwinDevice", package: "tarwin-device"),
+        .product(name: "TarwinIPC", package: "tarwin-ipc"),
+      ], path: "tests/TarwinNetTests"),
   ]
 )

@@ -1,3 +1,6 @@
+import TarwinIPC
+import TarwinNetWire
+
 public struct TxPacket {
   public let process: UInt64, flow: UInt64, memory: UInt64, offset: UInt64, bytes: UInt32
   public let notBefore: UInt64, background: Bool
@@ -16,6 +19,7 @@ public struct TxPacket {
 }
 public struct TxSlot {
   fileprivate var request: TxPacket?, key: UInt64 = 0, pin: UInt64 = 0, finish: UInt64 = 0
+  fileprivate var wireQueue: UInt32?
   fileprivate var next: Int = -1, owner: Int = -1, published = false
   public init() {}
 }
@@ -77,6 +81,12 @@ public struct InterfaceTxQueue: ~Copyable {
     now: UInt64, congested: Bool,
     publish: (UInt64, UInt64, UInt64, UInt32) -> Bool
   ) -> Bool {
+    dispatch(wireQueue: nil, now: now, congested: congested, publish: publish)
+  }
+  private mutating func dispatch(
+    wireQueue: UInt32?, now: UInt64, congested: Bool,
+    publish: (UInt64, UInt64, UInt64, UInt32) -> Bool
+  ) -> Bool {
     guard phase == .running else { return false }
     var chosen = -1
     for f in flows {
@@ -100,11 +110,44 @@ public struct InterfaceTxQueue: ~Copyable {
     virtualTime = max(virtualTime, packets[chosen].finish)
     flows[f].head = packets[chosen].next
     if flows[f].head < 0 { flows[f].tail = -1 }
+    packets[chosen].wireQueue = wireQueue
     packets[chosen].published = true
     packets[chosen].next = -1
     return true
   }
 
+  /// The mapping for (epoch, key) is stable until completion or old-domain drain,
+  /// including retries on ring backpressure. Never expose a pin token on the wire.
+  public mutating func publish(
+    queue: UInt32, now: UInt64, congested: Bool,
+    iova: (UInt64, UInt64, UInt64, UInt32) -> UInt64?, ring: inout RingEndpoint
+  ) -> RingStep? {
+    var step: RingStep?
+    _ = dispatch(wireQueue: queue, now: now, congested: congested) { e, key, pin, n in
+      guard let address = iova(e, key, pin, n),
+        let f = NetFrame(
+          direction: .transmit, queue: queue, id: key, epoch: e, iova: address, bytes: n)
+      else { return false }
+      let result = ring.push(f.record())
+      step = result
+      if case .transferred = result { return true }
+      return false
+    }
+    return step
+  }
+  public mutating func finish(
+    queue: UInt32, record: borrowing RingRecord,
+    retireMapping: (UInt64) -> Bool, done: (UInt64, UInt64, TxDisposition) -> Void
+  ) -> Bool {
+    guard phase == .running, let d = NetFrameDone(record: record), d.epoch == epoch,
+      d.direction == .transmit, d.queue == queue,
+      let i = packets.indices.first(where: { packets[$0].key == d.id && packets[$0].published }),
+      packets[i].wireQueue == queue, packets[i].request?.bytes == d.bytes,
+      retireMapping(packets[i].pin)
+    else { return false }
+    finish(i, .transmitted, done)
+    return true
+  }
   private func finish(
     _ i: Int, _ result: TxDisposition, _ retire: (UInt64, UInt64, TxDisposition) -> Void
   ) {
@@ -121,7 +164,9 @@ public struct InterfaceTxQueue: ~Copyable {
     retire: (UInt64, UInt64, TxDisposition) -> Void
   ) -> Bool {
     guard phase == .running, reported == epoch, key != 0,
-      let i = packets.indices.first(where: { packets[$0].key == key && packets[$0].published })
+      let i = packets.indices.first(where: {
+        packets[$0].key == key && packets[$0].published && packets[$0].wireQueue == nil
+      })
     else { return false }
     finish(i, .transmitted, retire)
     return true
