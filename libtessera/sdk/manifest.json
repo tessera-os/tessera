@@ -1,0 +1,41 @@
+{
+  "format": "tirpkg",
+  "tir": "26.11.1",
+  "id": "org.tessera.libtessera",
+  "name": "LibTessera",
+  "version": "26.11.1",
+  "build": 1,
+  "kind": "framework",
+  "profile": "system",
+  "platforms": [
+    "tessera"
+  ],
+  "modules": [],
+  "entitlements": [],
+  "resources": [
+    {
+      "path": "resources/abi/16c5ccde0f10407f8d01f80b3171e9db.ridlsig",
+      "kind": "asset"
+    },
+    {
+      "path": "resources/abi/42aaa29dec7f48ec8dc4d4fe42b2835b.ridlsig",
+      "kind": "asset"
+    },
+    {
+      "path": "resources/abi/6f1b36cbca464ed89885486fccf2a255.ridlsig",
+      "kind": "asset"
+    },
+    {
+      "path": "resources/abi/LibTessera.ridl",
+      "kind": "asset"
+    },
+    {
+      "path": "resources/abi/LibTessera.ridlmeta",
+      "kind": "asset"
+    },
+    {
+      "path": "resources/abi/f7296b66ea6741c498d7c1a54ae66a28.ridlsig",
+      "kind": "asset"
+    }
+  ]
+}

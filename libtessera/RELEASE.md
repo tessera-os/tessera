@@ -59,6 +59,17 @@ Expanded Linux system interfaces for partitions, remote processors, kernel loggi
   `code`/`subsystem` are final decisions for gaps the specs leave open
   (klf-swift `docs/decisions/ridl.md` R-10).
 
+- `sdk/LibTessera.tirpkg`: the four ABI records, `LibTessera.ridl` and
+  `LibTessera.ridlmeta` as a signed framework package with no modules. Rebuild with:
+  ```sh
+  OPENSSL=<openssl 3.5+> sdk/make-dev-identity.sh <identity.json>   # dev only
+  mkdir -p stage/resources && cp -R abi stage/resources/
+  tirc package stage --manifest sdk/manifest.json --sign <identity.json> \
+    --openssl <openssl 3.5+> -o sdk/LibTessera.tirpkg
+  ```
+  The development leaf certificates are valid for 180 days. A different identity
+  changes only `signatures/developer.sig`.
+
 ## Changed
 
 - Expanded explicit unsafe scopes across Linux process, memory, channels, debugging, and other native implementation paths.
@@ -69,7 +80,10 @@ Expanded Linux system interfaces for partitions, remote processors, kernel loggi
   Inlay → PID 1 → Notes document-open path is now connected in source, but the
   generic signed-registry dispatcher, document picker for other apps, and
   live-app RIDL activation are not yet integrated or guest-boot verified.
-- The frozen RIDL slice is unsigned. It lets consumers check wire compatibility.
-  It grants no developer CA or launch authority, and signing waits on a Tessera
-  developer identity (TIR §29.4).
+- The `.ridlsig` and `.ridlmeta` files stay unsigned (KLF-RIDL §24 defines no
+  signature). `sdk/LibTessera.tirpkg` carries them as resources of a TIR §29
+  framework package signed with a **development-only** identity. That identity is
+  not a Tessera developer CA identity: it proves the files came from this build,
+  and grants no developer CA or launch authority. It is a build-time input, never
+  committed; swap in the real identity by re-running the packaging step below.
 - Hardware-specific remote-processor startup and partition behavior have not been validated across device profiles for these notes.
