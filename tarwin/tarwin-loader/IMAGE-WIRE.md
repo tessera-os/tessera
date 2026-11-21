@@ -1,6 +1,6 @@
 # Tarwin native image v1 — proposed producer/consumer contract
 
-For review by the TIRImage linker, signer and train owners. This is a proposal for the gaps in Tarwin §7, not a second signing policy or evidence of a verified launch. Existing TVISA A.2 tables retain their encodings. No producer should silently emit a dummy signature, drop an unsupported relocation, or mark an unsigned artifact executable.
+The linker and loader use v1 for **unsigned interoperability**. Note 2 and the signature transcript still require signer and train agreement; this is not a signing policy or evidence of verified launch. Existing TVISA A.2 tables retain their encodings. No producer may emit a dummy signature, drop an unsupported relocation, or mark an unsigned artifact executable.
 
 ## Common encodings
 
@@ -9,6 +9,8 @@ Integers below are packed unsigned little-endian; there is no implicit alignment
 ## PT_NOTE descriptors (owner eight bytes `Tessera\0`)
 
 Use standard ELF note framing: 12-byte namesz/descsz/type, owner, descriptor, four-byte alignment; zero padding excluded from descsz. Exactly one each of 1–5 and 7; one 6 for a finalized image only. An unsigned **intermediate** may omit note 2; it is never eligible for launch.
+
+For unsigned interchange omit note 2. Carry 3/4/5/7 as explicit image metadata; missing input fails linking. The PT_NOTE may reference non-loaded file bytes with p_vaddr=0. Place note 1 after the end of the last page-rounded PT_LOAD file range even before signing.
 
 | Type | Proposed descriptor bytes |
 | --- | --- |
@@ -46,3 +48,5 @@ Header: ASCII `TLD1`, u16 version=1, u16 tableCount=8, u32 totalBytes, u32 reser
 | Feature bytes | u64 byte RVA and feature-name text, in .tirfeat byte order. Exactly one record per byte; function of CPU features, not an unchecked value. |
 
 Validate every destination, cross-table overlap, target, section count and binding against the **same immutable image** before any write. RELR/auth/TLS update authorized relocatable data only, never code; import/runtime/dispatch/feature slots obey TVISA A.2 location, type, size and order and become RELRO. The kernel profile allows relative relocations only. No ET_DYN load, boot or signature can pass on the strength of structural validation alone.
+
+Carry UUIDs, module kinds and function tags from the source metadata through the linker; do not infer them from names. Main-executable local-exec TLS constants resolve at link time per TVISA §19.2 and need no record. Shared/framework TLS requiring load-time resolution uses a RELRO slot, never a text patch. An empty feature table is valid only when no feature bytes remain to be filled.
