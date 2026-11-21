@@ -15,8 +15,8 @@ private struct EFIBytes: ByteSource {
 
 @Test func firmwareHandoff() {
   var map = EFIBytes()
-  map.descriptor(7, 0x12000, 1, 0)
-  map.descriptor(3, 0x2000, 1, 0)
+  map.descriptor(7, 0x12000, 1, 8)
+  map.descriptor(3, 0x2000, 1, 8)
   map.descriptor(11, 0x40000, 4, 1 << 63)
   map.descriptor(1, 0x8000, 2, 0)
   map.descriptor(5, 0x60000, 1, 1 << 63)
@@ -37,6 +37,24 @@ private struct EFIBytes: ByteSource {
       bad.descriptor(7, 0x2000, 2, 0)
       bad.descriptor(7, base, pages, 0)
       #expect(stageFirmwareMap(bad, stride: 48, version: 1, into: &buf) == nil)
+    }
+  }
+}
+
+@Test func nonOrdinaryMemoryNeverBecomesFreeAtFirmwareExit() {
+  let flags: [UInt64] = [0, 1, 8 | 0x1000, 8 | 0x2000, 8 | 0x8000,
+                         8 | 0x20000, 8 | 0x40000, 8 | (1 << 63)]
+  for type: UInt32 in [3, 4, 7] {
+    for attr in flags {
+      var map = EFIBytes()
+      map.descriptor(type, 0x4000, 1, attr)
+      var region = FirmwareRegion.empty
+      withUnsafeMutablePointer(to: &region) { p in
+        var out = UnsafeMutableBufferPointer(start: p, count: 1)
+        #expect(stageFirmwareMap(map, stride: 48, version: 1, into: &out) == 1)
+        #expect(out[0].bootMapKind(afterExit: false) == 1)
+        #expect(out[0].bootMapKind(afterExit: true) == 1)
+      }
     }
   }
 }

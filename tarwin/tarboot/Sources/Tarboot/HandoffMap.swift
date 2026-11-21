@@ -41,8 +41,7 @@ func writeHandoffMap(
     var start = r.base
     // Do not release firmware boot services, stack, FDT or loader storage
     // while they are still being used in the handoff identity mapping.
-    let k = r.bootMapKind(afterExit: false)
-    let kind: UInt32 = k == 0 && !r.ordinaryWritableRAM ? 1 : k
+    let kind = r.bootMapKind(afterExit: false)
     while pins < 2 {
       let pin = pins == 0 ? first : second
       if pin.base >= end { break }

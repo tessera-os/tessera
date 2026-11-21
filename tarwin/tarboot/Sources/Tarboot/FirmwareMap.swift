@@ -40,8 +40,8 @@ public struct FirmwareRegion {
     }
     guard attributes >> 63 == 0 else { return 1 }  // includes runtime MMIO
     switch type {
-    case 3, 4: return afterExit ? 0 : 1
-    case 7: return 0
+    case 3, 4: return afterExit && ordinaryWritableRAM ? 0 : 1
+    case 7: return ordinaryWritableRAM ? 0 : 1
     case 8: return 10
     case 9: return 4
     case 10: return 5
