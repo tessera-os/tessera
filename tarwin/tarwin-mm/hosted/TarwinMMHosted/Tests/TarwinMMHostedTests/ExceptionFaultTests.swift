@@ -30,6 +30,55 @@ private final class FaultSink: HostExceptionSink, @unchecked Sendable {
   }
 }
 
+@Test func sandboxedTaskCannotResumeAfterGuardFault() throws {
+  let executable = Bundle(for: ExceptionTestBundle.self).bundleURL.deletingLastPathComponent()
+    .appendingPathComponent("tarwin-task")
+  let sink = FaultSink()
+  let exceptions = try HostExceptionPort(sink: sink)
+  defer { withExtendedLifetime(exceptions) {} }
+  let child = try withExtendedLifetime(exceptions.makeSend()) {
+    try TaskSpawner.spawn(executable: executable.path, exceptionPort: $0.rawName)
+  }
+  var status: Int32 = 0
+  var exited = false
+  defer { if !exited { kill(child.pid, SIGKILL); waitpid(child.pid, nil, 0) } }
+  let page = hostedPageSize
+  let base = TaskWindow.base
+  let stack = base + page
+  let guardPage = stack + page
+  let space = try HostedAddressSpace(window: base..<(base + 3 * page),
+    task: HostedTaskCommandMappings(task: child) { Issue.record("transport failed: \($0)") })
+  sink.install(space: space)
+  try space.reserveGuard(address: guardPage, size: page)
+  let data = try HostedMemoryEntry.anonymous(size: page)
+  let code = try [UInt32(0xb940_0001), 0x1400_0000].withUnsafeBytes {
+    try HostedMemoryEntry.sealedCode(size: page, verifiedBytes: $0)
+  }
+  try space.map(.init(address: base, size: page, entry: code, protection: [.read, .execute]))
+  #expect(throws: HostedMemoryError.invalidProtection) {
+    try space.protect(address: base, size: page, protection: [.read, .write])
+  }
+  try space.map(.init(address: stack, size: page, entry: data, protection: [.read, .write], copy: true))
+  #expect(throws: HostedMemoryError.invalidRange) {
+    try space.map(.init(address: guardPage, size: page, entry: data, protection: [.read, .write]))
+  }
+  try #require(try child.command(.createThread(id: 1, entry: base, argument: guardPage,
+    stack: guardPage - 16, tls: stack)).get().status == KERN_SUCCESS)
+  try #require(try child.command(.resumeThread(id: 1)).get().status == KERN_SUCCESS)
+  try #require(sink.event.wait(timeout: .now() + .seconds(5)) == .success)
+  let fault = try #require(sink.observed.withLock { $0.first })
+  #expect(fault.kind == .badAccess)
+  #expect(fault.faultAddress == guardPage)
+  #expect(space.footprint == 2 * page)
+  let deadline = DispatchTime.now() + .seconds(5)
+  while DispatchTime.now() < deadline {
+    if waitpid(child.pid, &status, WNOHANG) == child.pid { exited = true; break }
+    usleep(1_000)
+  }
+  #expect(exited)
+  #expect(status & 0x7f == SIGBUS)
+}
+
 @Test func sandboxedTaskResumesAfterLiveTrfsFault() throws {
   let directory = FileManager.default.temporaryDirectory
     .appendingPathComponent("tarwin-live-trfs-\(UUID().uuidString)", isDirectory: true)

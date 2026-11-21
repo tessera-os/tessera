@@ -24,6 +24,8 @@ public enum HostedMemoryError: Error, Equatable {
   case invalidProtection
   case rollbackFailed
   case snapshotUnavailable
+  case protectUnavailable
+  case unreadableForkRange
   case liveMemoryUnavailable
   case pinned
   case notPurgeable

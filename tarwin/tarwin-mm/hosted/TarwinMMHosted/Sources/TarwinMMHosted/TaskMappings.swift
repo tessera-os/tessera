@@ -62,6 +62,11 @@ public struct HostedTaskCommandMappings: HostedTaskMappings, HostedLiveMemoryAcc
     try checkMach(exchange(.unmap(address: address, length: size), nil).status)
   }
 
+  public func protect(address: UInt64, size: UInt64, protection: HostedProtection) throws {
+    try checkMach(exchange(.protect(address: address, length: size,
+      protection: UInt32(bitPattern: protection.rawValue)), nil).status)
+  }
+
   public func snapshot(address: UInt64, size: UInt64) throws -> HostedMemoryEntry {
     guard size > 0, size % hostedPageSize == 0, address % hostedPageSize == 0,
       address <= UInt64.max - size

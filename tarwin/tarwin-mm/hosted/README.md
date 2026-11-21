@@ -25,6 +25,17 @@ the closure; it does not expose a guest pointer. Pins prevent H3
 unmapping, pressure eviction, and purge during the operation. Private
 writes are made in the owning task so XNU preserves copy-on-write.
 
+Use `reserveGuard(address:size:)` for the inaccessible pages bordering a
+guest stack or heap. These ranges stay reserved in H2's inaccessible
+task window, count against placement but not footprint, and never page
+in. `protect(address:size:protection:)` changes page-aligned private
+data mappings within their original rights, including revoking all
+access. It does not remap live data, elevate shared or sealed executable
+mappings, or change footprint. Fork inherits guards and current rights
+on readable mappings. Until H2 can snapshot live unreadable pages, fork
+returns `HostedMemoryError.unreadableForkRange` if a private data mapping
+contains such a page.
+
 `HostedAddressSpace.fork(into:)` clones memory into a fresh checked-in
 task, not a guest `fork` syscall. Keep the parent's guest threads stopped
 until cloning completes; the child must have no guest mappings or

@@ -30,11 +30,16 @@ public struct HostedMapCommand {
 
 public protocol HostedTaskMappings {
   func map(_ command: HostedMapCommand) throws
+  func protect(address: UInt64, size: UInt64, protection: HostedProtection) throws
   func unmap(address: UInt64, size: UInt64) throws
   func snapshot(address: UInt64, size: UInt64) throws -> HostedMemoryEntry
 }
 
 extension HostedTaskMappings {
+  public func protect(address: UInt64, size: UInt64, protection: HostedProtection) throws {
+    throw HostedMemoryError.protectUnavailable
+  }
+
   public func snapshot(address: UInt64, size: UInt64) throws -> HostedMemoryEntry {
     throw HostedMemoryError.snapshotUnavailable
   }
@@ -108,12 +113,44 @@ public final class HostedAddressSpace {
     let charged: Bool
     let cleanSince: UInt64?
     let privateFilePage: Bool
+    var protections: [(range: Range<UInt64>, access: HostedProtection)]
 
     init(command: HostedMapCommand, charged: Bool, cleanSince: UInt64?, privateFilePage: Bool) {
       self.command = command
       self.charged = charged
       self.cleanSince = cleanSince
       self.privateFilePage = privateFilePage
+      protections = [(command.address..<(command.address + command.size), command.protection)]
+    }
+
+    func protection(at address: UInt64) -> (range: Range<UInt64>, access: HostedProtection) {
+      protections.first { $0.range.contains(address) }!
+    }
+
+    func protect(_ range: Range<UInt64>, access: HostedProtection) {
+      var spans: [(range: Range<UInt64>, access: HostedProtection)] = []
+      func append(_ range: Range<UInt64>, _ access: HostedProtection) {
+        if let last = spans.last, last.access == access {
+          spans[spans.count - 1].range = last.range.lowerBound..<range.upperBound
+        } else {
+          spans.append((range, access))
+        }
+      }
+      for span in protections {
+        let changed = span.range.clamped(to: range)
+        if changed.isEmpty {
+          append(span.range, span.access)
+        } else {
+          if span.range.lowerBound < changed.lowerBound {
+            append(span.range.lowerBound..<changed.lowerBound, span.access)
+          }
+          append(changed, access)
+          if changed.upperBound < span.range.upperBound {
+            append(changed.upperBound..<span.range.upperBound, span.access)
+          }
+        }
+      }
+      protections = spans
     }
   }
 
@@ -121,6 +158,7 @@ public final class HostedAddressSpace {
   private let task: any HostedTaskMappings
   private let lock = NSLock()
   private var files: [UInt64: FileRegion] = [:]
+  private var guards: [UInt64: Range<UInt64>] = [:]
   private var mappings: [UInt64: Mapping] = [:]
   private var pins: [UInt64: Int] = [:]
 
@@ -161,6 +199,35 @@ public final class HostedAddressSpace {
     })
   }
 
+  public func reserveGuard(address: UInt64, size: UInt64) throws {
+    try lock.withLock {
+      guards[address] = try checkFree(address: address, size: size)
+    }
+  }
+
+  public func protect(address: UInt64, size: UInt64, protection: HostedProtection) throws {
+    guard protection.isValid, !protection.contains(.execute) else {
+      throw HostedMemoryError.invalidProtection
+    }
+    try lock.withLock {
+      let range = try checkedRange(address: address, size: size)
+      var affected: [Mapping] = []
+      var cursor = address
+      while cursor < range.upperBound {
+        guard let mapped = mapping(containing: cursor) else { throw HostedMemoryError.invalidRange }
+        let command = mapped.command
+        guard command.copy, !command.protection.contains(.execute),
+          protection.isSubset(of: command.protection)
+        else { throw HostedMemoryError.invalidProtection }
+        guard pins[command.address] == nil else { throw HostedMemoryError.pinned }
+        affected.append(mapped)
+        cursor = command.address + command.size
+      }
+      try task.protect(address: address, size: size, protection: protection)
+      for mapped in affected { mapped.protect(range, access: protection) }
+    }
+  }
+
   public func fork(into childTask: any HostedTaskMappings) throws -> HostedAddressSpace {
     try lock.withLock {
       let child = try HostedAddressSpace(window: window, task: childTask)
@@ -168,6 +235,9 @@ public final class HostedAddressSpace {
         mapping in
         let map = mapping.command
         guard map.copy || mapping.privateFilePage else { return mapping }
+        guard mapping.protections.allSatisfy({ $0.access.contains(.read) }) else {
+          throw HostedMemoryError.unreadableForkRange
+        }
         let entry = try task.snapshot(address: map.address, size: map.size)
         let copy = try HostedMapCommand(address: map.address, size: map.size, entry: entry,
           protection: map.protection, copy: true)
@@ -175,7 +245,26 @@ public final class HostedAddressSpace {
           cleanSince: nil, privateFilePage: mapping.privateFilePage)
       }
       try child.installBatch(batch)
+      do {
+        for original in mappings.values where original.command.copy {
+          let installed = child.mappings[original.command.address]!
+          for span in original.protections where span.access != original.command.protection {
+            try child.task.protect(address: span.range.lowerBound,
+              size: span.range.upperBound - span.range.lowerBound, protection: span.access)
+          }
+          installed.protections = original.protections
+        }
+      } catch {
+        var failed = false
+        for installed in batch.reversed() {
+          do { try child.task.unmap(address: installed.command.address, size: installed.command.size) }
+          catch { failed = true }
+        }
+        if failed { throw HostedMemoryError.rollbackFailed }
+        throw error
+      }
       child.files = files
+      child.guards = guards
       return child
     }
   }
@@ -208,8 +297,9 @@ public final class HostedAddressSpace {
     try lock.withLock {
       guard access == .read || access == .write || access == .execute else { return .protection }
       if let mapped = mapping(containing: address) {
-        return mapped.command.protection.contains(access) ? .notPresentOnHost : .protection
+        return mapped.protection(at: address).access.contains(access) ? .notPresentOnHost : .protection
       }
+      if guards.values.contains(where: { $0.contains(address) }) { return .protection }
       guard let file = files.values.first(where: { $0.range.contains(address) }) else {
         return .unmapped
       }
@@ -276,9 +366,6 @@ public final class HostedAddressSpace {
       while cursor < end {
         let mapped: Mapping
         if let resident = mapping(containing: cursor) {
-          guard resident.command.protection.contains(access) else {
-            throw HostedMemoryError.invalidProtection
-          }
           mapped = resident
         } else {
           guard let file = files.values.first(where: { $0.range.contains(cursor) }) else {
@@ -288,13 +375,16 @@ public final class HostedAddressSpace {
           mapped = try pageIn(cursor, from: file)
         }
         let command = mapped.command
+        let span = mapped.protection(at: cursor)
+        guard span.access.contains(access) else { throw HostedMemoryError.invalidProtection }
+        cursor = span.range.upperBound
+        if addresses.last == command.address { continue }
         if !command.copy, let object = command.entry.purgeable, objects[command.entry.objectID] == nil {
           try object.pin(writing: access == .write)
           objects[command.entry.objectID] = object
         }
         pins[command.address, default: 0] += 1
         addresses.append(command.address)
-        cursor = command.address + command.size
       }
     }
     return try body(memory)
@@ -323,7 +413,9 @@ public final class HostedAddressSpace {
 
   public func unmap(address: UInt64, size: UInt64) throws {
     try lock.withLock {
-      if let file = files[address], UInt64(file.range.count) == size {
+      if let range = guards[address], range.upperBound - range.lowerBound == size {
+        guards.removeValue(forKey: address)
+      } else if let file = files[address], UInt64(file.range.count) == size {
         guard !pins.keys.contains(where: file.range.contains) else { throw HostedMemoryError.pinned }
         try task.unmap(address: address, size: size)
         mappings = mappings.filter { !file.range.contains($0.key) }
@@ -405,7 +497,7 @@ public final class HostedAddressSpace {
 
   public var occupiedRanges: [Range<UInt64>] {
     lock.withLock {
-      files.values.map(\.range) + mappings.values.map {
+      Array(guards.values) + files.values.map(\.range) + mappings.values.map {
         $0.command.address..<($0.command.address + $0.command.size)
       }
     }
@@ -417,17 +509,22 @@ public final class HostedAddressSpace {
   }
 
   private func checkFree(address: UInt64, size: UInt64) throws -> Range<UInt64> {
-    guard address >= window.lowerBound, address < window.upperBound,
-      address % hostedPageSize == 0, size > 0, size % hostedPageSize == 0,
-      size <= window.upperBound - address
-    else { throw HostedMemoryError.invalidRange }
-    let range = address..<(address + size)
-    guard !files.values.contains(where: { $0.range.overlaps(range) }),
+    let range = try checkedRange(address: address, size: size)
+    guard !guards.values.contains(where: { $0.overlaps(range) }),
+      !files.values.contains(where: { $0.range.overlaps(range) }),
       !mappings.values.contains(where: {
         let map = $0.command
         return range.overlaps(map.address..<(map.address + map.size))
       })
     else { throw HostedMemoryError.invalidRange }
     return range
+  }
+
+  private func checkedRange(address: UInt64, size: UInt64) throws -> Range<UInt64> {
+    guard address >= window.lowerBound, address < window.upperBound,
+      address % hostedPageSize == 0, size > 0, size % hostedPageSize == 0,
+      size <= window.upperBound - address
+    else { throw HostedMemoryError.invalidRange }
+    return address..<(address + size)
   }
 }

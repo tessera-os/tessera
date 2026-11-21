@@ -266,3 +266,63 @@ private final class ProbeBundleAnchor {}
   #expect(original.load(as: UInt8.self) == 0)
   #expect(original.load(fromByteOffset: Int(size - 1), as: UInt8.self) == 0)
 }
+
+@Test func guestProtectionChangesLivePrivatePagesAndSurvivesFork() throws {
+  let testBundle = Bundle(for: ProbeBundleAnchor.self).bundleURL
+  let executable = testBundle.deletingLastPathComponent().appendingPathComponent("tarwin-task")
+  let parent = try TaskSpawner.spawn(executable: executable.path)
+  defer { kill(parent.pid, SIGKILL); waitpid(parent.pid, nil, 0) }
+  let child = try TaskSpawner.spawn(executable: executable.path)
+  defer { kill(child.pid, SIGKILL); waitpid(child.pid, nil, 0) }
+  let mappings = HostedTaskCommandMappings(task: parent) { Issue.record("transport failed: \($0)") }
+  let page = hostedPageSize
+  let base = TaskWindow.base
+  let address = base + page
+  let space = try HostedAddressSpace(window: base..<(base + 6 * page), task: mappings)
+  let entry = try HostedMemoryEntry.anonymous(size: 3 * page)
+  try space.reserveGuard(address: base, size: page)
+  try space.reserveGuard(address: address + 3 * page, size: page)
+  try space.map(.init(address: address, size: 3 * page, entry: entry,
+    protection: [.read, .write], copy: true))
+  try space.copyOut(Data([42]), to: address + page)
+  try space.protect(address: address + page, size: page, protection: [])
+  #expect(try space.fault(address: address + page, access: .read) == .protection)
+  #expect(try space.fault(address: base, access: .read) == .protection)
+  #expect(try space.fault(address: address + 3 * page, access: .write) == .protection)
+  #expect(throws: HostedMemoryError.invalidRange) {
+    try space.protect(address: address + 2 * page, size: 2 * page, protection: .read)
+  }
+  #expect(try space.fault(address: address + 2 * page, access: .write) == .notPresentOnHost)
+  #expect(throws: HostedMemoryError.invalidProtection) {
+    try space.copyIn(at: address + page - 1, count: 2)
+  }
+  #expect(throws: HostedMemoryError.invalidProtection) {
+    try space.protect(address: address, size: page, protection: [.write, .execute])
+  }
+  var byte: UInt8 = 0
+  #expect(throws: TaskTransportError.self) {
+    try withUnsafeMutableBytes(of: &byte) {
+      try parent.readMemory(address: address + page, into: $0).get()
+    }
+  }
+  let childMappings = HostedTaskCommandMappings(task: child) {
+    Issue.record("transport failed: \($0)")
+  }
+  #expect(throws: HostedMemoryError.unreadableForkRange) {
+    try space.fork(into: childMappings)
+  }
+  try space.protect(address: address + page, size: page, protection: .read)
+  let clone = try space.fork(into: childMappings)
+  #expect(clone.occupiedRanges.contains(base..<(base + page)))
+  #expect(try clone.fault(address: address + page, access: .write) == .protection)
+  #expect(try clone.copyIn(at: address + page, count: 1) == Data([42]))
+  #expect(space.footprint == 3 * page)
+  #expect(clone.footprint == space.footprint)
+  try clone.protect(address: address + page, size: page, protection: [.read, .write])
+  #expect(try clone.copyIn(at: address + page, count: 1) == Data([42]))
+  try clone.copyOut(Data([13]), to: address + page)
+  try space.protect(address: address + page, size: page, protection: [.read, .write])
+  #expect(try space.copyIn(at: address + page, count: 1) == Data([42]))
+  try space.unmap(address: address, size: 3 * page)
+  #expect(space.footprint == 0)
+}
