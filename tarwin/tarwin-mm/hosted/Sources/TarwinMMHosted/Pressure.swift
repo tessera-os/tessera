@@ -1,9 +1,7 @@
-import Dispatch
+import TarwinArchHosted
 import TarwinMM
 
-public enum HostedMemoryPressure: Sendable {
-  case normal, warning, critical
-}
+public typealias HostedMemoryPressure = HostPressureLevel
 
 public struct HostedPressureProcess: Sendable {
   public let id: UInt64
@@ -66,25 +64,4 @@ public enum HostedJetsam {
     try terminate(event)
     return .terminated(event)
   }
-}
-
-public final class HostedPressureSource: @unchecked Sendable {
-  private let source: any DispatchSourceMemoryPressure
-
-  public init(
-    queue: DispatchQueue, receive: @escaping @Sendable (HostedMemoryPressure) -> Void
-  ) {
-    let source = DispatchSource.makeMemoryPressureSource(
-      eventMask: [.normal, .warning, .critical], queue: queue)
-    self.source = source
-    source.setEventHandler { [weak self] in
-      guard let events = self?.source.data else { return }
-      if events.contains(.critical) { receive(.critical) }
-      else if events.contains(.warning) { receive(.warning) }
-      else if events.contains(.normal) { receive(.normal) }
-    }
-    source.activate()
-  }
-
-  deinit { source.cancel() }
 }

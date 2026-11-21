@@ -186,7 +186,8 @@ public final class HostedAddressSpace {
         if map.copy {
           charge(map.size)
         } else {
-          let span = map.entryOffset..<(map.entryOffset + map.size)
+          let offset = map.entry.objectOffset + map.entryOffset
+          let span = offset..<(offset + map.size)
           seen[map.entry.objectID, default: []].append(span)
         }
       }
@@ -198,6 +199,14 @@ public final class HostedAddressSpace {
         }
       }
       return bytes
+    }
+  }
+
+  public var occupiedRanges: [Range<UInt64>] {
+    lock.withLock {
+      files.values.map(\.range) + mappings.values.map {
+        $0.command.address..<($0.command.address + $0.command.size)
+      }
     }
   }
 
