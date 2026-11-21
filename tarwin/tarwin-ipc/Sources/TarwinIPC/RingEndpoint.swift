@@ -74,7 +74,7 @@ public struct RingEndpoint: ~Copyable {
     return seen
   }
 
-  private mutating func peerReady() -> RingStep? {
+  fileprivate mutating func peerReady() -> RingStep? {
     if failed { return .invalidPeer }
     if local == .max { return .exhausted }
     // Pairs with the peer's publish-then-check-idle sequence. The SC
@@ -101,7 +101,7 @@ public struct RingEndpoint: ~Copyable {
     return .wait
   }
 
-  private mutating func publish() -> RingStep {
+  fileprivate mutating func publish() -> RingStep {
     local += 1
     words[cursor].store(local, ordering: .sequentiallyConsistent)
     return .transferred(notifyPeer: words[peerIdle].load(ordering: .sequentiallyConsistent) != 0)
@@ -122,11 +122,75 @@ public struct RingEndpoint: ~Copyable {
   public mutating func pop(into record: inout RingRecord) -> RingStep {
     guard !producer else { return .wrongSide }
     if let error = peerReady() { return error }
+    copyAtCursor(into: &record)
+    return publish()
+  }
+
+  fileprivate func copyAtCursor(into record: inout RingRecord) {
     let first = Int(geometry.offset(local, completion)) / 4
     record = RingRecord()
     for i in 0..<Int(geometry.stride / 4) {
       record.words[i] = words[first + i].load(ordering: .relaxed)
     }
-    return publish()
   }
+}
+
+public enum SubmissionStop { case idle, capacity, budget, invalidPeer, exhausted }
+
+public struct SubmissionBatch {
+  public let count: UInt32
+  public let notifyPeer: Bool
+  public let stop: SubmissionStop
+}
+
+/// One kernel reader per fresh, pinned port mapping. On backend pressure,
+/// hold the private copy without acknowledging the caller's submission.
+public struct PortSubmissions: ~Copyable {
+  private var endpoint: RingEndpoint
+  private var held: RingRecord?
+  public init?(fresh words: UnsafeBufferPointer<Atomic<UInt32>>) {
+    guard let ep = RingEndpoint(fresh: words, completion: false, producer: false),
+      ep.isPortRequestReader
+    else { return nil }
+    endpoint = ep
+  }
+
+  /// Under the submission lock, stage bounded work for a trusted backend.
+  /// Return true only after reserving its completion and assuming ownership
+  /// of every operand, or committing a terminal error. A false return must
+  /// have no side effects. Never re-enter the ring in this callback.
+  /// On capacity, retry on backend progress; on budget, schedule another turn.
+  public mutating func drain(
+    budget: UInt32, capture: (borrowing RingRecord) -> Bool
+  ) -> SubmissionBatch {
+    var count: UInt32 = 0
+    var wake = false
+    while count < min(budget, 64) {
+      if let step = endpoint.peerReady() {
+        let stop: SubmissionStop
+        switch step {
+        case .wait: stop = .idle
+        case .exhausted: stop = .exhausted
+        default: stop = .invalidPeer
+        }
+        return SubmissionBatch(count: count, notifyPeer: wake, stop: stop)
+      }
+      if held == nil {
+        var copy = RingRecord()
+        endpoint.copyAtCursor(into: &copy)
+        held = copy
+      }
+      guard capture(held!) else {
+        return SubmissionBatch(count: count, notifyPeer: wake, stop: .capacity)
+      }
+      held = nil
+      if case .transferred(let notify) = endpoint.publish() { wake = wake || notify }
+      count += 1
+    }
+    return SubmissionBatch(count: count, notifyPeer: wake, stop: .budget)
+  }
+}
+
+extension RingEndpoint {
+  fileprivate var isPortRequestReader: Bool { !completion && !producer && geometry.stride == 64 }
 }

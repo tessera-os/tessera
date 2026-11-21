@@ -783,15 +783,28 @@ private func waitOnMappedRing(_ arena: inout Arena, _ challenge: UInt64) -> Bool
   cells[3].store(64, ordering: .relaxed)
   let view = UnsafeBufferPointer(cells)
   guard var reader = NativePortRing(koid: 101, fresh: view),
+    var requests = PortSubmissions(fresh: view),
+    var writer = RingEndpoint(fresh: view, completion: false, producer: true),
     var producer = RingEndpoint(fresh: view, completion: true, producer: true)
   else { return false }
+  var op = RingRecord()
+  op.words[0] = UInt32(truncatingIfNeeded: challenge)
+  op.words[1] = UInt32(truncatingIfNeeded: challenge >> 32)
+  guard writer.push(op) == .transferred(notifyPeer: false),
+    requests.drain(budget: 1, capture: { _ in false }).stop == .capacity,
+    cells[Int(RingFormat.requestConsumer / 4)].load(ordering: .acquiring) == 0
+  else { return false }
+  cells[Int(RingFormat.records / 4)].store(~op.words[0], ordering: .relaxed)
   var slot = PortSlot()
   return withUnsafeMutablePointer(to: &slot) { s in
     guard var port = CompletionPort(storage: .init(start: s, count: 1)) else { return false }
-    var packet = PortPacket()
-    packet.key = challenge
-    packet.timestamp = 17
-    guard port.post(packet), port.publishNext(to: &producer) == .transferred(notifyPeer: false),
+    let batch = requests.drain(budget: 2) { record in
+      let key = UInt64(record.words[0]) | UInt64(record.words[1]) << 32
+      guard let token = port.reserve(object: 101, key: key, kind: 1) else { return false }
+      return port.finish(token, at: 17) { PortPacket() } == 1
+    }
+    guard batch.count == 1, batch.stop == .idle,
+      port.publishNext(to: &producer) == .transferred(notifyPeer: false),
       port.readable
     else { return false }
     var output = InlineArray<8, UInt64>(repeating: .max)
