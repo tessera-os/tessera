@@ -23,12 +23,49 @@ private func emptyAuth<P: TpmPort>(_ p: P, at: UInt64) -> Bool {
   big(p, p: at, n: 2) == 0 && p.byteAt(at + 2) <= 1 && big(p, p: at + 3, n: 2) == 0
 }
 
+/// The caller supplies the verifier's hash of the entire signed image and
+/// a trusted SHA-256 PCR replay, independent of this TPM's command replies.
+@available(macOS 26, *)
+public struct PCR10Expectation {
+  let image: InlineArray<32, UInt8>
+  let before: InlineArray<32, UInt8>
+  let after: InlineArray<32, UInt8>
+
+  public init(
+    imageSHA256: InlineArray<32, UInt8>, previousPCR: InlineArray<32, UInt8>,
+    replayedPCR: InlineArray<32, UInt8>
+  ) {
+    image = imageSHA256
+    before = previousPCR
+    after = replayedPCR
+  }
+}
+
+@available(macOS 26, *)
+private func matchesPCR10<P: TpmPort>(_ port: inout P, _ expected: borrowing InlineArray<32, UInt8>)
+  -> Bool
+{
+  // TPML_PCR_SELECTION with only bit 10 selected in the SHA-256 bank.
+  let command: InlineArray<20, UInt8> = [
+    128, 1, 0, 0, 0, 20, 0, 0, 1, 126, 0, 0, 0, 1, 0, 11, 3, 0, 4, 0,
+  ]
+  let selection: InlineArray<16, UInt8> = [0, 0, 0, 1, 0, 11, 3, 0, 4, 0, 0, 0, 0, 1, 0, 32]
+  for i in 0..<20 { port.putByte(UInt64(i), value: command[i]) }
+  let n = port.submit(20)
+  guard n == 62, reply(port, n, tag: 0x8001) else { return false }
+  for i in 0..<16 where port.byteAt(UInt64(i + 14)) != selection[i] { return false }
+  for i in 0..<32 where port.byteAt(UInt64(i + 30)) != expected[i] { return false }
+  return true
+}
+
 /// Measure but do not authorize or enter a process. The caller must supply
 /// the exact immutable authorized image, a disjoint private event log with
 /// exclusive spare capacity, and serialized TPM access. Never retry after
 /// failure. The original log prefix and published end remain unchanged.
+@available(macOS 26, *)
 @unsafe public func measureEarlyProcess<P: TpmPort>(
-  _ image: UnsafeRawBufferPointer, port: inout P, state: inout MeasurementLog,
+  _ image: UnsafeRawBufferPointer, expected: borrowing PCR10Expectation, port: inout P,
+  state: inout MeasurementLog,
   log: UnsafeMutableRawBufferPointer, label: StaticString
 ) -> Bool {
   guard !state.stopped else { return false }
@@ -47,7 +84,7 @@ private func emptyAuth<P: TpmPort>(_ p: P, at: UInt64) -> Bool {
   // Reserve the exact Event2 size before any TPM command.
   let listBytes = fmt.digestListBytes
   let recordSize = 12 + listBytes + label.utf8CodeUnitCount
-  guard recordSize <= log.count - start else { return false }
+  guard recordSize <= log.count - start, matchesPCR10(&port, expected.before) else { return false }
   header(&port, 0x8001, 0x186, 14)
   putField(&port, p: 10, bytes: 4, value: 0x10, big: true)
   let began = port.submit(14)
@@ -96,11 +133,17 @@ private func emptyAuth<P: TpmPort>(_ p: P, at: UInt64) -> Bool {
         seen |= b.mask
         log[out] = UInt8(truncatingIfNeeded: id)
         log[out + 1] = UInt8(id >> 8)
-        for i in 0..<b.size { log[out + 2 + i] = port.byteAt(idx + 2 + UInt64(i)) }
+        for i in 0..<b.size {
+          let value = port.byteAt(idx + 2 + UInt64(i))
+          if id == 11 {
+            guard value == expected.image[i] else { return false }
+          }
+          log[out + 2 + i] = value
+        }
         idx += UInt64(b.size + 2)
         out += b.size + 2
       }
-      guard seen == fmt.banks else { return false }
+      guard seen == fmt.banks, matchesPCR10(&port, expected.after) else { return false }
       le(UInt32(label.utf8CodeUnitCount), out)
       for i in 0..<label.utf8CodeUnitCount { log[out + 4 + i] = label.utf8Start[i] }
       state.used += UInt64(recordSize)

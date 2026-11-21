@@ -7,6 +7,13 @@ private let expectedDigest: [UInt8] = [
   136, 197, 155, 124, 179, 72, 182, 158, 235, 145, 108, 146, 118, 69, 126, 118,
 ]
 
+@available(macOS 26, *)
+private let replayedPCR: InlineArray<32, UInt8> = [
+  67, 67, 27, 61, 207, 15, 72, 234, 12, 85, 171, 228, 3, 84, 21, 210,
+  52, 12, 243, 65, 151, 182, 137, 58, 146, 174, 176, 245, 83, 2, 89, 240,
+]
+
+@available(macOS 26, *)
 private struct SequencePort: TpmPort {
   var bytes = Array(repeating: UInt8(0), count: 300)
   var consumed: [UInt8] = []
@@ -24,6 +31,18 @@ private struct SequencePort: TpmPort {
     var result: [UInt8]
     guard be(2, 4) == n else { return 0 }
     switch code {
+    case 0x17e:
+      guard n == 20, be(0, 2) == 0x8001, be(10, 4) == 1, be(14, 2) == 11,
+        be(16, 4) == 0x0300_0400
+      else { return 0 }
+      let before = codes.count == 1
+      result = [
+        0x80, 1, 0, 0, 0, 62, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 1, 0, 11, 3, 0, 4, 0, 0, 0, 0, 1, 0,
+        32,
+      ]
+      result += before ? Array(repeating: 0x3c, count: 32) : (0..<32).map { replayedPCR[$0] }
+      if before && fault == 8 || !before && fault == 10 { result[60] ^= 1 }
+      if !before && fault == 11 { result[22] = 8 }
     case 0x186:
       guard n == 14, be(0, 2) == 0x8001, be(10, 4) == 0x10 else { return 0 }
       result = [0x80, 1, 0, 0, 0, 14, 0, 0, 0, 0, 0x80, 0, 0, 2]
@@ -47,6 +66,7 @@ private struct SequencePort: TpmPort {
         if fault == 3 { result[13] = 0 }
         if fault == 4 { result[19] = 12 }
         if fault == 5 { result[61] = 1 }
+        if fault == 9 { result[22] ^= 1 }
       } else {
         result = [0x80, 2, 0, 0, 0, 19, 0, 0, 0, 0, 0, 0, 0, 0] + auth
         if fault == 2 { return 0 }
@@ -58,6 +78,7 @@ private struct SequencePort: TpmPort {
   }
 }
 
+@available(macOS 26, *)
 @Test func measuresExactlyOneImageAndNeverPublishesAnAmbiguousEvent() {
   let image = (0..<577).map { UInt8(truncatingIfNeeded: $0) }
   let spec =
@@ -66,7 +87,12 @@ private struct SequencePort: TpmPort {
   header[4] = 3
   header[28] = UInt8(spec.count)
   header += spec
-  for fault in 0...7 {
+  var digest = InlineArray<32, UInt8>(repeating: 0)
+  for i in 0..<32 { digest[i] = expectedDigest[i] }
+  let trusted = PCR10Expectation(
+    imageSHA256: digest, previousPCR: .init(repeating: 0x3c),
+    replayedPCR: replayedPCR)
+  for fault in 0...11 {
     var log = header + Array(repeating: UInt8(0xa5), count: fault == 6 ? 4 : 100)
     if fault == 7 { log[4] = 0 }
     let prefix = Array(log.prefix(header.count))
@@ -75,7 +101,8 @@ private struct SequencePort: TpmPort {
     func run() -> Bool {
       image.withUnsafeBytes { im in
         log.withUnsafeMutableBytes {
-          measureEarlyProcess(im, port: &port, state: &state, log: $0, label: "init probe")
+          measureEarlyProcess(
+            im, expected: trusted, port: &port, state: &state, log: $0, label: "init probe")
         }
       }
     }
@@ -83,7 +110,7 @@ private struct SequencePort: TpmPort {
     #expect(ok == (fault == 0))
     #expect(Array(log.prefix(header.count)) == prefix)
     if ok {
-      #expect(port.codes == [0x186, 0x15c, 0x15c, 0x185])
+      #expect(port.codes == [0x17e, 0x186, 0x15c, 0x15c, 0x185, 0x17e])
       #expect(port.consumed == image)
       let event = log.withUnsafeBytes { EventLogFormat($0)?.event($0, at: header.count) }
       #expect(event?.pcr == 10 && event?.payload.upperBound == Int(state.used))
@@ -93,7 +120,8 @@ private struct SequencePort: TpmPort {
       let operations = port.codes
       #expect(!run())
       #expect(port.codes == operations)
-      if fault >= 6 { #expect(operations.isEmpty) }
+      if fault == 6 || fault == 7 { #expect(operations.isEmpty) }
+      if fault == 8 { #expect(operations == [0x17e]) }
     }
   }
 }

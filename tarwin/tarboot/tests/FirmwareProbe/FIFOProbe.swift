@@ -18,19 +18,6 @@
     func send(_ v: UInt8) { write8(base + 0x24, v) }
   }
 
-  private func readTen(_ port: inout TPMFIFO<VirtFIFO>, expected: UnsafeRawBufferPointer?) -> Bool {
-    let command: InlineArray<20, UInt8> = [
-      128, 1, 0, 0, 0, 20, 0, 0, 1, 126, 0, 0, 0, 1, 0, 11, 3, 0, 4, 0,
-    ]
-    let selection: InlineArray<16, UInt8> = [0, 0, 0, 1, 0, 11, 3, 0, 4, 0, 0, 0, 0, 1, 0, 32]
-    for i in 0..<20 { port.putByte(UInt64(i), value: command[i]) }
-    guard port.submit(20) == 62, port.byteAt(0) == 0x80, port.byteAt(1) == 1 else { return false }
-    for i in 6..<10 where port.byteAt(UInt64(i)) != 0 { return false }
-    for i in 0..<16 where port.byteAt(UInt64(i + 14)) != selection[i] { return false }
-    for i in 0..<32 where port.byteAt(UInt64(i + 30)) != (expected?[i] ?? 0) { return false }
-    return true
-  }
-
   func exerciseKernelFIFO(
     _ fixture: UnsafeRawBufferPointer, log: UnsafeMutableRawBufferPointer,
     used: Int
@@ -40,9 +27,12 @@
     let label: StaticString = "Tarwin FIFO diagnostic"
     return withUnsafeMutableBytes(of: &command) { raw in
       guard var port = TPMFIFO(registers: VirtFIFO(), scratch: raw, pollLimit: 500000),
-        readTen(&port, expected: nil),
-        measureEarlyProcess(fixture, port: &port, state: &cursor, log: log, label: label),
-        !cursor.stopped, withUnsafeBytes(of: fifoProbePCR, { readTen(&port, expected: $0) })
+        measureEarlyProcess(
+          fixture,
+          expected: PCR10Expectation(
+            imageSHA256: fifoProbeDigest,
+            previousPCR: .init(repeating: 0), replayedPCR: fifoProbePCR),
+          port: &port, state: &cursor, log: log, label: label), !cursor.stopped
       else { return nil }
       let bytes = UnsafeRawBufferPointer(rebasing: UnsafeRawBufferPointer(log)[..<Int(cursor.used)])
       guard let fmt = EventLogFormat(bytes), let event = fmt.event(bytes, at: used),

@@ -6,6 +6,7 @@ let package = Package(
   products: [
     .library(name: "TarwinBootstrap", targets: ["TarwinBootstrap"]),
     .library(name: "TarbootPreflight", targets: ["TarbootPreflight"]),
+    .library(name: "TarwinW1Bootstrap", targets: ["TarwinW1Bootstrap"]),
   ],
   dependencies: [
     .package(path: "../../../tarwin/tarwin-sched"),
@@ -13,6 +14,8 @@ let package = Package(
     .package(path: "../../../tarwin/kcore"),
     .package(path: "../../../tarwin/tarboot"),
     .package(path: "../../../tarwin/tarwin-loader"),
+    .package(path: "../../../tarwin/tarwin-boot"),
+    .package(path: "../../../tarwin/tarwin-loader/w0"),
   ],
   targets: [
     .target(
@@ -30,4 +33,10 @@ let package = Package(
         .product(name: "TarwinLoader", package: "tarwin-loader"),
       ]),
     .testTarget(name: "TarbootPreflightTests", dependencies: ["TarbootPreflight"]),
+    .target(
+      name: "TarwinW1Bootstrap", dependencies: [
+        .product(name: "TarwinBoot", package: "tarwin-boot"),
+        .product(name: "TarwinW0Verify", package: "w0"),
+      ]),
+    .testTarget(name: "TarwinW1BootstrapTests", dependencies: ["TarwinW1Bootstrap"]),
   ])
