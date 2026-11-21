@@ -24,6 +24,16 @@ screendump. To keep full-size evidence, set `TARBOOT_TEST_SCANOUT_DIR` to an
 existing empty directory. This exercises emulated scanout, not kernel entry
 or a hardware display driver.
 
+`TARBOOT_TEST_RNG=1 bash run.sh` attaches a host-backed virtio entropy device
+and requests a 64-byte seed with EFI RNG's RAW algorithm. Placement draws use
+separate default RNG words. The virtual window must fit all 2^18 aligned starts;
+the physical draw weights validated writable, write-back conventional descriptors
+by the number of fitting starts, rejecting modulo bias and unavailable candidates.
+Only successful EFI AllocateAddress acquires the exact physical extent. The
+probe rechecks it in the final map and exercises it after exit; no seed or
+address is logged. This does not map a kernel at the chosen VA or establish the
+entropy quality of any physical source.
+
 With `swtpm` installed, run `TARBOOT_TEST_TPM=1 bash run.sh aarch64 x86_64`. This starts a fresh software TPM for each guest. Before exit, the probe reads SHA-256 PCRs 8 and 9, uses UEFI TCG2 to hash, log and extend the archive and a fixed canonical config, then reads both PCRs again. The host independently hashes each payload and checks the resulting PCR against the previous PCR and that hash. A partially logged/extended pair is terminal; the guest never retries or treats a skipped measurement as success. This verifies PCR values, not the complete firmware event log or signer provenance. The bundled RV64 EDK II firmware returns `EFI_NOT_FOUND` for TCG2 with a TPM device attached, so measured boot on RV64 is **not verified**.
 
 This calls firmware on emulated CPUs. It does **not** authenticate firmware or boot sets, establish CPU admission, produce kernel-profile TIR, or enter the Tarwin kernel. The Swift/LLVM diagnostic link (including the x64 PE call ABI and the RV64 EDK II image converter) is not release build wiring.

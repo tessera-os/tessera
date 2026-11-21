@@ -26,6 +26,7 @@ for isa in "${@:-all}"; do
         if [[ $arch == x86_64 ]]; then flags+=(-D TARBOOT_EFI_PE_COFF); fi
         if [[ ${TARBOOT_TEST_TPM:-0} == 1 ]]; then flags+=(-D TARBOOT_TEST_TPM); fi
         if [[ ${TARBOOT_TEST_DISPLAY:-0} == 1 ]]; then flags+=(-D TARBOOT_TEST_DISPLAY); fi
+        if [[ ${TARBOOT_TEST_RNG:-0} == 1 ]]; then flags+=(-D TARBOOT_TEST_RNG); fi
         "$out/write-fixture" "$arch" "$d/esp/BOOT.TIR"
         for src in "$root"/{kcore,tarwin-boot,tarboot,tarwin-mm,tarwin-time,tarwin-sched,tarwin-loader}/Sources/* \
                    "$composition"/Sources/*; do

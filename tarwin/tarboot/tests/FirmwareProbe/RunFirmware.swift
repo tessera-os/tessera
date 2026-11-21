@@ -66,6 +66,8 @@ func check() throws {
   let process = Process()
   let displayEnabled = ProcessInfo.processInfo.environment["TARBOOT_TEST_DISPLAY"] == "1"
   let displayArgs = !displayEnabled ? [] : (a == "x86_64" ? ["-vga", "std"] : ["-device", "ramfb"]) + ["-no-shutdown"]
+  let rngEnabled = ProcessInfo.processInfo.environment["TARBOOT_TEST_RNG"] == "1"
+  let rngArgs = rngEnabled ? ["-object", "rng-random,filename=/dev/urandom,id=entropy", "-device", "virtio-rng-pci,rng=entropy"] : []
   let tpmEnabled = ProcessInfo.processInfo.environment["TARBOOT_TEST_TPM"] == "1"
   let state = URL(fileURLWithPath: "/tmp/tarwin-tpm-" + UUID().uuidString)
   let socket = state.appendingPathComponent("ctrl").path
@@ -102,7 +104,7 @@ func check() throws {
   }
   process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
   process.arguments =
-    ["qemu-system-" + a] + machine + tpmArgs + displayArgs + [
+    ["qemu-system-" + a] + machine + tpmArgs + displayArgs + rngArgs + [
       "-m", "512", "-smp", "1", "-display", "none",
       "-serial", "file:" + serial, "-monitor", "none", "-qmp", "stdio", "-nic", "none",
       "-drive", "if=pflash,format=raw,readonly=on,file=" + code, "-drive",
@@ -122,6 +124,11 @@ func check() throws {
   let deadline = ContinuousClock.now.advanced(by: .seconds(60))
   var captured = false
   while process.isRunning && ContinuousClock.now < deadline {
+    if rngEnabled, let log = try? Data(contentsOf: URL(fileURLWithPath: serial)) {
+      for marker in ["TARWIN-RNG-UNAVAILABLE", "TARWIN-PLACEMENT-FAILED"] where log.range(of: Data(marker.utf8)) != nil {
+        throw Failure("\(a): " + marker)
+      }
+    }
     if displayEnabled && !captured {
       if let log = try? Data(contentsOf: URL(fileURLWithPath: serial)),
         log.range(of: Data("TARWIN-GOP-UNAVAILABLE".utf8)) != nil { throw Failure("\(a): no linear GOP display") }
@@ -149,6 +156,7 @@ func check() throws {
   }
   guard guestShutdown(try Data(contentsOf: URL(fileURLWithPath: monitor)))
     else { throw Failure("\(a): missing guest-initiated shutdown event") }
+  if rngEnabled { print("\(a): EFI RNG seed read and randomized exact-address reservation passed post-exit checks") }
   if displayEnabled {
     guard captured else { throw Failure("no scanout recorded") }
     let frame = try Data(contentsOf: URL(fileURLWithPath: d + "/scanout.ppm"))

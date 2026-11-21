@@ -75,6 +75,47 @@ public enum FirmwareExit {
       }
     }
 
+    /// Fill only the dedicated 64-byte TBIB field. Verify the firmware/source
+    /// provenance separately. No partial seed may escape a failed GetRNG.
+    @unsafe public func readBootSeed(into bytes: UnsafeMutableRawBufferPointer) -> Bool {
+      FirmwareRNG.readSeed(locate, into: bytes)
+    }
+
+    public struct Placement: ~Copyable {
+      public let virtual: UInt64
+      public let pages: LoaderPages
+
+      public consuming func takePages() -> LoaderPages { pages }
+    }
+
+    /// Choose separate virtual/physical positions with fresh firmware RNG words.
+    /// This acquires only uninitialized data pages. It neither establishes a
+    /// page-table mapping nor grants authority to relocate or execute an image.
+    @unsafe public func reserveImage(count: UInt, alignment: UInt64, virtualRegion: Range<UInt64>,
+      map: UnsafeMutableRawBufferPointer, into regions: inout UnsafeMutableBufferPointer<FirmwareRegion>
+    ) -> Placement? {
+      guard count > 0, count <= UInt.max >> 12, let locate, let rng = FirmwareRNG(locate),
+        let allocate, let release, let sample = rng.word(),
+        let va = virtualBase(region: virtualRegion, bytes: UInt64(count) << 12, alignment: alignment, word: sample)
+      else { return nil }
+      let bytes = UInt64(count) << 12
+      for _ in 0..<8 {
+        guard let sample = rng.word(), let (n, _) = snapshot(map: map, into: &regions) else { return nil }
+        guard let base = physicalBase(UnsafeBufferPointer(rebasing: regions[..<n]), bytes: bytes,
+          alignment: alignment, word: sample) else { continue }
+        var actual = base
+        let status = allocate(2, 2, count, &actual) // AllocateAddress, EfiLoaderData
+        if status == 0x8000_0000_0000_000e { continue } // EFI_NOT_FOUND: stale candidate
+        guard status == 0 else { return nil }
+        guard actual == base else {
+          _ = release(actual, count)
+          return nil
+        }
+        return Placement(virtual: va, pages: LoaderPages(base: actual, count: count))
+      }
+      return nil
+    }
+
     /// Snapshot a linear GOP mode, not authority to map the aperture.
     @unsafe public func display() -> FirmwareDisplay? {
       guard let locate else { return nil }
@@ -149,19 +190,10 @@ public enum FirmwareExit {
       map: UnsafeMutableRawBufferPointer,
       into regions: inout UnsafeMutableBufferPointer<FirmwareRegion>
     ) -> FirmwareExit {
-      guard measurement != .stopped, let p = map.baseAddress, UInt(bitPattern: p) & 7 == 0,
-        map.count >= 40
-      else { return .preflightFailure }
+      guard measurement != .stopped else { return .preflightFailure }
       var attempted = false
       for _ in 0..<4 {
-        var size = UInt(map.count)
-        var key: UInt = 0
-        var stride: UInt = 0
-        var version: UInt32 = 0
-        guard getMap(&size, p, &key, &stride, &version) == 0, size <= UInt(map.count),
-          let count = stageFirmwareMap(
-            MappedBytes(base: UnsafeRawPointer(p), size: UInt64(size)),
-            stride: UInt64(stride), version: version, into: &regions)
+        guard let (count, key) = snapshot(map: map, into: &regions)
         else { return attempted ? .failedAfterExitAttempt : .preflightFailure }
         let status = exitBoot(image, key)
         if status == 0 { return .exited(regions: count) }
@@ -169,6 +201,19 @@ public enum FirmwareExit {
         if status != 0x8000_0000_0000_0002 { return .failedAfterExitAttempt }
       }
       return .failedAfterExitAttempt
+    }
+
+    private func snapshot(map: UnsafeMutableRawBufferPointer,
+      into regions: inout UnsafeMutableBufferPointer<FirmwareRegion>) -> (Int, UInt)? {
+      guard let p = map.baseAddress, UInt(bitPattern: p) & 7 == 0, map.count >= 40 else { return nil }
+      var size = UInt(map.count)
+      var key: UInt = 0
+      var stride: UInt = 0
+      var version: UInt32 = 0
+      guard getMap(&size, p, &key, &stride, &version) == 0, size <= UInt(map.count),
+        let n = stageFirmwareMap(MappedBytes(base: UnsafeRawPointer(p), size: UInt64(size)),
+          stride: UInt64(stride), version: version, into: &regions) else { return nil }
+      return (n, key)
     }
   }
 #endif

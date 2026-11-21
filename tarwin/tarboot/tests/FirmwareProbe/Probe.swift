@@ -49,10 +49,25 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
           return false
         }
       #endif
-      guard exerciseFile(&boot, system: system, console: console, output: output),
-        let owned = boot.reserveLoaderPages(UInt(2 * 64 * pageSize / 4096 - 1)),
-        case .exited(let n) = boot.finish(map: raw, into: &buffer)
-      else { return false }
+      guard exerciseFile(&boot, system: system, console: console, output: output) else { return false }
+      #if TARBOOT_TEST_RNG
+        var seed = InlineArray<64, UInt8>(repeating: 0)
+        guard withUnsafeMutableBytes(of: &seed, { boot.readBootSeed(into: $0) }) else {
+          writeDiagnostic("TARWIN-RNG-UNAVAILABLE\r\n", console: console, output: output)
+          return false
+        }
+        let window: Range<UInt64> = 0xffff_8000_0000_0000..<0xffff_c000_0000_0000
+        guard let placed = boot.reserveImage(count: UInt(64 * pageSize / 4096), alignment: 64 * pageSize,
+          virtualRegion: window, map: raw, into: &buffer), window.contains(placed.virtual),
+          placed.virtual % (64 * pageSize) == 0, placed.pages.base % (64 * pageSize) == 0 else {
+          writeDiagnostic("TARWIN-PLACEMENT-FAILED\r\n", console: console, output: output)
+          return false
+        }
+        let owned = placed.takePages()
+      #else
+        guard let owned = boot.reserveLoaderPages(UInt(2 * 64 * pageSize / 4096 - 1)) else { return false }
+      #endif
+      guard case .exited(let n) = boot.finish(map: raw, into: &buffer) else { return false }
       var usable = false
       var runtime = false
       var covered = false
