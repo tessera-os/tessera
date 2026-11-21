@@ -8,7 +8,7 @@ public protocol PinnedWaitWord {
   func load() -> UInt64?
 }
 
-public protocol WaitCallContext {
+public protocol WaitQueueContext {
   associatedtype Word: PinnedWaitWord
   /// Stable kernel storage, never a user pointer.
   var waits: UnsafePointer<AddressQueue> { get }
@@ -25,6 +25,9 @@ public protocol WaitCallContext {
   /// Commit scheduler state, retain/transfer/release frame pins, update PI,
   /// and arm/disarm this ticket's timer. Queues call this with their locks held.
   func change(_ event: AddressChange, deadline: UInt64)
+}
+
+public protocol WaitCallContext: WaitQueueContext {
   /// If already woken, consume the saved result rather than sleeping. No queue
   /// lock or temporary VM pin remains held. A timer expires via waits.finish.
   func park(_ ticket: SleepTicket) -> WaitEnd
@@ -50,6 +53,47 @@ public struct WaitCalls<C: WaitCallContext>: CallProvider {
     address != 0 && address % UInt64(width) == 0 && address <= UInt64.max - UInt64(width - 1)
   }
   public func invoke(number: UInt64, words: UnsafeBufferPointer<UInt64>) -> CallResult {
+    switch SplitWaitCalls(context: context).begin(number: number, words: words) {
+    case .completed(let result): return result
+    case .blocked(let ticket): return waitCallCompletion(context.park(ticket))
+    }
+  }
+}
+
+/// A blocked ticket completes exactly once through AddressChange.ready.
+public enum SplitWaitResult {
+  case completed(CallResult)
+  case blocked(SleepTicket)
+}
+
+/// Translate the winning queue completion into the syscall ABI.
+public func waitCallCompletion(_ end: WaitEnd) -> CallResult {
+  switch end {
+  case .woken: return CallResult()
+  case .timeout: return CallResult(status: syscallStatus(25, 1))
+  case .cancelled: return CallResult(status: syscallStatus(26, 1))
+  }
+}
+
+/// Arm without parking; consume ready callbacks even if they precede return.
+public struct SplitWaitCalls<C: WaitQueueContext> {
+  public let context: C
+  public init(context: C) { self.context = context }
+  public func argumentCount(for number: UInt64) -> UInt32? {
+    switch number {
+    case TarwinCall.syncWait32, TarwinCall.syncWait64: return 3
+    case TarwinCall.syncWake: return 2
+    case TarwinCall.syncRequeue: return 4
+    default: return nil
+    }
+  }
+  private func error(_ c: UInt32) -> SplitWaitResult {
+    .completed(CallResult(status: syscallStatus(c, 1)))
+  }
+  private func aligned(_ address: UInt64, _ width: UInt32) -> Bool {
+    address != 0 && address % UInt64(width) == 0 && address <= UInt64.max - UInt64(width - 1)
+  }
+  public func begin(number: UInt64, words: UnsafeBufferPointer<UInt64>) -> SplitWaitResult {
     guard let arity = argumentCount(for: number) else { return error(10) }
     guard words.count == Int(arity) else { return error(1) }
     let address = words[0]
@@ -76,11 +120,7 @@ public struct WaitCalls<C: WaitCallContext>: CallProvider {
       case .badState: return error(23)
       case .timeout: return error(25)
       case .blocked(let t):
-        switch context.park(t) {
-        case .woken: return CallResult()
-        case .timeout: return error(25)
-        case .cancelled: return error(26)
-        }
+        return .blocked(t)
       }
     case TarwinCall.syncWake:
       guard let count = UInt32(exactly: words[1]) else { return error(1) }
@@ -91,7 +131,7 @@ public struct WaitCalls<C: WaitCallContext>: CallProvider {
               word.physical, count: count, change: { context.change($0, deadline: .max) })
           })
         else { return error(1) }
-        return CallResult(first: UInt64(n))
+        return .completed(CallResult(first: UInt64(n)))
       } ?? error(1)
     default:
       let target = words[2]
@@ -107,7 +147,7 @@ public struct WaitCalls<C: WaitCallContext>: CallProvider {
                 change: { context.change($0, deadline: .max) })
             })
           else { return error(1) }
-          return CallResult(first: UInt64(n.woken) + UInt64(n.moved))
+          return .completed(CallResult(first: UInt64(n.woken) + UInt64(n.moved)))
         } ?? error(1)
       } ?? error(1)
     }

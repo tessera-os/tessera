@@ -7,6 +7,7 @@ let package = Package(
   products: [
     .library(name: "TarwinObjectCalls", targets: ["TarwinObjectCalls"]),
     .library(name: "TarwinSyncCalls", targets: ["TarwinSyncCalls"]),
+    .library(name: "TarwinKernelCalls", targets: ["TarwinKernelCalls"]),
   ],
   dependencies: [
     .package(name: "TarwinSyscall", path: ".."),
@@ -14,6 +15,14 @@ let package = Package(
     .package(path: "../../tarwin-sync"),
   ],
   targets: [
+    .target(name: "TarwinKernelCalls", dependencies: [
+      "TarwinSyncCalls", "TarwinObjectCalls",
+      .product(name: "TarwinObject", package: "tarwin-object"),
+      .product(name: "TarwinSync", package: "tarwin-sync"),
+      .product(name: "TarwinABI", package: "TarwinSyscall"),
+      .product(name: "TarwinSyscall", package: "TarwinSyscall"),
+    ]),
+    .testTarget(name: "TarwinProviderTests", dependencies: ["TarwinKernelCalls", "TarwinSyncCalls"]),
     .target(
       name: "TarwinObjectCalls",
       dependencies: [
