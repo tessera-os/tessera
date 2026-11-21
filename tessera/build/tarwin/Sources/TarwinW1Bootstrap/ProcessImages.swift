@@ -40,13 +40,14 @@ func signProcessImport(
   witnesses: UnsafeMutableRawBufferPointer, cleanToPoU: (UnsafeRawBufferPointer) -> Bool,
   child: borrowing ProcessExecution, tree: borrowing JobTree, keys: borrowing ArmProcessKeys,
   generation: W1KernelGeneration,
-  host: borrowing ArmFinishedKernelRoot, firstThread: consuming W1ThreadPlacement
+  host: borrowing ArmFinishedKernelRoot, clockPage: borrowing W1ClockPage,
+  firstThread: consuming W1ThreadPlacement
 ) -> W1PrivateImages? {
-  guard host.physical != physical else { return nil }
+  guard host.physical != physical, host.physical == clockPage.mapping.hostRoot else { return nil }
   return preparePrivateW1Images(
     set, plan: plan, archive: archive, storage: storage, physical: physical,
     tableBytes: tableBytes, nodes: nodes, witnesses: witnesses, cleanToPoU: cleanToPoU,
-    child: child, tree: tree, layout: host.layout,
+    child: child, tree: tree, layout: host.layout, clockPage: clockPage,
     signImport: { target, modifier in
       signProcessImport(
         target, modifier, plan: plan, root: physical, host: host.physical,

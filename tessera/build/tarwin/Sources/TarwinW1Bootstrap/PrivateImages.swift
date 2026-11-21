@@ -28,74 +28,6 @@ private func disjoint(_ a: UnsafeRawBufferPointer, _ b: UnsafeRawBufferPointer) 
   return u <= v ? UInt(a.count) <= v - u : UInt(b.count) <= u - v
 }
 
-struct W1FramePool {
-  let memory: UnsafeMutableRawBufferPointer
-  let physical: UInt64
-  var used = 0
-  private(set) var slotOffset: Int?
-
-  /// This pool is a fresh contiguous run. Issue each physical frame exactly
-  /// once; neither an image hole nor a second mapping gets an alias.
-  mutating func stage(
-    file: UnsafeRawBufferPointer, image: InspectedImage,
-    reservation: Range<UInt64>, rx: W1ExecutablePages, slot: UInt64?,
-    nodes: UnsafeBufferPointer<BlakeCv>, witnesses: UnsafeMutableRawBufferPointer,
-    tables: inout ArmUserTranslation, cleanToPoU: (UnsafeRawBufferPointer) -> Bool
-  ) -> Bool {
-    let size: UInt64 = 16384
-    guard let source = file.baseAddress else { return false }
-    for h in stride(
-      from: image.programHeaders.lowerBound, to: image.programHeaders.upperBound, by: 56)
-    {
-      func u32(_ off: Int) -> UInt32 {
-        .init(littleEndian: file.loadUnaligned(fromByteOffset: h + off, as: UInt32.self))
-      }
-      func u64(_ off: Int) -> UInt64 {
-        .init(littleEndian: file.loadUnaligned(fromByteOffset: h + off, as: UInt64.self))
-      }
-      if u32(0) != 1 { continue }
-      let permission = u32(4)
-      let offset = u64(8)
-      let rva = u64(16)
-      let count = u64(32)
-      guard permission == 4 || permission == 5 || (permission == 6 && slot != nil),
-        count != 0, count == u64(40), (offset | rva) & (size - 1) == 0,
-        imageContains(UInt64(file.count), offset, count),
-        imageContains(reservation.upperBound - reservation.lowerBound, rva, count)
-      else { return false }
-      var n: UInt64 = 0
-      while n < count {
-        guard used <= memory.count - Int(size) else { return false }
-        let va = reservation.lowerBound + rva + n
-        let pa = physical + UInt64(used)
-        let frame = UnsafeMutableRawBufferPointer(rebasing: memory[used..<used + Int(size)])
-        if permission == 5 {
-          guard
-            rx.install(
-              page: va, physical: pa, frame: frame, nodes: nodes,
-              witnesses: witnesses, tables: &tables, cleanToPoU: cleanToPoU)
-          else { return false }
-        } else {
-          // Non-executable data comes directly from the immutable pinned
-          // member. Zero all padding; never copy the next ELF record.
-          frame.initializeMemory(as: UInt8.self, repeating: 0)
-          frame.baseAddress!.copyMemory(
-            from: source + Int(offset + n), byteCount: Int(min(size, count - n)))
-          guard tables.insert(virtual: va, physical: pa, write: permission == 6, execute: false)
-          else { return false }
-          if let slot, slot >= va && slot - va < size {
-            guard permission == 6, slotOffset == nil else { return false }
-            slotOffset = used
-          }
-        }
-        n += size
-        used += Int(size)
-      }
-    }
-    return true
-  }
-}
-
 /// Hold the committed reservations and original immutable archive. Supply one
 /// exclusive contiguous run of normal RAM at `physical` and disjoint scratch.
 /// No frame, table, scratch or archive may alias physically, including DMA.
@@ -106,6 +38,7 @@ struct W1FramePool {
   physical: UInt64, tableBytes: Int, nodes: UnsafeMutableBufferPointer<BlakeCv>,
   witnesses: UnsafeMutableRawBufferPointer, cleanToPoU: (UnsafeRawBufferPointer) -> Bool,
   child: borrowing ProcessExecution, tree: borrowing JobTree, layout: ArmPermissionLayout = .direct,
+  clockPage: borrowing W1ClockPage,
   signImport: (UInt64, UInt64) -> UInt64?, firstThread: consuming W1ThreadPlacement? = nil
 ) -> W1PrivateImages? {
   let ram = UnsafeRawBufferPointer(storage)
@@ -116,6 +49,8 @@ struct W1FramePool {
     tableBytes >= 16384, tableBytes < storage.count, (tableBytes | storage.count) & 16383 == 0,
     physical != 0, physical & 16383 == 0, physical < 1 << 48,
     UInt64(storage.count) <= (1 << 48) - physical,
+    !(physical..<physical + UInt64(storage.count)).overlaps(
+      clockPage.mapping.physical..<clockPage.mapping.physical + 16384),
     !plan.processReservation.overlaps(plan.libraryReservation),
     disjoint(ram, cache), disjoint(ram, proof), disjoint(cache, proof),
     disjoint(archive, cache), disjoint(archive, proof),
@@ -126,22 +61,15 @@ struct W1FramePool {
   else { return nil }
   var finished = false
   defer { if !finished { storage.initializeMemory(as: UInt8.self, repeating: 0) } }
+  guard clockPage.mapping.install(in: &tables, privatePool: physical..<physical + UInt64(storage.count))
+  else { return nil }
   var pool = W1FramePool(
     memory: .init(rebasing: storage[tableBytes...]), physical: physical + UInt64(tableBytes))
   func stage(_ role: W1CodeRole, _ tables: inout ArmUserTranslation, _ pool: inout W1FramePool)
     -> Range<UInt64>?
   {
-    let initMember = role == .process
-    let member = initMember ? set.process : set.library
-    guard let rx = W1ExecutablePages(set, plan: plan, role: role, nodes: nodes),
-      pool.stage(
-        file: member.bytes, image: member.layout.image,
-        reservation: initMember ? plan.processReservation : plan.libraryReservation,
-        rx: rx, slot: initMember ? plan.slotAddress : nil, nodes: .init(nodes),
-        witnesses: witnesses,
-        tables: &tables, cleanToPoU: cleanToPoU)
-    else { return nil }
-    return rx.code
+    pool.stageMember(role, set: set, plan: plan, nodes: nodes, witnesses: witnesses,
+      tables: &tables, cleanToPoU: cleanToPoU)
   }
   guard let process = stage(.process, &tables, &pool),
     let library = stage(.library, &tables, &pool), let slot = pool.slotOffset,

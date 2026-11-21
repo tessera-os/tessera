@@ -4,6 +4,7 @@ import TarwinKernelRandom
 import TarwinLoader
 import TarwinObject
 import TarwinProcessKeys
+import TarwinTime
 import Testing
 
 @testable import TarwinW0Verify
@@ -44,8 +45,8 @@ private func stageImages(
   let poly = UnsafeMutableBufferPointer<Int32>.allocate(capacity: 2048)
   let temp = UnsafeMutableRawBufferPointer.allocate(byteCount: 16 * 54 * 32, alignment: 16)
   let page = 16384
-  let slots = 24
-  let tableBytes = 10 * 16384
+  let slots = 27
+  let tableBytes = 13 * 16384
   let ram = UnsafeMutableRawBufferPointer.allocate(byteCount: slots * page, alignment: page)
   defer {
     ram.deallocate()
@@ -54,6 +55,15 @@ private func stageImages(
     nodes.deallocate()
   }
   let archive = raw(inputs[0])
+  let hostBytes = UnsafeMutableRawBufferPointer.allocate(byteCount: 4 * page, alignment: page)
+  let clockBytes = UnsafeMutableRawBufferPointer.allocate(byteCount: page, alignment: page)
+  defer { hostBytes.deallocate(); clockBytes.deallocate() }
+  let clockPA: UInt64 = 0x600000
+  guard var host = ArmKernelTranslation(backing: hostBytes, physical: 0x500000, layout: layout),
+    let reservation = W1ClockReservation(physical: clockPA, kernelVA: 0xffff800000000000, host: &host),
+    let hostRoot = host.finish(), let clock = SystemClocks(frequency: 1234, counter: 0),
+    let clockPage = reservation.startMapped(in: hostRoot, clock: clock, bytes: clockBytes)
+  else { Issue.record("clock frame"); return }
   let set = try #require(
     verifyStage1(
       archive: archive, signature: raw(inputs[1]), enrollment: raw(inputs[2]),
@@ -126,7 +136,7 @@ private func stageImages(
         calls += 1
         return clean
       },
-      child: child, tree: tree, layout: layout,
+      child: child, tree: tree, layout: layout, clockPage: clockPage,
       signImport: { target, modifier in
         signSlot(target, modifier, root: base, child: child, tree: tree)
       }, firstThread: consume thread)
@@ -167,6 +177,9 @@ private func stageImages(
   }
   #expect(
     leaf(plan.processReservation.lowerBound) == 0 && leaf(plan.libraryReservation.lowerBound) == 0)
+  #expect(leaf(TimePageReader.address47) ==
+    armUserPage(clockPA, write: false, execute: false, lpa2: false) | (layout == .guarded ? 1 << 51 : 0))
+  #expect(leaf(TimePageReader.address47 + UInt64(page)) == 0)
   for (i, va) in [plan.processEntry, plan.slotAddress, plan.targetAddress].enumerated() {
     let pa = base + UInt64(tableBytes + i * page)
     let expect =

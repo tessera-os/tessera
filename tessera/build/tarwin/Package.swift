@@ -50,6 +50,7 @@ let package = Package(
     .target(
       name: "TarwinW1Bootstrap", dependencies: [
         "TarwinW1Generation",
+        .product(name: "TarwinTime", package: "tarwin-time"),
         .product(name: "Tarboot", package: "tarboot"),
       .product(name: "TarwinChannelCalls", package: "channel-calls"),
       .product(name: "TarwinDevice", package: "tarwin-device"),
@@ -68,6 +69,7 @@ let package = Package(
         .product(name: "TarwinMM", package: "tarwin-mm"),
       ]),
     .testTarget(name: "TarwinW1BootstrapTests", dependencies: [
+      .product(name: "TarwinTime", package: "tarwin-time"),
       "TarwinW1Generation", .product(name: "TarwinRandomCore", package: "random"),
       .product(name: "TarwinKernelRandom", package: "random"),
       .product(name: "TarwinProcessKeys", package: "random"),
