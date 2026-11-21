@@ -23,6 +23,7 @@ public enum HostedMemoryError: Error, Equatable {
   case invalidRange
   case invalidProtection
   case rollbackFailed
+  case snapshotUnavailable
   case notPurgeable
   case posix(Int32)
   case mach(kern_return_t)
@@ -123,6 +124,11 @@ public final class HostedMemoryEntry {
         size: size, offset: mapping.address, protection: protection, flags: MAP_MEM_VM_COPY,
         parent: 0)
     }
+  }
+
+  static func adoptSnapshot(port: mach_port_t, size: UInt64) -> HostedMemoryEntry {
+    HostedMemoryEntry(
+      port: port, size: size, protection: [.read, .write], object: Identity(), objectOffset: 0)
   }
 
   private static func make(

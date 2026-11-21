@@ -39,4 +39,14 @@ public struct HostedTaskCommandMappings: HostedTaskMappings {
   public func unmap(address: UInt64, size: UInt64) throws {
     try checkMach(exchange(.unmap(address: address, length: size), nil).status)
   }
+
+  public func snapshot(address: UInt64, size: UInt64) throws -> HostedMemoryEntry {
+    guard size > 0, size % hostedPageSize == 0, address % hostedPageSize == 0,
+      address <= UInt64.max - size
+    else { throw HostedMemoryError.invalidRange }
+    let reply = try exchange(.snapshot(address: address, size: size), nil)
+    try checkMach(reply.status)
+    guard let port = reply.memoryEntry, port != 0 else { throw HostedMemoryError.snapshotUnavailable }
+    return .adoptSnapshot(port: port, size: size)
+  }
 }

@@ -31,6 +31,13 @@ public struct HostedMapCommand {
 public protocol HostedTaskMappings {
   func map(_ command: HostedMapCommand) throws
   func unmap(address: UInt64, size: UInt64) throws
+  func snapshot(address: UInt64, size: UInt64) throws -> HostedMemoryEntry
+}
+
+extension HostedTaskMappings {
+  public func snapshot(address: UInt64, size: UInt64) throws -> HostedMemoryEntry {
+    throw HostedMemoryError.snapshotUnavailable
+  }
 }
 
 public enum HostedFaultResult: Equatable {
@@ -95,11 +102,13 @@ public final class HostedAddressSpace {
     let command: HostedMapCommand
     let charged: Bool
     let cleanSince: UInt64?
+    let privateFilePage: Bool
 
-    init(command: HostedMapCommand, charged: Bool, cleanSince: UInt64?) {
+    init(command: HostedMapCommand, charged: Bool, cleanSince: UInt64?, privateFilePage: Bool) {
       self.command = command
       self.charged = charged
       self.cleanSince = cleanSince
+      self.privateFilePage = privateFilePage
     }
   }
 
@@ -141,12 +150,38 @@ public final class HostedAddressSpace {
   }
 
   public func mapBatch(_ batch: [(command: HostedMapCommand, charged: Bool)]) throws {
+    try installBatch(batch.map {
+      Mapping(command: $0.command, charged: $0.charged, cleanSince: nil, privateFilePage: false)
+    })
+  }
+
+  public func fork(into childTask: any HostedTaskMappings) throws -> HostedAddressSpace {
+    try lock.withLock {
+      let child = try HostedAddressSpace(window: window, task: childTask)
+      let batch = try mappings.values.sorted { $0.command.address < $1.command.address }.map {
+        mapping in
+        let map = mapping.command
+        guard map.copy || mapping.privateFilePage else { return mapping }
+        let entry = try task.snapshot(address: map.address, size: map.size)
+        let copy = try HostedMapCommand(address: map.address, size: map.size, entry: entry,
+          protection: map.protection, copy: true)
+        return Mapping(command: copy, charged: mapping.charged,
+          cleanSince: nil, privateFilePage: mapping.privateFilePage)
+      }
+      try child.installBatch(batch)
+      child.files = files
+      return child
+    }
+  }
+
+  private func installBatch(_ batch: [Mapping]) throws {
     try lock.withLock {
       var installed: [HostedMapCommand] = []
       do {
-        for (command, charged) in batch {
+        for mapping in batch {
+          let command = mapping.command
           _ = try checkFree(address: command.address, size: command.size)
-          try install(command, charged: charged)
+          try install(mapping)
           installed.append(command)
         }
       } catch {
@@ -182,7 +217,8 @@ public final class HostedAddressSpace {
       let map = try HostedMapCommand(
         address: pageAddress, size: hostedPageSize, entry: entry, protection: file.protection)
       try install(map, charged: true,
-        cleanSince: file.protection == .read ? DispatchTime.now().uptimeNanoseconds : nil)
+        cleanSince: file.protection == .read ? DispatchTime.now().uptimeNanoseconds : nil,
+        privateFilePage: file.protection.contains(.write))
       return .mapped
     }
   }
@@ -275,10 +311,16 @@ public final class HostedAddressSpace {
   }
 
   private func install(
-    _ command: HostedMapCommand, charged: Bool, cleanSince: UInt64? = nil
+    _ command: HostedMapCommand, charged: Bool, cleanSince: UInt64? = nil,
+    privateFilePage: Bool = false
   ) throws {
-    try task.map(command)
-    mappings[command.address] = Mapping(command: command, charged: charged, cleanSince: cleanSince)
+    try install(Mapping(command: command, charged: charged,
+      cleanSince: cleanSince, privateFilePage: privateFilePage))
+  }
+
+  private func install(_ mapping: Mapping) throws {
+    try task.map(mapping.command)
+    mappings[mapping.command.address] = mapping
   }
 
   private func checkFree(address: UInt64, size: UInt64) throws -> Range<UInt64> {

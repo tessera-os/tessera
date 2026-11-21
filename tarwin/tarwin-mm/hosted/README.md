@@ -17,6 +17,16 @@ objects and dropped pages stop contributing to mapped footprint. Only
 unresolved critical pressure can trigger jetsam, using the remaining
 footprint to select the victim.
 
+`HostedAddressSpace.fork(into:)` clones memory into a fresh checked-in
+task, not a guest `fork` syscall. Keep the parent's guest threads stopped
+until cloning completes; the child must have no guest mappings or
+running threads. H3 snapshots live private mappings (those mapped with
+`copy: true` and resident writable file pages) through H2's snapshot
+command and maps them copy-on-write in the child. Shared mappings,
+including sealed code, keep their original entries. File reservations
+are inherited, so absent pages still fault independently. If the
+transport outcome is unknown or rollback fails, discard the child task.
+
 From this directory on Apple silicon, run `swift test --package-path TarwinMMHosted`
 for the memory tests and `swift test --package-path Integration` for the
 live Tarwind/H2 file-pager integration.

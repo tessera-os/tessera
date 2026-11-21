@@ -160,3 +160,82 @@ private final class ProbeBundleAnchor {}
   try waitForExecution(first, reaped: &firstReaped)
   try waitForExecution(second, reaped: &secondReaped)
 }
+
+@Test func forkSnapshotsLivePrivateMemoryAndKeepsSealedCodeShared() throws {
+  let testBundle = Bundle(for: ProbeBundleAnchor.self).bundleURL
+  let executable = testBundle.deletingLastPathComponent().appendingPathComponent("tarwin-task")
+  let parent = try TaskSpawner.spawn(executable: executable.path)
+  defer { kill(parent.pid, SIGKILL); waitpid(parent.pid, nil, 0) }
+  let child = try TaskSpawner.spawn(executable: executable.path)
+  defer { kill(child.pid, SIGKILL); waitpid(child.pid, nil, 0) }
+
+  let page = hostedPageSize
+  let code = TaskWindow.base
+  let data = code + page
+  let reportAddress = data + page
+  let stack = reportAddress + page - 16
+  let source = try HostedMemoryEntry.anonymous(size: page)
+  let original = try source.mapLocally(protection: .read)
+  let report = try HostedMemoryEntry.anonymous(size: page)
+  let observations = try report.mapLocally(protection: .read)
+  let rx: HostedProtection = [.read, .execute]
+  let rw: HostedProtection = [.read, .write]
+  let instructions = try [UInt32(0xf900_0001), 0xf940_0002, 0xf900_0062, 0x1400_0000].withUnsafeBytes {
+    try HostedMemoryEntry.sealedCode(size: page, verifiedBytes: $0)
+  }
+  func mappings(_ task: SpawnedTask) -> HostedTaskCommandMappings {
+    HostedTaskCommandMappings(task: task) { _ in kill(task.pid, SIGKILL) }
+  }
+  let parentSpace = try HostedAddressSpace(
+    window: TaskWindow.base..<(TaskWindow.base + TaskWindow.size), task: mappings(parent))
+  try parentSpace.map(.init(address: code, size: page, entry: instructions, protection: rx), charged: false)
+  try parentSpace.map(.init(address: data, size: page, entry: source, protection: rw, copy: true))
+  try parentSpace.map(.init(address: reportAddress, size: page, entry: report, protection: rw))
+
+  func send(_ command: TaskCommand, to task: SpawnedTask) throws {
+    try #require(try task.command(command).get().status == KERN_SUCCESS)
+  }
+  func run(_ task: SpawnedTask, at pc: UInt64, write value: UInt64, slot: UInt64,
+    expected: UInt64
+  ) throws {
+    var registers = InlineArray<31, UInt64>(repeating: 0)
+    registers[0] = data
+    registers[1] = value
+    registers[3] = reportAddress + 8 * slot
+    try send(.setThreadState(id: 1, state: TaskThreadState(
+      registers: registers, stack: stack, pc: pc, cpsr: 0)), to: task)
+    try send(.resumeThread(id: 1), to: task)
+    let deadline = DispatchTime.now() + .seconds(5)
+    var observed: UInt64 = 0
+    repeat {
+      var count: UInt64 = 0
+      let status = withUnsafeMutablePointer(to: &observed) {
+        mach_vm_read_overwrite(mach_task_self_, observations.address + 8 * slot, 8,
+          UInt64(UInt(bitPattern: $0)), &count)
+      }
+      try #require(status == KERN_SUCCESS)
+      if observed != 0 { break }
+      usleep(1_000)
+    } while DispatchTime.now() < deadline
+    try #require(observed == expected)
+    try send(.suspendThread(id: 1), to: task)
+  }
+  try send(.createThread(id: 1, entry: code, argument: 0, stack: stack, tls: 0), to: parent)
+  try run(parent, at: code, write: 42, slot: 0, expected: 42)
+  let childSpace = try parentSpace.fork(into: mappings(child))
+  #expect(childSpace.footprint == 2 * page)
+  #expect(childSpace.occupiedRanges.sorted { $0.lowerBound < $1.lowerBound }
+    == parentSpace.occupiedRanges.sorted { $0.lowerBound < $1.lowerBound })
+  let writeCode = try child.command(
+    .protect(address: code, length: page, protection: UInt32(rw.rawValue))).get()
+  #expect(writeCode.status == KERN_PROTECTION_FAILURE)
+
+  try send(.createThread(id: 1, entry: code, argument: 0, stack: stack, tls: 0), to: child)
+  try run(child, at: code + 4, write: 0, slot: 1, expected: 42)
+  try run(parent, at: code, write: 51, slot: 2, expected: 51)
+  try run(child, at: code + 4, write: 0, slot: 3, expected: 42)
+  try run(child, at: code, write: 63, slot: 4, expected: 63)
+  try run(parent, at: code + 4, write: 0, slot: 5, expected: 51)
+  let originalBytes = try #require(UnsafeRawPointer(bitPattern: UInt(original.address)))
+  #expect(originalBytes.load(as: UInt64.self) == 0)
+}

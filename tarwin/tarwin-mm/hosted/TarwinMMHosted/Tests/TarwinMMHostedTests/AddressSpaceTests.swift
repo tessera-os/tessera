@@ -6,15 +6,22 @@ private enum TransportError: Error { case unavailable }
 private final class TaskMappings: HostedTaskMappings {
   var commands: [HostedMapCommand] = []
   var fail = false
+  var failMapAt: UInt64?
+  var snapshotCommand: ((UInt64, UInt64) throws -> HostedMemoryEntry)?
 
   func map(_ command: HostedMapCommand) throws {
-    if fail { throw TransportError.unavailable }
+    if fail || command.address == failMapAt { throw TransportError.unavailable }
     commands.append(command)
   }
 
   func unmap(address: UInt64, size: UInt64) throws {
     if fail { throw TransportError.unavailable }
     commands.removeAll { (address..<(address + size)).contains($0.address) }
+  }
+
+  func snapshot(address: UInt64, size: UInt64) throws -> HostedMemoryEntry {
+    guard let snapshotCommand else { throw HostedMemoryError.snapshotUnavailable }
+    return try snapshotCommand(address, size)
   }
 }
 
@@ -204,4 +211,49 @@ private final class TaskMappings: HostedTaskMappings {
   #expect(try reclaim() == .noAction)
   #expect(space.footprint == 0)
   #expect(try space.fault(address: page, access: .read) == .mapped)
+}
+
+@Test func forkCopiesWritableFilePagesInheritsLazyRegionsAndRollsBackFailedInstall() throws {
+  let page = hostedPageSize
+  let task = TaskMappings()
+  let space = try HostedAddressSpace(window: page..<(5 * page), task: task)
+  let rw: HostedProtection = [.read, .write]
+  var reads: [UInt64] = []
+  let backing = HostedFileBacking(size: 2 * page) { offset, buffer in
+    reads.append(offset)
+    buffer.initializeMemory(as: UInt8.self, repeating: 11)
+    return buffer.count
+  }
+  try space.reserveFile(address: page, size: 2 * page, backing: backing, offset: 0, protection: rw)
+  #expect(try space.fault(address: page, access: .write) == .mapped)
+  let resident = try #require(task.commands.first).entry
+  let parentBytes = try resident.mapLocally(protection: rw)
+  try [UInt8(25)].withUnsafeBytes { try parentBytes.write($0) }
+  let shared = try HostedMemoryEntry.anonymous(size: page)
+  try space.map(.init(address: 3 * page, size: page, entry: shared, protection: .read))
+
+  task.snapshotCommand = { address, size in
+    #expect(address == page)
+    #expect(size == page)
+    return try resident.privateCopy()
+  }
+  let destination = TaskMappings()
+  destination.failMapAt = 3 * page
+  #expect(throws: TransportError.unavailable) { try space.fork(into: destination) }
+  #expect(destination.commands.isEmpty)
+  #expect(space.footprint == 2 * page)
+
+  destination.failMapAt = nil
+  let child = try space.fork(into: destination)
+  #expect(reads == [0])
+  let copied = try #require(destination.commands.first)
+  #expect(copied.copy)
+  let childBytes = try copied.entry.mapLocally(protection: .read)
+  let pointer = try #require(UnsafeRawPointer(bitPattern: UInt(childBytes.address)))
+  #expect(pointer.load(as: UInt8.self) == 25)
+  #expect(destination.commands.last?.entry === shared)
+  #expect(try child.fault(address: 2 * page, access: .write) == .mapped)
+  #expect(reads == [0, page])
+  #expect(space.footprint == 2 * page)
+  #expect(child.footprint == 3 * page)
 }
