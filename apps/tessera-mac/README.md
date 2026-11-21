@@ -45,7 +45,20 @@ including gestures and tablets; driver absolute pointer reports drive the cursor
 The view forwards each raw event once without a second legacy pointer path.
 Pressure events use a tablet-point adapter because H6's translator does not yet
 handle the pressure event type directly. The console cannot intercept clicks or
-keyboard focus. No H5 graphics drivers are integrated yet.
+keyboard focus.
+
+H5 now carries the preview desktop: the service imports a two-surface CPU BGRA8
+pool into HostedMetalGPU, composes and collects a GPU-complete private output
+copy, and sends IOSurface plus output/generation/serial over XPC. CPU sources
+are unlocked before compose and reused only after released receipts. The app
+embeds MacDisplayOutput.makeView per window; that view updates modes on resize
+and backing changes. Mode/removal/timing and presented/discarded callbacks
+return over XPC to the GPU. Test success requires frame receipt, not a positive
+presentation timestamp (the VM may discard zero-time drawable presentations).
+The gpu/display registry entries use HostedGraphicsDeviceProvider with served
+diagnostic slots, not unserved placeholder ports. Guest GPU commands are denied;
+this is host preview composition, not a launched guest compositor. Host imports
+do not charge Tarwin clients; guest allocation accounting remains unavailable.
 The cross-process check-in/gate test uses H2's fix for unrelated bootstrap traffic.
 Its test child checks in before clearing and releasing the bootstrap port.
 

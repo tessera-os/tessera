@@ -5,6 +5,7 @@ import IOSurface
 import TarwinArchHosted
 import TarwinHostedGate
 import TarwinABI
+import HostedMetalGPU
 
 private var panicFD: Int32 = -1
 private func crashHandler(_ signal: Int32) {
@@ -20,7 +21,8 @@ final class Service: NSObject, NSXPCListenerDelegate, TarwindControl, KernelHost
     var deviceDrivers: HostedServiceDevices?
     var inputTimer: DispatchSourceTimer?
     var launcher: TaskLauncher?
-    var displayProvider: DemoDeviceProvider?
+    var graphicsPorts: [DemoDeviceProvider] = []
+    var graphics: PreviewGPU?
     lazy var devices = HostDevices(display: self)
     var state = "stopped"
     var remote: TesseraHost? { connection?.remoteObjectProxyWithErrorHandler { NSLog("Host: %@", "\($0)") } as? TesseraHost }
@@ -39,6 +41,10 @@ final class Service: NSObject, NSXPCListenerDelegate, TarwindControl, KernelHost
                 self.deviceDrivers = try HostedServiceDevices(registry: self.registry) { [weak self] data in
                     self?.remote?.deviceFrame(["tw.frame": data])
                 }
+                guard let graphics = PreviewGPU(present: { [weak self] frame in
+                    self?.remote?.present(frame.surface, output: frame.id.output, generation: frame.id.generation, frame: frame.id.serial)
+                }) else { throw DiskError.io("Hosted Metal GPU unavailable") }
+                self.graphics = graphics
                 let display = try DemoDeviceProvider(kind: "display") { [weak self] request in
                     guard request.number == DemoCall.display,
                           let scalar = UnicodeScalar(UInt32(truncatingIfNeeded: request.arguments[0])) else {
@@ -47,7 +53,10 @@ final class Service: NSObject, NSXPCListenerDelegate, TarwindControl, KernelHost
                     DispatchQueue.main.async { self?.devices.hid?.deliver(HostEvent(kind: "keyDown", text: String(scalar))) }
                     return GateReply(result: CallResult())
                 }
-                self.displayProvider = display; self.registry.register(display)
+                let gpu = try DemoDeviceProvider(kind: "gpu") { _ in GateReply(result: CallResult(status: 1)) }
+                self.graphicsPorts = [display, gpu]
+                self.registry.register(HostedGraphicsDeviceProvider(kind: .macDisplay) { try display.open(slot: $0) })
+                self.registry.register(HostedGraphicsDeviceProvider(kind: .metalGPU) { try gpu.open(slot: $0) })
                 let timer = DispatchSource.makeTimerSource(queue: .main)
                 timer.schedule(deadline: .now(), repeating: 1.0 / 60)
                 timer.setEventHandler { [weak self] in
@@ -62,11 +71,12 @@ final class Service: NSObject, NSXPCListenerDelegate, TarwindControl, KernelHost
             } catch { self.panic(record: Array("Invalid config: \(error)".utf8)) }
         }
     }
-    func shutdownKernel() {
-        displayProvider?.close(); displayProvider = nil
+    @MainActor func shutdownKernel() {
+        graphicsPorts.forEach { $0.close() }; graphicsPorts.removeAll()
         launcher?.shutdown(); launcher = nil
         inputTimer?.cancel(); inputTimer = nil
         kernel?.shutdown(); kernel = nil; state = "stopped"
+        graphics?.shutdown(); graphics = nil
         deviceDrivers = nil
         if panicFD >= 0 { close(panicFD); panicFD = -1 }
     }
@@ -78,6 +88,14 @@ final class Service: NSObject, NSXPCListenerDelegate, TarwindControl, KernelHost
         }
     }
     func shutdown() { DispatchQueue.main.async { self.shutdownKernel() } }
+    func displayEvent(_ data: Data) {
+        DispatchQueue.main.async {
+            guard let event = try? JSONDecoder().decode(DisplayTransportEvent.self, from: data) else {
+                self.console("Invalid display transport event"); return
+            }
+            if let output = self.graphics?.handle(event), let data = try? JSONEncoder().encode(output) { self.resize(data) }
+        }
+    }
     func restart() { if let config, let data = try? JSONEncoder().encode(config) { start(data) } }
     func recovery() { console("Recovery requested (stub)"); restart() }
     func deliver(_ data: Data) {
@@ -112,7 +130,15 @@ final class Service: NSObject, NSXPCListenerDelegate, TarwindControl, KernelHost
         remote?.panic(Data(record)); state = "panic"
     }
     func outputChanged(_ output: DisplayOutput) { if let data = try? JSONEncoder().encode(output) { remote?.outputChanged(data) } }
-    func present(_ surface: IOSurface, output: Int, frame: UInt64) { remote?.present(surface, output: output, frame: frame) }
+    func acquireSurface(output: Int, width: Int, height: Int) -> IOSurface? {
+        MainActor.assumeIsolated { graphics?.acquireSurface(output: output, width: width, height: height) }
+    }
+    func discardSurface(_ surface: IOSurface, output: Int) {
+        MainActor.assumeIsolated { graphics?.discardSurface(surface, output: output) }
+    }
+    func present(_ surface: IOSurface, output: Int, frame: UInt64) {
+        MainActor.assumeIsolated { graphics?.submit(surface, output: output) }
+    }
 }
 for number in [SIGABRT, SIGILL, SIGSEGV, SIGBUS, SIGFPE] { signal(number, crashHandler) }
 let service = Service()

@@ -48,15 +48,13 @@ public final class StubKernel: HostedKernel, HIDProvider {
         if frame == 1 { host?.ready() }
     }
     private func render(_ output: DisplayOutput) {
-        let w = max(64, min(output.width, 4096)), h = max(64, min(output.height, 4096))
-        let properties: [IOSurfacePropertyKey: Any] = [.width: w, .height: h, .bytesPerElement: 4,
-            .bytesPerRow: w * 4, .pixelFormat: UInt32(0x42475241)]
-        guard let surface = IOSurface(properties: properties) else { return }
-        surface.lock(options: [], seed: nil)
+        let w = max(1, min(output.width, 16384)), h = max(1, min(output.height, 16384))
+        guard let surface = devices.display.acquireSurface(output: output.id, width: w, height: h) else { return }
+        guard surface.lock(options: [], seed: nil) == 0 else { devices.display.discardSurface(surface, output: output.id); return }
         guard let context = CGContext(data: surface.baseAddress, width: w, height: h, bitsPerComponent: 8,
             bytesPerRow: surface.bytesPerRow, space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else {
-            surface.unlock(options: [], seed: nil); return
+            surface.unlock(options: [], seed: nil); devices.display.discardSurface(surface, output: output.id); return
         }
         let colors = [NSColor(calibratedRed: 0.08, green: 0.18, blue: 0.28, alpha: 1).cgColor,
                       NSColor(calibratedRed: 0.18, green: 0.47, blue: 0.48, alpha: 1).cgColor]

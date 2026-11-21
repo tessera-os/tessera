@@ -1,6 +1,4 @@
 import AppKit
-import Metal
-import QuartzCore
 import IOSurface
 
 public final class ConsoleOverlay: NSTextField {
@@ -9,18 +7,17 @@ public final class ConsoleOverlay: NSTextField {
 }
 
 public final class DisplayView: NSView {
-    let metal = CAMetalLayer()
-    let device = MTLCreateSystemDefaultDevice()!
-    lazy var queue = device.makeCommandQueue()!
+    public let display: PreviewDisplay?
+    private let displayView: NSView?
     public var output: DisplayOutput
-    public var resized: ((DisplayOutput) -> Void)?
     public var rawEvent: ((NSEvent, CGSize) -> Void)?
     public let console = ConsoleOverlay(wrappingLabelWithString: "Starting Tessera…")
-    public init(output: DisplayOutput) {
+    public init(output: DisplayOutput, displayEvent: @escaping (Data) -> Void = { _ in }) {
         self.output = output
+        display = PreviewDisplay(id: output.id, send: displayEvent)
+        displayView = display?.makeView()
         super.init(frame: NSRect(x: 0, y: 0, width: output.width, height: output.height))
-        wantsLayer = true; metal.device = device; metal.pixelFormat = .bgra8Unorm
-        metal.framebufferOnly = false; layer = metal
+        if let displayView { addSubview(displayView) }
         console.textColor = .white; console.font = .monospacedSystemFont(ofSize: 14, weight: .regular)
         console.backgroundColor = NSColor.black.withAlphaComponent(0.8); console.drawsBackground = true
         console.isEditable = false; console.isSelectable = false
@@ -30,25 +27,8 @@ public final class DisplayView: NSView {
     public required init?(coder: NSCoder) { fatalError() }
     public override var acceptsFirstResponder: Bool { true }
     public override func layout() {
-        super.layout(); metal.drawableSize = CGSize(width: bounds.width, height: bounds.height)
+        super.layout(); displayView?.frame = bounds
         console.frame = bounds.insetBy(dx: 24, dy: 24)
-        output.width = Int(bounds.width); output.height = Int(bounds.height)
-        output.scale = Double(window?.backingScaleFactor ?? 1)
-        resized?(output)
-    }
-    public func present(_ surface: IOSurface) {
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,
-            width: surface.width, height: surface.height, mipmapped: false)
-        descriptor.usage = [.shaderRead]; descriptor.storageMode = .shared
-        guard let source = device.makeTexture(descriptor: descriptor, iosurface: surface, plane: 0),
-              let drawable = metal.nextDrawable(), let command = queue.makeCommandBuffer(),
-              let blit = command.makeBlitCommandEncoder() else { return }
-        blit.copy(from: source, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(),
-                  sourceSize: MTLSize(width: min(source.width, drawable.texture.width),
-                                      height: min(source.height, drawable.texture.height), depth: 1),
-                  to: drawable.texture, destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin())
-        blit.endEncoding(); command.addCompletedHandler { _ in _ = surface }
-        command.present(drawable); command.commit()
     }
     func forward(_ event: NSEvent) {
         rawEvent?(event, bounds.size)

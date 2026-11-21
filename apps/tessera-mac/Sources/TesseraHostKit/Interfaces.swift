@@ -37,6 +37,14 @@ public protocol KernelHost: AnyObject {
 public protocol DisplayProvider: AnyObject {
     func outputChanged(_ output: DisplayOutput)
     func present(_ surface: IOSurface, output: Int, frame: UInt64)
+    func acquireSurface(output: Int, width: Int, height: Int) -> IOSurface?
+    func discardSurface(_ surface: IOSurface, output: Int)
+}
+public extension DisplayProvider {
+    func acquireSurface(output: Int, width: Int, height: Int) -> IOSurface? {
+        IOSurface(properties: [.width: width, .height: height, .bytesPerElement: 4, .pixelFormat: UInt32(0x42475241)])
+    }
+    func discardSurface(_ surface: IOSurface, output: Int) {}
 }
 public protocol HIDProvider: AnyObject { func deliver(_ event: HostEvent) }
 public final class HostDevices {
@@ -62,6 +70,7 @@ public enum KernelFactory {
     func resize(_ output: Data)
     func status(_ reply: @escaping (String) -> Void)
     func deviceFrame(_ dictionary: [String: Data])
+    func displayEvent(_ data: Data)
 }
 @objc public protocol TesseraHost {
     func bootStage(_ name: String)
@@ -69,7 +78,7 @@ public enum KernelFactory {
     func console(_ line: String)
     func panic(_ record: Data)
     func outputChanged(_ output: Data)
-    func present(_ surface: IOSurface, output: Int, frame: UInt64)
+    func present(_ surface: IOSurface, output: UInt64, generation: UInt64, frame: UInt64)
     func audio(_ payload: Data)
     func power(_ payload: Data)
     func deviceFrame(_ dictionary: [String: Data])
@@ -79,7 +88,7 @@ public enum XPCInterfaces {
     public static func host() -> NSXPCInterface {
         let interface = NSXPCInterface(with: TesseraHost.self)
         interface.setClasses(NSSet(object: IOSurface.self) as! Set<AnyHashable>,
-            for: #selector(TesseraHost.present(_:output:frame:)), argumentIndex: 0, ofReply: false)
+            for: #selector(TesseraHost.present(_:output:generation:frame:)), argumentIndex: 0, ofReply: false)
         return interface
     }
 }

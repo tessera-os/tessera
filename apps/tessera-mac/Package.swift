@@ -13,6 +13,9 @@ let package = Package(name: "TesseraMac", platforms: [.macOS(.v26)], products: [
     .package(path: "../../tarwin/drivers/mac-hid"),
     .package(path: "../../tarwin/drivers/mac-audio"),
     .package(path: "../../tarwin/drivers/mac-power"),
+    .package(path: "../../tarwin/drivers/metal-gpu"),
+    .package(path: "../../tarwin/drivers/mac-display"),
+    .package(path: "../../tarwin/tarwin-gpu"),
     .package(path: "../../tarwin/tarwin-arch-hosted")
 ], targets: [
     .target(name: "TesseraHostKit", dependencies: [
@@ -26,6 +29,9 @@ let package = Package(name: "TesseraMac", platforms: [.macOS(.v26)], products: [
         .product(name: "MacHIDDriver", package: "mac-hid"),
         .product(name: "MacAudioDriver", package: "mac-audio"),
         .product(name: "MacPowerDriver", package: "mac-power"),
+        .product(name: "HostedMetalGPU", package: "metal-gpu"),
+        .product(name: "MacDisplay", package: "mac-display"),
+        .product(name: "TarwinGPU", package: "tarwin-gpu"),
         .product(name: "TarwinArchHosted", package: "tarwin-arch-hosted")
     ]),
     .executableTarget(name: "tarwind", dependencies: ["TesseraHostKit"]),

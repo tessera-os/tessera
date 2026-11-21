@@ -21,7 +21,7 @@ do {
     try output.close()
     let text = try String(contentsOf: log, encoding: .utf8)
     print(text, terminator: "")
-    guard process.terminationStatus == 0, text.contains("TESSERA READY"), text.contains("FRAME "), text.contains("TASK CHECKED IN") else {
+    guard process.terminationStatus == 0, text.contains("TESSERA READY"), text.contains("H5 composition received"), text.contains("TASK CHECKED IN") else {
         throw DiskError.io("Boot or frame check failed (exit \(process.terminationStatus))")
     }
     let stages = ["time", "objects", "syscalls", "storage", "network", "scheduler", "ready"]
@@ -33,5 +33,5 @@ do {
     guard FileManager.default.fileExists(atPath: directory.appendingPathComponent("system.trfsdisk").path) else {
         throw DiskError.io("Tarwind did not create the data disk")
     }
-    print("tessera-mac-test PASS: real kernel ready, IOSurface frame, kernel-created disk, task checked in")
+    print("tessera-mac-test PASS: real kernel ready, H5 composition received, kernel-created disk, task checked in")
 } catch { print("tessera-mac-test FAIL: \(error)"); exit(1) }

@@ -13,6 +13,7 @@ final class App: NSObject, NSApplicationDelegate, TesseraHost, NSWindowDelegate 
     var didFrame = false, isReady = false, quitting = false
     var consoleLines: [String] = []
     var bootFailed = false
+    var headlessModes: [UInt64: DisplayOutput] = [:]
     var remote: TarwindControl? { connection?.remoteObjectProxyWithErrorHandler { error in NSLog("XPC: %@", "\(error)") } as? TarwindControl }
     func applicationDidFinishLaunching(_ notification: Notification) {
         if !headless { NSApp.setActivationPolicy(.regular); makeMenu() }
@@ -50,11 +51,15 @@ final class App: NSObject, NSApplicationDelegate, TesseraHost, NSWindowDelegate 
         didFrame = false; isReady = false
         bootFailed = false
         views.values.forEach { $0.console.isHidden = false }
+        views.values.forEach { $0.display?.stop() }; headlessModes.removeAll()
         if let data = try? JSONEncoder().encode(config) { remote?.start(data) }
     }
     @MainActor @objc func stop() { deviceHosts?.close(); deviceHosts = nil; remote?.shutdown(); console("Kernel shut down"); views.values.forEach { $0.console.isHidden = false } }
-    @objc func restart() { views.values.forEach { $0.console.isHidden = false }; remote?.restart() }
-    @objc func recovery() { remote?.recovery() }
+    @MainActor @objc func restart() { start() }
+    @MainActor @objc func recovery() {
+        views.values.forEach { $0.console.isHidden = false; $0.display?.stop() }; headlessModes.removeAll()
+        remote?.recovery()
+    }
     func bootStage(_ name: String) { console("Stage: \(name)") }
     func ready() { DispatchQueue.main.async {
         self.deviceHosts?.close()
@@ -71,14 +76,26 @@ final class App: NSObject, NSApplicationDelegate, TesseraHost, NSWindowDelegate 
     } }
     func panic(_ record: Data) { console("PANIC: " + String(decoding: record, as: UTF8.self)) }
     func outputChanged(_ data: Data) { DispatchQueue.main.async {
-        guard !self.headless, let output = try? JSONDecoder().decode(DisplayOutput.self, from: data) else { return }
-        if self.windows[output.id] != nil { return }
-        let view = DisplayView(output: output)
+        guard let output = try? JSONDecoder().decode(DisplayOutput.self, from: data), output.id >= 0 else { return }
+        if self.headless {
+            let id = UInt64(output.id) + 1
+            guard self.headlessModes[id] == nil else { return }
+            self.headlessModes[id] = output
+            self.sendDisplay(.mode(output: id, generation: 1, width: output.width, height: output.height, scale: output.scale, refreshHz: 60))
+            return
+        }
+        if let view = self.views[output.id] {
+            let size = view.convertToBacking(view.bounds).size
+            view.display?.resume(width: Int(size.width.rounded()), height: Int(size.height.rounded()),
+                                 scale: Double(view.window?.backingScaleFactor ?? 1),
+                                 refreshHz: view.window?.screen?.maximumFramesPerSecond ?? 60)
+            return
+        }
+        let view = DisplayView(output: output) { [weak self] in self?.remote?.displayEvent($0) }
         view.rawEvent = { [weak self] event, size in
             guard let hid = self?.deviceHosts?.hid else { return }
             InputEvents.translate(event, using: hid, windowSize: size)
         }
-        view.resized = { [weak self] output in if let data = try? JSONEncoder().encode(output) { self?.remote?.resize(data) } }
         let window = NSWindow(contentRect: view.frame, styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
         window.title = "Tessera"; window.contentView = view; window.delegate = self
         window.collectionBehavior = [.fullScreenPrimary]; window.acceptsMouseMovedEvents = true
@@ -87,9 +104,22 @@ final class App: NSObject, NSApplicationDelegate, TesseraHost, NSWindowDelegate 
         view.console.isHidden = self.isReady && !self.bootFailed
         NSApp.activate(ignoringOtherApps: true)
     } }
-    func present(_ surface: IOSurface, output: Int, frame: UInt64) { DispatchQueue.main.async {
-        if !self.didFrame { print("FRAME \(frame)"); fflush(stdout); self.didFrame = true }
-        if !self.headless { self.views[output]?.present(surface) }; self.finishIfNeeded()
+    @MainActor func sendDisplay(_ event: DisplayTransportEvent) {
+        if let data = try? JSONEncoder().encode(event) { remote?.displayEvent(data) }
+    }
+    func present(_ surface: IOSurface, output: UInt64, generation: UInt64, frame: UInt64) { DispatchQueue.main.async {
+        guard output > 0, output <= UInt64(Int.max) else { return }
+        let accepted: Bool
+        if self.headless {
+            accepted = generation == 1 && self.headlessModes[output]?.width == surface.width && self.headlessModes[output]?.height == surface.height
+            self.sendDisplay(.discarded(output: output, generation: generation, serial: frame))
+        } else if let display = self.views[Int(output - 1)]?.display {
+            accepted = display.receive(surface, output: output, generation: generation, serial: frame)
+        } else {
+            accepted = false; self.sendDisplay(.discarded(output: output, generation: generation, serial: frame))
+        }
+        if accepted && !self.didFrame { print("FRAME \(frame) output=\(output) generation=\(generation) H5 composition received"); fflush(stdout); self.didFrame = true }
+        self.finishIfNeeded()
     } }
     func audio(_ payload: Data) {}
     func audioLink(_ link: AudioLinkEnvelope, reply: @escaping (Bool) -> Void) {
@@ -106,6 +136,11 @@ final class App: NSObject, NSApplicationDelegate, TesseraHost, NSWindowDelegate 
     }
     func windowDidBecomeKey(_ notification: Notification) { deviceHosts?.hid.setFocused(true) }
     func windowDidResignKey(_ notification: Notification) { deviceHosts?.hid.setFocused(false) }
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              let id = windows.first(where: { $0.value === window })?.key else { return }
+        views[id]?.display?.stop()
+    }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { !headless }
     func applicationWillTerminate(_ notification: Notification) { quitting = true; deviceHosts?.close(); remote?.shutdown(); connection?.invalidate() }
     func makeMenu() {
