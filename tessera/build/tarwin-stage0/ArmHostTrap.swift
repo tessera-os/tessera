@@ -167,6 +167,16 @@
     ldr x3, =0x57510b510
     cmp x2, x3
     b.ne .Lbad_mode
+    // These private roots use 64-bit direct-permission leaves. Do not
+    // reinterpret their AP/PXN/UXN bits as indices or enable overlays.
+    mrs x2, S3_0_C0_C7_3 // ID_AA64MMFR3_EL1
+    and x2, x2, #15      // TCRX
+    cbz x2, .Ldirect
+    cmp x2, #1
+    b.ne .Lbad_mode
+    mrs x2, S3_4_C2_C0_3 // TCR2_EL2
+    cbnz x2, .Lbad_mode
+    .Ldirect:
     mrs x2, mair_el2
     and x2, x2, #255
     cmp x2, #255

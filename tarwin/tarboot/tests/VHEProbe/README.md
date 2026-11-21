@@ -24,6 +24,14 @@ invalidation, checks the old identity map and stack guard are absent, and
 recovers another store fault on its high-half stack. These are data-only
 user roots, not live processes. ASID reuse and SMP shootdown are not tested.
 
+The probe prints the CPU's GCS, S1PIE and TCRX feature nibbles. With
+all three at version 1, a second guest enables permission indirection
+before enabling its MMU. It checks that the host refuses a direct-permission
+root without changing TTBR0. On a private test page with EL0 GCS permission,
+the CPU completes a GCSSTTR, rejects an ordinary STTR, and reads back the
+first word unchanged. Both instructions run at EL2 with EL0 access checks;
+no EL0 instructions run, and no thread's guarded stack is installed.
+
 The lower-EL synchronous slot uses a separate private frame and requires a
 kernel-owned dispatcher. This test does **not** exercise that slot, any
-return to EL0, signed user code, process keys, GCS, MTE tags, or interrupts.
+return to EL0, signed user code, process keys, GCS call/return, MTE tags, or interrupts.

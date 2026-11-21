@@ -30,11 +30,21 @@ SECTIONS {
 }
 LD
 "$bin/ld.lld" --gc-sections -T "$d/sections" "$d/start.o" "$d/host.o" "$d/probe.o" -o "$d/probe.elf"
-# Bound a guest whose unhandled exception correctly stops the boot CPU.
-perl -e 'alarm 10; exec @ARGV' qemu-system-aarch64 -machine virt,virtualization=on \
-  -cpu max -smp 1 -m 128M -nodefaults -nographic -monitor none -serial none \
-  -semihosting-config enable=on,target=native -kernel "$d/probe.elf" >"$d/log" 2>&1 || {
-  cat "$d/log" >&2; exit 1
+run_guest() {
+  # Bound a guest whose unhandled exception correctly stops the boot CPU.
+  perl -e 'alarm 10; exec @ARGV' qemu-system-aarch64 -machine virt,virtualization=on \
+    -cpu max -smp 1 -m 128M -nodefaults -nographic -monitor none -serial none \
+    -semihosting-config enable=on,target=native -kernel "$d/$1.elf" >"$d/log" 2>&1 || {
+      cat "$d/log" >&2; exit 1
+    }
 }
+run_guest probe
 grep -Fx 'VHE-COPY-READ-WRITE-ABORT-DENY' "$d/log"
 grep -Fx 'VHE-HIGH-HOST-PRIVATE-ROOT-SWITCH' "$d/log"
+grep -Ex 'VHE-CPU-GCS-S1PIE-TCRX=[0-9a-f]{3}' "$d/log"
+if grep -Fxq 'VHE-CPU-GCS-S1PIE-TCRX=111' "$d/log"; then
+  "$bin/clang" -target aarch64-none-none-elf -march=armv9.4-a+gcs -DTEST_GCS -c "$d/start.S" -o "$d/gcs.o"
+  "$bin/ld.lld" --gc-sections -T "$d/sections" "$d/gcs.o" "$d/host.o" "$d/probe.o" -o "$d/gcs.elf"
+  run_guest gcs
+  grep -Fx 'VHE-GCS-STORE-ORDINARY-WRITE-DENIED' "$d/log"
+fi

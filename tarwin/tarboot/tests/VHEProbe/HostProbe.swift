@@ -12,6 +12,22 @@ _start:
   msr spsel, #1
   ldr x0, =stack_top
   mov sp, x0
+  // Report guest-visible features, not a claim that a control stack is
+  // installed. W1 cannot use an ordinary writable page as a GCS.
+  mrs x2, id_aa64pfr1_el1
+  ubfx x2, x2, #44, #4
+  mrs x3, S3_0_C0_C7_3 // ID_AA64MMFR3_EL1
+  ubfx x4, x3, #8, #4  // S1PIE
+  and x3, x3, #15     // TCRX
+  adr x1, gcs_features
+  bl hex_digit
+  mov x2, x4
+  bl hex_digit
+  mov x2, x3
+  bl hex_digit
+  adr x1, gcs_report
+  mov x0, #4
+  hlt #0xf000
   ldr x0, =host_root
   ldr x1, =private_a
   ldr x2, =private_b
@@ -37,6 +53,28 @@ _start:
   msr tcr_el2, x0
   mov x0, #255
   msr mair_el2, x0
+  #ifdef TEST_GCS
+  mrs x2, id_aa64pfr1_el1
+  ubfx x2, x2, #44, #4
+  cmp x2, #1
+  b.ne failed
+  mrs x3, S3_0_C0_C7_3
+  ubfx x4, x3, #8, #4
+  cmp x4, #1
+  b.ne failed
+  and x4, x3, #15
+  cmp x4, #1
+  b.ne failed
+  // Diagnostic layout only. EL2 indices 8=RX and 12=RW cover the
+  // privileged boot text and data. No EL2 access to user frames.
+  // The only user leaf permission is index 14=GCS. All others deny.
+  ldr x0, =0x000c000a00000000
+  msr S3_4_C10_C2_3, x0
+  mov x0, #0x0900000000000000
+  msr S3_4_C10_C2_2, x0
+  mov x0, #2
+  msr S3_4_C2_C0_3, x0
+  #endif
   dsb sy
   isb
   tlbi alle2
@@ -46,8 +84,10 @@ _start:
   orr x0, x0, #1
   msr sctlr_el2, x0
   isb
+  #ifndef TEST_GCS
   bl tarwin_vhe_copy_probe
   cbnz w0, failed
+  #endif
   // Switching away while running from the low identity map must refuse.
   msr pan, #1
   ldr x0, =private_a
@@ -68,6 +108,38 @@ _start:
   add x19, x19, x20
   msr tpidr_el2, x19
   isb
+  #ifdef TEST_GCS
+  // Do not install a direct-permission TTBR0 under permission indirection.
+  ldr x0, =private_a
+  ldr x1, =host_root
+  bl tarwin_w1_switch_user_root
+  cbnz w0, failed
+  mrs x9, ttbr0_el2
+  ldr x10, =root
+  cmp x9, x10
+  b.ne failed
+  mov x21, #0x100000000
+  add x21, x21, #16, lsl #12
+  mov x22, #0xcb34
+  gcssttr x22, [x21]
+  gcsb dsync
+  mov x0, x21
+  mov x1, #0x5555
+  bl tarwin_w1_store_user_word
+  cbnz w0, failed
+  mov x0, x21
+  mov x1, x19
+  bl tarwin_w1_load_user_word
+  cbz w0, failed
+  ldr x0, [x19]
+  cmp x0, x22
+  b.ne failed
+  adr x1, gcs_ok
+  mov x0, #4
+  hlt #0xf000
+  adr x1, exit_ok
+  b exit_host
+  #endif
   ldr x0, =private_a
   ldr x1, =host_root
   bl tarwin_w1_switch_user_root
@@ -135,13 +207,23 @@ exit_host:
   mov x0, #0x20
   hlt #0xf000
   b .
+hex_digit:
+  cmp x2, #10
+  add x0, x2, #48
+  add x2, x2, #87
+  csel x0, x0, x2, lo
+  strb w0, [x1], #1
+  ret
 ok: .asciz "VHE-COPY-READ-WRITE-ABORT-DENY\\nVHE-HIGH-HOST-PRIVATE-ROOT-SWITCH\\n"
 bad: .asciz "VHE-COPY-FAILED\\n"
+gcs_ok: .asciz "VHE-GCS-STORE-ORDINARY-WRITE-DENIED\\n"
 .p2align 3
 exit_ok: .quad 0x20026,0
 exit_bad: .quad 0x20026,1
 
 .data
+gcs_report: .ascii "VHE-CPU-GCS-S1PIE-TCRX="
+gcs_features: .asciz "000\\n"
 .p2align 14
 root: .quad l1+3
 .p2align 14
@@ -164,6 +246,10 @@ for i in 34..<128 {
 print("""
 .p2align 14
 user: .quad 0x0060000040200fc3,0,0x0060000040204783,0x0060000040208f43
+  #ifdef TEST_GCS
+  // Index 14 (UXN|PXN|DBM) selects GCS only in this second guest.
+  .quad 0x006800004020cf03
+  #endif
 .p2align 14
 host_root: .space 65536
 private_a: .space 65536
