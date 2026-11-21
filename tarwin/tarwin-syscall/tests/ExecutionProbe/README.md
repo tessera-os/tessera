@@ -23,6 +23,8 @@ message and a job handle, verifies the child-local name, decodes the
 received grant, and rejects reuse of the handoff after the read.
 Peek and read use the native register ABI with private diagnostic buffers,
 not EL0 pointers. After draining Startup, peek reports peer closure.
+Before preload, native write sends a grant through the FIFO, invalidates
+the sender name and receives the grant back under a fresh name.
 Before preload, a 64-byte synchronous call and reply moves a grant both
 ways between the two tables without using either channel FIFO. The local
 scheduler selects the waiting worker on the caller's scheduling context

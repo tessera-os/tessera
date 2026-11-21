@@ -2,6 +2,7 @@ import TarwinABI
 import TarwinChannelCalls
 import TarwinIPCChannels
 import TarwinObject
+import TarwinObjectCalls
 import TarwinSyscall
 import XCTest
 
@@ -18,7 +19,7 @@ private final class PairOwner: ChannelNamespace {
       (heads + i).initialize(
         to: ObjectHeader(
           source: ids, ownerJob: 1,
-          kind: i == 3 ? TarwinKind.port : TarwinKind.channel, maximumRights: 7)!)
+          kind: i == 3 ? TarwinKind.port : TarwinKind.channel, maximumRights: 15)!)
     }
     lengths.initialize(repeating: .init())
     table = HandleTable(storage: cells, salt: 4)!
@@ -83,6 +84,68 @@ private final class Output: ChannelUserOutput {
       h.isEmpty || h == 0x2000..<0x2008
     else { return nil }
     return body(.init(rebasing: bytes.prefix(b.count)), .init(rebasing: names.prefix(h.count / 8)))
+  }
+}
+
+private struct Capture: ChannelUserInput {
+  let userRange: Range<UInt64> = 1..<0x4000
+  var names: [UInt64] = [], data: [UInt8] = [3, 7]
+  var fault = false
+  mutating func withCaptured(
+    names h: Range<UInt64>, bytes b: Range<UInt64>?,
+    _ body: (UnsafeBufferPointer<UInt64>, UnsafeRawBufferPointer?) -> CallResult
+  ) -> CallResult? {
+    guard h.count == names.count * 8, h.isEmpty || h.lowerBound == 0x2000 else { return nil }
+    return names.withUnsafeBufferPointer { handles in
+      guard !fault, let b, b.count == data.count else { return body(handles, nil) }
+      return data.withUnsafeBytes { body(handles, $0) }
+    }
+  }
+}
+
+private struct Events: HandleRetirement {
+  var removed: [UInt64] = []
+  mutating func invalidate(_ name: UInt64) { removed.append(name) }
+  func retire(_ header: UnsafePointer<ObjectHeader>) { XCTFail("fixture holds a reference") }
+}
+
+final class WriteTests: XCTestCase {
+  func testMoveOrDropOnlyAfterTransferAndEndpointPreflight() {
+    let owner = PairOwner()
+    let writer = owner.install(0, rights: 8)
+    let alias = owner.install(0, rights: 2)
+    let readOnly = owner.install(1, rights: 4)
+    let denied = owner.install(2, rights: 4)
+    var calls = ChannelWriteCalls(space: owner, memory: Capture(), lifecycle: Events())
+    func send(_ name: UInt64, _ handles: [UInt64], length: UInt64 = 2, address: UInt64 = 0x2000)
+      -> UInt32
+    {
+      calls.memory.names = handles
+      return [name, 0x1000, length, address, UInt64(handles.count)].withUnsafeBufferPointer {
+        calls.invoke(number: TarwinCall.channelWrite, words: $0).code
+      }
+    }
+    let first = owner.install(2, rights: 6)
+    XCTAssertEqual(send(readOnly, [first]), 4)
+    XCTAssertEqual(send(writer, [first, denied]), 4)
+    XCTAssertEqual(send(writer, [first, alias]), 1)
+    XCTAssertEqual(send(writer, [first, first]), 2)
+    XCTAssertEqual(send(writer, [first], address: 0x2008), 1)
+    XCTAssertTrue(calls.lifecycle.removed.isEmpty)
+    calls.memory.fault = true
+    XCTAssertEqual(send(writer, [first]), 1)
+    calls.memory.fault = false
+    let second = owner.install(2, rights: 6)
+    XCTAssertEqual(send(writer, [second], length: .max), 6)
+    let accepted = owner.install(2, rights: 6)
+    XCTAssertEqual(send(writer, [accepted]), 0)
+    XCTAssertEqual(owner.pair.peek(at: .b)?.handles, 1)
+    let full = owner.install(2, rights: 6)
+    XCTAssertEqual(send(writer, [full]), 24)
+    owner.pair.close(.b) { _ in XCTFail() }
+    let closed = owner.install(2, rights: 6)
+    XCTAssertEqual(send(writer, [closed]), 27)
+    XCTAssertEqual(calls.lifecycle.removed, [first, second, accepted, full, closed])
   }
 }
 

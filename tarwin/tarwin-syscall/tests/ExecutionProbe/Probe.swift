@@ -122,6 +122,50 @@ private struct PrivateOutput: ChannelUserOutput {
   }
 }
 
+extension PrivateOutput: ChannelUserInput {
+  func withCaptured(
+    names: Range<UInt64>, bytes: Range<UInt64>?,
+    _ body: (UnsafeBufferPointer<UInt64>, UnsafeRawBufferPointer?) -> CallResult
+  ) -> CallResult? {
+    guard names.lowerBound == UInt64(UInt(bitPattern: h.baseAddress)), names.count == h.count * 8
+    else { return nil }
+    guard let bytes, bytes.lowerBound == UInt64(UInt(bitPattern: b.baseAddress)),
+      bytes.count == b.count
+    else { return body(.init(h), nil) }
+    return body(.init(h), .init(b))
+  }
+}
+
+private func queuedWrite(
+  _ pair: inout ChannelPair, header: UnsafePointer<ObjectHeader>, table: inout HandleTable,
+  name: inout UInt64, scratch: UnsafeMutableRawBufferPointer
+) -> Bool {
+  guard case .installed(let writer) = table.install(header, rights: 8) else { return false }
+  scratch[0] = 71
+  let sent = withUnsafeMutablePointer(to: &name) { hp in
+    withUnsafeMutablePointer(to: &table) { tp in
+      withUnsafeMutablePointer(to: &pair) { qp in
+        let memory = PrivateOutput(b: .init(rebasing: scratch[..<1]), h: .init(start: hp, count: 1))
+        var gate = RegisterGate(
+          calls: ChannelWriteCalls(
+            space: PrivatePair(pair: qp, table: tp),
+            memory: memory, lifecycle: Lifecycle()))
+        let r = NativeChannels.write(
+          writer, bytes: .init(memory.b), names: .init(memory.h), gate: &gate)
+        return r.status == 0 && gate.calls.lifecycle.removed == hp.pointee
+      }
+    }
+  }
+  let old = name
+  var size = ChannelSize()
+  scratch[0] = 0
+  return sent && table.close(writer) { _ in }
+    && withUnsafeMutablePointer(to: &name) {
+      pair.receive(
+        at: .b, into: scratch, names: .init(start: $0, count: 1), table: &table, size: &size)
+    } == .ok && size.handles == 1 && size.bytes == 1 && scratch[0] == 71 && name != old
+}
+
 private func bootstrapChannel(
   _ arena: inout Arena, process: inout ProcessExecution, tree: borrowing JobTree,
   ids: borrowing KoidSource, job: UnsafePointer<ObjectHeader>, roots: UnsafeMutableRawBufferPointer
@@ -130,13 +174,14 @@ private func bootstrapChannel(
   for i in heads.indices {
     (heads.baseAddress! + i).initialize(
       to: ObjectHeader(
-        source: ids, ownerJob: process.job.id, kind: TarwinKind.channel, maximumRights: 4)!)
+        source: ids, ownerJob: process.job.id, kind: TarwinKind.channel,
+        maximumRights: i == 0 ? 8 : 4)!)
   }
   let sizes = arena.take(ChannelSize.self, count: 2)
   let grants = arena.take(ObjectGrant.self, count: 128)
   let payload = arena.take(UInt8.self, count: 112)
   let scratch = arena.take(UInt8.self, count: 56)
-  let cells = arena.take(HandleCell.self, count: 1)
+  let cells = arena.take(HandleCell.self, count: 2)
   sizes.initialize(repeating: ChannelSize())
   var staging = HandleTable(storage: cells, salt: 8)!
   defer {
@@ -164,6 +209,11 @@ private func bootstrapChannel(
       }) == true
   else { return false }
   var tag: UInt32 = 13
+  guard
+    queuedWrite(
+      &pair, header: .init(heads.baseAddress!), table: &staging, name: &jobName,
+      scratch: .init(scratch))
+  else { return false }
   var invalidated: UInt64 = 0
   let token = withUnsafePointer(to: &tag) { tp in
     withUnsafePointer(to: &jobName) { np in

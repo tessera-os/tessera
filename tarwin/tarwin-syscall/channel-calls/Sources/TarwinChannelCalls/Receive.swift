@@ -23,17 +23,50 @@ public protocol ChannelUserOutput {
   ) -> CallResult?
 }
 
-private func failure(_ code: UInt32, detail: UInt64 = 0) -> CallResult {
+func failure(_ code: UInt32, detail: UInt64 = 0) -> CallResult {
   CallResult(status: syscallStatus(code, 1), detail: detail)
 }
 
-private func span(_ address: UInt64, _ count: UInt64, within range: Range<UInt64>) -> Range<UInt64>?
-{
+func span(_ address: UInt64, _ count: UInt64, within range: Range<UInt64>) -> Range<UInt64>? {
   if count == 0 { return 0..<0 }
   guard address != 0, range.contains(address), count <= range.upperBound - address else {
     return nil
   }
   return address..<(address + count)
+}
+
+enum ResolvedEnd {
+  case denied(UInt32)
+  case found(ChannelEnd)
+}
+
+func resolveEnd(
+  _ name: UInt64, need: UInt64, pair: borrowing ChannelPair, table: borrowing HandleTable
+) -> ResolvedEnd {
+  switch table.reader.pinWithinEpoch(name, kind: TarwinKind.channel, need: need) {
+  case .invalidHandle: return .denied(2)
+  case .wrongType: return .denied(3)
+  case .accessDenied: return .denied(4)
+  case .found(let grant):
+    let end = pair.end(of: grant.header)
+    // The locked table still owns the source reference.
+    grant.drop { _ in preconditionFailure("lost locked channel reference") }
+    guard let end else { return .denied(2) }
+    return .found(end)
+  }
+}
+
+func channelResult(_ result: ChannelStatus, size: ChannelSize = ChannelSize()) -> CallResult {
+  switch result {
+  case .ok: return CallResult(first: UInt64(size.bytes), second: UInt64(size.handles))
+  case .bufferTooSmall(let bytes, _): return failure(7, detail: UInt64(bytes))
+  case .shouldWait: return failure(24)
+  case .peerClosed: return failure(27)
+  case .handleLimit: return failure(33)
+  case .outOfRange: return failure(6)
+  case .invalidHandle: return failure(2)
+  case .accessDenied: return failure(4)
+  }
 }
 
 public struct ChannelReceiveCalls<Space: ChannelNamespace, Memory: ChannelUserOutput>: CallProvider
@@ -78,15 +111,9 @@ public struct ChannelReceiveCalls<Space: ChannelNamespace, Memory: ChannelUserOu
     output: (UnsafeMutableRawBufferPointer, UnsafeMutableBufferPointer<UInt64>)?
   ) -> CallResult {
     space.withPair(named: name) { pair, table in
-      switch table.reader.pinWithinEpoch(name, kind: TarwinKind.channel, need: 1 << 2) {
-      case .invalidHandle: return failure(2)
-      case .wrongType: return failure(3)
-      case .accessDenied: return failure(4)
-      case .found(let grant):
-        let end = pair.end(of: grant.header)
-        // The locked table still owns the source reference.
-        grant.drop { _ in preconditionFailure("lost locked channel reference") }
-        guard let end else { return failure(2) }
+      switch resolveEnd(name, need: 1 << 2, pair: pair, table: table) {
+      case .denied(let code): return failure(code)
+      case .found(let end):
         var size = ChannelSize()
         let result: ChannelStatus
         if let (bytes, names) = output {
@@ -94,16 +121,7 @@ public struct ChannelReceiveCalls<Space: ChannelNamespace, Memory: ChannelUserOu
         } else {
           result = pair.peek(at: end, size: &size)
         }
-        switch result {
-        case .ok: return CallResult(first: UInt64(size.bytes), second: UInt64(size.handles))
-        case .bufferTooSmall(let bytes, _): return failure(7, detail: UInt64(bytes))
-        case .shouldWait: return failure(24)
-        case .peerClosed: return failure(27)
-        case .handleLimit: return failure(33)
-        case .outOfRange: return failure(6)
-        case .invalidHandle: return failure(2)
-        case .accessDenied: return failure(4)
-        }
+        return channelResult(result, size: size)
       }
     }
   }
