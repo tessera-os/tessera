@@ -86,6 +86,7 @@ final class Stage1Tests: XCTestCase {
                           XCTAssertEqual(r.binding.entryRVA, 0x4010)
                           XCTAssertEqual(r.binding.slotRVA, 0x8010)
                           XCTAssertEqual(r.binding.typeTag, 0x5e57_0002)
+                          checkPlacement(r)
                           XCTAssertEqual(
                             Data(SHA256.hash(data: Data(r.process.bytes))),
                             withUnsafeBytes(of: r.initSHA256) { Data($0) })
@@ -186,5 +187,41 @@ final class Stage1Tests: XCTestCase {
       a = archive
       s = sidecar
     }
+  }
+}
+
+private func checkPlacement(_ set: W1BootSet) {
+  let base: UInt64 = 1 << 32
+  let limit: UInt64 = 1 << 43
+  let page: UInt64 = 16384
+  let p = base..<base + 0xc000
+  let l = limit - 0x8000..<limit
+  let empty = UnsafeBufferPointer<Range<UInt64>>(start: nil, count: 0)
+  let slots = (limit - base) / page
+  // Independently known rank counts: three pages for init then two for the
+  // library. Reject the first draw, pick first init and last library.
+  var words = [0, slots - 2, 2 * (slots - 4) - 1].makeIterator()
+  guard let plan = set.addressPlan(occupied: empty, nextRandom: { words.next() }) else {
+    return XCTFail("separate reserved image slots")
+  }
+  XCTAssertNil(words.next())
+  XCTAssertEqual(plan.processReservation, p)
+  XCTAssertEqual(plan.libraryReservation, l)
+  XCTAssertEqual(plan.processEntry, base + 0x4010)
+  XCTAssertEqual(plan.libraryCode, limit - 0x4000..<limit - 0x3fe4)
+  XCTAssertEqual(plan.targetAddress, limit - 0x3ff0)
+  XCTAssertEqual(plan.slotAddress, base + 0x8010)
+  XCTAssertEqual(plan.storageModifier, 0x0002_0001_0000_8010)
+  XCTAssertEqual(plan.sealReadOnly, base + 0x8000..<base + 0xc000)
+  XCTAssertNil(set.addressPlan(occupied: empty, nextRandom: { nil }))
+  XCTAssertNil(set.addressPlan(occupied: empty, nextRandom: { 0 }))
+  [base + (minimumImagePositions + 1) * page..<limit].withUnsafeBufferPointer { occupied in
+    XCTAssertNil(
+      set.addressPlan(
+        occupied: occupied,
+        nextRandom: {
+          XCTFail("insufficient space")
+          return nil
+        }))
   }
 }

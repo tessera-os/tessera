@@ -1460,10 +1460,12 @@ All fields little-endian, block aligned to 4,096 bytes.
 | Region | aarch64 | x64 | rv64 |
 | --- | --- | --- | --- |
 | Null guard | `0` to `2^32` | `0` to `2^32` | `0` to `2^32` |
-| Images (randomized) | `2^32` to `2^40` | same | same |
-| Heap spans, stacks, mappings (randomized) | `2^40` to `2^46` | same | same |
+| Images (randomized) | `2^32` to `2^43` | same | same |
+| Heap spans, stacks, mappings (randomized) | `2^43` to `2^46` | same | same |
 | GPU address space reservation (Ember, randomized) | `2^46` to `2^47 − 2^36` | same | same |
 | Kernel time page and LibTessera shared pages | Top 2^36 bytes of the user range | same | same |
+
+The intervals are half-open. On all three architectures the kernel chooses each image's load bias uniformly among at least 2^28 legal positions (section 13.9), using fresh kernel CSPRNG output. Count positions after applying the actual ELF alignment, page-rounded reservation size and existing reservations, not pages of an empty window. The entire reservation must fit; reserve under exclusive map ownership or retry against a new map snapshot. If fewer positions remain, fail the load rather than reducing entropy or spilling into the adjacent region.
 
 ### A.3 System-call registers
 

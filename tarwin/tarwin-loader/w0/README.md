@@ -62,6 +62,17 @@ intervals **as RVAs**, and resolves an import slot to a tagged export RVA.
 `initSHA256` covers the entire signed init ELF, not its archive directory
 entry, BLAKE3 build ID or rounded code range.
 
+`set.addressPlan(occupied:nextRandom:)` chooses both image reservations from
+Appendix A.2's image window. Hold exclusive map ownership, pass every
+occupied image reservation in ascending order, and draw from the seeded
+kernel CSPRNG. Commit the returned pair atomically before releasing the
+lock. The planner counts aligned starts after fragmentation and rejects
+entropy below 28 bits, including for the second image after placing init.
+It may refuse a tight pair before drawing if it cannot guarantee enough
+framework positions for every init bias. A result gives the exact library
+RX bounds, slot VA, target VA, process-key IA storage modifier, and pages
+to seal. None is evidence that a mapping exists or a pointer is signed.
+
 Before entry, the kernel must still verify and install pages from those
 bytes, establish private mapping provenance, authenticate the function
 pointer for the process and seal RELRO, extend PCR 10 with `initSHA256` and

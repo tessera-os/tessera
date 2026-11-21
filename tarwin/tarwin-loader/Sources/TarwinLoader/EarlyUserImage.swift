@@ -9,6 +9,10 @@ public struct EarlyUserImage {
   public let image: InspectedImage
   /// Unrounded file-backed RX bytes only, relative to the image base.
   public let code: Range<UInt64>
+  /// Reservation starts at the load bias and includes holes between segments.
+  public let reservationBytes, biasAlignment: UInt64
+  /// File-backed RELRO bytes (before mapping and sealing).
+  public let relroBytes: Range<UInt64>?
 }
 
 /// Restricted QEMU W1 input to the loader, never authority to run. The single
@@ -49,6 +53,9 @@ public func inspectEarlyUserImage(
   var writable: Int?
   var relro: Int?
   var note = false
+  let page = imagePage(machine)
+  var reservation: UInt64 = 0
+  var alignment = page
   for h in stride(
     from: image.programHeaders.lowerBound, to: image.programHeaders.upperBound, by: 56)
   {
@@ -57,6 +64,10 @@ public func inspectEarlyUserImage(
     switch r.u32(h) {
     case 1:
       guard size != 0, size == r.u64(h + 40) else { return nil }
+      // inspectELF checked the page-rounded end and load order.
+      let end = va + size
+      reservation = end + ((page - (end % page)) % page)
+      alignment = max(alignment, r.u64(h + 48))
       switch r.u32(h + 4) {
       case 4: break
       case 5:
@@ -97,5 +108,11 @@ public func inspectEarlyUserImage(
         ".ridlmeta", programs: image.programHeaders, unloaded: true)
     else { return nil }
   }
-  return EarlyUserImage(image: image, code: rx)
+  return EarlyUserImage(
+    image: image, code: rx, reservationBytes: reservation,
+    biasAlignment: alignment,
+    relroBytes: relro.map { h in
+      let start = r.u64(h + 16)
+      return start..<start + r.u64(h + 32)
+    })
 }
