@@ -93,7 +93,7 @@ final class QTest {
             + (tcpFixture ? ",guestfwd=tcp:10.0.2.100:4242-chardev:tcpfixture" : "")
             + (listenerSocket.map { ",hostfwd=unix:\($0)-10.0.2.15:4242" } ?? "")
           : "hubport,id=nic\(i),hubid=1",
-        "-device", device + ",netdev=nic\(i),iommu_platform=on,mac=52:54:00:00:00:0\(i+1)",
+        "-device", device + ",netdev=nic\(i),iommu_platform=on,host_mtu=1500,mac=52:54:00:00:00:0\(i+1)",
       ]
     }
     if machine != .x64 { process.arguments! += ["-global", "virtio-mmio.force-legacy=off"] }
@@ -455,11 +455,12 @@ func run() throws {
   let intx = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--intx"
   let nvme = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--nvme"
   let coldPCI = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--cold-virt-pci"
+  let gpu = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--gpu"
   let ufs =
     CommandLine.arguments.count == 3 && ["--ufs", "--ufs-vtd"].contains(CommandLine.arguments[2])
   guard
     CommandLine.arguments.count == 2 || translated || neighbors || streams || tcp || listen || intx
-      || nvme || ufs || coldPCI,
+      || nvme || ufs || coldPCI || gpu,
     let machine = Machine(
       rawValue: URL(fileURLWithPath: CommandLine.arguments[1]).lastPathComponent)
   else {
@@ -476,6 +477,10 @@ func run() throws {
   if coldPCI {
     guard machine == .arm else { throw Failure("--cold-virt-pci requires AArch64 virt-11.1") }
     try testColdVirtPCI(binary: CommandLine.arguments[1], disk: disk)
+    return
+  }
+  if gpu {
+    try testGPU(binary: CommandLine.arguments[1], disk: disk, machine: machine)
     return
   }
   if ufs {
@@ -559,6 +564,8 @@ do {
   print(
     CommandLine.arguments.last == "--cold-virt-pci"
       ? "PASS: Arm firmware-style queues reset; both PCI streams denied access to their former pages. No boot or W1 entry."
+      : CommandLine.arguments.last == "--gpu"
+      ? "PASS: virtio-gpu fenced 2D scanout, all 3072 pixels matched QEMU display capture; backing retired"
       : CommandLine.arguments.last == "--ufs-vtd"
       ? "PASS: q35 UFS translated command pages and directional scatter DMA; nine page drains, read remap, both backing files verified"
       : CommandLine.arguments.last == "--ufs"

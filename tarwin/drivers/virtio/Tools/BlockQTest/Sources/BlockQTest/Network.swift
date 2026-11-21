@@ -7,6 +7,15 @@ import TarwinNetWire
 import VirtioGuest
 import VirtioNetService
 
+func activeTestMAC(_ nic: DeviceTransport) throws -> [UInt8] {
+  guard
+    let config = NetConfiguration.snapshot(
+      features: nic.features, configBytes: nic.configBytes,
+      generation: nic.generation, read: nic.config), config.linkUp == true, config.mtu == 1500
+  else { throw Failure("Missing stable NIC identity, carrier or configured MTU") }
+  return config.mac
+}
+
 func netSubmit(
   _ q: QTest, _ queue: inout SplitQueue, _ memory: QueueMemory, _ id: UInt64, _ packet: NetPacket,
   _ receive: Bool
@@ -26,7 +35,8 @@ func netSubmit(
       { i, head in q.write("w", memory.available + 4 + UInt64(i) * 2, head) },
       { idx in q.write("w", memory.available + 2, idx) }), "Frame was not submitted")
 }
-func netCompleted(_ q: QTest, _ queue: inout SplitQueue, _ memory: QueueMemory) throws -> UsedBuffer
+func queueCompleted(_ q: QTest, _ queue: inout SplitQueue, _ memory: QueueMemory) throws
+  -> UsedBuffer
 {
   let end = ContinuousClock.now + .seconds(3)
   while q.read("w", memory.used + 2) == UInt64(queue.consumed) && q.error == nil && .now < end {
@@ -38,7 +48,7 @@ func netCompleted(_ q: QTest, _ queue: inout SplitQueue, _ memory: QueueMemory) 
       { UInt16(q.read("w", memory.used + 2)) },
       { UInt32(q.read("l", memory.used + 4 + UInt64($0) * 8)) },
       { UInt32(q.read("l", memory.used + 8 + UInt64($0) * 8)) })
-  else { throw q.error ?? Failure("Missing network used entry at \(memory.used)") }
+  else { throw q.error ?? Failure("Missing used entry at \(memory.used)") }
   return entry
 }
 
@@ -49,13 +59,14 @@ func testNetwork(_ q: QTest, _ machine: Machine) throws {
     return QueueMemory(count: 8, descriptors: base, available: base + 4096, used: base + 8192)
   }
   let left = try transport(
-    q, machine, type: 1, instance: 0, supported: 32, queues: [ring(0), ring(1)])
+    q, machine, type: 1, instance: 0, supported: NetConfiguration.deviceBits,
+    queues: [ring(0), ring(1)])
   let right = try transport(
-    q, machine, type: 1, instance: 1, supported: 32, queues: [ring(2), ring(3)])
-  let macLeft = (0..<6).map(left.config)
-  let macRight = (0..<6).map(right.config)
-  try q.require(
-    left.features & right.features & 32 != 0 && macLeft != macRight, "Missing independent MACs")
+    q, machine, type: 1, instance: 1, supported: NetConfiguration.deviceBits,
+    queues: [ring(2), ring(3)])
+  let macLeft = try activeTestMAC(left)
+  let macRight = try activeTestMAC(right)
+  try q.require(macLeft != macRight, "Missing independent MACs")
 
   let payload = (0..<127).map { UInt8($0) }
   let route = UdpRoute(
@@ -128,8 +139,8 @@ func testNetwork(_ q: QTest, _ machine: Machine) throws {
   else { throw Failure("Paced transmit did not reach driver") }
   try netSubmit(q, &tx, ring(1), write.request.id, write.packet, false)
   left.notify(1)
-  let sent = try netCompleted(q, &tx, ring(1))
-  let received = try netCompleted(q, &rx, ring(2))
+  let sent = try queueCompleted(q, &tx, ring(1))
+  let received = try queueCompleted(q, &rx, ring(2))
   guard let txDone = write.complete(cookie: sent.cookie, written: sent.written, flags: 0, gso: 0),
     case .transferred = txChannel.replies.push(txDone.record()),
     case .transferred = txChannel.client.pop(into: &record)

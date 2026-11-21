@@ -1,5 +1,31 @@
 // Modern single-buffer virtio-net. No merge, checksum/segmentation offload,
 // HASH_REPORT, or GUEST_HDRLEN; the virtio 1.x base header is twelve bytes.
+public struct NetConfiguration: Equatable {
+  public static let deviceBits: UInt32 = (1 << 16) | (1 << 5) | (1 << 3)  // STATUS, MAC, MTU
+  public let mac: [UInt8], linkUp: Bool?, mtu: UInt16?
+
+  /// Re-snapshot on configuration change. An unnegotiated field is unknown,
+  /// not evidence of carrier or authorization to send jumbo frames.
+  public static func snapshot(
+    features: UInt64, configBytes: UInt64, generation: () -> UInt32, read: (Int) -> UInt8
+  ) -> Self? {
+    let status = features & (1 << 16) != 0
+    let hasMTU = features & 8 != 0
+    guard features & 32 != 0, configBytes >= (hasMTU ? 12 : status ? 8 : 6) else { return nil }
+    for _ in 0..<8 {
+      let before = generation()
+      let mac = (0..<6).map(read)
+      let link: Bool? = status ? read(6) & 1 != 0 : nil
+      let mtu: UInt16? = hasMTU ? UInt16(read(10)) | UInt16(read(11)) << 8 : nil
+      guard before == generation() else { continue }
+      guard mac[0] & 1 == 0, mac.contains(where: { $0 != 0 }), mtu.map({ $0 >= 68 }) != false
+      else { return nil }
+      return Self(mac: mac, linkUp: link, mtu: mtu)
+    }
+    return nil
+  }
+}
+
 public struct NetPacket: Equatable {
   public let header: UInt64
   public let frame: UInt64

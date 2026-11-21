@@ -14,9 +14,9 @@ func testNeighbors(
   }
   let read = ring(base)
   let write = ring(base + 0x10000)
-  let nic = try transport(q, machine, type: 1, supported: 32, queues: [read, write])
-  let mac = (0..<6).map(nic.config)
-  try q.require(nic.features & 32 != 0, "Missing NIC MAC")
+  let nic = try transport(
+    q, machine, type: 1, supported: NetConfiguration.deviceBits, queues: [read, write])
+  let mac = try activeTestMAC(nic)
   let rxHeader = base + 0x20000
   let txHeader = base + 0x30000
   let inbound = NetPacket(header: rxHeader, frame: rxHeader + 4096, bytes: 1514)
@@ -30,7 +30,7 @@ func testNeighbors(
       "write \(packet.frame) \(frame.count) 0x" + frame.map { String(format: "%02x", $0) }.joined())
     try netSubmit(q, &tx, write, serial, packet, false)
     nic.notify(1)
-    let done = try netCompleted(q, &tx, write)
+    let done = try queueCompleted(q, &tx, write)
     try q.require(done.cookie == serial && done.written == 0, "Unretired transmit")
   }
   func post() throws {
@@ -39,7 +39,7 @@ func testNeighbors(
     nic.notify(0)
   }
   func take() throws -> [UInt8] {
-    let used = try netCompleted(q, &rx, read)
+    let used = try queueCompleted(q, &rx, read)
     guard used.cookie == 42,
       case .received(let n) = frameResult(
         true, inbound.bytes, used.written, UInt8(q.read("b", rxHeader)),

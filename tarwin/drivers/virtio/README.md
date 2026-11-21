@@ -22,7 +22,27 @@ On q35, add `--intx` to test the interrupt path. The first disk completion ident
 
 On the Arm and RISC-V models the harness reads QEMU's generated DTB for the configured device topology, enumerates enabled virtio MMIO transports and probes those windows only; there is no board-specific scan address or stride fallback. On q35 the hosted PCI setup still stands in for firmware.
 
-### q35 VT-d disk remap
+### Network configuration
+
+The network checks negotiate MAC, STATUS and MTU, snapshot them across the
+configuration-generation counter, and require a live link with the configured
+1500-byte MTU. A short config, invalid MAC or continually changing generation
+is not used. This is the single-pair path: no RSS, checksum/segmentation
+offload, guest boot or hardware throughput claim.
+
+### Fenced virtio-gpu 2D scanout
+
+Run the same three binaries with `--gpu`. The regular-Swift driver queries the
+display, creates one B8G8R8X8 resource, attaches a single device-readable
+backing grant, transfers its pixels, binds the scanout and flushes. The
+control-queue owner must serialize the resource and retain its pages. Only
+an exact-size response with the expected type and fence advances the state.
+The QTest harness verifies the independent QMP PPM capture against all 3,072
+expected RGB pixels, then disables the head, detaches backing and destroys
+the resource. No 3D, Venus, Ember, MosaicDisplay, vblank timing, or physical
+GPU fence is exercised.
+
+### q35 VT-d disk remap and invalidation
 
     swift run -c release --package-path Tools/BlockQTest BlockQTest "$(command -v qemu-system-x86_64)" --vtd
 
