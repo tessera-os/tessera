@@ -1,0 +1,110 @@
+--- a/hw/acpi/Kconfig
++++ b/hw/acpi/Kconfig
+@@ -63,7 +63,7 @@
+ config ACPI_VMGENID
+     bool
+     default y
+-    depends on PC
++    depends on PC || ARM_VIRT
+ 
+ config ACPI_VMCLOCK
+     bool
+--- a/hw/acpi/vmgenid.c
++++ b/hw/acpi/vmgenid.c
+@@ -12,6 +12,7 @@
+ 
+ #include "qemu/osdep.h"
+ #include "qapi/error.h"
++#include "crypto/random.h"
+ #include "qemu/module.h"
+ #include "hw/acpi/acpi.h"
+ #include "hw/acpi/aml-build.h"
+@@ -168,9 +169,25 @@
+ /* After restoring an image, we need to update the guest memory and notify
+  * it of a potential change to VM Generation ID
+  */
++static int vmgenid_rotate(VmGenIdState *vms, Error **errp)
++{
++    QemuUUID fresh;
++
++    if (qcrypto_random_bytes(fresh.data, sizeof(fresh.data), errp) < 0) {
++        return -EIO;
++    }
++    fresh.data[6] = (fresh.data[6] & 0x0f) | 0x40;
++    fresh.data[8] = (fresh.data[8] & 0x3f) | 0x80;
++    vms->guid = fresh;
++    return 0;
++}
++
+ static int vmgenid_post_load(void *opaque, int version_id)
+ {
+     VmGenIdState *vms = opaque;
++    if (vms->rotate_on_load && vmgenid_rotate(vms, NULL) < 0) {
++        return -EIO;
++    }
+     vmgenid_update_guest(vms);
+     return 0;
+ }
+@@ -213,11 +230,18 @@
+ 
+     qemu_register_reset(vmgenid_handle_reset, vms);
+ 
++    if (vms->rotate_on_load) {
++        if (vmgenid_rotate(vms, errp) < 0) {
++            return;
++        }
++    }
++
+     vmgenid_update_guest(vms);
+ }
+ 
+ static const Property vmgenid_device_properties[] = {
+     DEFINE_PROP_UUID(VMGENID_GUID, VmGenIdState, guid),
++    DEFINE_PROP_BOOL("x-rotate-on-load", VmGenIdState, rotate_on_load, false),
+ };
+ 
+ static void vmgenid_device_class_init(ObjectClass *klass, const void *data)
+--- a/hw/arm/virt-acpi-build.c
++++ b/hw/arm/virt-acpi-build.c
+@@ -43,6 +43,7 @@
+ #include "hw/acpi/cxl.h"
+ #include "hw/acpi/memory_hotplug.h"
+ #include "hw/acpi/generic_event_device.h"
++#include "hw/acpi/vmgenid.h"
+ #include "hw/acpi/tpm.h"
+ #include "hw/acpi/hmat.h"
+ #include "hw/arm/smmuv3.h"
+@@ -1473,6 +1474,12 @@
+     }
+ 
+     /* XSDT is pointed to by RSDP */
++    Object *genid = find_vmgenid_dev();
++    if (genid) {
++        acpi_add_table(table_offsets, tables_blob);
++        vmgenid_build_acpi(VMGENID(genid), tables_blob, tables->vmgenid,
++                           tables->linker, vms->oem_id);
++    }
+     xsdt = tables_blob->len;
+     build_xsdt(tables_blob, tables->linker, table_offsets, vms->oem_id,
+                vms->oem_table_id);
+@@ -1590,6 +1597,10 @@
+ 
+     fw_cfg_add_file(vms->fw_cfg, ACPI_BUILD_TPMLOG_FILE, tables.tcpalog->data,
+                     acpi_data_len(tables.tcpalog));
++    Object *genid = find_vmgenid_dev();
++    if (genid) {
++        vmgenid_add_fw_cfg(VMGENID(genid), vms->fw_cfg, tables.vmgenid);
++    }
+ 
+     if (vms->ras) {
+         assert(vms->acpi_dev);
+--- a/include/hw/acpi/vmgenid.h
++++ b/include/hw/acpi/vmgenid.h
+@@ -21,6 +21,7 @@
+ struct VmGenIdState {
+     DeviceState parent_obj;
+     QemuUUID guid;                /* The 128-bit GUID seen by the guest */
++    bool rotate_on_load;
+     uint8_t vmgenid_addr_le[8];   /* Address of the GUID (little-endian) */
+ };
+ 

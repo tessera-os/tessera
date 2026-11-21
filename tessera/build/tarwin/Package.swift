@@ -7,6 +7,7 @@ let package = Package(
     .library(name: "TarwinBootstrap", targets: ["TarwinBootstrap"]),
     .library(name: "TarbootPreflight", targets: ["TarbootPreflight"]),
     .library(name: "TarwinW1Bootstrap", targets: ["TarwinW1Bootstrap"]),
+    .library(name: "TarwinW1Generation", targets: ["TarwinW1Generation"]),
   ],
   dependencies: [
     .package(path: "../../../tarwin/tarwin-sched"),
@@ -26,6 +27,10 @@ let package = Package(
     .package(path: "../../../tarwin/tarwin-ipc"),
   ],
   targets: [
+    .target(name: "TarwinW1Generation", dependencies: [
+      .product(name: "Tarboot", package: "tarboot"),
+      .product(name: "TarwinRandomCore", package: "random"),
+    ]),
     .target(
       name: "TarwinBootstrap",
       dependencies: [
@@ -43,6 +48,7 @@ let package = Package(
     .testTarget(name: "TarbootPreflightTests", dependencies: ["TarbootPreflight"]),
     .target(
       name: "TarwinW1Bootstrap", dependencies: [
+        "TarwinW1Generation",
         .product(name: "TarwinChannelCalls", package: "channel-calls"),
         .product(name: "TarwinABI", package: "tarwin-syscall"),
         .product(name: "TarwinArmBootstrap", package: "first-entry"),

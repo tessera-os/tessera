@@ -1,6 +1,6 @@
 // Ordered MMIO for a caller-provisioned AArch64 Device mapping. No firmware
 // call, DMA, interrupt or command-specific behavior is implemented in asm.
-for bits in [8, 32] {
+for bits in [8, 32, 64] {
   print("""
   define i\(bits) @tarwin_mmio_read\(bits)(ptr %p) nounwind {
     call void asm sideeffect "dmb osh", "~{memory}"()

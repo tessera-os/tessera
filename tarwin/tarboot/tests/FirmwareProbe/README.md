@@ -209,6 +209,29 @@ from swtpm and checks that kernel RNG initialization refuses the absent
 generation. The host requires the post-exit serial marker. This negative
 probe does not supply an epoch, an ASLR draw or permission to launch W1.
 
+### Debug VMGenID restore
+
+Stock QEMU 11.1.3 does not register VMGenID on ARM virt. The optional
+host-side test patch in this directory enables the upstream device and ACPI
+linker on virt and adds an opt-in property to generate a fresh GUID from
+the host CSPRNG at realization and on VMState load. It is not upstream and
+does not certify an arbitrary hypervisor. Only use this single-vCPU, stopped
+snapshot profile; do not accept a boot-set flag as management authorization.
+The guest polls the page; virt's GED does not deliver a VMGenID IRQ.
+
+To reproduce, apply `qemu-11.1.3-virt-vmgenid.patch` with `patch -p1` to
+QEMU 11.1.3 (release tar.xz SHA256
+`5a8289c7940dc77d3873c81a6c29ba3afe1446fc9d36e77fa1658cdbecb84b22`).
+Configure with `--target-list=aarch64-softmmu --enable-tcg --disable-docs`,
+build with ninja and prepend the build directory to PATH. Add
+`TARBOOT_TEST_RESTORE=1` to the generation/FIFO test above. The runner
+creates a disposable qcow2 VM-state node, saves the waiting guest and
+loads that snapshot via QMP. After a checked initial draw the guest must
+see the live NVS GUID change, reject both the new epoch and the latched
+old one, then accept a fresh TPM reseed at the new epoch. No entropy or
+key material is printed. This is not a production launch or an SMP,
+postcopy, ACPI-interrupt or cross-host migration test.
+
 `TARBOOT_TEST_TPM=1 TARBOOT_TEST_FIFO=1 bash run.sh aarch64` binds a single
 QEMU virt platform-bus TIS device to disposable swtpm. After ExitBootServices,
 TarwinBoot requests locality zero and streams the ESP fixture bytes through

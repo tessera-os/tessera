@@ -53,8 +53,13 @@ for isa in "${@:-all}"; do
         if [[ ${TARBOOT_TEST_GENERATION:-0} == 1 ]]; then
             [[ ${TARBOOT_TEST_FIFO:-0} == 1 && ${TARBOOT_TEST_RNG:-0} == 1 ]] || exit 2
             flags+=(-D TARBOOT_TEST_GENERATION)
+            if [[ ${TARBOOT_TEST_RESTORE:-0} == 1 ]]; then
+                flags+=(-D TARBOOT_TEST_RESTORE)
+                qemu-img create -q -f qcow2 "$d/state.qcow2" 16M
+            fi
             modules+=("$root/tarwin-security/random/Sources/TarwinRandomCore"
-                      "$root/tarwin-security/random/Sources/TarwinKernelRandom")
+                      "$root/tarwin-security/random/Sources/TarwinKernelRandom"
+                      "$composition/Sources/TarwinW1Generation")
         fi
         if [[ ${TARBOOT_TEST_PSCI:-0} == 1 ]]; then
             [[ $arch == aarch64 && ${TARBOOT_TEST_CPU:-0} == 1 && ${TARBOOT_TEST_SMP_TABLES:-0} == 1 ]] || exit 2

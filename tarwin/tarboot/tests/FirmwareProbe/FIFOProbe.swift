@@ -23,19 +23,8 @@
       return true
     }
 
-    func exerciseUnavailableGeneration(bootSeed: UnsafeRawBufferPointer) -> Bool {
-      var cfg = VirtConfig()
-      guard bootSeed.count == 64, case .unavailable = qemuGenerationDevice(&cfg) else { return false }
-      var command = InlineArray<1100, UInt8>(repeating: 0)
-      var sample = InlineArray<32, UInt8>(repeating: 0)
-      defer { sample = .init(repeating: 0) }
-      guard withUnsafeMutableBytes(of: &command, { raw in
-        guard var port = TPMFIFO(registers: VirtFIFO(), scratch: raw, pollLimit: 500000),
-          readTPMEntropy32(&port, into: &sample) else { return false }
-        return withUnsafeBytes(of: &sample) { refusesRandom(bootSeed, $0, nil) }
-      }) else { return false }
+    private func emit(_ marker: StaticString) -> Bool {
       let uart = UnsafeRawPointer(bitPattern: 0x0900_0000)!
-      let marker: StaticString = "TARWIN-NO-VMGEN-RNG-REFUSED\r\n"
       for i in 0..<marker.utf8CodeUnitCount {
         var polls = 500000
         while read32(uart + 0x18) & 0x20 != 0 {
@@ -45,6 +34,47 @@
         write32(uart, UInt32(marker.utf8Start[i]))
       }
       return true
+    }
+    #if TARBOOT_TEST_RESTORE
+    import TarwinW1Generation
+    @_extern(c, "tarwin_mmio_read64") private func read64(_ p: UnsafeRawPointer) -> UInt64
+    private func readWord(_ address: UInt64) -> UInt64? {
+      guard let p = UnsafeRawPointer(bitPattern: UInt(address)) else { return nil }
+      return read64(p)
+    }
+    #endif
+    func exerciseGeneration(bootSeed: UnsafeRawBufferPointer, regions: UnsafeBufferPointer<FirmwareRegion>) -> Bool {
+      var cfg = VirtConfig()
+      guard bootSeed.count == 64 else { return false }
+      #if TARBOOT_TEST_RESTORE
+      guard let source = W1GenerationSource(policy: .rotatingDevice, reader: &cfg,
+        regions: regions, readWord: readWord),
+        let first = source.current(readWord: readWord) else { return false }
+      #else
+      guard case .unavailable = qemuGenerationDevice(&cfg) else { return false }
+      #endif
+      var command = InlineArray<1100, UInt8>(repeating: 0)
+      var sample = InlineArray<32, UInt8>(repeating: 0)
+      defer { sample = .init(repeating: 0) }
+      return withUnsafeMutableBytes(of: &command, { raw in
+        guard var port = TPMFIFO(registers: VirtFIFO(), scratch: raw, pollLimit: 500000),
+          readTPMEntropy32(&port, into: &sample) else { return false }
+        #if TARBOOT_TEST_RESTORE
+        guard var rng = withUnsafeBytes(of: &sample, { KernelRandom(policy: .debugQEMU,
+          bootSeed: bootSeed, hardware: $0, source: .emulatedTPM, generation: first) }),
+          rng.word(generation: source.current(readWord: readWord)) != nil, emit("TARWIN-VMGEN-SNAPSHOT-READY\r\n")
+        else { return false }
+        while source.current(readWord: readWord) == first {}
+        guard let next = source.current(readWord: readWord), next != first, rng.word(generation: next) == nil,
+          rng.word(generation: first) == nil, readTPMEntropy32(&port, into: &sample),
+          withUnsafeBytes(of: &sample, { rng.reseed(hardware: $0, source: .emulatedTPM, generation: next) }),
+          rng.word(generation: source.current(readWord: readWord)) != nil else { return false }
+        return emit("TARWIN-VMGEN-RESTORED-REFUSED-RESEEDED\r\n")
+        #else
+        return withUnsafeBytes(of: &sample) { refusesRandom(bootSeed, $0, nil) }
+          && emit("TARWIN-NO-VMGEN-RNG-REFUSED\r\n")
+        #endif
+      })
     }
   #endif
 

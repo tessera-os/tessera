@@ -124,8 +124,12 @@ func check() throws {
     ]
   }
   process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+  let restore = ProcessInfo.processInfo.environment["TARBOOT_TEST_RESTORE"] == "1"
+  let generationArgs = restore ? ["-device", "vmgenid,x-rotate-on-load=on", "-blockdev",
+    "driver=file,filename=" + d + "/state.qcow2,node-name=statefile", "-blockdev",
+    "driver=qcow2,file=statefile,node-name=state"] : []
   process.arguments =
-    ["qemu-system-" + a] + machine + tpmArgs + displayArgs + rngArgs + [
+    ["qemu-system-" + a] + machine + tpmArgs + displayArgs + rngArgs + generationArgs + [
       "-m", "512", "-smp", multiple ? "4" : "1", "-display", "none", "-rtc", "base=utc",
       "-serial", "file:" + serial, "-monitor", "none", "-qmp", "stdio", "-nic", "none",
       "-drive", "if=pflash,format=raw,readonly=on,file=" + code, "-drive",
@@ -146,7 +150,37 @@ func check() throws {
   var captured = false
   let bootKernel = ProcessInfo.processInfo.environment["TARBOOT_ENTER_W0"] == "1"
   var nextShot = ContinuousClock.now
+  var saved = false, loaded = false
+  func snapshot(_ action: String) throws {
+    let cmd: [String: Any] = ["execute": "snapshot-" + action, "arguments": [
+      "job-id": action, "tag": "tarwin", "vmstate": "state", "devices": ["state"]]]
+    var data = try JSONSerialization.data(withJSONObject: cmd)
+    data.append(10)
+    try input.fileHandleForWriting.write(contentsOf: data)
+  }
   while process.isRunning && ContinuousClock.now < deadline {
+    if restore && !loaded {
+      if !saved {
+        if let uart = try? Data(contentsOf: URL(fileURLWithPath: serial)),
+          uart.range(of: Data("TARWIN-VMGEN-SNAPSHOT-READY".utf8)) != nil {
+          try snapshot("save")
+          saved = true
+        }
+      } else {
+        let events = try Data(contentsOf: URL(fileURLWithPath: monitor))
+        for line in events.split(separator: 10) {
+          let event = (try? JSONSerialization.jsonObject(with: Data(line))) as? [String: Any]
+          if let error = event?["error"] { throw Failure("snapshot: " + String(describing: error)) }
+          if event?["event"] as? String == "JOB_STATUS_CHANGE",
+            let data = event?["data"] as? [String: Any], data["id"] as? String == "save",
+            data["status"] as? String == "concluded" {
+            try snapshot("load")
+            loaded = true
+            break
+          }
+        }
+      }
+    }
     if let bytes = try? Data(contentsOf: URL(fileURLWithPath:serial)),
       bytes.range(of:Data("TARWIN-SIGNED-VERIFICATION-FAILED".utf8)) != nil {
       throw Failure("guest rejected signed archive or native image")
@@ -307,10 +341,17 @@ func check() throws {
     print("\(a): captured log contains both expected SHA-256 measurements and the final firmware exit event")
     if ProcessInfo.processInfo.environment["TARBOOT_TEST_FIFO"] == "1" {
       if ProcessInfo.processInfo.environment["TARBOOT_TEST_GENERATION"] == "1" {
-        guard uart.range(of: Data("TARWIN-NO-VMGEN-RNG-REFUSED".utf8)) != nil else {
-          throw Failure("missing post-exit RNG refusal")
+        if restore {
+          guard saved && loaded,
+            uart.range(of: Data("TARWIN-VMGEN-RESTORED-REFUSED-RESEEDED".utf8)) != nil
+          else { throw Failure("missing snapshot restore and checked reseed") }
+          print("\(a): restored guest rejected its previous RNG stream, then reseeded from swtpm")
+        } else {
+          guard uart.range(of: Data("TARWIN-NO-VMGEN-RNG-REFUSED".utf8)) != nil else {
+            throw Failure("missing post-exit RNG refusal")
+          }
+          print("\(a): guest found no advertised generation device; kernel RNG refused the TBIB seed and emulated TPM sample")
         }
-        print("\(a): guest found no advertised generation device; kernel RNG refused the TBIB seed and emulated TPM sample")
       }
       print("\(a): post-exit TPM2_GetRandom supplied a full 32-byte debug sample")
       print("\(a): post-exit TPM event sequence hashed the fixture; PCR 10 and the appended Event2 SHA-256 digest match host replay")

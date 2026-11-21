@@ -261,7 +261,8 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
             && received.entropy6 == info.entropy6 && received.entropy7 == info.entropy7
         else { return false }
         #if TARBOOT_TEST_GENERATION
-          guard exerciseUnavailableGeneration(bootSeed: .init(start: p + 96, count: 64)) else { return false }
+          guard exerciseGeneration(bootSeed: .init(start: p + 96, count: 64),
+            regions: .init(rebasing: buffer[..<n])) else { return false }
         #endif
       #endif
       #if TARBOOT_ENTER_W0
