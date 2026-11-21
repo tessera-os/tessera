@@ -3,10 +3,13 @@ import Dispatch
 import HostedDeviceWire
 import MacAudioWire
 import Synchronization
+import XPC
 
 public final class MacAudioHost: @unchecked Sendable {
-  public let playback: AudioProcessor?
-  public let capture: AudioProcessor?
+  public var playback: AudioProcessor? { queue.sync { processors[0] } }
+  public var capture: AudioProcessor? { queue.sync { processors[1] } }
+  private var processors: [AudioProcessor?] = [nil,nil]
+  private var links: [AudioLink?] = [nil,nil]
   private let channel: any HostedDeviceChannel
   private let useHAL: Bool
   private let queue = DispatchQueue(label: "tarwin.audio.control", qos: .userInteractive)
@@ -16,16 +19,14 @@ public final class MacAudioHost: @unchecked Sendable {
   private var timer: DispatchSourceTimer?
   private var listener: AudioObjectPropertyListenerBlock?
   public private(set) var lastDeviceError: AudioError?
-  public init(channel: any HostedDeviceChannel, playback: AudioRing?, capture: AudioRing?, useHAL: Bool = true,
+  public init(channel: any HostedDeviceChannel, playback: AudioRing? = nil, capture: AudioRing? = nil, useHAL: Bool = true,
     automaticPositions: Bool = true) {
     self.channel = channel; self.useHAL = useHAL
-    self.playback = playback.map { AudioProcessor(ring: $0) }
-    self.capture = capture.map { AudioProcessor(ring: $0) }
-    if let p = self.playback { units[0] = HALUnit(processor: p, endpoint: .playback) }
-    if let c = self.capture { units[1] = HALUnit(processor: c, endpoint: .capture) }
+    processors = [playback.map { AudioProcessor(ring: $0) }, capture.map { AudioProcessor(ring: $0) }]
+    if let p = processors[0] { units[0] = HALUnit(processor: p, endpoint: .playback) }
+    if let c = processors[1] { units[1] = HALUnit(processor: c, endpoint: .capture) }
     channel.onReceive = { [weak self] bytes in
-      guard let self else { return }
-      self.queue.sync { self.receive(bytes) }
+      self?.receive(bytes)
     }
     if automaticPositions {
       let timer = DispatchSource.makeTimerSource(queue: queue)
@@ -37,6 +38,8 @@ public final class MacAudioHost: @unchecked Sendable {
   }
   deinit {
     timer?.cancel()
+    for unit in units { unit?.close() }
+    for processor in processors { processor?.running.store(false, ordering: .releasing) }
     if let listener {
       for endpoint in AudioEndpoint.allCases {
         var address = Self.address(endpoint)
@@ -73,7 +76,29 @@ public final class MacAudioHost: @unchecked Sendable {
   public static func hasDefaultDevice(_ endpoint: AudioEndpoint) -> Bool {
     (try? HALUnit.defaultDevice(endpoint)) != nil
   }
-  private func processor(_ endpoint: AudioEndpoint) -> AudioProcessor? { endpoint == .playback ? playback : capture }
+  private func processor(_ endpoint: AudioEndpoint) -> AudioProcessor? { processors[Int(endpoint.rawValue-1)] }
+  @discardableResult public func attach(_ object: xpc_object_t) throws -> AudioEndpoint {
+    let link = try AudioLink(attaching: object)
+    queue.sync {
+      detachLocked(link.endpoint)
+      let i = Int(link.endpoint.rawValue-1)
+      links[i] = link
+      let processor = AudioProcessor(ring: link.ring)
+      processors[i] = processor
+      units[i] = HALUnit(processor: processor, endpoint: link.endpoint)
+    }
+    return link.endpoint
+  }
+  public func detach(_ endpoint: AudioEndpoint) { queue.sync { detachLocked(endpoint) } }
+  private func detachLocked(_ endpoint: AudioEndpoint, state: AudioStreamState = .closed) {
+    let i = Int(endpoint.rawValue-1)
+    units[i]?.close()
+    processors[i]?.running.store(false, ordering: .releasing)
+    processors[i]?.draining.store(false, ordering: .releasing)
+    units[i] = nil; processors[i] = nil; links[i] = nil; states[i] = state
+    lastOverruns[i] = 0; lastUnderruns[i] = 0
+  }
+  public func receive(_ bytes: UnsafeRawBufferPointer) { queue.sync { handle(bytes) } }
   /// Explicit hardware smoke/integration entry; normal clients use family-2 commands.
   public func startHardware(_ endpoint: AudioEndpoint) throws {
     try queue.sync {
@@ -89,19 +114,26 @@ public final class MacAudioHost: @unchecked Sendable {
       units[Int(endpoint.rawValue-1)]?.close()
       processor(endpoint)?.running.store(false, ordering: .releasing)
       states[Int(endpoint.rawValue-1)] = .stopped
+      if links[Int(endpoint.rawValue-1)] != nil { detachLocked(endpoint, state: .stopped) }
     }
   }
   public func shutdown() {
     stopHardware(.playback); stopHardware(.capture)
-    queue.sync { timer?.cancel(); timer = nil }
+    queue.sync {
+      timer?.cancel(); timer = nil
+      for endpoint in AudioEndpoint.allCases { detachLocked(endpoint) }
+    }
   }
-  private func receive(_ bytes: UnsafeRawBufferPointer) {
+  private func handle(_ bytes: UnsafeRawBufferPointer) {
     guard let f = FrameView(bytes), f.family == 2 else { return }
     if f.kind == Wire.ping, f.payload.isEmpty {
       AudioWire.send(channel, kind: Wire.pong, sequence: f.sequence, timestampNs: f.timestampNs, payloadSize: 0) { _ in }; return
     }
-    guard f.payload.count >= 4, let endpoint = AudioEndpoint(rawValue: UInt32(Wire.read(f.payload,0,4))),
-      let p = processor(endpoint) else { return }
+    let rawEndpoint = f.payload.count >= 4 ? UInt32(Wire.read(f.payload,0,4)) : 0
+    guard let endpoint = AudioEndpoint(rawValue: rawEndpoint) else {
+      reply(f, endpoint: rawEndpoint, status: 1); return
+    }
+    guard let p = processor(endpoint) else { reply(f, endpoint: rawEndpoint, status: 2); return }
     var status: UInt16 = 0
     do { try apply(f, endpoint: endpoint, processor: p) }
     catch AudioError.malformed { status = 1 }
@@ -109,8 +141,11 @@ public final class MacAudioHost: @unchecked Sendable {
     catch AudioError.state { status = 3 }
     catch AudioError.noDevice { status = 5 }
     catch { status = 4 }
+    reply(f, endpoint: rawEndpoint, status: status)
+  }
+  private func reply(_ f: FrameView, endpoint: UInt32, status: UInt16) {
     AudioWire.send(channel, kind: AudioKind.status, sequence: f.sequence, payloadSize: 8) { out in
-      Wire.write(UInt64(endpoint.rawValue), to: out, at: 0, width: 4)
+      Wire.write(UInt64(endpoint), to: out, at: 0, width: 4)
       Wire.write(UInt64(f.kind), to: out, at: 4, width: 2)
       Wire.write(UInt64(status), to: out, at: 6, width: 2)
     }
@@ -137,6 +172,7 @@ public final class MacAudioHost: @unchecked Sendable {
       guard [.running,.draining].contains(states[i]) else { throw AudioError.state }
       units[i]?.close(); p.running.store(false, ordering: .releasing)
       p.draining.store(false, ordering: .releasing); states[i] = .stopped
+      if links[i] != nil { detachLocked(endpoint, state: .stopped) }
     case AudioKind.drain:
       guard endpoint == .playback, states[i] == .running else { throw AudioError.state }
       p.draining.store(true, ordering: .releasing); states[i] = .draining
@@ -150,6 +186,7 @@ public final class MacAudioHost: @unchecked Sendable {
     case AudioKind.close:
       units[i]?.close(); p.running.store(false, ordering: .releasing)
       p.draining.store(false, ordering: .releasing); states[i] = .closed
+      if links[i] != nil { detachLocked(endpoint) }
     default: throw AudioError.malformed
     }
   }
@@ -175,6 +212,7 @@ public final class MacAudioHost: @unchecked Sendable {
       }
       if states[i] == .draining, !p.running.load(ordering: .acquiring) {
         units[i]?.close(); states[i] = .stopped
+        if links[i] != nil { detachLocked(endpoint, state: .stopped) }
       }
     }
   }

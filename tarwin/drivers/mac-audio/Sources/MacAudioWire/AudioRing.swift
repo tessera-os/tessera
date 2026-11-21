@@ -28,6 +28,7 @@ public final class AudioRing: @unchecked Sendable {
   public let capacity: Int
   public let configuration: AudioConfiguration
   private let ownsRegion: Bool
+  private let regionOwner: AnyObject?
   private let sampleBytes: Int
   public static func requiredBytes(capacity: Int, configuration: AudioConfiguration) -> Int? {
     let stride = Int(configuration.channels) * (configuration.format == .f32 ? 4 : 2)
@@ -55,7 +56,10 @@ public final class AudioRing: @unchecked Sendable {
   public convenience init?(region: UnsafeMutableRawPointer, byteCount: Int) {
     self.init(region: region, byteCount: byteCount, ownsRegion: false)
   }
-  private init?(region: UnsafeMutableRawPointer, byteCount: Int, ownsRegion: Bool) {
+  convenience init?(region: UnsafeMutableRawPointer, byteCount: Int, retaining owner: AnyObject) {
+    self.init(region: region, byteCount: byteCount, ownsRegion: false, regionOwner: owner)
+  }
+  private init?(region: UnsafeMutableRawPointer, byteCount: Int, ownsRegion: Bool, regionOwner: AnyObject? = nil) {
     guard byteCount >= 64, UInt(bitPattern: region) % 8 == 0 else { return nil }
     let bytes = UnsafeRawBufferPointer(start: region, count: byteCount)
     guard Wire.read(bytes, 0, 4) == 0x52415754,
@@ -65,6 +69,7 @@ public final class AudioRing: @unchecked Sendable {
       let needed = Self.requiredBytes(capacity: Int(Wire.read(bytes, 4, 4)), configuration: config),
       needed <= byteCount else { return nil }
     self.region = region; self.byteCount = needed; self.ownsRegion = ownsRegion
+    self.regionOwner = regionOwner
     self.capacity = Int(Wire.read(bytes, 4, 4)); configuration = config
     sampleBytes = format == .f32 ? 4 : 2
     region.advanced(by: 24).bindMemory(to: Int64.self, capacity: 4)

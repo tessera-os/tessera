@@ -1,5 +1,6 @@
 import HostedDeviceWire
 import MacAudioWire
+import XPC
 
 public struct AudioStreamSnapshot {
   public var configuration: AudioConfiguration?
@@ -13,6 +14,7 @@ public struct AudioStreamSnapshot {
 /// Control calls and receive callbacks must be serialized by the owner.
 public final class MacAudioDriver {
   private var streams = [AudioStreamSnapshot(), AudioStreamSnapshot()]
+  private var links: [AudioLink?] = [nil,nil]
   private var channel: any HostedDeviceChannel
   private var sequence: UInt64 = 0
   public private(set) var playbackPosition: UInt64 = 0
@@ -26,6 +28,24 @@ public final class MacAudioDriver {
     channel.onReceive = { [weak self] in self?.receive($0) }
   }
   public func snapshot(_ endpoint: AudioEndpoint) -> AudioStreamSnapshot { streams[Int(endpoint.rawValue-1)] }
+  /// Stage the local configuration; deliver the returned object and await attach before sending commands.
+  public func makeLink(_ endpoint: AudioEndpoint, configuration: AudioConfiguration, capacity: Int) throws -> xpc_object_t {
+    let i = Int(endpoint.rawValue-1)
+    guard ![.running,.draining].contains(streams[i].state) else { throw AudioError.state }
+    let link = try AudioLink(endpoint: endpoint, configuration: configuration, capacity: capacity)
+    streams[i] = AudioStreamSnapshot()
+    links[i] = link; streams[i].ring = link.ring; streams[i].configuration = configuration
+    return link.object
+  }
+  public func configure(_ endpoint: AudioEndpoint) throws {
+    guard let link = links[Int(endpoint.rawValue-1)] else { throw AudioError.configuration }
+    try configure(endpoint, ring: link.ring)
+  }
+  private func releaseLink(_ endpoint: AudioEndpoint) {
+    let i = Int(endpoint.rawValue-1)
+    guard links[i] != nil else { return }
+    streams[i].ring = nil; links[i] = nil
+  }
   private func command(_ kind: UInt16, _ endpoint: AudioEndpoint, size: Int = 4,
     fill: (UnsafeMutableRawBufferPointer) -> Void = { _ in }) {
     sequence &+= 1
@@ -41,6 +61,7 @@ public final class MacAudioDriver {
   public func configure(_ endpoint: AudioEndpoint, ring: AudioRing) throws {
     let i = Int(endpoint.rawValue-1)
     guard [.open,.configured,.stopped].contains(streams[i].state) else { throw AudioError.state }
+    if let link = links[i], link.ring !== ring { throw AudioError.configuration }
     streams[i].configuration = ring.configuration; streams[i].ring = ring; streams[i].state = .configured
     command(AudioKind.configure, endpoint, size: 20) { p in
       Wire.write(UInt64(ring.configuration.sampleRate), to: p, at: 4, width: 4)
@@ -51,13 +72,14 @@ public final class MacAudioDriver {
   }
   public func start(_ endpoint: AudioEndpoint) throws {
     let i = Int(endpoint.rawValue-1)
-    guard [.configured,.stopped].contains(streams[i].state) else { throw AudioError.state }
+    guard [.configured,.stopped].contains(streams[i].state), streams[i].ring != nil else { throw AudioError.state }
     streams[i].state = .running; command(AudioKind.start, endpoint)
   }
   public func stop(_ endpoint: AudioEndpoint) throws {
     let i = Int(endpoint.rawValue-1)
     guard [.running,.draining].contains(streams[i].state) else { throw AudioError.state }
     streams[i].state = .stopped; command(AudioKind.stop, endpoint)
+    releaseLink(endpoint)
   }
   public func drain(_ endpoint: AudioEndpoint = .playback) throws {
     guard endpoint == .playback, snapshot(endpoint).state == .running else { throw AudioError.state }
@@ -65,6 +87,7 @@ public final class MacAudioDriver {
   }
   public func close(_ endpoint: AudioEndpoint) {
     streams[Int(endpoint.rawValue-1)] = AudioStreamSnapshot(); command(AudioKind.close, endpoint)
+    releaseLink(endpoint)
   }
   public func setVolume(_ value: Float, endpoint: AudioEndpoint = .playback) throws {
     guard value.isFinite, (0...1).contains(value), snapshot(endpoint).state != .closed else { throw AudioError.configuration }
@@ -76,16 +99,29 @@ public final class MacAudioDriver {
     streams[Int(endpoint.rawValue-1)].muted = value
     command(AudioKind.mute, endpoint, size: 8) { Wire.write(value ? 1 : 0, to: $0, at: 4, width: 4) }
   }
-  /// H7 must re-send/re-map each snapshot's ring before calling this method.
-  public func restore(on channel: any HostedDeviceChannel) throws {
+  /// The callback must deliver each fresh shared mapping and wait for host attach before returning.
+  public func restore(on channel: any HostedDeviceChannel, attachLink: ((xpc_object_t) throws -> Void)? = nil) throws {
     let saved = streams
+    let managed = links.map { $0 != nil }
+    guard !managed.contains(true) || attachLink != nil else { throw AudioError.configuration }
+    self.channel.onReceive = nil
     self.channel = channel; channel.onReceive = { [weak self] in self?.receive($0) }
     streams = [AudioStreamSnapshot(), AudioStreamSnapshot()]
+    links = [nil,nil]
     for endpoint in AudioEndpoint.allCases {
       let s = saved[Int(endpoint.rawValue-1)]
       guard s.state != .closed else { continue }
+      if s.state == .stopped, s.ring == nil {
+        streams[Int(endpoint.rawValue-1)] = s; continue
+      }
+      if managed[Int(endpoint.rawValue-1)], let ring = s.ring {
+        let object = try makeLink(endpoint, configuration: ring.configuration, capacity: ring.capacity)
+        do { try attachLink?(object) }
+        catch { releaseLink(endpoint); throw error }
+      }
       try open(endpoint)
-      if let ring = s.ring { try configure(endpoint, ring: ring) }
+      if managed[Int(endpoint.rawValue-1)] { try configure(endpoint) }
+      else if let ring = s.ring { try configure(endpoint, ring: ring) }
       try setVolume(s.volume, endpoint: endpoint); try setMuted(s.muted, endpoint: endpoint)
       if s.state == .running || s.state == .draining { try start(endpoint) }
       if s.state == .draining { try drain(endpoint) }
@@ -105,12 +141,16 @@ public final class MacAudioDriver {
       hostTimeNs = Wire.read(p,12,8); latencyNs = Wire.read(p,20,8)
       if snapshot(endpoint).state == .draining, snapshot(endpoint).ring?.availableFrames == 0 {
         streams[Int(endpoint.rawValue-1)].state = .stopped
+        releaseLink(endpoint)
       }
     case AudioKind.gap where p.count == 20:
       onGap?(endpoint, Wire.read(p,4,8), Wire.read(p,12,8))
     case AudioKind.status where p.count == 8:
       lastStatus = UInt16(Wire.read(p,6,2))
-      if lastStatus != 0 { streams[Int(endpoint.rawValue-1)].state = .stopped }
+      if lastStatus != 0, Wire.read(p,4,2) != UInt64(AudioKind.close) {
+        streams[Int(endpoint.rawValue-1)].state = .stopped
+        releaseLink(endpoint)
+      }
     default: break
     }
   }

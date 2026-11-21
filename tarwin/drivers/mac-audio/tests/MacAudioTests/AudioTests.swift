@@ -211,22 +211,30 @@ final class AudioTests: XCTestCase {
     processor.running.store(false, ordering: .releasing)
     input.withUnsafeBufferPointer { XCTAssertEqual(processor.capture($0, frames: 8, timestampNs: 78), 0) }
   }
-  func testHALSmokeOrOfflineCallback() throws {
-    guard ProcessInfo.processInfo.environment["TARWIN_AUDIO_HAL"] == "1" else {
-      let ring = AudioRing(capacity: 1024, configuration: config())!
-      let processor = AudioProcessor(ring: ring)
-      processor.running.store(true, ordering: .releasing)
-      var output = [Float](repeating: 1, count: 960)
-      output.withUnsafeMutableBufferPointer { XCTAssertEqual(processor.render(into:$0,frames:480,timestampNs:1), 0) }
-      XCTAssertTrue(output.allSatisfy { $0 == 0 }); return
+  func testSharedLinkSignalHALOrOffline() throws {
+    let useHAL = ProcessInfo.processInfo.environment["TARWIN_AUDIO_HAL"] == "1"
+    if useHAL {
+      _ = try XCTUnwrap(MacAudioHost.hasDefaultDevice(.playback) ? true : nil, "HAL loopback requires a default output")
+      _ = try XCTUnwrap(MacAudioHost.hasDefaultDevice(.capture) ? true : nil, "HAL loopback requires a default input")
     }
-    _ = try XCTUnwrap(MacAudioHost.hasDefaultDevice(.playback) ? true : nil, "HAL loopback requires a default output")
-    _ = try XCTUnwrap(MacAudioHost.hasDefaultDevice(.capture) ? true : nil, "HAL loopback requires a default input")
     let (a,b) = LoopbackChannel.pair()
+    let driver = MacAudioDriver(channel: a)
     let positions = HALPositions()
-    a.onReceive = { positions.receive($0) }
-    let playback = AudioRing(capacity: 131072, configuration: config())!
-    let capture = AudioRing(capacity: 131072, configuration: config())!
+    a.onReceive = { [weak driver] in positions.receive($0); driver?.receive($0) }
+    let host = MacAudioHost(channel: b, useHAL: useHAL, automaticPositions: false)
+    defer { host.shutdown(); withExtendedLifetime((a,driver)) {} }
+    for endpoint in [AudioEndpoint.capture, .playback] {
+      let object = try driver.makeLink(endpoint, configuration: config(), capacity: 131072)
+      try host.attach(object)
+      try driver.open(endpoint); XCTAssertEqual(driver.lastStatus, 0)
+      try driver.configure(endpoint); XCTAssertEqual(driver.lastStatus, 0)
+      try driver.start(endpoint); XCTAssertEqual(driver.lastStatus, 0)
+    }
+    let playback = try XCTUnwrap(driver.snapshot(.playback).ring)
+    let capture = try XCTUnwrap(driver.snapshot(.capture).ring)
+    XCTAssertNotEqual(playback.region, host.playback!.ring.region)
+    XCTAssertNotEqual(capture.region, host.capture!.ring.region)
+    host.flushPositions()
     let lead = 4096, markerLength = 2048, sineLength = 48000, tail = 2048
     let frames = lead + markerLength + sineLength + tail
     var signal = [Float](repeating: 0, count: frames * 2)
@@ -241,18 +249,35 @@ final class AudioTests: XCTestCase {
       signal[(lead + markerLength + frame)*2] = value
       signal[(lead + markerLength + frame)*2+1] = -0.5 * value
     }
-    let host = MacAudioHost(channel: b, playback: playback, capture: capture)
-    defer { host.shutdown(); withExtendedLifetime(a) {} }
-    try host.startHardware(.capture)
-    try host.startHardware(.playback)
-    let primed = expectation(description: "HAL loopback startup silence")
-    DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(250)) { primed.fulfill() }
-    wait(for: [primed], timeout: 2)
+    if useHAL {
+      let primed = expectation(description: "HAL loopback startup silence")
+      DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(250)) { primed.fulfill() }
+      wait(for: [primed], timeout: 2)
+    }
+    host.flushPositions()
     signal.withUnsafeBufferPointer { XCTAssertEqual(playback.write($0, frames: frames), frames) }
-    let elapsed = expectation(description: "HAL loopback recording")
-    DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(1800)) { elapsed.fulfill() }
-    wait(for: [elapsed], timeout: 5)
-    host.stopHardware(.playback); host.stopHardware(.capture)
+    if useHAL {
+      let elapsed = expectation(description: "HAL loopback recording")
+      DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(1800)) { elapsed.fulfill() }
+      wait(for: [elapsed], timeout: 5)
+    } else {
+      var chunk = [Float](repeating: 0, count: 1024)
+      while playback.availableFrames > 0 {
+        let count = min(512, playback.availableFrames)
+        chunk.withUnsafeMutableBufferPointer {
+          XCTAssertEqual(host.playback!.render(into: $0, frames: count, timestampNs: AudioWire.nowNs()), count)
+        }
+        chunk.withUnsafeBufferPointer {
+          XCTAssertEqual(host.capture!.capture($0, frames: count, timestampNs: AudioWire.nowNs()), count)
+        }
+        host.flushPositions()
+      }
+    }
+    host.flushPositions()
+    try driver.stop(.playback); XCTAssertEqual(driver.lastStatus, 0)
+    try driver.stop(.capture); XCTAssertEqual(driver.lastStatus, 0)
+    XCTAssertNil(driver.snapshot(.playback).ring); XCTAssertNil(driver.snapshot(.capture).ring)
+    XCTAssertNil(host.playback); XCTAssertNil(host.capture)
     XCTAssertEqual(playback.availableFrames, 0, "HAL must consume the complete known signal")
     XCTAssertEqual(capture.overruns, 0, "A dropped capture block would invalidate alignment")
     let recordedFrames = capture.availableFrames
@@ -287,12 +312,13 @@ final class AudioTests: XCTestCase {
       print("HAL sine mismatches: frames \(firstMismatch)...\(lastMismatch), \(mismatchCount) channel samples")
     }
     XCTAssertLessThan(rmsError, 0.005, "Both channels must retain the known 1 kHz waveform and gain")
+    let mode = useHAL ? "HAL" : "Offline"
     for endpoint in AudioEndpoint.allCases {
       let position = try XCTUnwrap(positions.snapshot(endpoint))
       XCTAssertGreaterThan(position.count, 2); XCTAssertGreaterThan(position.last, position.first)
       XCTAssertGreaterThan(position.time, 0)
-      print("HAL loopback \(endpoint): position \(position.first)->\(position.last), \(position.count) position frames")
+      print("\(mode) shared-link \(endpoint): position \(position.first)->\(position.last), \(position.count) position frames")
     }
-    print("HAL loopback: recorded \(recordedFrames) frames, marker at \(markerStart), correlation \(correlation), sine RMS error \(rmsError)")
+    print("\(mode) shared-link: recorded \(recordedFrames) frames, marker at \(markerStart), correlation \(correlation), sine RMS error \(rmsError)")
   }
 }

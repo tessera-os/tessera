@@ -21,8 +21,10 @@ swift build && swift test
 TARWIN_AUDIO_HAL=1 swift test
 ```
 
-The normal smoke test renders offline through `AudioProcessor.render`, the same
-method called by the real HAL callback. The opt-in test requires a loopback device
+The signal test creates driver-owned shared links and maps separate host views,
+then opens/configures/starts both endpoints through the frame channel. Normally
+it loops offline render output through the capture processor, the same methods
+called by HAL. The opt-in test requires a loopback device
 selected as both default input and output. After 250 ms of startup silence to
 prime both independently started AudioUnits, it plays a deterministic pseudorandom
 marker followed by a stereo 1 kHz sine through the playback ring, records through
@@ -46,6 +48,88 @@ TARWIN_AUDIO_HAL=1 swift test
 ```
 
 ## Host integration / lifetime
+
+### Plug-and-play links
+
+Tarwind allocates one link per endpoint. `makeLink` allocates a page-rounded
+`mmap(MAP_SHARED | MAP_ANON)` region, initializes the ring, stages the driver's
+ring/configuration, and returns a libxpc dictionary ready to carry to the app:
+
+```swift
+let configuration = AudioConfiguration(sampleRate: 48000, channels: 2, format: .f32)!
+let object = try driver.makeLink(.playback, configuration: configuration, capacity: 16384)
+// Deliver object and await successful app attach before issuing these commands.
+try driver.open(.playback)
+try driver.configure(.playback)
+try driver.start(.playback)
+```
+
+Repeat for `.capture`. Staging does not emit configure prematurely: the host must
+have mapped the link before open/configure/start. `configure(endpoint)` uses the
+staged ring; the existing `configure(endpoint, ring:)` API remains available.
+Wait for each matching successful status on asynchronous transports. Access PCM
+through `driver.snapshot(endpoint).ring`: tarwind writes playback and reads
+capture; the host does the inverse.
+
+The app constructs `MacAudioHost(channel: channel)` once. Its **two incoming
+message calls** are:
+
+```swift
+try host.attach(object)                       // link dictionary; acknowledge success
+frameData.withUnsafeBytes { host.receive($0) } // subsequent tw.frame bytes
+```
+
+Alternatively the injected channel's existing `onReceive` callback already calls
+`host.receive`; do not deliver a frame through both paths. Attach returns the
+endpoint, validates the envelope against the mapped ring header, stops/replaces
+any previous processor for that endpoint, and resets it to closed. Missing
+mappings return status 2 (including close after an already-detaching stop);
+malformed/unknown endpoints return status 1. Attach errors throw without
+replacing a valid existing endpoint.
+
+Envelope fields (XPC has uint64 rather than a native u32 scalar type; all numeric
+values must fit u32):
+
+| Key | XPC type | Value |
+|---|---|---|
+| `tw.shmem` | shmem | page-rounded mapping |
+| `tw.version` | uint64 | 1 |
+| `tw.endpoint` | uint64 | playback=1, capture=2 |
+| `tw.rate` | uint64 | 44100 or 48000 |
+| `tw.channels` | uint64 | 1 or 2 |
+| `tw.format` | uint64 | F32=1 or I16=2 |
+| `tw.capacity` | uint64 | power-of-two frames |
+
+Carry the **whole dictionary** on a libxpc-capable transport, not just its
+`tw.shmem` value. Do not pass it to `XPCDeviceChannel.sendSharedMemory`, which
+would discard the endpoint/configuration metadata, or serialize it as Data.
+Foundation NSXPC `[String: Data]` alone cannot carry XPC shmem objects; the app's
+transport adapter must provide a bulk-message path and attach acknowledgment.
+No transport listener or service is installed by this package.
+
+Stop, close, and completed drain release managed links on both sides. Explicit
+`host.detach(endpoint)` and `shutdown()` also stop hardware before dropping views.
+After stop/drain, make/attach a fresh link and open/configure/start again; linked
+streams do not preserve queued PCM. Caller-supplied legacy rings retain their
+existing stop/restart behavior. A ring or processor retained by a caller keeps
+its mapping alive until released, preventing dangling snapshot pointers. Release
+old snapshots and message objects when no longer needed. Both creator and mapped
+views use `munmap`, never Swift heap deallocation, for these shared regions.
+
+For restart, first quiesce/shut down the old host, then use:
+
+```swift
+try driver.restore(on: newChannel) { object in
+    // Deliver each fresh link and await attach acknowledgment before returning.
+    try newHost.attach(object)
+}
+```
+
+This creates fresh managed mappings and replays configuration/gain/mute/running
+state, not old queued PCM. Omitting the attach callback for managed links throws
+before changing driver state. Driver calls and receive callbacks still require
+external serialization. Host attach/receive/detach serialize internally; do not
+reenter synchronous host APIs from its outgoing channel callback.
 
 Tessera.app/H7 owns XPC acceptance and mapping. Supply one `HostedDeviceChannel`
 and optional playback/capture `AudioRing` views to `MacAudioHost`. It uses separate
@@ -77,12 +161,12 @@ family-2 fallback. Health/restart supervision (500 ms ping, 100 ms restart budge
 is external. `onGap` is the input to the Tarwin audio service's **OVERRUN** gap
 signal. A full ring drops newest frames; a playback underrun inserts silence.
 
-For restart, retain `AudioStreamSnapshot`s, re-send/map their rings in H7, and
+For legacy caller-supplied rings, retain `AudioStreamSnapshot`s, re-send/map their rings in H7, and
 call `restore(on:)` with a fresh channel. This replays open/configure/gain/mute
 and running/draining state. Never reset shared indices while a producer or
 consumer is active. Drain forbids new producer writes by convention, consumes
 queued playback, then stops; capture drain is rejected. Stop preserves queued
-data and position; close releases logical state, not ownership of external maps.
+data and position; close releases logical state, not ownership of legacy external maps.
 
 ## Shared-memory ring ABI (version 1)
 
