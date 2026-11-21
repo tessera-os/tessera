@@ -6,7 +6,7 @@ struct InputError: Error, CustomStringConvertible {
   init(_ reason: String) { description = reason }
 }
 
-// Narrow stage-0 bridge: accept only the live, read-only AArch64 or x64 ET_REL
+// Narrow kernel bridge: accept only live, read-only ELF64 ET_REL
 // produced by kernel-object.sh. A12, not this importer, lays out the image
 // and resolves its relocations. Never ignore an unknown allocated section.
 private struct Input {
@@ -36,10 +36,13 @@ func readKernelObject(_ bytes: [UInt8]) throws -> ObjectFile {
   let f = Input(bytes: bytes)
   guard bytes.count >= 64, bytes.count <= 8 << 20,
     Array(bytes.prefix(7)) == [127, 69, 76, 70, 2, 1, 1],
-    f.number(16, 2) == 1, [62, 183].contains(f.number(18, 2)), f.number(20, 4) == 1, f.number(52, 2) == 64,
+    f.number(16, 2) == 1, [62, 183, 243].contains(f.number(18, 2)), f.number(20, 4) == 1, f.number(52, 2) == 64,
     f.number(56, 2) == 0, f.number(58, 2) == 64
-  else { throw InputError("expected little-endian AArch64 or x64 ELF64 ET_REL") }
+  else { throw InputError("expected little-endian AArch64, x64 or rv64 ELF64 ET_REL") }
   let arm = f.number(18, 2) == 183
+  let rv = f.number(18, 2) == 243
+  let elfFlags = UInt32(f.number(48, 4))
+  guard !rv || elfFlags & ~1 == 0 else { throw InputError("rv64 kernel requires soft-float LP64") }
   let count = Int(f.number(60, 2))
   let names = Int(f.number(62, 2))
   guard count > 1, names > 0, names < count else { throw InputError("invalid section directory") }
@@ -98,14 +101,14 @@ func readKernelObject(_ bytes: [UInt8]) throws -> ObjectFile {
     let offset = f.number(at + 8, 8)
     let size = f.number(at + 16, 8)
     guard !entry, bytes[at + 4] == 0x12, let index = mapped[section], sections[index].kind.isCode,
-      !arm || offset & 3 == 0, offset < sections[index].size, size > 0,
+      !arm || offset & 3 == 0, !rv || offset & 1 == 0, offset < sections[index].size, size > 0,
       size <= UInt64(sections[index].size) - offset
     else { throw InputError("invalid entry function") }
     entry = true
     symbols.append(
       .init(
         name: "tarwin_start_body", section: index, offset: Int(offset), size: Int(size),
-        binding: .exported))
+        binding: .image))
   }
   guard entry else { throw InputError("no tarwin_start_body") }
   for i in 1..<count where field(i, 4, 4) == 4 || field(i, 4, 4) == 9 {
@@ -119,8 +122,10 @@ func readKernelObject(_ bytes: [UInt8]) throws -> ObjectFile {
       let off = f.number(at, 8)
       let info = f.number(at + 8, 8)
       let s = info >> 32
+      let type = UInt32(truncatingIfNeeded: info)
+      let width: UInt64 = rv && (type == 44 || type == 45) ? 2 : rv && (type == 18 || type == 19) ? 8 : 4
       guard !arm || (sections[destination].kind.isCode && off & 3 == 0), off <= sections[destination].size,
-        UInt64(sections[destination].size) - off >= 4, s < sym.count / 24
+        UInt64(sections[destination].size) - off >= width, s < sym.count / 24
       else { throw InputError("bad relocation extent") }
       let source = sym.lowerBound + Int(s) * 24
       let referenced = Int(f.number(source + 6, 2))
@@ -129,6 +134,23 @@ func readKernelObject(_ bytes: [UInt8]) throws -> ObjectFile {
       let (addend, overflow) = value.addingReportingOverflow(
         Int64(bitPattern: f.number(at + 16, 8)))
       guard !overflow else { throw InputError("relocation addend overflow") }
+      if rv {
+        guard sections[destination].kind.isCode, sections[target].kind.isCode, off & 1 == 0,
+          addend >= 0, addend & 1 == 0, addend < sections[target].size
+        else { throw InputError("rv64 branch outside code") }
+        let kind: RelocationKind
+        switch type {
+        case 16: kind = .rv64Branch
+        case 17: kind = .rv64Jal
+        case 18, 19: kind = .rv64Call
+        case 44: kind = .rv64CompressedBranch
+        case 45: kind = .rv64CompressedJump
+        default: throw InputError("unsupported rv64 kernel relocation \(type)")
+        }
+        sections[destination].relocations.append(.init(offset: Int(off), kind: kind,
+          symbol: "section.\(referenced)", addend: addend))
+        continue
+      }
       if !arm {
         // x64 RIP-relative instruction operands use a -4 PC bias. Relative
         // jump-table words use S+A-P (with a cell-relative bias in A).
@@ -163,5 +185,8 @@ func readKernelObject(_ bytes: [UInt8]) throws -> ObjectFile {
         .init(offset: Int(off), kind: kind, symbol: "section.\(referenced)", addend: addend))
     }
   }
-  return .init(name: "body", architecture: arm ? .aarch64 : .x64, sections: sections, symbols: symbols)
+  var object = ObjectFile(name: "body", architecture: rv ? .rv64 : arm ? .aarch64 : .x64,
+    sections: sections, symbols: symbols)
+  if rv { object.elfFlags = elfFlags }
+  return object
 }

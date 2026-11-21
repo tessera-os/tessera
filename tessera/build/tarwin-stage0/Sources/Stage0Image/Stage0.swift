@@ -19,18 +19,24 @@ private func readNativeImage(_ path: String) throws -> [UInt8] {
 func packageKernel(_ object: ObjectFile) throws -> NativeImage {
   let train = TIRVersion(year: 26, month: 11, week: 1)
   let arm = object.architecture == .aarch64
+  let rv = object.architecture == .rv64
   let metadata = TarwinImageMetadata(
     buildTrain: train, expiryTrain: train,
-    target: arm ? "aarch64.base" : "x64.v3",
-    features: arm ? [
+    target: rv ? "rv64.base" : arm ? "aarch64.base" : "x64.v3",
+    features: rv ? [
+      "supm", "v", "zawrs", "zba", "zbb", "zbs", "zcb", "zcmop", "zfa", "zfhmin", "zicbom",
+      "zicbop", "zicboz", "zicfilp", "zicfiss", "zicond", "zihintntl", "zihintpause", "zimop",
+      "zvbb", "zvfhmin", "zvkt",
+    ] : arm ? [
       "bti", "crc", "dotprod", "fcma", "flagm", "flagm2", "fp16", "frintts", "jscvt",
       "lse", "lse2", "pauth", "rcpc", "rcpc2", "rdm", "sb", "ssbs",
     ] : [
       "aes", "avx", "avx2", "bmi1", "bmi2", "cx16", "erms", "f16c", "fma", "ibt",
       "lahf_sahf", "lzcnt", "movbe", "pclmul", "popcnt", "rdrand", "rdseed", "shstk",
       "sse3", "sse4_1", "sse4_2", "ssse3", "vaes", "vpclmulqdq", "xsave",
-    ], vectorMode: .fixed(vscale: arm ? 1 : 2), profile: .kernel, kind: .kernel)
-  let tag = UInt32(truncatingIfNeeded: BLAKE3.hash64(Array("fn(ptr) -> never abi(c)".utf8)))
+    ], vectorMode: rv ? .agnostic : .fixed(vscale: arm ? 1 : 2), profile: .kernel, kind: .kernel)
+  let prototype = rv ? "fn(i64, ptr) -> never abi(c)" : "fn(ptr) -> never abi(c)"
+  let tag = UInt32(truncatingIfNeeded: BLAKE3.hash64(Array(prototype.utf8)))
   let veneer = TarwinEntryVeneer.object(entry: "tarwin_start", body: "tarwin_start_body",
     tag: tag, architecture: object.architecture)
   let image = try ImageLinker.link(
@@ -43,7 +49,8 @@ func packageKernel(_ object: ObjectFile) throws -> NativeImage {
   let ok = image.bytes.withUnsafeBytes { bytes in
     stack.withUnsafeMutableBufferPointer {
       inspectUnsignedArtifact(
-        bytes, machine: arm ? ElfMachine.aarch64 : ElfMachine.x64, addressLimit: 1 << 30, finalized: false,
+        bytes, machine: rv ? ElfMachine.rv64 : arm ? ElfMachine.aarch64 : ElfMachine.x64,
+        addressLimit: 1 << 30, finalized: false,
         requiresEntry: true, scratch: $0) != nil
     }
   }

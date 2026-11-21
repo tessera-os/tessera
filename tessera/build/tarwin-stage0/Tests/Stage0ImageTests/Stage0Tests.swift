@@ -4,14 +4,14 @@ import Testing
 
 // Two function sections; the entry calls the second by a section-relative
 // relocation. A12 must receive the relocation, not just the instruction bytes.
-private func input(x64: Bool = false) -> [UInt8] {
+private func input(x64: Bool = false, rv64: Bool = false) -> [UInt8] {
   var b = [UInt8](repeating: 0, count: 64 + 7 * 64)
   func put(_ offset: Int, _ n: Int, _ v: UInt64) {
     for i in 0..<n { b[offset + i] = UInt8(truncatingIfNeeded: v >> (8 * i)) }
   }
   b[0..<7] = [127, 69, 76, 70, 2, 1, 1]
   put(16, 2, 1)
-  put(18, 2, x64 ? 62 : 183)
+  put(18, 2, rv64 ? 243 : x64 ? 62 : 183)
   put(20, 4, 1)
   put(40, 8, 64)
   put(52, 2, 64)
@@ -45,11 +45,11 @@ private func input(x64: Bool = false) -> [UInt8] {
     b += bytes
     return at
   }
-  _ = add(1, 1, 6, x64 ? [0xe9, 0, 0, 0, 0] : [0, 0, 0, 0x94], alignment: x64 ? 1 : 4)
-  _ = add(2, 1, 6, x64 ? [0xc3] : [0xc0, 3, 0x5f, 0xd6], alignment: x64 ? 1 : 4)
+  _ = add(1, 1, 6, rv64 ? [0x6f, 0, 0, 0] : x64 ? [0xe9, 0, 0, 0, 0] : [0, 0, 0, 0x94], alignment: x64 ? 1 : 4)
+  _ = add(2, 1, 6, rv64 ? [0x67, 0x80, 0, 0] : x64 ? [0xc3] : [0xc0, 3, 0x5f, 0xd6], alignment: x64 ? 1 : 4)
   let rel = add(3, 4, 0, [UInt8](repeating: 0, count: 24), link: 4, info: 1, ent: 24)
   put(rel, 8, x64 ? 1 : 0)
-  put(rel + 8, 8, 2 << 32 | (x64 ? 4 : 283))
+  put(rel + 8, 8, 2 << 32 | (rv64 ? 17 : x64 ? 4 : 283))
   if x64 { put(rel + 16, 8, UInt64(bitPattern: -4)) }
   let syms = add(4, 2, 0, [UInt8](repeating: 0, count: 72), link: 5, ent: 24)
   put(syms + 24, 4, 1)
@@ -91,4 +91,16 @@ private func input(x64: Bool = false) -> [UInt8] {
     0xb8, 0x60, 0x50, 0x41, 0xd4, 0xf3, 0x0f, 0x1e, 0xfa, 0xe9, 0, 0, 0, 0,
   ])
   #expect(Array(image.bytes[0x1019..<0x101f]) == [0xe9, 0, 0, 0, 0, 0xc3])
+}
+
+@Test func rv64KernelVeneerCarriesHartAndHandoffPrototype() throws {
+  let image = try packageKernel(readKernelObject(input(rv64: true)))
+  #expect(image.entryAddress == 0x1010)
+  #expect(Array(image.bytes[0x100c..<0x1020]) == [
+    0xc7, 0xd4, 0xd1, 0xd8, 0x17, 0x70, 0x4c, 0x1d,
+    0x6f, 0, 0x40, 0, 0x6f, 0, 0x40, 0, 0x67, 0x80, 0, 0,
+  ])
+  var wrongABI = input(rv64: true)
+  wrongABI[48] = 4
+  #expect(throws: InputError.self) { try readKernelObject(wrongABI) }
 }
