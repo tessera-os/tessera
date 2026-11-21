@@ -6,7 +6,9 @@ import Testing
 
 private enum Failure: Error { case untrusted, unexpectedRecord, map }
 
-private func elf(train: UInt8, trapSites: [UInt32]? = nil) -> Data {
+private func elf(
+  train: UInt8, trapSites: [UInt32]? = nil, importsDependency: Bool = false, hasEntry: Bool = true
+) -> Data {
   let page = Int(hostedPageSize)
   var file = Data(count: 3 * page + 16)
   func put<T: FixedWidthInteger>(_ x: T, _ at: Int) {
@@ -18,7 +20,7 @@ private func elf(train: UInt8, trapSites: [UInt32]? = nil) -> Data {
   put(UInt16(3), 16)
   put(UInt16(183), 18)
   put(UInt32(1), 20)
-  put(UInt64(page), 24)
+  put(UInt64(hasEntry ? page : 0), 24)
   put(UInt64(64), 32)
   put(UInt16(64), 52)
   put(UInt16(56), 54)
@@ -83,6 +85,48 @@ private func elf(train: UInt8, trapSites: [UInt32]? = nil) -> Data {
     put(UInt32(0xd420_00e0), page + 4)
     put(UInt32(0xd400_0001), page + 8)
     put(UInt32(0xd65f_03c0), page + 12)
+  }
+  if importsDependency {
+    let sections = file.count
+    let names = sections + 3 * 64
+    let sectionNames = Data("\0.shstrtab\0.tirload\0".utf8)
+    let records = names + sectionNames.count
+    let item = records + 144
+    let itemSize = 36
+    let total = 144 + itemSize + 4
+    file.append(Data(count: 3 * 64))
+    file.append(sectionNames)
+    file.append(Data(count: total))
+    put(UInt64(sections), 40)
+    put(UInt16(64), 58)
+    put(UInt16(3), 60)
+    put(UInt16(1), 62)
+    put(UInt32(1), sections + 64)
+    put(UInt32(3), sections + 68)
+    put(UInt64(names), sections + 88)
+    put(UInt64(sectionNames.count), sections + 96)
+    put(UInt32(11), sections + 128)
+    put(UInt32(1), sections + 132)
+    put(UInt64(records), sections + 152)
+    put(UInt64(total), sections + 160)
+    put(UInt32(0x3144_4c54), records)
+    put(UInt16(1), records + 4)
+    put(UInt16(8), records + 6)
+    put(UInt32(total), records + 8)
+    for table in 0..<8 {
+      put(UInt32(table <= 2 ? 144 : table <= 6 ? 144 + itemSize : total), records + 16 + 16 * table)
+    }
+    put(UInt32(itemSize), records + 52)
+    put(UInt32(1), records + 56)
+    put(UInt32(4), records + 116)
+    put(UInt32(1), records + 120)
+    put(UInt64(2 * page + 8), item)
+    file[item + 10] = 1
+    put(UInt32(0x1234_5678), item + 26)
+    put(UInt16(1), item + 30)
+    file[item + 32] = 65
+    put(UInt16(1), item + 33)
+    file[item + 35] = 66
   }
   return file
 }
@@ -185,4 +229,48 @@ private let window: Range<UInt64> = (1 << 36)..<(1 << 37)
     }
   }
   #expect(task.mapped.isEmpty)
+}
+
+@Test func placesDependenciesBeforeBindingAndSharesTheirSealedCodeAcrossTasks() throws {
+  let page = hostedPageSize
+  let app = try HostedVerifiedImage.admit(
+    elf(train: 1, importsDependency: true), requiresEntry: true
+  ) { _, _ in }
+  let library = try HostedVerifiedImage.admit(
+    elf(train: 1, hasEntry: false), requiresEntry: false
+  ) { _, _ in }
+  let cache = HostedImageCache()
+  func load(_ task: Task) throws -> [HostedLoadedImage] {
+    let space = try HostedAddressSpace(window: window, task: task)
+    let loader = HostedImageLoader(space: space, cache: cache)
+    let loaded = try loader.loadGroup([app, library], resolve: { index, bases, kind, _, count in
+      #expect(index == 0)
+      #expect(kind == .imports)
+      #expect(count == 1)
+      #expect(task.mapped.isEmpty)
+      let destination = bases[1] + page
+      return [HostedRelocation(rva: 2 * page + 8,
+        bytes: withUnsafeBytes(of: destination.littleEndian) { Data($0) })]
+    }, rewrite: { _, code, _, _, _ in (code, Data(), [:]) })
+    #expect(!loaded[0].range.overlaps(loaded[1].range))
+    #expect(loaded[1].entry == nil)
+    let relroAddress = loaded[0].range.lowerBound + 2 * page
+    let relro = try #require(task.mapped.first { $0.address == relroAddress })
+    #expect(relro.protection == .read)
+    let mapping = try relro.entry.mapLocally(protection: .read)
+    let pointer = try #require(UnsafeRawPointer(bitPattern: UInt(mapping.address)))
+    #expect(pointer.load(fromByteOffset: 8, as: UInt64.self) == loaded[1].range.lowerBound + page)
+    return loaded
+  }
+  let rejected = Task()
+  rejected.failAt = 3
+  #expect(throws: Failure.map) { try load(rejected) }
+  #expect(rejected.mapped.isEmpty)
+  let one = Task(), two = Task()
+  let a = try load(one)
+  let b = try load(two)
+  let firstCode = try #require(one.mapped.first { $0.address == a[1].range.lowerBound + page })
+  let secondCode = try #require(two.mapped.first { $0.address == b[1].range.lowerBound + page })
+  #expect(firstCode.protection == [.read, .execute])
+  #expect(firstCode.entry === secondCode.entry)
 }

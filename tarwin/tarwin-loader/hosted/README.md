@@ -20,6 +20,13 @@ the same transaction, then returns the absolute veneer-PC-to-original-PC
 map for that process. Keep guest threads stopped until the map is enrolled.
 Different rewritten bytes never alias a cached right.
 
+For an executable with dependencies, call `loadGroup` with the admitted
+images in dependency-resolver order. The resolver gets the source image
+index and every image base before any mappings are installed, so it can
+bind against dependencies placed by that same transaction. The caller
+supplies dependency selection, RIDL matching and per-process pointer
+signing. The group is returned in input order only after the batch maps.
+
 The task command transport is `HostedTaskCommandMappings`. Its exchange
 closure sends the frozen H2 command and the optional capability, waiting
 for its matching reply. A transport failure with unknown outcome must

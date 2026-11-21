@@ -68,6 +68,14 @@ public final class HostedImageLoader {
     _ code: Data, _ rva: UInt64, _ imageBase: UInt64, _ veneersAt: UInt64
   ) throws -> (text: Data, veneers: Data, siteMap: [UInt64: UInt64])
 
+  public typealias GroupBindingResolver = (
+    _ imageIndex: Int, _ imageBases: [UInt64], _ kind: LoaderTableKind, _ table: Data, _ count: UInt32
+  ) throws -> [HostedRelocation]
+
+  public typealias GroupTrapRewriter = (
+    _ imageIndex: Int, _ code: Data, _ rva: UInt64, _ imageBase: UInt64, _ veneersAt: UInt64
+  ) throws -> (text: Data, veneers: Data, siteMap: [UInt64: UInt64])
+
   private let space: HostedAddressSpace
   private let cache: HostedImageCache
   private let lock = NSLock()
@@ -81,73 +89,106 @@ public final class HostedImageLoader {
   public func load(
     _ image: HostedVerifiedImage, resolve: BindingResolver, rewrite: TrapRewriter
   ) throws -> HostedLoadedImage {
+    try loadGroup([image], resolve: { _, bases, kind, table, count in
+      try resolve(kind, table, count, bases[0])
+    }, rewrite: { _, code, rva, base, veneersAt in
+      try rewrite(code, rva, base, veneersAt)
+    })[0]
+  }
+
+  public func loadGroup(
+    _ images: [HostedVerifiedImage], resolve: GroupBindingResolver, rewrite: GroupTrapRewriter
+  ) throws -> [HostedLoadedImage] {
     try lock.withLock {
       var random = SystemRandomNumberGenerator()
       let gatePage = TaskGatePage.address..<(TaskGatePage.address + hostedPageSize)
       let occupied = reservations + space.occupiedRanges + [gatePage]
-      let base = try HostedImagePlacement.choose(
-        window: space.window, occupied: occupied, span: image.span,
-        alignment: image.alignment, using: &random)
-      let range = base..<(base + image.span)
-      let segments = try relocatedSegments(image, base: base, resolve: resolve)
-      let imageMappings = segments.map { (base + $0.rva)..<(base + $0.rva + $0.size) }
+      var ranges: [Range<UInt64>] = []
+      for image in images {
+        let base = try HostedImagePlacement.choose(
+          window: space.window, occupied: occupied + ranges, span: image.span,
+          alignment: image.alignment, using: &random)
+        ranges.append(base..<(base + image.span))
+      }
+      let bases = ranges.map(\.lowerBound)
       var sidecars: [Range<UInt64>] = []
-      var veneerCommands: [HostedMapCommand] = []
-      var siteMap: [UInt64: UInt64] = [:]
-      let trapSites = Set(image.trapRVAs.map { base + $0 })
       var commands: [HostedMapCommand] = []
-      for segment in segments {
-        var segment = segment
-        if segment.protection.contains(.execute) {
-          let start = base + segment.rva
-          let end = start + segment.size
-          let gap = veneerGap(
-            after: end, window: space.window, occupied: occupied + imageMappings + sidecars)
-          let veneersAt = gap?.lowerBound ?? end
-          let result = try rewrite(segment.bytes, segment.rva, base, veneersAt)
-          let veneerSize = UInt64(result.veneers.count)
-          let textEnd = start + UInt64(segment.bytes.count)
-          let expected = trapSites.filter { start <= $0 && $0 < textEnd }
-          guard result.text.count == segment.bytes.count, veneerSize % 4 == 0,
-            Set(result.siteMap.values) == expected, result.siteMap.count == expected.count,
-            result.siteMap.keys.allSatisfy({
-              $0 >= veneersAt && $0 - veneersAt < veneerSize && $0 % 4 == 0
-            })
-          else { throw HostedImageError.invalidTrapRewrite }
-          segment.bytes = result.text
-          if veneerSize != 0 {
-            guard let gap, veneerSize <= UInt64(gap.count) else {
-              throw HostedImageError.noPlacement
-            }
-            let size = (veneerSize + hostedPageSize - 1) & ~(hostedPageSize - 1)
-            let veneer = HostedSegment(
-              rva: veneersAt &- base, size: size, protection: [.read, .execute],
-              bytes: result.veneers)
-            let entry = try cache.entry(image: image, segment: veneer, share: true)
-            veneerCommands.append(try HostedMapCommand(
-              address: veneersAt, size: size, entry: entry, protection: veneer.protection))
-            sidecars.append(veneersAt..<(veneersAt + size))
-            siteMap.merge(result.siteMap) { current, _ in current }
-          }
-        }
-        let copy = segment.protection.contains(.write)
-        let entry = try cache.entry(image: image, segment: segment, share: !copy)
-        commands.append(try HostedMapCommand(
-          address: base + segment.rva, size: segment.size, entry: entry,
-          protection: segment.protection, copy: copy))
+      var loaded: [HostedLoadedImage] = []
+      for index in images.indices {
+        let (image, mappings) = try stage(
+          images[index], range: ranges[index],
+          occupied: occupied + ranges.enumerated().compactMap { $0.offset == index ? nil : $0.element },
+          sidecars: &sidecars,
+          resolve: { kind, table, count, _ in try resolve(index, bases, kind, table, count) },
+          rewrite: { code, rva, base, veneersAt in try rewrite(index, code, rva, base, veneersAt) })
+        loaded.append(image)
+        commands += mappings
       }
       do {
-        try space.mapBatch((commands + veneerCommands).map {
-          (command: $0, charged: !$0.protection.contains(.execute))
-        })
+        try space.mapBatch(commands.map { (command: $0, charged: !$0.protection.contains(.execute)) })
       } catch HostedMemoryError.rollbackFailed {
-        reservations += [range] + sidecars
+        reservations += ranges + sidecars
         throw HostedImageError.rollbackFailed
       }
-      reservations += [range] + sidecars
-      return HostedLoadedImage(
-        range: range, entry: image.entry == 0 ? nil : base + image.entry, siteMap: siteMap)
+      reservations += ranges + sidecars
+      return loaded
     }
+  }
+
+  private func stage(
+    _ image: HostedVerifiedImage, range: Range<UInt64>, occupied: [Range<UInt64>],
+    sidecars: inout [Range<UInt64>], resolve: BindingResolver, rewrite: TrapRewriter
+  ) throws -> (HostedLoadedImage, [HostedMapCommand]) {
+    let base = range.lowerBound
+    let segments = try relocatedSegments(image, base: base, resolve: resolve)
+    let imageMappings = segments.map { (base + $0.rva)..<(base + $0.rva + $0.size) }
+    var veneerCommands: [HostedMapCommand] = []
+    var siteMap: [UInt64: UInt64] = [:]
+    let trapSites = Set(image.trapRVAs.map { base + $0 })
+    var commands: [HostedMapCommand] = []
+    for segment in segments {
+      var segment = segment
+      if segment.protection.contains(.execute) {
+        let start = base + segment.rva
+        let end = start + segment.size
+        let gap = veneerGap(
+          after: end, window: space.window, occupied: occupied + imageMappings + sidecars)
+        let veneersAt = gap?.lowerBound ?? end
+        let result = try rewrite(segment.bytes, segment.rva, base, veneersAt)
+        let veneerSize = UInt64(result.veneers.count)
+        let textEnd = start + UInt64(segment.bytes.count)
+        let expected = trapSites.filter { start <= $0 && $0 < textEnd }
+        guard result.text.count == segment.bytes.count, veneerSize % 4 == 0,
+          Set(result.siteMap.values) == expected, result.siteMap.count == expected.count,
+          result.siteMap.keys.allSatisfy({
+            $0 >= veneersAt && $0 - veneersAt < veneerSize && $0 % 4 == 0
+          })
+        else { throw HostedImageError.invalidTrapRewrite }
+        segment.bytes = result.text
+        if veneerSize != 0 {
+          guard let gap, veneerSize <= UInt64(gap.count) else {
+            throw HostedImageError.noPlacement
+          }
+          let size = (veneerSize + hostedPageSize - 1) & ~(hostedPageSize - 1)
+          let veneer = HostedSegment(
+            rva: veneersAt &- base, size: size, protection: [.read, .execute],
+            bytes: result.veneers)
+          let entry = try cache.entry(image: image, segment: veneer, share: true)
+          veneerCommands.append(try HostedMapCommand(
+            address: veneersAt, size: size, entry: entry, protection: veneer.protection))
+          sidecars.append(veneersAt..<(veneersAt + size))
+          siteMap.merge(result.siteMap) { current, _ in current }
+        }
+      }
+      let copy = segment.protection.contains(.write)
+      let entry = try cache.entry(image: image, segment: segment, share: !copy)
+      commands.append(try HostedMapCommand(
+        address: base + segment.rva, size: segment.size, entry: entry,
+        protection: segment.protection, copy: copy))
+    }
+    return (HostedLoadedImage(
+      range: range, entry: image.entry == 0 ? nil : base + image.entry, siteMap: siteMap),
+      commands + veneerCommands)
   }
 }
 
