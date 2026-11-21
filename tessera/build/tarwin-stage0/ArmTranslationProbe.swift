@@ -18,6 +18,7 @@ orr x10, x10, #(1 << 31)
 msr hcr_el2, x10
 isb
 mrs x5, ttbr0_el1
+mrs x13, ttbr1_el1
 mrs x6, tcr_el1
 mrs x7, mair_el1
 mrs x8, sctlr_el1
@@ -30,8 +31,9 @@ tlbi vmalle1
 dsb sy
 isb
 msr ttbr0_el1, x0
+msr ttbr1_el1, x11
 mov x10, #0xb510
-movk x10, #0x90, lsl #16
+movk x10, #0x7510, lsl #16
 movk x10, #5, lsl #32
 msr tcr_el1, x10
 mov x10, #255
@@ -59,6 +61,32 @@ at s1e0r, x1
 isb
 mrs x10, par_el1
 str x10, [x2, #24]
+at s1e1r, x12
+isb
+mrs x10, par_el1
+str x10, [x2, #32]
+at s1e1w, x12
+isb
+mrs x10, par_el1
+str x10, [x2, #40]
+at s1e0r, x12
+isb
+mrs x10, par_el1
+str x10, [x2, #48]
+add x12, x12, #4, lsl #12
+at s1e1w, x12
+isb
+mrs x10, par_el1
+str x10, [x2, #56]
+at s1e0w, x12
+isb
+mrs x10, par_el1
+str x10, [x2, #64]
+add x12, x12, #4, lsl #12
+at s1e1r, x12
+isb
+mrs x10, par_el1
+str x10, [x2, #72]
 bic x10, x8, #1
 msr sctlr_el1, x10
 isb
@@ -66,6 +94,7 @@ tlbi vmalle1
 dsb sy
 isb
 msr ttbr0_el1, x5
+msr ttbr1_el1, x13
 msr tcr_el1, x6
 msr mair_el1, x7
 isb
@@ -80,8 +109,8 @@ ret
 ret
 """
 print("""
-define i64 @tarboot_test_translation(i64 %root, i64 %va, ptr %results) naked nounwind {
-  call void asm sideeffect "\(code.replacingOccurrences(of: "\n", with: "\\0A"))", "~{memory}"()
+define i64 @tarboot_test_translation(i64 %root, i64 %va, ptr %results, i64 %kroot, i64 %kva) naked nounwind {
+  call void asm sideeffect "mov x11, x3\\0Amov x12, x4\\0A\(code.replacingOccurrences(of: "\n", with: "\\0A"))", "~{memory}"()
   unreachable
 }
 """)

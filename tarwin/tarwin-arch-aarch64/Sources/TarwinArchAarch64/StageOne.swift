@@ -8,8 +8,8 @@ public func armUserPage(_ pa: UInt64, write: Bool, execute: Bool, lpa2: Bool) ->
   return pa | 3 | ap | 0x300 | 0x400 | 0x800 | (UInt64(1) << 53) | uxn
 }
 
-// 16 KiB granule uses eleven index bits per level and a 14-bit offset.
+// 48-bit VA: the first level has one index bit, not the sign-extension bits.
 public func armWalkIndex(_ va: UInt64, level: UInt8) -> UInt64 {
   if level > 3 { return 2048 }
-  return (va >> (14 + (3 - UInt64(level)) * 11)) & 2047
+  return (va >> (14 + (3 - UInt64(level)) * 11)) & (level == 0 ? 1 : 2047)
 }

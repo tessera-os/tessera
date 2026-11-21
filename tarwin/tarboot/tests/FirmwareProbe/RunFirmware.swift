@@ -260,6 +260,7 @@ func check() throws {
   }
   if ProcessInfo.processInfo.environment["TARBOOT_TEST_TRANSLATION"] == "1" {
     print("\(a): EL0 hardware translation resolved two frames, rejected write to RX and read from guard page")
+    print("\(a): upper-half EL1 code and stack resolved; EL0 access, writes to privileged RX and EL1 guard reads denied")
   }
   if secure {
     print("\(a): signed diagnostic admitted by enrolled OVMF; SecureBoot=1, SetupMode=0")
