@@ -1,5 +1,5 @@
-// EFI diagnostic, not tarboot or a Tarwin kernel. The dedicated QEMU instance
-// powers off only after successful ExitBootServices and inspection of the returned map.
+// QEMU-only firmware entry. Diagnostics power down through runtime services;
+// the signed boot composition instead transfers control to a separate ELF.
 import Tarboot
 import TarwinBoot
 import TarwinBootstrap
@@ -133,6 +133,15 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
         }
         let virtual = placed.virtual
         let owned = placed.takePages()
+        #if TARBOOT_ENTER_W0
+          guard let stack = boot.reserveLoaderPages(16),
+            let entry = installArmKernel(kernel, in: owned)
+          else {
+            writeDiagnostic("TARWIN-IMAGE-INSTALL-REFUSED\r\n", console: console, output: output)
+            return false
+          }
+          writeDiagnostic("TARBOOT-PHYSICAL-IMAGE-READY\r\n", console: console, output: output)
+        #endif
       #else
         guard let owned = boot.reserveLoaderPages(UInt(2 * 64 * pageSize / 4096 - 1)) else {
           return false
@@ -184,7 +193,7 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
         info.year = 26
         info.month = 11
         info.week = 1
-        info.security = 2  // debug image; the archive is never authorized for entry
+        info.security = 2  // QEMU debug mode; do not assert production Secure Boot.
         #if TARBOOT_TEST_SECURE_FIRMWARE
           info.security |= 1 // OVMF admitted this PE, not the archive it reads.
         #endif
@@ -236,6 +245,15 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
             && received.entropy6 == info.entropy6 && received.entropy7 == info.entropy7
         else { return false }
       #endif
+      #if TARBOOT_ENTER_W0
+        cleanRange(owned.base, owned.base + owned.length)
+        cleanRange(storage.base, storage.base + storage.length)
+        cleanRange(archive.base, archive.base + archive.length)
+        cleanRange(logPages.base, logPages.base + logPages.length)
+        cleanRange(stack.base, stack.base + stack.length)
+        enterArm(storage.base, entry, stack.base + stack.length)
+        while true {}
+      #else
       var usable = false
       var runtime = false
       var covered = false
@@ -267,6 +285,7 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
         return debug.write("TARWIN TEST")
       #else
         return true
+      #endif
       #endif
     }
   }

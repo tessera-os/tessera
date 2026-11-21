@@ -62,5 +62,33 @@ import Testing
       }
     }
     #expect(storage[0] == 127 && storage[65] == 127 && storage[1...64].allSatisfy { $0 == 0 })
+    if #available(macOS 26, *) {
+      let handles: LocateHandles = { kind, _, _, length, out in
+        precondition(kind == 2 && length.pointee >= 8)
+        out.storeBytes(of: UInt(1), as: UInt.self)
+        length.pointee = 8
+        return 0
+      }
+      let lookup: HandleProtocol = { handle, _, out in
+        precondition(UInt(bitPattern: handle) == 1)
+        out.pointee = rngTable
+        return 0
+      }
+      let fill: RandomBytes = { _, alg, count, output in
+        precondition(alg?.load(as: UInt64.self) == 0x4827_b6e8_e431_76d7 && count == 64)
+        for i in 0..<Int(count) { output.storeBytes(of: UInt8(i), toByteOffset: i, as: UInt8.self) }
+        return 0
+      }
+      table.withUnsafeMutableBytes { raw in
+        raw.storeBytes(of: fill, toByteOffset: 8, as: RandomBytes.self)
+        rngTable = UnsafeRawPointer(raw.baseAddress!)
+        defer { rngTable = nil }
+        storage.withUnsafeMutableBytes { bytes in
+          #expect(FirmwareRNG.readSeed(nil, handles: handles, protocolFor: lookup,
+            into: .init(rebasing: bytes[1...64])))
+        }
+      }
+      #expect(storage == [127] + (0..<64).map(UInt8.init) + [127])
+    }
   }
 #endif

@@ -41,6 +41,15 @@ for isa in "${@:-all}"; do
             flags+=(-D TARBOOT_TEST_STAGE0)
         fi
         modules=()
+        entry_source=()
+        if [[ ${TARBOOT_ENTER_W0:-0} == 1 ]]; then
+            [[ $arch == aarch64 && -n ${TARBOOT_TEST_SIGNATURE:-} && ${TARBOOT_TEST_RNG:-0} == 1 && ${TARBOOT_TEST_DISPLAY:-0} == 1 && ${TARBOOT_TEST_SMP_TABLES:-0} == 0 && ${TARBOOT_BAD_SIGNATURE:-0} == 0 ]] || exit 2
+            flags+=(-D TARBOOT_ENTER_W0)
+            entry_source+=("$composition-stage0/QEMUEntry.swift")
+            swift "$composition-stage0/ArmHandoffVariants.swift" > "$d/entry.ll"
+            "$bin/clang" -target aarch64-unknown-windows-msvc -Wno-override-module -c "$d/entry.ll" -o "$d/entry.obj"
+            extra+=("$d/entry.obj")
+        fi
         if [[ -n ${TARBOOT_TEST_SIGNATURE:-} ]]; then
             [[ $arch == aarch64 && ${TARBOOT_TEST_CPU:-0} == 1 && ${TARBOOT_TEST_FLOOR:-0} == 1 && -n ${TARBOOT_TEST_STAGE0_ARCHIVE:-} && -f ${TARBOOT_QEMU_ENROLLMENT:-} ]] || exit 2
             flags+=(-D TARBOOT_TEST_SIGNED)
@@ -69,7 +78,7 @@ for isa in "${@:-all}"; do
                 mod=$(basename "$src")
                 "$bin/swiftc" "${flags[@]}" -module-name "$mod" -emit-module -emit-module-path "$d/$mod.swiftmodule" "$src"/*.swift
         done
-        "$bin/swiftc" "${flags[@]}" -module-name Probe -emit-ir -o "$d/probe.ll" "$here/Probe.swift" "$here/Memory.swift" "$here/BootFileProbe.swift" "$here/MeasurementProbe.swift" "$here/ProcessorProbe.swift" "$here/SignedArchive.swift" "$d/FixtureHashes.swift"
+        "$bin/swiftc" "${flags[@]}" -module-name Probe -emit-ir -o "$d/probe.ll" "$here/Probe.swift" "$here/Memory.swift" "$here/BootFileProbe.swift" "$here/MeasurementProbe.swift" "$here/ProcessorProbe.swift" "$here/SignedArchive.swift" "$d/FixtureHashes.swift" ${entry_source[@]+"${entry_source[@]}"}
         if [[ $arch == riscv64 ]]; then
             edk=${EDK_BASETOOLS:?set EDK_BASETOOLS to built edk2 BaseTools for riscv64}
             "$bin/clang" -target "$triple" -mcmodel=medany -msmall-data-limit=0 -mno-relax -flto -O2 -c "$d/probe.ll" -o "$d/main.o"
@@ -104,6 +113,9 @@ for isa in "${@:-all}"; do
             mv "$d/signed.efi" "$image"
         else
             cp "$fw/edk2-$vars-vars.fd" "$d/vars.fd"
+        fi
+        if [[ ${TARBOOT_ENTER_W0:-0} == 1 ]] && LC_ALL=C grep -aFq 'TARWIN W0 PASS' "$image"; then
+            echo "kernel-only pass marker found in EFI image" >&2; exit 1
         fi
         swift "$here/RunFirmware.swift" "$arch" "$d" "$fw/edk2-$code-code.fd"
     done

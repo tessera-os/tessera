@@ -18,19 +18,25 @@ private func guestShutdown(_ data: Data) -> Bool {
 
 // QMP screendump emits binary PPM. Check the whole message on the emulated
 // scanout, not a copy of framebuffer RAM or a guest-supplied success value.
-private func verifyScanout(_ bytes: Data) throws {
+private func verifyScanout(_ bytes: Data, kernel: Bool = false) throws {
   let lines = bytes.split(separator: 10, maxSplits: 3, omittingEmptySubsequences: false)
   guard lines.count == 4, lines[0].elementsEqual("P6".utf8), lines[2].elementsEqual("255".utf8)
     else { throw Failure("invalid QMP PPM header") }
   let dims = String(decoding: lines[1], as: UTF8.self).split(separator: " ").compactMap { Int($0) }
-  guard dims.count == 2, (66...16384).contains(dims[0]), (8...16384).contains(dims[1]),
+  guard dims.count == 2, ((kernel ? 84 : 66)...16384).contains(dims[0]), (8...16384).contains(dims[1]),
     lines[3].count == 3 * dims[0] * dims[1] else { throw Failure("invalid QMP scanout size") }
   let glyphs: [[UInt8]] = [
     [31,4,4,4,4,4,4], [14,17,17,31,17,17,17], [30,17,17,30,20,18,17],
     [17,17,17,21,21,27,17], [14,4,4,4,4,4,14], [17,25,25,21,19,19,17],
-    [0,0,0,0,0,0,0], [31,4,4,4,4,4,4], [31,16,16,30,16,16,31],
+    [0,0,0,0,0,0,0],
+  ] + (kernel ? [
+    [17,17,17,21,21,27,17], [14,17,19,21,25,17,14], [0,0,0,0,0,0,0],
+    [30,17,17,30,16,16,16], [14,17,17,31,17,17,17],
+    [15,16,16,14,1,1,30], [15,16,16,14,1,1,30],
+  ] : [
+    [31,4,4,4,4,4,4], [31,16,16,30,16,16,31],
     [15,16,16,14,1,1,30], [31,4,4,4,4,4,4],
-  ]
+  ])
   let pixels = lines[3]
   for (cell, glyph) in glyphs.enumerated() {
     for y in 0..<8 {
@@ -138,6 +144,8 @@ func check() throws {
     contentsOf: Data("{\"execute\":\"qmp_capabilities\"}\n".utf8))
   let deadline = ContinuousClock.now.advanced(by: .seconds(60))
   var captured = false
+  let bootKernel = ProcessInfo.processInfo.environment["TARBOOT_ENTER_W0"] == "1"
+  var nextShot = ContinuousClock.now
   while process.isRunning && ContinuousClock.now < deadline {
     if let bytes = try? Data(contentsOf: URL(fileURLWithPath:serial)),
       bytes.range(of:Data("TARWIN-SIGNED-VERIFICATION-FAILED".utf8)) != nil {
@@ -166,7 +174,24 @@ func check() throws {
         throw Failure("\(a): " + marker)
       }
     }
-    if displayEnabled && !captured {
+    if bootKernel && !captured {
+      let frame = URL(fileURLWithPath: d + "/scanout.ppm")
+      if let bytes = try? Data(contentsOf: frame), (try? verifyScanout(bytes, kernel: true)) != nil {
+        try input.fileHandleForWriting.write(contentsOf: Data("{\"execute\":\"quit\"}\n".utf8))
+        captured = true
+      } else if ContinuousClock.now >= nextShot, let uart = try? Data(contentsOf: URL(fileURLWithPath: serial)) {
+        if uart.range(of: Data("TARWIN-IMAGE-INSTALL-REFUSED".utf8)) != nil {
+          throw Failure("kernel rejected before installation")
+        }
+        if uart.range(of: Data("TARBOOT-PHYSICAL-IMAGE-READY".utf8)) != nil {
+          let msg: [String:Any] = ["execute":"screendump","arguments":["filename":frame.path]]
+          var cmd = try JSONSerialization.data(withJSONObject: msg)
+          cmd.append(10)
+          try input.fileHandleForWriting.write(contentsOf: cmd)
+          nextShot = .now.advanced(by: .milliseconds(400))
+        }
+      }
+    } else if displayEnabled && !captured {
       if let log = try? Data(contentsOf: URL(fileURLWithPath: serial)),
         log.range(of: Data("TARWIN-GOP-UNAVAILABLE".utf8)) != nil { throw Failure("\(a): no linear GOP display") }
       if let events = try? Data(contentsOf: URL(fileURLWithPath: monitor)), guestShutdown(events) {
@@ -218,7 +243,7 @@ func check() throws {
   guard uart.range(of: Data("TARWIN-FIRMWARE-EXIT-TEST".utf8)) != nil else {
     throw Failure("\(a): probe did not run")
   }
-  guard guestShutdown(try Data(contentsOf: URL(fileURLWithPath: monitor)))
+  guard bootKernel ? captured : guestShutdown(try Data(contentsOf: URL(fileURLWithPath: monitor)))
     else { throw Failure("\(a): missing guest-initiated shutdown event") }
   if rngEnabled { print("\(a): physical TBIB, EFI RNG seed, randomized reservation and typed archive/map extents passed readback") }
   if multiple { print("\(a): enumerated four distinct enabled CPU hardware IDs from firmware; boot CPU only") }
@@ -231,7 +256,7 @@ func check() throws {
   if displayEnabled {
     guard captured else { throw Failure("no scanout recorded") }
     let frame = try Data(contentsOf: URL(fileURLWithPath: d + "/scanout.ppm"))
-    try verifyScanout(frame)
+    try verifyScanout(frame, kernel: bootKernel)
     if let dir = ProcessInfo.processInfo.environment["TARBOOT_TEST_SCANOUT_DIR"] {
       let output = URL(fileURLWithPath: dir).appendingPathComponent(a + ".ppm")
       try frame.write(to: output, options: .withoutOverwriting)
@@ -264,6 +289,10 @@ func check() throws {
     }
     print("\(a): firmware TCG2 PCR 8 and PCR 9 match independent host replay")
     print("\(a): captured log contains both expected SHA-256 measurements and the final firmware exit event")
+  }
+  if bootKernel {
+    print("\(a): signed W0 kernel wrote TARWIN W0 PASS to hardware scanout; stopped via QMP, not EFI shutdown")
+    return
   }
   print(
     "\(a): ESP file read, TIRA member and ELF preflight, EFI exit, page, boot queue and shutdown passed"

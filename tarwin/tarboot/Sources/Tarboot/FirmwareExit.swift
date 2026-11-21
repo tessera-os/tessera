@@ -38,6 +38,7 @@ public enum FirmwareExit {
     private let system: UnsafeRawPointer
     private let protocolFor: HandleProtocol?
     private let locate: LocateProtocol?
+    private let handles: LocateHandles?
     private enum Measurement { case notAttempted, stopped, complete, captured }
     private var measurement: Measurement = .notAttempted
     private let allocate: Allocate?
@@ -58,6 +59,7 @@ public enum FirmwareExit {
       self.image = image
       self.system = system
       self.protocolFor = boot.load(fromByteOffset: 152, as: HandleProtocol?.self)
+      self.handles = boot.load(fromByteOffset: 176, as: LocateHandles?.self)
       self.locate =
         boot.load(fromByteOffset: 12, as: UInt32.self) >= 328
         ? boot.load(fromByteOffset: 320, as: LocateProtocol?.self) : nil
@@ -92,7 +94,7 @@ public enum FirmwareExit {
     /// Fill only the dedicated 64-byte TBIB field. Verify the firmware/source
     /// provenance separately. No partial seed may escape a failed GetRNG.
     @unsafe public func readBootSeed(into bytes: UnsafeMutableRawBufferPointer) -> Bool {
-      FirmwareRNG.readSeed(locate, into: bytes)
+      FirmwareRNG.readSeed(locate, handles: handles, protocolFor: protocolFor, into: bytes)
     }
 
     /// Index and SHA-256 Name digest are trusted installation policy, never

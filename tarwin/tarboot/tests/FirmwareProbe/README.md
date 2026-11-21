@@ -135,3 +135,22 @@ PAN2, GIC system registers and an implemented counter frequency. On aarch64
 `TARBOOT_TEST_CPU=refusal` uses Cortex-A72 and requires a negative result.
 The x64 CPUID and RV64 SBI snapshots are *not* complete baseline checks.
 None of these tests establishes release trust or physical hardware support.
+
+### Enter the separate AArch64 kernel
+
+Add `TARBOOT_ENTER_W0=1 TARBOOT_TEST_DISPLAY=1 TARBOOT_TEST_RNG=1` to
+the positive signed invocation above. Use the tagged A12 kernel, with a
+16-byte-aligned `tarwin_start`, the physical-TBIB type tag at E−4 and
+BTI C at E. This build is for **one QEMU CPU only**. After authorization,
+tarboot zeroes its private random image reservation and installs only the
+bounded R/RX PT_LOAD spans. The firmware exit map pins the image and a
+separate 64 KiB stack. After TBIB readback it cleans image and handoff
+ranges, invalidates I-cache, masks DAIF, turns off the EL2 MMU and caches,
+switches stacks and branches with x0 = physical TBIB. The signed ELF never
+returns. There are no post-exit firmware calls in this path.
+
+The runner compares every pixel of **TARWIN W0 PASS** from QMP scanout
+before stopping QEMU. Only the kernel draws that string; the EFI image is
+checked not to contain it. Set `TARBOOT_TEST_SCANOUT_DIR` to an existing
+empty directory to save the PPM. This is a stage-0 shell-free boot, not an
+OS install, SMP test, hardware timer interrupt or certified boot chain.
