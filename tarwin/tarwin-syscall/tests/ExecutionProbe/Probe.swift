@@ -561,17 +561,26 @@ private struct ProbePort: SignalPorts {
   let entry: UnsafeMutablePointer<PortObject>
   var wakes = 0
   mutating func withPort<R>(_ id: UInt64, _ body: (inout CompletionPort) -> R) -> R? {
-    id == self.id ? entry.pointee.withQueue(changed: { _, _ in }, body) : nil
+    id == self.id ? entry.pointee.withQueue(notify: { _ in }, body) : nil
   }
   mutating func wake(port: UInt64, count: Int) { if port == id { wakes += count } }
 }
 
-private struct ProbePortWork: PortNotifications {
+private struct ProbePortWork: PortRingWork {
   let id: UInt64
   var wakes = 0
   var cancel: PortOperation?
   var source: UInt64 = 0
-  mutating func readinessChanged(port: UInt64, signals: UInt32) {}
+  var acceptSubmission = false
+  mutating func capture(
+    process: UInt64, port: UInt64, record: borrowing RingRecord, queue: inout CompletionPort
+  ) -> Bool {
+    guard acceptSubmission, port == id, process == 71 else { return false }
+    let key = UInt64(record.words[0]) | UInt64(record.words[1]) << 32
+    guard let token = queue.reserve(object: id, key: key, kind: 1) else { return false }
+    return queue.finish(token, at: 17) { PortPacket() } == 1
+  }
+  mutating func portEvent(_ event: PortQueueEvent) {}
   mutating func wakeOne(port: UInt64) { if port == id { wakes += 1 } }
   mutating func scheduleCancel(port: UInt64, source: UInt64, operation: PortOperation) {
     if port == id {
@@ -657,7 +666,7 @@ private func observePeer(
         defer { _ = table.pointee.close(name, retire: { _ in preconditionFailure() }) }
         guard NativePorts.post(name, packet: input, gate: &pg).code == 0,
           pg.calls.context.work.wakes == 1, h.pointee.signals == 1,
-          let userPacket = p.pointee.withQueue(changed: { _, _ in }, { $0.take() }),
+          let userPacket = p.pointee.withQueue(notify: { _ in }, { $0.take() }),
           h.pointee.signals == 0,
           userPacket.key == 91, userPacket.kind == 0, userPacket.timestamp == 16
         else { return false }
@@ -684,7 +693,7 @@ private func observePeer(
                 ends.signal(name: source, set: bit, clear: 0, in: table.pointee, notify: notify)
                   == .ok,
                 h.pointee.signals == 1,
-                let packet = p.pointee.withQueue(changed: { _, _ in }, { $0.take() }),
+                let packet = p.pointee.withQueue(notify: { _ in }, { $0.take() }),
                 h.pointee.signals == 0, packet.kind == 1, packet.key == 27,
                 packet.flags == 1, packet.result0 == UInt64(bit), packet.timestamp == 21,
                 router.pointee.wakes == 1,
@@ -698,7 +707,7 @@ private func observePeer(
               else { return false }
               l.pointee.cancelled(cancelling, port: h.pointee.koid, at: 22, ports: &router.pointee)
               guard h.pointee.signals == 1,
-                let final = p.pointee.withQueue(changed: { _, _ in }, { $0.take() }),
+                let final = p.pointee.withQueue(notify: { _ in }, { $0.take() }),
                 h.pointee.signals == 0
               else { return false }
               return final.flags == 0 && final.error == 26 && final.key == 27
@@ -756,13 +765,14 @@ private func eventPair(_ arena: inout Arena) -> Bool {
 
 private struct ProbeRingReader: NativePortRingDirectory {
   let reader: UnsafeMutablePointer<NativePortRing>
+  let name, id: UInt64
   mutating func withReader(
     named: UInt64, _ body: (UInt64, inout NativePortRing, () -> Void) -> CallResult?
   )
     -> CallResult?
   {
-    guard named == 7 else { return CallResult(status: 2) }
-    return body(101, &reader.pointee, {})
+    guard named == name else { return CallResult(status: 2) }
+    return body(id, &reader.pointee, {})
   }
 }
 
@@ -782,41 +792,69 @@ private func waitOnMappedRing(_ arena: inout Arena, _ challenge: UInt64) -> Bool
   cells[2].store(64, ordering: .relaxed)
   cells[3].store(64, ordering: .relaxed)
   let view = UnsafeBufferPointer(cells)
-  guard var reader = NativePortRing(koid: 101, fresh: view),
-    var requests = PortSubmissions(fresh: view),
-    var writer = RingEndpoint(fresh: view, completion: false, producer: true),
-    var producer = RingEndpoint(fresh: view, completion: true, producer: true)
+  let handles = arena.take(HandleCell.self, count: 1)
+  let slots = arena.take(PortSlot.self, count: 1)
+  slots.initialize(repeating: PortSlot())
+  defer { slots.deinitialize() }
+  guard
+    let ph = ObjectHeader(
+      source: KoidSource(), ownerJob: 1,
+      kind: TarwinKind.port, maximumRights: PortObject.initialRights),
+    var table = HandleTable(storage: handles, salt: 97),
+    var reader = NativePortRing(koid: ph.koid, fresh: view),
+    var writer = RingEndpoint(fresh: view, completion: false, producer: true)
   else { return false }
+  defer { handles.deinitialize() }
   var op = RingRecord()
   op.words[0] = UInt32(truncatingIfNeeded: challenge)
   op.words[1] = UInt32(truncatingIfNeeded: challenge >> 32)
-  guard writer.push(op) == .transferred(notifyPeer: false),
-    requests.drain(budget: 1, capture: { _ in false }).stop == .capacity,
-    cells[Int(RingFormat.requestConsumer / 4)].load(ordering: .acquiring) == 0
-  else { return false }
-  cells[Int(RingFormat.records / 4)].store(~op.words[0], ordering: .relaxed)
-  var slot = PortSlot()
-  return withUnsafeMutablePointer(to: &slot) { s in
-    guard var port = CompletionPort(storage: .init(start: s, count: 1)) else { return false }
-    let batch = requests.drain(budget: 2) { record in
-      let key = UInt64(record.words[0]) | UInt64(record.words[1]) << 32
-      guard let token = port.reserve(object: 101, key: key, kind: 1) else { return false }
-      return port.finish(token, at: 17) { PortPacket() } == 1
+  return withUnsafePointer(to: ph) { h in
+    guard var entry = PortObject(header: h, storage: slots),
+      entry.bindFreshRing(process: 71, words: view)
+    else { return false }
+    let created = withUnsafeMutablePointer(to: &entry) { p in
+      withUnsafeMutablePointer(to: &table) { t in
+        var pg = RegisterGate(
+          calls: PortCalls(
+            context: ProbePortSpace(
+              entry: p, table: t, input: .init(start: nil, count: 0),
+              work: ProbePortWork(id: h.pointee.koid))))
+        return NativePorts.create(gate: &pg)
+      }
     }
-    guard batch.count == 1, batch.stop == .idle,
-      port.publishNext(to: &producer) == .transferred(notifyPeer: false),
-      port.readable
+    guard created.status == 0 else { return false }
+    let name = created.first
+    defer { _ = table.close(name, retire: { _ in preconditionFailure() }) }
+    var work = ProbePortWork(id: h.pointee.koid)
+    guard writer.push(op) == .transferred(notifyPeer: false),
+      entry.prepareEnter(
+        name: name, process: 72, table: table, deadline: .max, now: 0,
+        work: &work) == .error(4),
+      entry.prepareEnter(
+        name: name, process: 71, table: table, deadline: .max, now: 0,
+        work: &work) == .wouldSleep,
+      cells[Int(RingFormat.requestConsumer / 4)].load(ordering: .acquiring) == 0
+    else { return false }
+    cells[Int(RingFormat.records / 4)].store(~op.words[0], ordering: .relaxed)
+    work.acceptSubmission = true
+    guard
+      entry.prepareEnter(
+        name: name, process: 71, table: table, deadline: 0, now: 0,
+        work: &work) == .ready, h.pointee.signals == 1
     else { return false }
     var output = InlineArray<8, UInt64>(repeating: .max)
     return withUnsafeMutableBytes(of: &output) { raw in
       let out = raw.bindMemory(to: UInt64.self)
       return withUnsafeMutablePointer(to: &reader) { r in
-        var dir = ProbeRingReader(reader: r)
+        var dir = ProbeRingReader(reader: r, name: name, id: h.pointee.koid)
         var gate = NoSleep()
-        let got = NativePorts.wait(7, into: out, deadline: .max, directory: &dir, gate: &gate)
+        let got = NativePorts.wait(name, into: out, deadline: .max, directory: &dir, gate: &gate)
         return got.status == 0 && got.first == 1 && out[0] == challenge && out[7] == 17
-          && NativePorts.wait(7, into: out, deadline: 0, directory: &dir, gate: &gate).code == 25
-          && port.acknowledgeConsumed(from: &producer) { _ in } == nil && !port.readable
+          && NativePorts.wait(name, into: out, deadline: 0, directory: &dir, gate: &gate).code == 25
+          && entry.prepareEnter(
+            name: name, process: 71, table: table, deadline: 9, now: 9,
+            work: &work) == .error(25)
+          && h.pointee.signals == 0
       }
     }
   }

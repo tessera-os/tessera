@@ -2,6 +2,17 @@ import TarwinIPC
 import XCTest
 
 final class SubmissionTests: XCTestCase {
+  func testRejectsCompletionHalfWithDifferentCapturedGeometryOrMapping() {
+    let m = SharedMemory(stride: 128), other = SharedMemory(stride: 64)
+    defer { withExtendedLifetime((m, other)) {} }
+    m.cells[3].store(64, ordering: .relaxed)
+    let sub = PortSubmissions(fresh: m.view)!
+    let foreign = RingEndpoint(fresh: other.view, completion: true, producer: true)!
+    XCTAssertFalse(sub.isPaired(with: foreign))
+    m.cells[2].store(128, ordering: .relaxed)
+    let mismatch = RingEndpoint(fresh: m.view, completion: true, producer: true)!
+    XCTAssertFalse(sub.isPaired(with: mismatch))
+  }
   func testBackpressurePinsOriginalRequestUntilCapturedAndBatchesDoorbells() {
     let m = SharedMemory(stride: 64)
     defer { withExtendedLifetime(m) {} }

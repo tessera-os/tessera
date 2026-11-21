@@ -52,8 +52,9 @@ The guest creates the port through the native ABI, posts an untrusted user
 packet and checks that the kernel supplied its kind and timestamp. It arms
 an edge observer, checks the peer's Signal packet, cancels by port/key and
 consumes the terminal Cancelled packet after the provider acknowledges.
-It also refuses a submission under backpressure, modifies the shared record,
-then commits the original private copy exactly once. This diagnostic operation
+The port rejects a ring turn from the wrong process. Its owner reaches the
+would-sleep decision under backpressure, modifies the shared record, then
+commits the original private copy exactly once. This diagnostic operation
 reserves its own completion; it is not a frozen submission opcode.
 It publishes the packet into the shared TRNG mapping, drains it through
 the native ring waiter without entering the gate, polls empty and acknowledges

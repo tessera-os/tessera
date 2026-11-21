@@ -51,6 +51,7 @@ public struct RingEndpoint: ~Copyable {
   private var peerIdle: Int { peerCursor + 32 }
   var isPortCompletionProducer: Bool { completion && producer && geometry.stride == 64 }
   public var isPortCompletionReader: Bool { completion && !producer && geometry.stride == 64 }
+  fileprivate var geometryCount: UInt32 { geometry.count }
   var completionMapping: UInt { UInt(bitPattern: words.baseAddress) }
   var publishedThrough: UInt32 { local }
 
@@ -153,6 +154,14 @@ public struct PortSubmissions: ~Copyable {
       ep.isPortRequestReader
     else { return nil }
     endpoint = ep
+  }
+
+  /// Both halves must have captured identical geometry before the mapping
+  /// was published. A peer changing the header between attaches cannot make
+  /// the submission area overlap the completion area.
+  public func isPaired(with completion: borrowing RingEndpoint) -> Bool {
+    completion.isPortCompletionProducer && completion.completionMapping == endpoint.completionMapping
+      && completion.geometryCount == endpoint.geometryCount
   }
 
   /// Under the submission lock, stage bounded work for a trusted backend.

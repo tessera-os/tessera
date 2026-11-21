@@ -5,9 +5,27 @@ import TarwinObject
 import TarwinSyscall
 import XCTest
 
-private struct Notifications: PortNotifications {
+private struct Notifications: PortRingWork {
+  var ringEvents: [PortQueueEvent] = []
+  var accept = true, submitters: [UInt64] = []
+  mutating func capture(
+    process: UInt64, port: UInt64, record: borrowing RingRecord,
+    queue: inout CompletionPort
+  ) -> Bool {
+    guard accept, let op = queue.reserve(object: port, key: UInt64(record.words[0]), kind: 1)
+    else { return false }
+    submitters.append(process)
+    XCTAssertEqual(queue.finish(op, at: 100) { PortPacket() }, 1)
+    return true
+  }
   var changes: [UInt32] = []
-  mutating func readinessChanged(port: UInt64, signals: UInt32) { changes.append(signals) }
+  mutating func portEvent(_ event: PortQueueEvent) {
+    if case .readiness(_, let signals) = event {
+      changes.append(signals)
+    } else {
+      ringEvents.append(event)
+    }
+  }
   var wake: [UInt64] = []
   var jobs: [(UInt64, UInt64, PortOperation)] = []
   mutating func wakeOne(port: UInt64) { wake.append(port) }
@@ -75,11 +93,102 @@ private final class PortFixture: PortNamespace {
     return words.withUnsafeBufferPointer { calls.invoke(number: number, words: $0) }
   }
   func queue<R>(_ body: (inout CompletionPort) -> R) -> R {
-    entry.withQueue(changed: { work.readinessChanged(port: $0, signals: $1) }, body)
+    entry.withQueue(notify: { work.portEvent($0) }, body)
+  }
+  func enter(_ name: UInt64, process: UInt64 = 22, deadline: UInt64 = .max) -> PortEnterDecision {
+    entry.prepareEnter(
+      name: name, process: process, table: table, deadline: deadline, now: 9, work: &work)
   }
 }
 
 final class PortCallTests: XCTestCase {
+  func testBoundEnterAndEagerPublication() {
+    let m = SharedMemory(stride: 64)
+    let f = PortFixture()
+    defer { withExtendedLifetime(m) {} }
+    var sender = RingEndpoint(fresh: m.view, completion: false, producer: true)!
+    var receiver = RingEndpoint(fresh: m.view, completion: true, producer: false)!
+    XCTAssertFalse(f.entry.bindFreshRing(process: 0, words: m.view))
+    XCTAssertTrue(f.entry.bindFreshRing(process: 22, words: m.view))
+    XCTAssertFalse(f.entry.bindFreshRing(process: 99, words: m.view))
+    let name = f.call(TarwinCall.portCreate, 0).first
+    guard case .installed(let narrow) = f.table.derive(name, rights: 8, duplicate: true) else {
+      return XCTFail()
+    }
+    var rec = RingRecord()
+    rec.words[0] = 172
+    XCTAssertEqual(sender.push(rec), .transferred(notifyPeer: false))
+    XCTAssertEqual(f.enter(0), .error(2))
+    XCTAssertEqual(f.enter(narrow), .error(4))
+    XCTAssertEqual(f.enter(name, process: 23), .error(4))
+    XCTAssertEqual(m.cells[32].load(ordering: .acquiring), 0)
+    f.work.accept = false
+    XCTAssertEqual(f.enter(name, deadline: 9), .error(25))
+    XCTAssertEqual(f.enter(name, deadline: 10), .wouldSleep)
+    XCTAssertEqual(m.cells[32].load(ordering: .acquiring), 0)
+    XCTAssertEqual(receiver.pop(into: &rec), .wait)
+    f.work.accept = true
+    XCTAssertEqual(f.enter(name, deadline: 0), .ready)
+    XCTAssertEqual(f.work.submitters, [22])
+    XCTAssertEqual(m.cells[32].load(ordering: .acquiring), 1)
+    XCTAssertTrue(f.work.ringEvents.contains(.notifyPeer(f.headers[0].koid, completion: true)))
+    XCTAssertEqual(receiver.pop(into: &rec), .transferred(notifyPeer: true))
+    XCTAssertEqual(rec.words[0], 172)
+    XCTAssertEqual(f.enter(name), .wouldSleep)
+    XCTAssertEqual(f.work.changes, [1, 0])
+    // A completed post must be visible even if the reader only polls.
+    XCTAssertEqual(f.call(TarwinCall.portPost, name, 0x2000).code, 0)
+    XCTAssertEqual(receiver.pop(into: &rec), .transferred(notifyPeer: true))
+    XCTAssertEqual(rec.words[0], 13)
+    XCTAssertEqual(f.enter(name, deadline: 0), .error(25))
+    XCTAssertEqual(f.work.changes, [1, 0, 1, 0])
+    m.cells[Int(RingFormat.completionConsumer / 4)].store(77, ordering: .releasing)
+    XCTAssertEqual(f.enter(name), .error(23))
+    XCTAssertEqual(f.work.submitters, [22])
+  }
+
+  func testPublishedRinglessPortCannotChangeMapping() {
+    let m = SharedMemory(stride: 64)
+    let f = PortFixture()
+    let name = f.call(TarwinCall.portCreate, 0).first
+    XCTAssertFalse(f.entry.bindFreshRing(process: 22, words: m.view))
+    XCTAssertEqual(f.enter(name), .error(10))
+    XCTAssertNil(PortCalls(context: f).argumentCount(for: TarwinCall.portEnter))
+  }
+
+  func testMappedRingRetainsOverflowUntilSpaceAndRearmsAfterAck() {
+    let m = SharedMemory(stride: 64), f = PortFixture()
+    defer { withExtendedLifetime(m) {} }
+    var reader = RingEndpoint(fresh: m.view, completion: true, producer: false)!
+    XCTAssertTrue(f.entry.bindFreshRing(process: 22, words: m.view))
+    let name = f.call(TarwinCall.portCreate, 0).first
+    for key: UInt64 in 0..<67 {
+      var user = PortPacket()
+      user.key = key
+      XCTAssertEqual(f.queue { $0.post(user) }, key < 66)
+    }
+    var record = RingRecord()
+    for i in 0..<64 {
+      XCTAssertEqual(reader.pop(into: &record), .transferred(notifyPeer: true))
+      XCTAssertEqual(record.words[0], UInt32(i))
+    }
+    XCTAssertEqual(f.enter(name), .ready)
+    for i in 64..<66 {
+      XCTAssertEqual(reader.pop(into: &record), .transferred(notifyPeer: true))
+      XCTAssertEqual(record.words[0], UInt32(i))
+    }
+    XCTAssertEqual(f.enter(name), .wouldSleep)
+    guard let op = f.queue({ $0.reserve(object: 19, key: 55, kind: 1, repeating: true) }) else {
+      return XCTFail()
+    }
+    XCTAssertEqual(f.queue { $0.more(op, at: 42, PortPacket()) }, .committed(wake: 1))
+    XCTAssertEqual(f.enter(name), .ready)
+    XCTAssertFalse(f.work.ringEvents.contains(.rearm(f.headers[0].koid, op)))
+    XCTAssertEqual(reader.pop(into: &record), .transferred(notifyPeer: true))
+    XCTAssertEqual(record.words[7], 1)
+    XCTAssertEqual(f.enter(name), .wouldSleep)
+    XCTAssertEqual(f.work.ringEvents.filter { $0 == .rearm(f.headers[0].koid, op) }.count, 1)
+  }
   func testReadableFollowsValidatedRingConsumptionNotPublication() {
     let f = PortFixture()
     let m = SharedMemory(stride: 64)

@@ -1,3 +1,4 @@
+import Synchronization
 import TarwinABI
 import TarwinIPC
 import TarwinObject
@@ -9,6 +10,7 @@ public struct PortObject: ~Copyable {
   public let header: UnsafePointer<ObjectHeader>
   fileprivate var queue: CompletionPort
   private var published = false
+  private var rings: OwnedPortRings?
   public static var initialRights: UInt64 { 0x7cf }
 
   public init?(header: UnsafePointer<ObjectHeader>, storage: UnsafeMutableBufferPointer<PortSlot>) {
@@ -31,6 +33,35 @@ public struct PortObject: ~Copyable {
     }
   }
 
+  /// Before publishing the port, MM must exclusively pin this fresh,
+  /// quiescent mapping for this process until final port retirement.
+  public mutating func bindFreshRing(process: UInt64, words: UnsafeBufferPointer<Atomic<UInt32>>)
+    -> Bool
+  {
+    guard !published, !queue.closed, rings == nil,
+      let binding = OwnedPortRings(process: process, words: words)
+    else { return false }
+    rings = consume binding
+    return true
+  }
+
+  /// Hold the port, mapping and caller table locks. If the result is
+  /// wouldSleep, enroll under this same port lock before releasing it.
+  /// Never install this as a blocking call without a resumable park path.
+  public mutating func prepareEnter<W: PortRingWork>(
+    name: UInt64, process: UInt64, table: borrowing HandleTable, deadline: UInt64,
+    now: UInt64, work: inout W
+  ) -> PortEnterDecision {
+    let code = authorize(name, need: 128, table: table)
+    guard code == 0 else { return .error(code) }
+    guard rings != nil else { return .error(10) }
+    guard rings?.owner == process else { return .error(4) }
+    defer { recordReadiness { work.portEvent($0) } }
+    return rings!.turn(
+      process: process, port: header.pointee.koid, queue: &queue,
+      deadline: deadline, now: now, work: &work)
+  }
+
   fileprivate func authorize(_ name: UInt64, need: UInt64, table: borrowing HandleTable) -> UInt32 {
     switch table.reader.pinWithinEpoch(name, kind: TarwinKind.port, need: need) {
     case .invalidHandle: return 2
@@ -47,22 +78,31 @@ public struct PortObject: ~Copyable {
   /// order; do not run an observer that locks a destination port here (the
   /// observer may target this same port). One logical operation per body.
   public mutating func withQueue<R>(
-    changed: (UInt64, UInt32) -> Void, _ body: (inout CompletionPort) -> R
+    notify: (PortQueueEvent) -> Void, _ body: (inout CompletionPort) -> R
   ) -> R {
     let result = body(&queue)
+    let id = header.pointee.koid
+    if !queue.closed, rings != nil {
+      let code = rings!.flush(port: id, queue: &queue, notify: notify)
+      if code != 0 { notify(.ringFailed(id, code)) }
+    }
+    recordReadiness(notify)
+    return result
+  }
+
+  private func recordReadiness(_ notify: (PortQueueEvent) -> Void) {
     let old = header.pointee.signals
     let new = queue.readable ? old | 1 : old & ~1
     if new != old {
       _ = header.pointee.updateSignals(clear: 1, set: new & 1)
-      changed(header.pointee.koid, new)
+      notify(.readiness(header.pointee.koid, new))
     }
-    return result
   }
 }
 
 /// Queue scheduler/provider work; neither callback may re-enter the port.
 public protocol PortNotifications {
-  mutating func readinessChanged(port: UInt64, signals: UInt32)
+  mutating func portEvent(_ event: PortQueueEvent)
   mutating func wakeOne(port: UInt64)
   mutating func scheduleCancel(port: UInt64, source: UInt64, operation: PortOperation)
 }
@@ -140,7 +180,7 @@ public struct PortCalls<C: PortNamespace>: CallProvider {
         packet.timestamp = now
         guard
           entry.withQueue(
-            changed: { work.readinessChanged(port: $0, signals: $1) },
+            notify: { work.portEvent($0) },
             { $0.post(packet) })
         else { return portError(24) }
         work.wakeOne(port: id)
