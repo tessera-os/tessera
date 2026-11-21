@@ -12,6 +12,9 @@ mkdir -p "$out"
 [[ -n ${GUEST_CONTROLLER_OUT:-} ]] || trap 'rm -rf "$out"' EXIT
 swiftc "$here/RunGuest.swift" -o "$out/guest"
 swiftc "$here/Access.swift" -o "$out/access"
+rm -f "$out/system.trfs" "$out/system.trfs.root"
+swiftc "$r/trfs/tests/fixtures/make-system-image.swift" -o "$out/fixture"
+"$out/fixture" "$out"
 if [[ $# == 0 ]]; then set -- aarch64 x86_64 riscv64; fi
 for arch in "$@"; do
     case $arch in
@@ -36,13 +39,23 @@ for arch in "$@"; do
     for name in kcore/KCore tarwin-boot/TarwinBoot tarboot/Tarboot tarwin-object/TarwinObject tarwin-syscall/TarwinABI tarwin-syscall/TarwinSyscall; do
         module "${name#*/}" "$r/${name%/*}/Sources/${name#*/}"/*.swift
     done
+    # The TRFS GuestIO reader's modules, built as trfs/tests/GuestIO/check.sh does.
+    reader() {
+        local mod=$1
+        shift
+        "$bin/swiftc" "${flags[@]}" -module-name "$mod" -emit-module -emit-module-path "$d/$mod.swiftmodule" "$@"
+    }
+    reader EarlyVolume "$r/trfs/Sources/TRFS"/{SnapshotVolume,ScopedLookup}.swift
+    reader TarwinIPC "$r/tarwin-ipc/Sources/TarwinIPC"/{Ring,RingEndpoint}.swift
+    reader TarwinBlockWire "$r/tarwin-block/Sources/TarwinBlockWire/Records.swift"
     module TarwinDevice "$r/tarwin-device/Sources/TarwinDevice"/{PciWalk,Pci,Range,Mcfg,Native,Slot,ConfigCalls}.swift
     # The driver allocates its queue bookkeeping; Heap.swift backs it with loader
     # pages. The probe shares the package to reach the snapshot-limited submitBlock.
     "$bin/swiftc" "${flags[@]}" -module-name VirtioGuest -package-name VirtioGuest -emit-module -emit-module-path "$d/VirtioGuest.swiftmodule" \
         "$r/drivers/virtio/Sources/VirtioGuest"/{Pci,Mmio,SplitRing,Block,BlockConfiguration,BlockRange}.swift
     "$bin/swiftc" "${flags[@]}" -enable-experimental-feature Extern -module-name GuestController -package-name VirtioGuest -emit-ir -o "$d/main.ll" \
-        "$here"/{Probe,Sha256,Heap}.swift "$r/tarboot/tests/FirmwareProbe/Memory.swift"
+        "$here"/{Probe,Sha256,Heap}.swift "$r/tarboot/tests/FirmwareProbe/Memory.swift" \
+        "$r/trfs/tests/GuestIO/Storage.swift" "$r/tarwin-loader/w0/Sources/TarwinW0Verify"/{SHA512,MeasurementDigest}.swift
     "$out/access" "$arch" > "$d/access.ll"
     if [[ $arch == riscv64 ]]; then
         edk=${EDK_BASETOOLS:?set EDK_BASETOOLS to edk2-stable202408 BaseTools}

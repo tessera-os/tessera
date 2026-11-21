@@ -2,7 +2,8 @@ import CryptoKit
 import Darwin
 import Foundation
 
-// Host side: builds the one-sector images, boots the EFI probe under QEMU
+// Host side: builds the one-sector images and the TRFS fixture cases, boots
+// the EFI probe under QEMU
 // with a read-only virtio-blk test drive behind a PCIe root port, and checks
 // the guest verdict against QEMU's own virtio-blk trace and the host digest.
 struct Failure: Error, CustomStringConvertible { let description: String }
@@ -22,14 +23,41 @@ func image(corrupt: Bool) -> (Data, String) {
   return (Data(sector), hex(SHA256.hash(data: payload)))
 }
 
+struct Case {
+  let name: String
+  let bytes: Data
+  let verdict: String
+  let digest: String?
+  let reads: Int
+}
+
+func oneSector(corrupt: Bool) -> Case {
+  let (bytes, digest) = image(corrupt: corrupt)
+  return Case(
+    name: corrupt ? "wrong-payload" : "positive", bytes: bytes,
+    verdict: corrupt ? "TARWIN-GC-PAYLOAD-MISMATCH" : "TARWIN-GC-PASS", digest: digest, reads: 1)
+}
+
+// Damage flips one byte the way trfs/tests/GuestIO's host check does: page 4
+// is system-version's data, page 6 the root record the pin covers. The read
+// counts are the ones that host check reports for the same fixture.
+func trfs(_ fixture: Data, _ name: String, damage page: Int?, reads: Int) -> Case {
+  var bytes = fixture
+  if let page { bytes[page * 4096 + 77] ^= 0x01 }
+  return Case(
+    name: name, bytes: bytes,
+    verdict: page == nil ? "TARWIN-GC-TRFS-PASS" : "TARWIN-GC-TRFS-REJECTED", digest: nil,
+    reads: reads)
+}
+
 func field(_ line: Substring, _ name: String) -> String? {
   guard let r = line.range(of: name + " ") else { return nil }
   return String(line[r.upperBound...].prefix { !$0.isWhitespace && $0 != "," })
 }
 
-func run(_ arch: String, _ dir: String, _ code: String, corrupt: Bool) throws {
-  let name = corrupt ? "wrong-payload" : "positive"
-  let (bytes, payloadDigest) = image(corrupt: corrupt)
+func run(_ arch: String, _ dir: String, _ code: String, _ c: Case) throws {
+  let name = c.name
+  let bytes = c.bytes
   let disk = dir + "/" + name + ".img"
   try bytes.write(to: URL(fileURLWithPath: disk))
   let machine =
@@ -96,15 +124,18 @@ func run(_ arch: String, _ dir: String, _ code: String, corrupt: Bool) throws {
     throw fail("test image changed")
   }
   let lines = console.split(whereSeparator: \.isNewline)
-  let verdict = corrupt ? "TARWIN-GC-PAYLOAD-MISMATCH" : "TARWIN-GC-PASS"
+  let verdict = c.verdict
+  let requests = "TARWIN-GC post-exit io: requests=" + String(format: "%02x", c.reads)
   guard lines.contains(where: { $0 == verdict }),
     lines.contains(where: { $0.hasPrefix("TARWIN-GC post-exit: ExitBootServices ok") }),
-    lines.contains(where: { $0 == "TARWIN-GC sha256=" + payloadDigest })
-  else { throw fail("expected \(verdict) and guest digest \(payloadDigest)") }
+    lines.contains(where: { $0.hasPrefix(requests) }),
+    c.digest.map({ d in lines.contains { $0 == "TARWIN-GC sha256=" + d } }) ?? true
+  else { throw fail("expected \(verdict), \(c.reads) requests and guest digest \(c.digest ?? "-")") }
 
   // The test drive is the device whose reads end the trace. After its last
-  // DRIVER_OK (status 15) QEMU must see exactly one read of sector 0, one
-  // sector long, completed successfully, then the probe's reset (status 0).
+  // DRIVER_OK (status 15) QEMU must see exactly the expected reads (one-sector
+  // cases: sector 0, one sector; TRFS: aligned 8-sector pages), each completed
+  // successfully, then the probe's reset (status 0).
   let t = try String(contentsOfFile: trace, encoding: .utf8).split(whereSeparator: \.isNewline)
   guard let last = t.last(where: { $0.contains("virtio_blk_handle_read") }),
     let vdev = field(last, "vdev"),
@@ -118,14 +149,22 @@ func run(_ arch: String, _ dir: String, _ code: String, corrupt: Bool) throws {
   let early = t[..<ready].filter {
     $0.contains("virtio_blk_handle_read") && field($0, "vdev") == vdev
   }.count
-  guard reads.count == 1, field(reads[0], "sector") == "0", field(reads[0], "nsectors") == "1",
-    completes.count == 1, field(completes[0], "ret") == "0",
+  let span = c.digest == nil ? 8 : 1
+  guard reads.count == c.reads, completes.count == c.reads,
+    reads.allSatisfy({ r in
+      guard let s = field(r, "sector").flatMap({ UInt64($0) }) else { return false }
+      return field(r, "nsectors") == String(span)
+        && (span == 1 ? s == 0 : s % 8 == 0 && s + 8 <= UInt64(bytes.count / 512))
+    }),
+    completes.allSatisfy({ field($0, "ret") == "0" }),
     after.last.map({ $0.contains("virtio_set_status") && field($0, "val") == "0" }) == true
   else { throw fail("trace after final DRIVER_OK: " + after.joined(separator: " | ")) }
+  let sectors = reads.compactMap { field($0, "sector") }.joined(separator: ",")
   print(
-    "\(arch) \(name): \(verdict); QEMU trace after the probe's DRIVER_OK: 1 read, sector 0, 1 sector, ret 0, then reset;"
-      + " guest digest = host digest \(payloadDigest.prefix(16)); image unchanged;"
-      + " firmware reads of the test drive before the probe's DRIVER_OK: \(early)")
+    "\(arch) \(name): \(verdict); QEMU trace after the probe's DRIVER_OK: \(c.reads) read(s) of"
+      + " \(span) sector(s) at sector \(sectors), all ret 0, then reset;"
+      + (c.digest.map { " guest digest = host digest \($0.prefix(16));" } ?? "")
+      + " image unchanged; firmware reads of the test drive before the probe's DRIVER_OK: \(early)")
 }
 
 let args = CommandLine.arguments
@@ -134,8 +173,21 @@ guard args.count == 4 else {
   exit(2)
 }
 do {
-  try run(args[1], args[2], args[3], corrupt: false)
-  try run(args[1], args[2], args[3], corrupt: true)
+  // The unmodified trfs/tests/fixtures generator writes the fixture next to
+  // the per-ISA directories; its root file must name the root record page.
+  let base = URL(fileURLWithPath: args[2]).deletingLastPathComponent()
+  let fixture = try Data(contentsOf: base.appendingPathComponent("system.trfs"))
+  let root = try Data(contentsOf: base.appendingPathComponent("system.trfs.root"))
+  guard fixture.count == 1 << 20, root == Data(SHA256.hash(data: fixture[6 * 4096..<7 * 4096]))
+  else { throw Failure(description: "TRFS fixture is not the 1 MiB pinned system image") }
+  for c in [
+    oneSector(corrupt: false), oneSector(corrupt: true),
+    trfs(fixture, "trfs-clean", damage: nil, reads: 11),
+    trfs(fixture, "trfs-damaged-file", damage: 4, reads: 11),
+    trfs(fixture, "trfs-damaged-root", damage: 6, reads: 3),
+  ] {
+    try run(args[1], args[2], args[3], c)
+  }
 } catch {
   FileHandle.standardError.write(Data("\(error)\n".utf8))
   exit(1)

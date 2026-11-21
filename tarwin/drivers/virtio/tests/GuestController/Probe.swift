@@ -1,6 +1,8 @@
 import KCore
 import Tarboot
+import TarwinBlockWire
 import TarwinDevice
+import TarwinIPC
 import VirtioGuest
 
 // Debug probe only: an EFI application that walks PCI through firmware, calls
@@ -35,6 +37,14 @@ let imageSectors: UInt64 = 1
 let payloadBytes: UInt32 = 448
 let readBytes: UInt32 = 512
 let imageMagic: UInt64 = 0x4347_4e49_5752_4154  // "TARWINGC"
+// A 2048-sector drive holds the repository's 1 MiB TRFS system fixture,
+// mounted by the unmodified trfs/tests/GuestIO exerciseGuestStorage.
+let trfsSectors: UInt64 = 2048
+
+struct ControllerTransport: GuestStorageTransport {
+  let run: (UnsafeMutableRawBufferPointer) -> Bool
+  func exchange(_ grant: UnsafeMutableRawBufferPointer) -> Bool { run(grant) }
+}
 
 nonisolated(unsafe) var console: UnsafeRawPointer?
 nonisolated(unsafe) var output: Output?
@@ -133,7 +143,7 @@ func mcfg(_ rsdp: UInt64) -> Phys? {
 
 enum Stage: UInt64 {
   case ecam = 1, identity, bars, discovery, negotiate, config, queue, submit, completion,
-    status, overrun
+    status, overrun, request
 }
 
 struct Result {
@@ -143,12 +153,13 @@ struct Result {
   var headerOK = false
   var digest = InlineArray<32, UInt8>(repeating: 0)
   var expected = InlineArray<32, UInt8>(repeating: 0)
+  var trfs: Bool?
 }
 
 // Phase 2 (after ExitBootServices): firmware-independent ECAM and controller.
 func drive(
   _ ecam: FirmwareEcam, _ want: Target, _ regions: UnsafeMutableBufferPointer<FirmwareRegion>,
-  _ count: Int, dma: UInt64, result: inout Result
+  _ count: Int, dma: UInt64, work: UInt64, result: inout Result
 ) -> Stage? {
   let window = ecam.registers
   for i in 0..<count {
@@ -242,7 +253,7 @@ func drive(
       read: { load8(config + UInt64($0)) })
   else { return .config }
   result.capacity = geometry.capacity
-  guard geometry.capacity == imageSectors, features & 32 != 0 else { return .config }
+  guard geometry.capacity == imageSectors || geometry.capacity == trfsSectors, features & 32 != 0 else { return .config }
 
   // Loader pages: queue (page 0), header+status (page 1), data (page 2),
   // untouched guard (page 3). Identity-mapped; not an isolated DMA domain.
@@ -258,19 +269,17 @@ func drive(
   guard queue.initialize(8) else { return .queue }
 
   let fill: UInt64 = 0x5a5a_5a5a_5a5a_5a5a
-  var hash = Sha256()
-  var sector: UInt64 = 0
-  while sector < imageSectors {
-    let header = dma + 4096
-    let status = header + 64
-    let data = dma + 8192
-    for a in stride(from: data, to: data + 4096, by: 8) { store64(a, fill) }
+  let header = dma + 4096
+  let status = header + 64
+  // One request in flight: `bytes` from `sector` into `data`, checked
+  // against the used ring and the virtio-blk status byte.
+  func transfer(_ sector: UInt64, _ bytes: UInt32, _ data: UInt64) -> Stage? {
     let packet = BlockPacket(
-      op: .read, sector: sector, bytes: readBytes, header: header, data: data, status: status)
+      op: .read, sector: sector, bytes: bytes, header: header, data: data, status: status)
     guard
       submitBlock(
         &queue, sector, packet, geometry,
-        [Segment(iova: data, length: readBytes, deviceWrites: true)],
+        [Segment(iova: data, length: bytes, deviceWrites: true)],
         { a, kind, s in
           store32(a, kind)
           store32(a + 4, 0)
@@ -312,15 +321,24 @@ func drive(
       }
     }
     guard let done, done.cookie == sector else { return .completion }
-    guard blockCompletion(load8(status), .read, readBytes, done.written) == .ok else {
+    guard blockCompletion(load8(status), .read, bytes, done.written) == .ok else {
       return .status
     }
+    return nil
+  }
+
+  if geometry.capacity == imageSectors {
+    let data = dma + 8192
+    for a in stride(from: data, to: data + 4096, by: 8) { store64(a, fill) }
+    if let stage = transfer(0, readBytes, data) { return stage }
+    result.requests = 1
     // Bytes past the request in the data page and the whole guard page
     // must keep their fill: the device wrote exactly the 512-byte span.
     for a in stride(from: data + UInt64(readBytes), to: dma + 16384, by: 8)
     where word(a) != (a >= dma + 12288 ? ~0 : fill) {
       return .overrun
     }
+    var hash = Sha256()
     for b in 0..<UInt64(readBytes) {
       let byte = load8(data + b)
       if b >= 64 {
@@ -330,10 +348,46 @@ func drive(
       }
     }
     result.headerOK = word(data) == imageMagic && load32(data + 8) == payloadBytes
-    result.requests += 1
-    sector += 1
+    result.digest = hash.finish()
+  } else {
+    // Backend for the GuestIO grant: validate the TarwinBlockWire request and
+    // its one vector, read the eight sectors straight into the grant's payload
+    // page, then post one terminal completion. Controller faults are kept
+    // apart from TRFS rejecting what it read.
+    var failed: Stage?
+    var requests = 0
+    let transport = ControllerTransport { grant in
+      guard failed == nil, grant.count == 8192, let p = grant.baseAddress else { return false }
+      var record = RingRecord()
+      for i in 0..<32 {
+        record.words[i] = UInt32(littleEndian: p.load(fromByteOffset: 4 * i, as: UInt32.self))
+      }
+      guard let r = BlockRequest(record: record, epoch: 1, queue: 0), r.op == .read,
+        r.blocks == 8, r.lba % 8 == 0, UInt64(r.lba) + 8 <= geometry.capacity,
+        r.payload.list == 256, r.payload.vectors == 1,
+        UInt64(littleEndian: p.load(fromByteOffset: 256, as: UInt64.self)) == 4096,
+        UInt32(littleEndian: p.load(fromByteOffset: 264, as: UInt32.self)) == 4096,
+        p.load(fromByteOffset: 268, as: UInt32.self) == 0
+      else {
+        failed = .request
+        return false
+      }
+      requests += 1
+      failed = transfer(UInt64(r.lba), 4096, UInt64(UInt(bitPattern: p)) + 4096)
+      guard failed == nil else { return false }
+      let done = BlockCompletion(id: r.id, epoch: r.epoch, queue: r.queue, status: .ok).record()
+      for i in 0..<32 {
+        p.storeBytes(of: done.words[i].littleEndian, toByteOffset: 128 + 4 * i, as: UInt32.self)
+      }
+      return true
+    }
+    let workspace = UnsafeMutableRawBufferPointer(
+      start: UnsafeMutableRawPointer(bitPattern: UInt(work)), count: 16384)
+    let accepted = exerciseGuestStorage(workspace, transport: transport)
+    result.requests = requests
+    if let failed { return failed }
+    result.trfs = accepted
   }
-  result.digest = hash.finish()
   write(20, 1, 0)
   while read(20, 1) != 0 {
     spins += 1
@@ -360,6 +414,7 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
   guard let (want, functions) = efiTarget(boot), let services = FirmwareBootServices(
     image: image, system: system),
     let heap = services.reserveLoaderPages(64), let dma = services.reserveLoaderPages(4),
+    let work = services.reserveLoaderPages(4),
     let mapPages = services.reserveLoaderPages(8), let regionPages = services.reserveLoaderPages(4),
     let tables = services.locateTables(), let table = mcfg(tables.rsdp)
   else {
@@ -393,7 +448,7 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
   var result = Result()
   var failure: Stage? = .ecam
   if let ecam = firmwareEcam(table, segment: 0, bus: UInt8(want.bus), reservedRegisters: { _ in true }) {
-    failure = drive(ecam, want, regions, count, dma: dma.base, result: &result)
+    failure = drive(ecam, want, regions, count, dma: dma.base, work: work.base, result: &result)
   }
   say("TARWIN-GC post-exit io: requests=")
   hex(UInt64(result.requests), 2)
@@ -401,14 +456,18 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
   hex(result.features, 16)
   say(" capacity=")
   hex(result.capacity, 4)
-  say("\nTARWIN-GC sha256=")
-  digest(result.digest)
-  say("\nTARWIN-GC header-sha256=")
-  digest(result.expected)
+  if result.trfs == nil {
+    say("\nTARWIN-GC sha256=")
+    digest(result.digest)
+    say("\nTARWIN-GC header-sha256=")
+    digest(result.expected)
+  }
   put(10)
   if let failure {
     say("TARWIN-GC-FAIL stage=")
     hex(failure.rawValue, 2)
+  } else if let trfs = result.trfs {
+    say(trfs ? "TARWIN-GC-TRFS-PASS" : "TARWIN-GC-TRFS-REJECTED")
   } else if !result.headerOK {
     say("TARWIN-GC-BAD-HEADER")
   } else {
