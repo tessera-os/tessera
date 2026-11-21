@@ -2,6 +2,7 @@
 // and virtio block/network protocols are under test, not Tarwin isolation or boot.
 import Darwin
 import Foundation
+import KCore
 import TarwinBlock
 import TarwinBlockWire
 import TarwinDevice
@@ -15,9 +16,16 @@ struct Failure: Error, CustomStringConvertible {
   init(_ text: String) { description = text }
 }
 
+private struct DeviceTreeBlob: ByteSource {
+  let bytes: [UInt8]
+  func byteCount() -> UInt64 { UInt64(bytes.count) }
+  func byteAt(_ offset: UInt64) -> UInt8 { bytes[Int(offset)] }
+}
+
 final class QTest {
   private let process = Process(), input = Pipe(), output = Pipe()
   private var buffered = Data()
+  private(set) var mmio: [DeviceRange] = []
   private(set) var error: Error?
 
   init(binary: String, machine: Machine, disk: URL) throws {
@@ -42,6 +50,25 @@ final class QTest {
     }
     if machine != .x64 { process.arguments! += ["-global", "virtio-mmio.force-legacy=off"] }
     if machine == .arm { process.arguments! += ["-cpu", "cortex-a57"] }
+    if machine != .x64 {
+      // Dump the device tree with the exact device topology used by the test.
+      let tree = FileManager.default.temporaryDirectory.appendingPathComponent(
+        UUID().uuidString + ".dtb")
+      defer { try? FileManager.default.removeItem(at: tree) }
+      let dump = Process()
+      dump.executableURL = process.executableURL
+      var args = process.arguments!
+      args[1] += ",dumpdtb=" + tree.path
+      dump.arguments = args
+      dump.standardInput = FileHandle.nullDevice
+      dump.standardOutput = FileHandle.nullDevice
+      try dump.run()
+      dump.waitUntilExit()
+      guard dump.terminationStatus == 0,
+        let devices = firmwareVirtioMmio(DeviceTreeBlob(bytes: Array(try Data(contentsOf: tree))))
+      else { throw Failure("Invalid firmware device tree") }
+      mmio = devices.map(\.registers).sorted { $0.base < $1.base }
+    }
     process.standardInput = input
     process.standardOutput = output
     try process.run()
@@ -120,11 +147,9 @@ func transport(
   if machine == .x64 {
     return try pciTransport(q, type: type, instance: instance, supported: supported, queues: queues)
   }
-  let candidates: [UInt64] =
-    machine == .rv
-    ? (0..<8).map { UInt64(0x1000_1000 + 0x1000 * $0) }
-    : (0..<32).map { UInt64(0x0a00_0000 + 0x200 * $0) }
-  let matching = candidates.filter { q.read("l", $0 + 8) == type }
+  // This harness uses the transport registers and at most 8 config bytes.
+  let matching = q.mmio.filter { $0.length >= 0x108 && q.read("l", $0.base + 8) == type }.map(
+    \.base)
   guard matching.indices.contains(instance) else {
     throw q.error ?? Failure("Missing virtio MMIO device")
   }

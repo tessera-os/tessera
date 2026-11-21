@@ -4,13 +4,15 @@ import PackageDescription
 let package = Package(
   name: "BlockQTest", platforms: [.macOS(.v26)],
   dependencies: [
-    .package(path: "../.."), .package(path: "../../../../tarwin-block"),
+    .package(path: "../../../../kcore"), .package(path: "../.."),
+    .package(path: "../../../../tarwin-block"),
     .package(path: "../../../../tarwin-device"), .package(path: "../../../../tarwin-ipc"),
   ],
   targets: [
     .executableTarget(
       name: "BlockQTest",
       dependencies: [
+        .product(name: "KCore", package: "kcore"),
         .product(name: "TarwinBlock", package: "tarwin-block"),
         .product(name: "TarwinIoCompletion", package: "tarwin-device"),
         .product(name: "TarwinDevice", package: "tarwin-device"),

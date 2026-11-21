@@ -9,7 +9,8 @@ let package = Package(
     .library(name: "TarwinDevice", targets: ["TarwinDevice"]),
   ],
   dependencies: [
-    .package(path: "../tarwin-ipc"), .package(path: "../tarwin-object"),
+    .package(path: "../kcore"), .package(path: "../tarwin-boot"), .package(path: "../tarwin-ipc"),
+    .package(path: "../tarwin-object"),
     .package(path: "../tarwin-syscall"),
   ],
   targets: [
@@ -19,7 +20,8 @@ let package = Package(
     .target(
       name: "TarwinDevice",
       dependencies: [
-        "TarwinIoCompletion",
+        "TarwinIoCompletion", .product(name: "KCore", package: "kcore"),
+        .product(name: "TarwinBoot", package: "tarwin-boot"),
         .product(name: "TarwinIPC", package: "tarwin-ipc"),
         .product(name: "TarwinObject", package: "tarwin-object"),
         .product(name: "TarwinSyscall", package: "tarwin-syscall"),
@@ -27,7 +29,8 @@ let package = Package(
     .testTarget(
       name: "TarwinDeviceTests",
       dependencies: [
-        "TarwinDevice", "TarwinIoCompletion", .product(name: "TarwinIPC", package: "tarwin-ipc"),
+        "TarwinDevice", "TarwinIoCompletion", .product(name: "KCore", package: "kcore"),
+        .product(name: "TarwinIPC", package: "tarwin-ipc"),
       ], path: "tests/TarwinDeviceTests"),
   ]
 )

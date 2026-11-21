@@ -33,3 +33,7 @@ A fresh pinned, cache-coherent Memory mapping contains the A.4 ring pair. Initia
 Arm a masked vector through `PortInterrupt` using the validated slot epoch, interrupt KOID and driver binding. A full/closed port refuses arming without unmasking. Each arm reserves one Device packet; IRQ entry acknowledges/masks before finishing it, and rearm requires a fresh credit. A cancelled or closed port never re-enables the line. Teardown must mask and drain; a failed drain keeps its reservation alive.
 
 The kernel's `IoPorts` implementation must retain the actual port object, serialize access under its lock and wake the number of waiters returned by `TarwinIPC.CompletionPort`. Enqueue cancellation work under the port lock and execute it outside that lock, never recursively acquire the device lock. Release a retained port after recording its last buffer access and notifying waiters.
+
+## Firmware MMIO discovery
+
+`firmwareVirtioMmio` walks TarwinBoot's FDT cursor over a pinned immutable boot tree. It stages only enabled `virtio,mmio` nodes in root physical space or bounded simple-bus translations. Child and parent address cells are independent; a missing bus mapping, overlapping device windows, truncated property or ambiguous translation rejects the snapshot before probing. Per-node interrupt fields are offsets in that tree, not grants. The interrupt-controller and IOMMU owners must resolve the actual route and isolation group before slot assignment. This is not an ACPI namespace interpreter.

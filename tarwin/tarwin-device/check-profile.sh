@@ -8,7 +8,7 @@ out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
 for target in aarch64-none-none-elf x86_64-unknown-none-elf riscv64-none-none-eabi; do
   case "$(basename "$package")" in
-    tarwin-device) deps="tarwin-ipc:TarwinIPC tarwin-device:TarwinIoCompletion tarwin-object:TarwinObject tarwin-syscall:TarwinABI tarwin-syscall:TarwinSyscall" ;;
+    tarwin-device) deps="kcore:KCore tarwin-boot:TarwinBoot tarwin-ipc:TarwinIPC tarwin-device:TarwinIoCompletion tarwin-object:TarwinObject tarwin-syscall:TarwinABI tarwin-syscall:TarwinSyscall" ;;
     tarwin-block) deps="tarwin-ipc:TarwinIPC tarwin-device:TarwinIoCompletion tarwin-block:TarwinBlockWire" ;;
     trfs) deps="kcore:KCore tarwin-mm:TarwinMM" ;;
     *) deps="" ;;
