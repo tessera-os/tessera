@@ -63,6 +63,28 @@ The Metal presentation cases require actual per-client grants, clear/blit, two o
 bounded failure recovery and Mosaic presentation against a WorkInterval deadline. Matching wire
 vectors alone do not prove any of those cases on a reference device.
 
+### Native storage after measured entry (§§6.6, 19.4)
+
+Add one final tab-separated field to each physical row, after the x64 backend if present:
+`storage=nvme,virtio-blk` is an example, not a list of supported transports. List **every**
+transport separately enrolled for this reference, using distinct IDs made of lowercase letters,
+digits or hyphens (up to eight IDs of 1–32 characters). Use `storage=none` only if the approved
+inventory enrolls none. A missing field leaves the inventory unknown and blocks that
+reference; dropping a transport invalidates its archive. Do not put this field on QEMU rows.
+
+Every reference must demonstrate denial under an unenrolled profile. That check claims no
+native reads. Each enrolled transport additionally needs its own captures on that ISA:
+a bounded read with exact completion and bytes; denial for a second requester, protected and
+adjacent pages, and wrong-direction accesses; a stale generation unable to enable a queue;
+a failed invalidation retaining the pins; and successful revocation before any reuse. The
+queue-specific check must show the grant cannot start another queue, including an administrative
+queue, or authorize a mount. Bind the actual profile, requester, domain, queue, generation
+and observed hardware acknowledgments to the capture. The runner checks each capture's digest
+and each result's target, serial, build and transport key. The adapter and reviewer must verify
+the hardware observations in the log.
+The fixed W1/PCR10 debug profile has no storage-enable transition. Neither its boot, hosted
+I/O nor a monitor-backed disk can satisfy any native transport gate.
+
 ## Missing evidence and traceability
 
 `swift run --package-path conformance tarwin-conformance --unverified` emits

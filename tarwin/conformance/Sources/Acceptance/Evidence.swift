@@ -6,6 +6,7 @@ struct Reference {
   let arch, serial, tarwin, linux: String
   let battery, nested, confidential: Bool
   let backend: String?
+  let storage: [String]?  // nil: inventory unknown; empty: no transport enrolled
 }
 
 func safeID(_ id: String) -> Bool {
@@ -22,7 +23,22 @@ private func validSiteID(_ id: String) -> Bool {
 }
 
 func reference(_ line: String) -> Reference? {
-  let f = line.components(separatedBy: "\t")
+  var f = line.components(separatedBy: "\t")
+  var storage: [String]?
+  if let field = f.last, field.hasPrefix("storage=") {
+    let value = String(field.dropFirst("storage=".count))
+    let names = value.components(separatedBy: ",")
+    guard names.count <= 8, Set(names).count == names.count,
+      names.allSatisfy({ id in
+        (1...32).contains(id.utf8.count)
+          && id.utf8.allSatisfy {
+            (97...122).contains($0) || (48...57).contains($0) || $0 == 45
+          }
+      }), value == "none" || !names.contains("none")
+    else { return nil }
+    storage = value == "none" ? [] : names
+    f.removeLast()
+  }
   guard (8...9).contains(f.count), f[0] == "physical", ["aarch64", "x64", "rv64"].contains(f[1]),
     f.count == 8 || (f[1] == "x64" && ["vmx", "svm"].contains(f[8])),
     validSiteID(f[2]), f[3...4].allSatisfy(safeID),
@@ -30,7 +46,8 @@ func reference(_ line: String) -> Reference? {
   else { return nil }
   return Reference(
     target: .physical, arch: f[1], serial: f[2], tarwin: f[3], linux: f[4], battery: f[5] == "yes",
-    nested: f[6] == "yes", confidential: f[7] == "yes", backend: f.count == 9 ? f[8] : nil)
+    nested: f[6] == "yes", confidential: f[7] == "yes", backend: f.count == 9 ? f[8] : nil,
+    storage: storage)
 }
 
 // W0 is explicitly the Arm QEMU machine. Use the same target for the W1
@@ -42,7 +59,7 @@ func qemuReference(_ line: String) -> Reference? {
   else { return nil }
   return Reference(
     target: .qemu, arch: f[1], serial: f[2], tarwin: f[3], linux: "", battery: false,
-    nested: false, confidential: false, backend: nil)
+    nested: false, confidential: false, backend: nil, storage: nil)
 }
 
 func captureExists(_ file: URL) -> Bool {

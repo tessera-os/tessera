@@ -7,7 +7,10 @@ extension Reference {
       ([
         "physical", arch, serial, tarwin, linux, battery ? "yes" : "no",
         nested ? "yes" : "no", confidential ? "yes" : "no",
-      ] + (backend.map { [$0] } ?? [])).joined(separator: "\t")
+      ] + (backend.map { [$0] } ?? [])
+      + (storage.map {
+        ["storage=" + ($0.isEmpty ? "none" : $0.joined(separator: ","))]
+      } ?? [])).joined(separator: "\t")
   }
 }
 

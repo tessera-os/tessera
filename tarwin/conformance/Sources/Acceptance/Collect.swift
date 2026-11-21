@@ -6,7 +6,8 @@ let qemuMilestones = [
 let roleKey = "platform.form-factor"
 
 func deviceCases(_ ref: Reference) -> [String] {
-  var required = cases() + platformCases(ref.arch, backend: ref.backend)
+  var required =
+    cases() + platformCases(ref.arch, backend: ref.backend) + nativeStorageCases(ref.storage)
   required.append(ref.nested ? "hv.nested" : "hv.reject-nested")
   required.append(ref.confidential ? "hv.confidential-attestation" : "hv.reject-confidential")
   return required

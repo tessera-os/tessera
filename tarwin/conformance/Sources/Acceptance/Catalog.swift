@@ -1,5 +1,18 @@
 import Foundation
 
+func nativeStorageCases(_ transports: [String]?) -> [String] {
+  guard let transports else { return ["storage.native.inventory"] }
+  return ["storage.native.unenrolled-denied"]
+    + transports.flatMap { transport in
+      [
+        "bounded-read-bytes", "isolated-requester", "protected-pages-denied",
+        "adjacent-pages-denied",
+        "wrong-direction-denied", "stale-generation-denied", "failed-invalidation-quarantine",
+        "queue-specific-authority", "revoke-before-reuse",
+      ].map { "storage.native.\(transport).\($0)" }
+    }
+}
+
 // Each key is an independently required result, not a suite-wide "pass".
 func cases() -> [String] {
   return [

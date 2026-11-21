@@ -7,7 +7,7 @@ private let architectures = ["aarch64", "x64", "rv64"]
 func missingGates(_ arch: String, _ ref: Reference?) -> [String] {
   let keys =
     ref.map(deviceCases)
-    ?? (cases() + platformCases(arch, backend: nil)
+    ?? (cases() + platformCases(arch, backend: nil) + nativeStorageCases(nil)
       + ["hv.nested", "hv.reject-nested", "hv.confidential-attestation", "hv.reject-confidential"])
   return keys + [roleKey] + budgets(ref?.battery ?? true).map(\.name)
 }
@@ -72,10 +72,13 @@ private func score(
     print("TRAIN BLOCKED: collection manifest missing or inventory changed")
     return 1
   }
+  func admissible(_ ref: Reference) -> Bool {
+    (qemu || ref.storage != nil) && (ref.arch != "x64" || ref.backend != nil)
+  }
   var failed = Set<String>()
   if let adapter {
     for ref in refs
-    where (ref.arch == "x64" && ref.backend == nil) || !collect(adapter, root, ref, id) {
+    where !admissible(ref) || !collect(adapter, root, ref, id) {
       failed.insert(ref.serial)
     }
     guard archiveID(root, refs, create: false) == id else {
@@ -87,8 +90,11 @@ private func score(
   var qualifying = Set<String>()
   for ref in refs {
     print("reference \(ref.serial) (\(ref.arch))")
-    if ref.arch == "x64" && ref.backend == nil {
-      report("unidentified x64 virtualization backend: " + ref.serial, .missing)
+    if !admissible(ref) {
+      if !qemu && ref.storage == nil { report("native storage inventory: " + ref.serial, .missing) }
+      if ref.arch == "x64" && ref.backend == nil {
+        report("unidentified x64 virtualization backend: " + ref.serial, .missing)
+      }
       unknown(ref.arch, ref)
       continue
     }
