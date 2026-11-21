@@ -24,8 +24,9 @@ for path in kcore/Sources/KCore tarwin-boot/Sources/TarwinBoot tarboot/Sources/T
     module "${path##*/}" "$root/$path"/*.swift
 done
 module TarwinArchAarch64 "$root/tarwin-arch-aarch64/Sources/TarwinArchAarch64/"*.swift
+module TarwinTime "$root/tarwin-time/Sources/TarwinTime/"*.swift
 module TarwinDevice "$root"/tarwin-device/Sources/TarwinDevice/{Range,ColdVirtPCI,VirtBootFence}.swift
-module TarwinW1Bootstrap "$here"/../tarwin/Sources/TarwinW1Bootstrap/{ColdBus,QEMUReverification,ColdKernelIntake,ColdLog,InitMeasurement,ColdKernelMeasurement,ColdPrivateImages,ExecutablePages,FramePool,ThreadStorage}.swift
+module TarwinW1Bootstrap "$here"/../tarwin/Sources/TarwinW1Bootstrap/{ColdBus,QEMUReverification,ColdKernelIntake,ColdLog,InitMeasurement,ColdKernelMeasurement,ColdPrivateImages,ColdHostPages,ClockPage,ExecutablePages,FramePool,ThreadStorage}.swift
 "$bin/swiftc" "${flags[@]}" -module-name W1ColdKernel -emit-ir "$here"/Kernel/{W1Entry,W1Authority}.swift -o "$d/kernel.ll"
 "$bin/swiftc" "${flags[@]}" -module-name W1ColdMemory -emit-ir "$here/Kernel/ColdMemory.swift" -o "$d/memory.ll"
 swift "$here/W1PublicInstallation.swift" "$2" "$3" "$4" > "$d/install.ll"

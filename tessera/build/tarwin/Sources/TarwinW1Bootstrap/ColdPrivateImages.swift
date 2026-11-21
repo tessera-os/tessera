@@ -7,12 +7,14 @@ import TarwinRandomCore
 import TarwinW0Verify
 
 /// Owns the unpublished private root, image reservations and first-thread
-/// storage. Not runnable: import binding, clock, channel and host context
-/// must be installed before the table writer can be consumed.
+/// storage, and separate unpublished host stacks and clock mapping. Not
+/// runnable: the host root, import binding, clock publisher and channel
+/// are not active.
 public struct W1ColdPrivateImages: ~Copyable {
   let verified: W1ColdVerifiedSet
   let layout: W1ColdLogLayout
   var tables: ArmUserTranslation
+  let host: W1ColdHostPages
   let plan: W1AddressPlan
   let pool: W1FramePool
   let thread: W1ThreadStorage
@@ -37,7 +39,8 @@ extension W1ColdVerifiedSet {
     let proof = round(16 * 54 * 32)
     let tablesSize = 32 * page
     let frames = round(p) + round(l) + 16 * page
-    let bytes = cache + proof + tablesSize + frames
+    let hostOffset = cache + proof + tablesSize + frames
+    let bytes = hostOffset + W1ColdHostPages.bytes
     guard let layout = W1ColdLogLayout(boot: boot, map: map, privateBytes: UInt64(bytes)),
       let memory = UnsafeMutableRawPointer(bitPattern: UInt(layout.privatePages.lowerBound))
     else { return nil }
@@ -50,14 +53,19 @@ extension W1ColdVerifiedSet {
     let witnesses = UnsafeMutableRawBufferPointer(rebasing: ram[cache..<cache + proof])
     let base = cache + proof
     let root = layout.privatePages.lowerBound + UInt64(base)
+    let hostPA = layout.privatePages.lowerBound + UInt64(hostOffset)
     let generation = launch.generation
     guard let plan = set.addressPlan(occupied: .init(start: nil, count: 0),
       nextRandom: { launch.random.word(generation: generation) }),
       let placement = W1ThreadPlacement(stackBytes: 4 * UInt64(page),
         random: &launch.random, generation: { generation }),
+      let draw = launch.random.word(generation: generation),
+      let host = W1ColdHostPages(backing: .init(rebasing: ram[hostOffset...]),
+        physical: hostPA, privateAllocation: layout.privatePages.lowerBound..<hostPA, draw: draw),
       var tables = ArmUserTranslation(backing: .init(rebasing: ram[base..<base + tablesSize]),
-        physical: root, layout: .guarded) else { return nil }
-    var pool = W1FramePool(memory: .init(rebasing: ram[(base + tablesSize)...]),
+        physical: root, layout: .guarded),
+      host.clock.install(in: &tables, privatePool: root..<hostPA) else { return nil }
+    var pool = W1FramePool(memory: .init(rebasing: ram[(base + tablesSize)..<hostOffset]),
       physical: root + UInt64(tablesSize))
     guard pool.stageMember(.process, set: set, plan: plan, nodes: nodes,
       witnesses: witnesses, tables: &tables, cleanToPoU: cleanToPoU) != nil,
@@ -66,7 +74,7 @@ extension W1ColdVerifiedSet {
       pool.slotOffset != nil, let thread = pool.stageThread(placement, tables: &tables)
     else { return nil }
     keep = true
-    return W1ColdPrivateImages(verified: self, layout: layout, tables: consume tables,
+    return W1ColdPrivateImages(verified: self, layout: layout, tables: consume tables, host: consume host,
       plan: plan, pool: pool, thread: thread)
   }
 }
