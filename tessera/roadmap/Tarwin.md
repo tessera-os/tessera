@@ -490,7 +490,17 @@ There is no `fork`. The Launcher service creates processes with its `Launch` res
 
 - `x0` is the **sole initial handle**: the nonzero name of a channel in this process's handle table, not a descriptor or pointer. Other startup handles travel in the bootstrap channel's Startup message (LibTessera §11.4). For the first init, the kernel supplies this message under the signed launch policy; a missing channel or message confers no authority.
 - `SP_EL0` points to a 16-byte-aligned user stack with the guard from §11.3; `TPIDR_EL0` points to its initialized user TCB. The kernel selects the verified user entry and EL0 execution state, installs the process keys and guarded control stack, and clears all other user GPRs (including LR) and FP/vector state except architecturally required initial state. No kernel pointers or boot-block address are passed.
-- These rules construct a **first-entry** frame, not a return from a system call; they do not apply to an existing saved frame or define an entry ABI for x64 or rv64.
+- These rules construct a **first-entry** frame, not a return from a system call; they do not apply to an existing saved frame.
+
+**x64 and rv64 first user entry.** Both use the same authorized, non-returning `_tarwin_process_start` of type `fn(i64) -> never abi(c)` and the same sole child-local bootstrap channel and Startup message as on AArch64. The kernel verifies the full type tag and the architecture's landing instruction in the executable RX bytes before making the thread runnable. An ELF note or a CPU feature bit does not establish that the required controls are active.
+
+| | x64 (ring 3) | rv64 (U-mode) |
+| --- | --- | --- |
+| Entry, aligned to 16 | `B8` at E−5, little-endian `0x4d3e7643` at E−4, `ENDBR64` at E | Little-endian `0x4d3e7643` at E−4, `LPAD 0xe7643` at E (TVISA §17.2) |
+| Initial registers | RDI = channel; FS base = user TCB; RSP points into the guarded stack with RSP ≡ 8 (mod 16) on entry | a0 = channel; tp = user TCB; sp points into the guarded stack, aligned to 16; t2 holds the XLEN sign-extension of the 32-bit `label << 12`, as from `lui t2, label` |
+| Control-flow state | User CET shadow stack and IBT active, with a private guarded shadow stack | Zicfilp active with ELP expecting the selected landing pad on first entry; Zicfiss active with the thread's private guarded shadow stack |
+
+Clear remaining user GPRs and FP/vector state except architecturally required initial state. No return slot, kernel address or handoff pointer grants authority. The rv64 **kernel** entry in §6.6 is a different prototype: a0 = hart ID, a1 = physical TBIB; neither is a user entry argument.
 
 ### 11.3 Threads
 
