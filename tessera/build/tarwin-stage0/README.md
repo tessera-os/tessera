@@ -84,3 +84,23 @@ its own detached signature. The mount must compare the digest returned by
 the system-root verifier with the independently read disk head, measure the
 match, then mount read-only. Packing bytes alone authorizes neither disk nor
 process. The ordinary W0 and W1 archives are unchanged.
+
+### Compile the AArch64 cold intake kernel (unsigned)
+
+Set `EMBEDDED_SWIFTC` to Embedded Swift 6.3.3. Supply the independent public
+installation used by the fixed debug firmware and the two trusted enrollment
+SHA-256 pins, not data read from the ESP:
+
+    bash w1-intake-object.sh NEW-INTAKE.o PUBLIC-INSTALL BOOT-PIN SYSTEM-PIN
+
+The output is an allocation-free relocatable object, not a signed image.
+It checks fence continuity and reauthorizes the input on entry, stages the
+process and library in an unpublished private address space, and measures
+the authorized init before stopping. It never installs a live process root,
+switches a thread or enters EL0. Building the object does not test any of
+these operations in a guest or change an existing signed fixture.
+
+To check the MMU-off memory routines on the host:
+
+    swiftc -O Kernel/ColdMemory.swift Tests/ColdMemoryCheck.swift -o /tmp/cold-memory-check
+    /tmp/cold-memory-check
