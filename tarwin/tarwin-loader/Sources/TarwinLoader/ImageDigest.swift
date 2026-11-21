@@ -1,18 +1,23 @@
-/// Read-only canonicalisation for the unsigned linker artifact. The signature
-/// envelope and its trust policy are not inputs to this operation.
+/// Logical file offsets omit the raw signature bytes. Substitution of the
+/// ID uses physical offsets, including when the ID follows the signatures.
 private struct DigestView {
   let bytes: UnsafeRawBufferPointer
   let zeros: Range<Int>
+  let omit: Range<Int>
 
   func word(_ at: Int, _ end: Int) -> UInt32 {
     let n = min(end - at, 4)
-    if n == 4 && (at >= zeros.upperBound || at + 4 <= zeros.lowerBound) {
-      return UInt32(littleEndian: bytes.loadUnaligned(fromByteOffset: at, as: UInt32.self))
-    }
     guard n > 0 else { return 0 }
+    let off = at < omit.lowerBound ? at : at + omit.count
+    if n == 4 && (at >= omit.lowerBound || at + 4 <= omit.lowerBound)
+      && (off >= zeros.upperBound || off + 4 <= zeros.lowerBound)
+    {
+      return UInt32(littleEndian: bytes.loadUnaligned(fromByteOffset: off, as: UInt32.self))
+    }
     var word: UInt32 = 0
-    for i in 0..<n where !zeros.contains(at + i) {
-      word |= UInt32(bytes[at + i]) << (8 * i)
+    for i in 0..<n {
+      let p = at + i < omit.lowerBound ? at + i : at + i + omit.count
+      if !zeros.contains(p) { word |= UInt32(bytes[p]) << (8 * i) }
     }
     return word
   }
@@ -28,17 +33,18 @@ private struct DigestView {
 // Trees are left-balanced: merge completed equal-sized subtrees, then
 // fold the last leaf against the pending left siblings, smallest first.
 func digestImage(
-  _ bytes: UnsafeRawBufferPointer, zeros: Range<Int>,
+  _ bytes: UnsafeRawBufferPointer, zeros: Range<Int>, omit: Range<Int> = 0..<0,
   stack: UnsafeMutableBufferPointer<BlakeCv>
 ) -> BlakeCv? {
   guard zeros.lowerBound >= 0, zeros.upperBound <= bytes.count,
+    omit.lowerBound >= 0, omit.upperBound <= bytes.count, !omit.overlaps(zeros),
     bytes.count <= Int.max - 1024
   else { return nil }
-  let size = UInt64(bytes.count)
-  let last = bytes.isEmpty ? 0 : (bytes.count - 1) / 1024
+  let size = UInt64(bytes.count - omit.count)
+  let last = size == 0 ? 0 : (Int(size) - 1) / 1024
   let levels = last == 0 ? 0 : Int.bitWidth - last.leadingZeroBitCount
   guard stack.count >= levels else { return nil }
-  let view = DigestView(bytes: bytes, zeros: zeros)
+  let view = DigestView(bytes: bytes, zeros: zeros, omit: omit)
   var used = 0
   var at = 0
   for index in 0...last {

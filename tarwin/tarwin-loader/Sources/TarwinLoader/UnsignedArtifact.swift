@@ -144,7 +144,20 @@ public func inspectUnsignedArtifact(
     let image = inspectLayout(
       bytes, target: machine, addressLimit: addressLimit,
       finalized: finalized, requiresEntry: requiresEntry, requiresLoaderRecords: true),
-    image.notes.signature == nil, let id = image.notes.buildID, let section = image.loaderRecords,
+    image.notes.signature == nil, let id = image.notes.buildID,
+    let root = unsignedBuildID(bytes, descriptor: id, scratch: scratch),
+    let parsed = validatedMetadata(
+      bytes, image: image, machine: machine, addressLimit: addressLimit, finalized: finalized,
+      root: root)
+  else { return nil }
+  return UnsignedArtifact(buildID: root, notes: image.notes, records: parsed.0, section: parsed.1)
+}
+
+func validatedMetadata(
+  _ bytes: UnsafeRawBufferPointer, image: InspectedImage, machine: UInt16, addressLimit: UInt64,
+  finalized: Bool, root: BlakeCv
+) -> (LoaderDirectory, Range<Int>)? {
+  guard let id = image.notes.buildID, let section = image.loaderRecords,
     let ent = image.notes.entitlements, let train = image.notes.train,
     let target = image.notes.target,
     let profile = image.notes.profile
@@ -166,6 +179,11 @@ public func inspectUnsignedArtifact(
     let page = imagePage(machine)
     // Note header (12) plus "Tessera\0" (8) precede the descriptor.
     guard UInt64(id.lowerBound - 20) >= ((end + page - 1) & ~(page - 1)) else { return nil }
+    if let sig = image.notes.signature,
+      UInt64(sig.lowerBound - 20) < ((end + page - 1) & ~(page - 1))
+    {
+      return nil
+    }
   }
   guard
     let records = inspectLoaderRecords(
@@ -187,11 +205,10 @@ public func inspectUnsignedArtifact(
       bytes[g + 6] == bytes[train.lowerBound + 5]
     else { return nil }
   }
-  guard let root = unsignedBuildID(bytes, descriptor: id, scratch: scratch) else { return nil }
   let pId = id.lowerBound
   let expected = BlakeCv(
     w0: r.u32(pId), w1: r.u32(pId + 4), w2: r.u32(pId + 8), w3: r.u32(pId + 12),
     w4: r.u32(pId + 16), w5: r.u32(pId + 20), w6: r.u32(pId + 24), w7: r.u32(pId + 28))
   guard root.matches(expected) else { return nil }
-  return UnsignedArtifact(buildID: root, notes: image.notes, records: records, section: section)
+  return (records, section)
 }
