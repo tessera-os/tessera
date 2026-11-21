@@ -84,8 +84,9 @@ private let order: InlineArray<32, UInt8> = [
 ]
 private struct Point {
   var x: Field, y: Field, z: Field, t: Field
-  static let identity = Point(x: Field(), y: .one, z: .one, t: Field())
-  static let base: Point = {
+  // No lazy global storage in the measured R/RX-only kernel.
+  static var identity: Point { Point(x: Field(), y: .one, z: .one, t: Field()) }
+  static var base: Point {
     let x = Field([
       0xd51a, 0x8f25, 0x2d60, 0xc956, 0xa7b2, 0x9525, 0xc760, 0x692c, 0xdc5c, 0xfdd6, 0xe231,
       0xc0a4, 0x53fe, 0xcd6e, 0x36d3, 0x2169,
@@ -95,7 +96,7 @@ private struct Point {
       0x6666, 0x6666, 0x6666, 0x6666, 0x6666,
     ])
     return Point(x: x, y: y, z: .one, t: x * y)
-  }()
+  }
   func add(_ q: Point) -> Point {
     let a = (y - x) * (q.y - q.x)
     let b = (y + x) * (q.y + q.x)

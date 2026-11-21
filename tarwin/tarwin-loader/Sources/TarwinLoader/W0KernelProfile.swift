@@ -1,23 +1,34 @@
 // TVISA §17.2 tag of TIR's canonical "fn(ptr) -> never abi(c)".
 let w0SinglePointerTag: UInt32 = 0xd441_5060
+// TVISA §17.2: fn(i64, ptr) -> never abi(c); hart ID, then TBIB.
+let w0HartAndPointerTag: UInt32 = 0xd8d1_d4c7
 
 extension ELFReader {
   func validW0Entry(_ entry: UInt64, machine: UInt16, programs: Range<Int>) -> Bool {
     var header: Int?
-    guard machine == ElfMachine.aarch64 || machine == ElfMachine.x64,
+    let tag = machine == ElfMachine.rv64 ? w0HartAndPointerTag : w0SinglePointerTag
+    guard imagePage(machine) != 0,
       validLocalEntry(
-        entry, tag: w0SinglePointerTag, machine: machine, programs: programs, hint: &header),
+        entry, tag: tag, machine: machine, programs: programs, hint: &header),
       let h = header
     else { return false }
-    guard machine == ElfMachine.aarch64 else { return true }
-    // The stage-0 AArch64 wrapper tail-branches into the compiled body.
+    guard machine != ElfMachine.x64 else { return true }
     let start = u64(h + 16)
     let size = u64(h + 32)
     let offset = entry - start
     guard imageContains(size, offset, 8) else { return false }
     let instruction = u32(Int(u64(h + 8) + offset) + 4)
-    guard instruction >> 26 == 0b000101 else { return false }
-    let displacement = Int64(Int32(bitPattern: instruction << 6) >> 4)
+    let displacement: Int64
+    if machine == ElfMachine.rv64 {
+      // LPAD; JAL x0, body. This direct tail transfer never changes RA.
+      guard instruction & 0xfff == 0x06f else { return false }
+      let bits = ((instruction >> 31) << 20) | (instruction & 0x000f_f000)
+        | ((instruction >> 9) & 0x800) | ((instruction >> 20) & 0x7fe)
+      displacement = Int64(Int32(bitPattern: bits << 11) >> 11)
+    } else {
+      guard instruction >> 26 == 0b000101 else { return false }
+      displacement = Int64(Int32(bitPattern: instruction << 6) >> 4)
+    }
     let (body, overflow) = Int64(offset + 4).addingReportingOverflow(displacement)
     guard !overflow, body >= 0, imageContains(size, UInt64(body), 4) else { return false }
     return UInt64(body) + 4 <= offset - 4 || UInt64(body) >= offset + 8
@@ -30,9 +41,7 @@ public func inspectW0SigningCandidate(
   _ b: UnsafeRawBufferPointer, machine: UInt16, train: (UInt8, UInt8, UInt8),
   tir: (UInt8, UInt8, UInt8), addressLimit: UInt64, scratch: UnsafeMutableBufferPointer<BlakeCv>
 ) -> InspectedImage? {
-  // RV64 passes the hart and TBIB in separate arguments. Do not reuse
-  // the single-pointer type tag for that incompatible entry.
-  guard machine == ElfMachine.aarch64 || machine == ElfMachine.x64,
+  guard imagePage(machine) != 0,
     let (image, d, section) = parsedSigningCandidate(
       b, machine: machine, addressLimit: addressLimit,
       finalized: false, requiresEntry: true, scratch: scratch)

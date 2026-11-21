@@ -69,7 +69,7 @@ private func matches(_ cv: BlakeCv, _ b: UnsafeRawBufferPointer, _ p: Int) -> Bo
   for i in 0..<32 where b[p + i] != digestByte(cv, i) { return false }
   return true
 }
-private func authenticated(
+func authenticated(
   _ envelope: UnsafeRawBufferPointer, _ enrolled: UnsafeRawBufferPointer,
   _ msg: UnsafeRawBufferPointer, _ stack: UnsafeMutableBufferPointer<BlakeCv>,
   _ work: UnsafeMutableBufferPointer<Int32>

@@ -30,6 +30,7 @@ final class Stage1Tests: XCTestCase {
       try Data(contentsOf: base.appendingPathComponent(name))
     }
     let archive = try read("TEST-ONLY.TIR")
+    let config = Data(#"{"flags":["debug"],"securityVersion":1,"slot":"A"}"#.utf8)
     let sidecar = try read("TEST-ONLY.SIG")
     let boot = try read("test-boot.pub")
     let system = try read("test-only.pub")
@@ -95,6 +96,12 @@ final class Stage1Tests: XCTestCase {
                           XCTAssertEqual(r.binding.typeTag, 0x5e57_0002)
                           checkPlacement(r)
                           XCTAssertEqual(
+                            withUnsafeBytes(of: r.archiveSHA256) { Data($0) },
+                            Data(SHA256.hash(data: archive)))
+                          XCTAssertEqual(
+                            withUnsafeBytes(of: r.configurationSHA256) { Data($0) },
+                            Data(SHA256.hash(data: config)))
+                          XCTAssertEqual(
                             Data(SHA256.hash(data: Data(r.process.bytes))),
                             withUnsafeBytes(of: r.initSHA256) { Data($0) })
                           return true
@@ -135,6 +142,10 @@ final class Stage1Tests: XCTestCase {
     s[sidecar.count - 1] ^= 1
     XCTAssertFalse(validate())
     s = sidecar
+    let configRange = try XCTUnwrap(a.range(of: config))
+    a[configRange.lowerBound] ^= 1
+    XCTAssertFalse(validate())
+    a = archive
     a[24] ^= 1
     XCTAssertFalse(validate())
     a = archive

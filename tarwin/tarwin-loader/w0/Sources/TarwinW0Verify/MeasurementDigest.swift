@@ -12,7 +12,7 @@ public func replaySHA256PCR(previous: InlineArray<32, UInt8>, event: InlineArray
 }
 
 /// SHA-256, FIPS 180-4. The SHA-256 constants are the high halves of the
-/// first 64 SHA-512 constants. Bound by the W1 member size before entry.
+/// first 64 SHA-512 constants. W1 input sizes are bounded by archive authorization.
 func measurementDigest(_ bytes: UnsafeRawBufferPointer) -> InlineArray<32, UInt8> {
   func rr(_ w: UInt32, _ n: Int) -> UInt32 { (w >> n) | (w << (32 - n)) }
   var state: InlineArray<8, UInt32> = [

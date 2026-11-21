@@ -21,8 +21,10 @@ For the AArch64/x64 single-pointer handoff, require a 16-byte-aligned
 ELF entry and the full TVISA §17.2 tagged landing pad in the same RX
 PT_LOAD. The AArch64 W0 veneer tail-branches directly into a file-backed
 body outside the veneer in the same RX segment. The canonical TIR §7.9 string `fn(ptr) -> never abi(c)` gives
-tag `0xd4415060` (no forbidden-value adjustment). The RV64 two-argument
-handoff has no confirmed tagged native image yet and is not enabled.
+tag `0xd4415060` (no forbidden-value adjustment). The RV64 kernel handoff
+is `fn(i64, ptr) -> never abi(c)`: require tag `0xd8d1d4c7`, LPAD
+`0x1d4c7` and direct JAL x0 into this file-backed RX load. The user
+process has a different one-channel entry on every ISA.
 
 For QEMU only, the detached archive envelope has exactly the TSG1 shape and signs ASCII `Tarwin boot set v1`, one NUL and 32 raw BLAKE3 bytes of the **entire final archive**, not an image ID or a member digest. A valid signature does not imply valid member hashes, allowed options, security version, or an authorized native kernel. Verify both layers on the same pinned bytes before placement.
 
@@ -43,5 +45,12 @@ as input and no output path. The init entry tag must come independently from
 the compiled process entry signature; the boot kernel tag is not its ABI.
 Signing checks each image structure, not the pair's SDK identity. See
 `w0/README.md` for the kernel-side contract and remaining launch gates.
+
+For a real debug process use `sign-w1-users ID ISA INIT LIB NEW-INIT NEW-LIB`
+and `verify-w1-users ID ISA INIT LIB`. These check both image profiles, the
+26.11.1 processCurrent export and eager import, and the exact historical
+SDK metadata. Only the signed user images go in the boot set. Provision
+the SDK and its separate `sign-w1-debug-sdk ID ISA SDK NEW-RECEIPT` result
+in protected installation storage; the boot set cannot select its own SDK.
 
 The public enrollment format is `TQE1`, u64le earliest allowed UTC Unix second, u64le last allowed second (intersection of both leaves and root), BLAKE3-256 of the exact canonical enrolled chain JSON, raw Ed25519 key (32), raw ML-DSA-65 key (1952). Pin the **entire** enrollment independently in the emulator-only trust boundary. An attacker-selected enrollment, clock or platform state is not a trust source. Regenerate to rotate; removing the trust record revokes the identity. The host checks X.509 signatures, times, code-signing purpose and the root self-signature at enrollment. No PKI parser or private key belongs in a W0 guest.

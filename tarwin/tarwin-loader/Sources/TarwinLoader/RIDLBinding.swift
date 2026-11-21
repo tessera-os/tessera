@@ -164,6 +164,9 @@ func checkedRIDLBinding(
     guard tag == contract.typeTag, bytesMatch(symbol, contract.symbol),
       bytesMatch(identity.uuid, contract.uuid)
     else { return nil }
+    if contract.isW1ProcessCurrent,
+      withW1SDKContract(.init(rebasing: framework[metadata]), { _ in true }) != true
+    { return nil }
   }
   guard
     RIDLMetadata(bytes: .init(rebasing: framework[metadata])).supports(

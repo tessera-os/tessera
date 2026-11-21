@@ -7,14 +7,17 @@ public struct W1UserMember {
 }
 
 public struct W1BootSet {
+  public let machine: UInt16
   public let kernel: W0Kernel
   public let process, library: W1UserMember
   public let binding: NativeFunctionBinding
+  /// SHA-256 bank event digests of the exact archive and authorized boot.json bytes.
+  public let archiveSHA256, configurationSHA256: InlineArray<32, UInt8>
   /// SHA-256 bank event digest of the entire immutable signed init member.
   public let initSHA256: InlineArray<32, UInt8>
 }
 
-/// Verification only, AArch64 debug QEMU. Pin both enrollments and the SDK
+/// Verification only, debug QEMU. Pin both enrollments and the SDK
 /// contract independently. Borrow all image bytes from the single protected
 /// snapshot; never reopen the archive by name. This does not publish a log,
 /// extend a PCR, install a mapping, sign a slot pointer or grant thread entry.
@@ -40,7 +43,7 @@ func verifyStage1(
   hashes: UnsafeMutableBufferPointer<BlakeCv>, polynomials: UnsafeMutableBufferPointer<Int32>,
   message: UnsafeMutableRawBufferPointer
 ) -> W1BootSet? {
-  guard policy.machine == ElfMachine.aarch64, let utc = policy.trustedUTC,
+  guard policy.debugEmulator, imagePage(policy.machine) != 0, let utc = policy.trustedUTC,
     validPin(systemEnrollment, utc: utc), contract.uuid.count == 16,
     contract.textSHA256.count == 32, !contract.symbol.isEmpty,
     let (kernel, conf) = authorizedKernel(
@@ -71,6 +74,7 @@ func verifyStage1(
       contract: contract)
   else { return nil }
   return W1BootSet(
-    kernel: kernel, process: process, library: library, binding: binding,
+    machine: policy.machine, kernel: kernel, process: process, library: library, binding: binding,
+    archiveSHA256: measurementDigest(archive), configurationSHA256: measurementDigest(view(archive, conf)),
     initSHA256: measurementDigest(process.bytes))
 }

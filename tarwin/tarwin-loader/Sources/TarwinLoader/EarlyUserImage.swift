@@ -13,6 +13,8 @@ public struct EarlyUserImage {
   public let reservationBytes, biasAlignment: UInt64
   /// File-backed RELRO bytes (before mapping and sealing).
   public let relroBytes: Range<UInt64>?
+  /// Matching immutable bytes in the authorized ELF (not virtual addresses).
+  public let relroFileBytes: Range<Int>?
 }
 
 /// Restricted QEMU W1 input to the loader, never authority to run. The single
@@ -29,7 +31,9 @@ public func inspectEarlyUserImage(
     entryTag = tag
   case .systemLibrary: entryTag = nil
   }
-  guard machine == ElfMachine.aarch64,
+  // Structural signing checks, not platform admission. validLocalEntry
+  // checks E-4 plus each ISA's BTI C, B8/tag/ENDBR64, or labelled LPAD.
+  guard imagePage(machine) != 0,
     let (image, d, section) = parsedSigningCandidate(
       file, machine: machine, addressLimit: addressLimit,
       finalized: false, requiresEntry: entryTag != nil, scratch: scratch)
@@ -114,5 +118,8 @@ public func inspectEarlyUserImage(
     relroBytes: relro.map { h in
       let start = r.u64(h + 16)
       return start..<start + r.u64(h + 32)
+    }, relroFileBytes: relro.map { h in
+      let start = Int(r.u64(h + 8))
+      return start..<start + Int(r.u64(h + 32))
     })
 }

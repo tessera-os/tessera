@@ -44,18 +44,21 @@ run, never a clock to use in the guest. No private key is in the corpus.
 ## W1 restricted user-set verification
 
 `authorizeQEMUStage1(archive:signature:enrollment:systemEnrollment:policy:contract:hashes:polynomials:message:)`
-is the AArch64 debug-QEMU entry point. Use the W0 modules, scratch sizes,
+is the debug-QEMU verification entry point for AArch64, x64 and RV64. Use the W0 modules, scratch sizes,
 real CPU checks, UTC, slot and TPM floor above. The boot pin covers the
 archive and kernel; the system pin covers each user image. The two TQE1
 public pins and `EarlyRIDLContract` (ABI UUID,
 exact RIDL symbol, canonical interface SHA-256 and function type tag) must
 be installed independently. Do not copy any from the archive or assume a
 platform-dependent symbol RVA or a fixed load address. The verifier requires
-the AArch64 process-entry tag from Tarwin §11.2 (`0x4d3e7643`); callers
+the process-entry tag from Tarwin §11.2 (`0x4d3e7643`) and the corresponding
+BTI, ENDBR64 or labelled LPAD; callers
 cannot substitute the W0 handoff tag or an interoperability fixture's tag.
 The installed contract must also match the published 26.11.1
 `LibTessera.processCurrent` freeze. Matching the unsigned freeze proves
 compatibility only: it does not supply a signing identity or enrollment.
+Use `withProvisionedDebugW1SDK` to authenticate the SDK bytes and the
+machine-specific receipt under the protected system pin and trusted clock.
 
 The accepted TIRA has four disjoint, uncompressed, hash-verified members:
 `boot.json`, `kernel`, `tessera.init` and `LibTessera`. Each native image has
@@ -64,10 +67,13 @@ image, no grants, TLS, runtime lookups or dispatch slots; init has one eager
 function import inside RELRO, and the framework has no entry or imports.
 The result borrows the same immutable member bytes, gives the exact RX
 intervals **as RVAs**, and resolves an import slot to a tagged export RVA.
+`archiveSHA256` covers the complete TIRA (excluding its detached signature);
+`configurationSHA256` covers exactly the authorized `boot.json` member, not
+reserialized JSON. Compare them against the ordered firmware event records.
 `initSHA256` covers the entire signed init ELF, not its archive directory
 entry, BLAKE3 build ID or rounded code range.
 
-`set.addressPlan(occupied:nextRandom:)` chooses both image reservations from
+`set.addressPlan(for:occupied:nextRandom:)` chooses both image reservations from
 Appendix A.2's image window. Hold exclusive map ownership, pass every
 occupied image reservation in ascending order, and draw from the seeded
 kernel CSPRNG. Commit the returned pair atomically before releasing the
@@ -75,13 +81,18 @@ lock. The planner counts aligned starts after fragmentation and rejects
 entropy below 28 bits, including for the second image after placing init.
 It may refuse a tight pair before drawing if it cannot guarantee enough
 framework positions for every init bias. A result gives the exact library
-RX bounds, slot VA, target VA, process-key IA storage modifier, and pages
+RX bounds, slot VA, target VA, per-ISA slot format, and pages
 to seal. None is evidence that a mapping exists or a pointer is signed.
 
 Before entry, the kernel must still verify and install pages from those
 bytes, establish private mapping provenance, authenticate the function
 pointer for the process and seal RELRO, extend PCR 10 with `initSHA256` and
 publish the protected event log. Verification does none of those things.
+On x64 and RV64, `prepareCFIImportPage` reconstructs the private slot page from
+the verified file and writes the raw export address. The checked thunk uses
+the full tag plus IBT or labelled LPAD; this helper does not enable either.
+Seal RELRO read-only/non-executable with no writable aliases before entry.
+Only the AArch64 slot is signed with the process IA key and storage modifier.
 
 `InteropW1` is **host test data, not a boot set for execution**. Its two
 fresh public pins, UUID, ABI hash, entry tag, export and stub bodies are
