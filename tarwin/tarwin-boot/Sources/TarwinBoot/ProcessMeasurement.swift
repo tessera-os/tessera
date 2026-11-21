@@ -31,14 +31,18 @@ public struct PCR10Expectation {
 }
 
 @available(macOS 26, *)
-private func matchesPCR10<P: TpmPort>(_ port: inout P, _ expected: borrowing InlineArray<32, UInt8>)
+public func matchesBootPCR<P: TpmPort>(_ port: inout P, index: UInt8,
+  expected: borrowing InlineArray<32, UInt8>)
   -> Bool
 {
-  // TPML_PCR_SELECTION with only bit 10 selected in the SHA-256 bank.
-  let command: InlineArray<20, UInt8> = [
+  guard index >= 8, index <= 10, port.byteCount() >= 62 else { return false }
+  let mask = UInt8(1) << (index - 8)
+  var command: InlineArray<20, UInt8> = [
     128, 1, 0, 0, 0, 20, 0, 0, 1, 126, 0, 0, 0, 1, 0, 11, 3, 0, 4, 0,
   ]
-  let selection: InlineArray<16, UInt8> = [0, 0, 0, 1, 0, 11, 3, 0, 4, 0, 0, 0, 0, 1, 0, 32]
+  var selection: InlineArray<16, UInt8> = [0, 0, 0, 1, 0, 11, 3, 0, 0, 0, 0, 0, 0, 1, 0, 32]
+  command[18] = mask
+  selection[8] = mask
   for i in 0..<20 { port.putByte(UInt64(i), value: command[i]) }
   let n = port.submit(20)
   guard n == 62, tpmSuccess(port, n, tag: 0x8001) else { return false }
@@ -73,7 +77,8 @@ private func matchesPCR10<P: TpmPort>(_ port: inout P, _ expected: borrowing Inl
   // Reserve the exact Event2 size before any TPM command.
   let listBytes = fmt.digestListBytes
   let recordSize = 12 + listBytes + label.utf8CodeUnitCount
-  guard recordSize <= log.count - start, matchesPCR10(&port, expected.before) else { return false }
+  guard recordSize <= log.count - start, matchesBootPCR(&port, index: 10, expected: expected.before)
+  else { return false }
   tpmHeader(&port, 0x8001, 0x186, 14)
   putField(&port, p: 10, bytes: 4, value: 0x10, big: true)
   let began = port.submit(14)
@@ -132,7 +137,8 @@ private func matchesPCR10<P: TpmPort>(_ port: inout P, _ expected: borrowing Inl
         idx += UInt64(b.size + 2)
         out += b.size + 2
       }
-      guard seen == fmt.banks, matchesPCR10(&port, expected.after) else { return false }
+      guard seen == fmt.banks, matchesBootPCR(&port, index: 10, expected: expected.after)
+      else { return false }
       le(UInt32(label.utf8CodeUnitCount), out)
       for i in 0..<label.utf8CodeUnitCount { log[out + 4 + i] = label.utf8Start[i] }
       state.used += UInt64(recordSize)

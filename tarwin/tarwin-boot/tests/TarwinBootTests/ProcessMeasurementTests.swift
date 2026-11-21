@@ -19,6 +19,7 @@ private struct SequencePort: TpmPort {
   var consumed: [UInt8] = []
   var codes: [Int] = []
   let fault: Int
+  var pcrMask: Int = 4
   func byteCount() -> UInt64 { UInt64(bytes.count) }
   func byteAt(_ offset: UInt64) -> UInt8 { bytes[Int(offset)] }
   mutating func putByte(_ offset: UInt64, value: UInt8) { bytes[Int(offset)] = value }
@@ -33,7 +34,7 @@ private struct SequencePort: TpmPort {
     switch code {
     case 0x17e:
       guard n == 20, be(0, 2) == 0x8001, be(10, 4) == 1, be(14, 2) == 11,
-        be(16, 4) == 0x0300_0400
+        be(16, 4) == 0x0300_0000 | (pcrMask << 8)
       else { return 0 }
       let before = codes.count == 1
       result = [
@@ -41,6 +42,8 @@ private struct SequencePort: TpmPort {
         32,
       ]
       result += before ? Array(repeating: 0x3c, count: 32) : (0..<32).map { replayedPCR[$0] }
+      result[22] = UInt8(pcrMask)
+      if fault == 12 { result[22] ^= 3 }
       if before && fault == 8 || !before && fault == 10 { result[60] ^= 1 }
       if !before && fault == 11 { result[22] = 8 }
     case 0x186:
@@ -76,6 +79,25 @@ private struct SequencePort: TpmPort {
     bytes.replaceSubrange(..<result.count, with: result)
     return UInt64(result.count)
   }
+}
+
+@available(macOS 26, *)
+@Test func coldPCRReadRequiresTheRequestedBankIndexAndDigest() {
+  for index: UInt8 in [8, 9, 10] {
+    for fault in [0, 8, 12] {
+      var port = SequencePort(fault: fault, pcrMask: 1 << (index - 8))
+      let match = matchesBootPCR(&port, index: index, expected: .init(repeating: 0x3c))
+      #expect(match == (fault == 0))
+      #expect(port.codes == [0x17e])
+    }
+  }
+  var port = SequencePort(fault: 0)
+  for index: UInt8 in [0, 7, 11, 255] {
+    #expect(!matchesBootPCR(&port, index: index, expected: .init(repeating: 0)))
+  }
+  port.bytes = Array(repeating: 0, count: 61)
+  #expect(!matchesBootPCR(&port, index: 8, expected: .init(repeating: 0)))
+  #expect(port.codes.isEmpty)
 }
 
 @available(macOS 26, *)
