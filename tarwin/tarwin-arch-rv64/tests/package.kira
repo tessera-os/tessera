@@ -1,0 +1,4 @@
+construct TarwinArchRv64Tests extends Package {
+    let kind: PackageKind = .App
+    let dependencies: [Dependency] = [Dependency { name: "TarwinArchRv64", path: ".." }]
+}

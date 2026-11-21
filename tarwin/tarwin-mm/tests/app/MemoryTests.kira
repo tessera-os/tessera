@@ -1,0 +1,32 @@
+import TarwinMM
+
+@Main
+function main() -> I32 {
+    var order: U8 = 0
+    while order <= 6 {
+        var arena = makeArena(0x100000, 4096, 0xffffffffffffffff)
+        let size = U64(4096) << U64(order)
+        var address: U64 = 0x100000
+        while address < 0x140000 {
+            let block = takePages(arena, order)
+            if !block.ok || block.address != address { return 1 }
+            address += size
+        }
+        if takePages(arena, 0).ok { return 2 }
+        if order > 0 && givePages(arena, 0x100000, order - 1) { return 3 }
+        if order < 6 && givePages(arena, 0x100000, order + 1) { return 4 }
+        while address > 0x100000 {
+            address -= size
+            if !givePages(arena, address, order) || givePages(arena, address, order) { return 5 }
+        }
+        if !takePages(arena, 6).ok { return 6 }
+        order += 1
+    }
+    var reserved = makeArena(0, 16384, 0xfffffffffffffffe)
+    if takePages(reserved, 6).ok || takePages(reserved, 0).address != 16384 { return 7 }
+    if userRegion(0, 4096, 4096, 47) != 0 || userRegion(0x100000000, 16384, 16384, 47) != 1 { return 8 }
+    if userRegion(0xfffffff000, 8192, 4096, 47) != 0 || userRegion(0xfffffffffffff000, 4096, 4096, 56) != 0 { return 9 }
+    if permitsMapping(7, true, true, true, true, false) || permitsMapping(3, true, true, false, false, true) || permitsMapping(5, true, false, true, false, true) { return 10 }
+    if !permitsMapping(5, true, false, true, true, true) || !fitsReservation(0x2000, 4096, 0x1000, 8192) || fitsReservation(0x2000, 4097, 0x1000, 8192) { return 11 }
+    return 0
+}

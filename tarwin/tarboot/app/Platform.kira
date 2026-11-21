@@ -1,0 +1,52 @@
+// Admission of normalized facts discovered by firmware. Missing discovery
+// results must not be reported as a supported version or capability.
+public struct PlatformFacts {
+    var mobile: Bool
+    var uefi: Bool
+    var verified: Bool
+    var firmwareMajor: U16
+    var firmwareMinor: U16
+    var tableMajor: U16
+    var tableMinor: U16
+    var iommuCoversAll: Bool
+    var protectedRoot: Bool
+    var monotonicCounter: Bool
+    var sealedStorage: Bool
+    var entropySource: Bool
+    var memoryBytes: U64
+    var storageBytes: U64
+    var nvme: Bool
+    var storageMajor: U16
+    var storageMinor: U16
+}
+
+function atLeast(major: U16, minor: U16, needMajor: U16, needMinor: U16) -> Bool {
+    return major > needMajor || (major == needMajor && minor >= needMinor)
+}
+
+public function admitsPlatform(facts: borrow PlatformFacts) -> Bool {
+    if !facts.verified || !facts.iommuCoversAll || !facts.protectedRoot || !facts.monotonicCounter || !facts.sealedStorage || !facts.entropySource { return false }
+    if facts.uefi {
+        if !atLeast(facts.firmwareMajor, facts.firmwareMinor, 2, 9) || !atLeast(facts.tableMajor, facts.tableMinor, 6, 4) { return false }
+    } else if !facts.mobile || !atLeast(facts.tableMajor, facts.tableMinor, 0, 4) { return false }
+    let minimum: U64 = facts.mobile ? 8589934592 : 17179869184
+    if facts.memoryBytes < minimum || facts.memoryBytes > (U64(1) << 52) || facts.storageBytes < 256000000000 { return false }
+    if facts.nvme { return atLeast(facts.storageMajor, facts.storageMinor, 1, 4) }
+    return atLeast(facts.storageMajor, facts.storageMinor, 4, 0)
+}
+
+public struct CpuIntersection {
+    var count: U32
+    var common: U64
+    var refused: Bool
+}
+
+public function addProcessor(state: borrow mut CpuIntersection, mandatory: Bool, optional: U64) -> Bool {
+    if !mandatory || state.count >= 4096 || state.refused {
+        state.refused = true
+        return false
+    }
+    state.common = state.count == 0 ? optional : state.common & optional
+    state.count += 1
+    return true
+}

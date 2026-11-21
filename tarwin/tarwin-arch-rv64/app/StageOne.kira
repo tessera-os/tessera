@@ -1,0 +1,13 @@
+// Ordinary Sv48/Sv57 final-level user leaf: PBMT=PMA, N=0. Start with
+// A/D clear so the MM can account for first access and first write.
+public function rvUserPage(pa: U64, write: Bool, execute: Bool) -> U64 {
+    if (write && execute) || (pa & 4095) != 0 || pa >= (U64(1) << 56) { return 0 }
+    let w: U64 = write ? 4 : 0
+    let x: U64 = execute ? 8 : 0
+    return ((pa >> 12) << 10) | 0x13 | w | x
+}
+
+public function rvWalkIndex(va: U64, levelFromLeaf: U8, sv57: Bool) -> U64 {
+    if levelFromLeaf > 4 || (levelFromLeaf == 4 && !sv57) { return 512 }
+    return (va >> (12 + U64(levelFromLeaf) * 9)) & 511
+}

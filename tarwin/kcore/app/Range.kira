@@ -1,0 +1,16 @@
+// Half-open ranges. Use subtraction so wraparound is never permission.
+public function withinRange(base: U64, length: U64, lower: U64, upper: U64) -> Bool {
+    return length != 0 && base >= lower && base < upper && length <= upper - base
+}
+
+public function validExtent(base: U64, length: U64) -> Bool {
+    return length != 0 && length <= U64(0xffffffffffffffff) - base
+}
+
+public function isPowerOfTwo(value: U64) -> Bool {
+    return value != 0 && (value & (value - 1)) == 0
+}
+
+public function alignedTo(value: U64, alignment: U64) -> Bool {
+    return isPowerOfTwo(alignment) && (value & (alignment - 1)) == 0
+}

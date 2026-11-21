@@ -1,0 +1,44 @@
+import TarwinBoot
+
+@Main
+function main() -> I32 {
+    var info = emptyBootInfo()
+    info.year = 26
+    info.month = 11
+    info.week = 1
+    info.mapAddress = 0x10000
+    info.mapCount = 2
+    info.rsdp = 0x3000
+    info.bootSet = 0x100000
+    info.bootSetSize = 8000
+    info.entropy0 = 0x0706050403020100
+    info.entropy7 = 0x3f3e3d3c3b3a3938
+    info.slot = 1
+    info.security = 1
+    info.kernelVirtual = 0xffff800000004000
+    info.panicRecord = 0x20000
+    if !validBootInfo(info) || bootBlockFits(1, 4096) || bootBlockFits(4096, 4095) { return 1 }
+    if bootInfoByte(info, 0) != 0x54 || bootInfoByte(info, 1) != 0x42 || bootInfoByte(info, 2) != 0x49 || bootInfoByte(info, 3) != 0x42 { return 2 }
+    if bootInfoByte(info, 9) != 16 || bootInfoByte(info, 103) != 7 || bootInfoByte(info, 159) != 63 || bootInfoByte(info, 210) != 2 { return 3 }
+    var state = beginBootInfo(0x2000, 4096)
+    var corrupt = beginBootInfo(0x2000, 4096)
+    var i: U64 = 0
+    while i < 4096 {
+        if completeBootInfo(state) { return 4 }
+        let byte = bootInfoByte(info, i)
+        if !acceptBootByte(state, byte) { return 5 }
+        let ok = acceptBootByte(corrupt, i == 178 ? U8(1) : byte)
+        if i >= 183 && ok { return 6 }
+        i += 1
+    }
+    if !completeBootInfo(state) || completeBootInfo(corrupt) || state.info.kernelVirtual != info.kernelVirtual { return 7 }
+    if acceptBootByte(state, 0) || completeBootInfo(state) { return 8 }
+    info.mapCount = 0xffffffffffffffff
+    if validBootInfo(info) { return 9 }
+    var map = beginMemoryMap(2, 64)
+    if completeMemoryMap(map) || !acceptRegion(map, 0, 0x1000, 1, 0) { return 10 }
+    if !acceptRegion(map, 0x1000, 0x4000, 0, 0) || !completeMemoryMap(map) { return 11 }
+    var bad = beginMemoryMap(2, 64)
+    if !acceptRegion(bad, 0, 2, 0, 0) || acceptRegion(bad, 1, 1, 0, 0) || completeMemoryMap(bad) { return 12 }
+    return 0
+}

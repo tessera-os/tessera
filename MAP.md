@@ -9,6 +9,7 @@ services, drivers, tools and apps.
 | Folder | What it is |
 | --- | --- |
 | `tessera/` | The OS build: `kernel/`, `patches/`, `sysroot/`, `scripts/`, `build/`, `roadmap/` and `ROADMAP.md`. `HANDOFF.md` tracks work in progress |
+| `tarwin/` | Native Tarwin kernel and boot loader under development, separate from the Linux build. Platform packages: `kcore`, `tarboot`, `tarwin-boot`, `tarwin-mm`, `tarwin-time`, and `tarwin-arch-{aarch64,x64,rv64}` |
 | `system/` | The system volume's package: the init Tessera runs from its read-only system volume |
 | `init/` | Init |
 | `bootstrap/` | The service broker every named service checks in with |

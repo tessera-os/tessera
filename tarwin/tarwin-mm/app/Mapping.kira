@@ -1,0 +1,28 @@
+import KCore
+
+// A.2: 0 invalid, 1 image, 2 ordinary mapping, 3 GPU, 4 shared
+// kernel-supplied pages. No interval may cross from one class into another.
+public function userRegion(base: U64, length: U64, pageSize: U64, userBits: U8) -> U8 {
+    if (pageSize != 4096 && pageSize != 16384) || !alignedTo(base, pageSize) || !alignedTo(length, pageSize) { return 0 }
+    if userBits != 47 && userBits != 56 { return 0 }
+    let high = U64(1) << U64(userBits)
+    if withinRange(base, length, U64(1) << 32, U64(1) << 40) { return 1 }
+    if withinRange(base, length, U64(1) << 40, U64(1) << 46) { return 2 }
+    if withinRange(base, length, U64(1) << 46, (U64(1) << 47) - (U64(1) << 36)) { return 3 }
+    if withinRange(base, length, high - (U64(1) << 36), high) { return 4 }
+    return 0
+}
+
+// TIR code pages come only from verified code objects; write permission
+// must not survive sealing. Rights are checked before any PTE is written.
+public function permitsMapping(protection: U8, readable: Bool, writable: Bool, executable: Bool, code: Bool, sealed: Bool) -> Bool {
+    if !readable { return false }
+    if protection == 1 { return true }
+    if protection == 3 { return writable && !sealed && !code }
+    return protection == 5 && executable && code && sealed
+}
+
+public function fitsReservation(base: U64, size: U64, reservedBase: U64, reservedSize: U64) -> Bool {
+    if !validExtent(reservedBase, reservedSize) { return false }
+    return withinRange(base, size, reservedBase, reservedBase + reservedSize)
+}

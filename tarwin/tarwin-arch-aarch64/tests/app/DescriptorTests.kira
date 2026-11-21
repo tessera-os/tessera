@@ -1,0 +1,10 @@
+import TarwinArchAarch64
+
+@Main
+function main() -> I32 {
+    let rx = armUserPage(0x8000, false, true, false)
+    if rx != 0x0020000000008fc3 || armUserPage(0x8000, true, true, false) != 0 { return 1 }
+    if armUserPage(1, false, false, false) != 0 || armUserPage(0, false, false, true) != 0 { return 2 }
+    if armWalkIndex(0x3ffc000, 3) != 2047 || armWalkIndex(0x2000000, 2) != 1 { return 3 }
+    return 0
+}

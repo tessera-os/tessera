@@ -1,0 +1,9 @@
+import TarwinArchRv64
+
+@Main
+function main() -> I32 {
+    if rvUserPage(0x3000, true, false) != 0xc17 || rvUserPage(0x3000, false, true) != 0xc1b { return 1 }
+    if rvUserPage(1, true, false) != 0 || rvUserPage(0, true, true) != 0 || rvUserPage(U64(1) << 56, false, false) != 0 { return 2 }
+    if rvWalkIndex(0x3fe00000, 1, false) != 511 || rvWalkIndex(0, 4, false) != 512 { return 3 }
+    return 0
+}

@@ -1,0 +1,68 @@
+public struct DurationResult {
+    var valid: Bool
+    var ns: U64
+}
+
+// floor(remainder * 10^9 / frequency) without a double-width multiply.
+// At every prefix of the multiplier we retain the quotient and residue.
+// Adding modulo frequency by subtraction also works above 2^63 Hz.
+function fractionalNs(remainder: U64, frequency: U64) -> U64 {
+    var residue: U64 = 0
+    var quotient: U64 = 0
+    var bit = U64(1) << 29
+    while bit != 0 {
+        quotient += quotient
+        if residue >= frequency - residue {
+            residue -= frequency - residue
+            quotient += 1
+        } else { residue += residue }
+        if (U64(1000000000) & bit) != 0 {
+            if residue >= frequency - remainder {
+                residue -= frequency - remainder
+                quotient += 1
+            } else { residue += remainder }
+        }
+        bit = bit >> 1
+    }
+    return quotient
+}
+
+public function counterDuration(ticks: U64, frequency: U64) -> DurationResult {
+    if frequency == 0 { return DurationResult { valid: false, ns: 0 } }
+    let seconds = ticks / frequency
+    if seconds > U64(0xffffffffffffffff) / 1000000000 { return DurationResult { valid: false, ns: 0 } }
+    let base = seconds * 1000000000
+    let rem = ticks % frequency
+    var tail: U64 = 0
+    if rem <= U64(0xffffffffffffffff) / 1000000000 {
+        tail = (rem * 1000000000) / frequency
+    } else { tail = fractionalNs(rem, frequency) }
+    if tail > U64(0xffffffffffffffff) - base { return DurationResult { valid: false, ns: 0 } }
+    return DurationResult { valid: true, ns: base + tail }
+}
+
+// The service can slew UTC by at most 500 ppm of elapsed real time.
+// Return the permitted magnitude (the caller retains the correction's sign).
+public function utcSlewLimit(correction: U64, elapsed: U64) -> U64 {
+    let allowed = elapsed / 2000
+    return correction < allowed ? correction : allowed
+}
+
+public function backgroundSlack(interval: U64) -> U64 {
+    let fraction = interval / 10
+    return fraction < 1000000000 ? fraction : 1000000000
+}
+
+// Prefer an existing programmed wakeup, but never fire early or past slack.
+public function coalesceDeadline(deadline: U64, slack: U64, programmed: U64) -> U64 {
+    if programmed >= deadline && programmed - deadline <= slack { return programmed }
+    return deadline
+}
+
+// Timestamps from the same monotonic epoch, in ns. Sleep/park intervals
+// are excluded by resetting both heartbeats when bringing the CPU online.
+public function lockupCode(now: U64, lastScheduled: U64, lastInterrupt: U64) -> U32 {
+    if now >= lastInterrupt && now - lastInterrupt >= 20000000000 { return 6 }
+    if now >= lastScheduled && now - lastScheduled >= 10000000000 { return 6 }
+    return 0
+}
