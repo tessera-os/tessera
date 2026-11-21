@@ -17,11 +17,17 @@ private final class RecordingHost: TarwindHost, @unchecked Sendable {
 }
 
 final class HostedTests: XCTestCase {
+  var directory: URL!
+  override func setUpWithError() throws {
+    directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+  }
+  override func tearDownWithError() throws { try FileManager.default.removeItem(at: directory) }
   private func boot() throws -> (Tarwind, RecordingHost, TarwindProcessID) {
     let host = RecordingHost()
-    let kernel = try Tarwind.boot(.init(diskPath: "unused.disk", systemImagePath: "unused.image",
+    let kernel = try Tarwind.boot(.init(diskPath: directory.appendingPathComponent("disk").path, systemImagePath: directory.appendingPathComponent("image").path,
       panicRecordPath: "unused.panic", taskExecutablePath: "unused.task"), host: host)
-    XCTAssertEqual(host.stages, ["time", "objects", "syscalls", "scheduler", "ready"])
+    XCTAssertEqual(host.stages, ["time", "objects", "syscalls", "storage", "network", "scheduler", "ready"])
     XCTAssertEqual(host.readyCount, 1)
     return (kernel, host, kernel.createKernelProcess(name: "conformance"))
   }
