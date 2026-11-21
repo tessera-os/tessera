@@ -1,5 +1,6 @@
-import TarwinLoader
 import XCTest
+
+@testable import TarwinLoader
 
 private func le(_ value: UInt64, _ n: Int) -> [UInt8] {
   (0..<n).map { UInt8(truncatingIfNeeded: value >> ($0 * 8)) }
@@ -45,6 +46,94 @@ private func readRecords(_ bytes: [UInt8]) -> LoaderDirectory? {
 }
 
 final class LoaderRecordTests: XCTestCase {
+  func testImportsBindOnlyToCanonicalZeroSlotsAndTypedLocalEntries() {
+    let tag: UInt64 = 0x1234_5678
+    var records = Records()
+    let meta = [UInt8](repeating: 1, count: 16) + le(tag, 4) + recordText([65]) + recordText([66])
+    let fun = le(0x8010, 8) + [0, 0] + meta
+    let data =
+      le(0x8028, 8) + [1, 1] + [UInt8](repeating: 0, count: 20) + recordText([67])
+      + recordText([68])
+    records.tables = [
+      [], [], fun + data, le(0x8018, 8) + le(1, 2),
+      le(0x8020, 8) + le(tag, 4) + le(1, 2) + le(0x4010, 8) + le(0, 2), [], le(0, 4), [],
+    ]
+    records.counts = [0, 0, 2, 1, 1, 0, 1, 0]
+    var file = [UInt8](repeating: 0, count: 1536)
+    func set(_ at: Int, _ v: UInt64, _ n: Int) { file[at..<(at + n)] = le(v, n)[...] }
+    set(40, 1024, 8)
+    set(58, 64, 2)
+    set(60, 3, 2)
+    set(62, 1, 2)
+    set(1092, 3, 4)
+    set(1112, 1280, 8)
+    set(1120, 12, 8)
+    let names = Array("\0.tirimport\0".utf8)
+    file[1280..<(1280 + names.count)] = names[...]
+    set(1152, 1, 4)
+    set(1156, 1, 4)
+    set(1160, 3, 8)
+    set(1168, 0x8000, 8)
+    set(1176, 384, 8)
+    set(1184, 48, 8)
+    for (i, k, fl, o, v, n): (Int, UInt64, UInt64, UInt64, UInt64, UInt64) in [
+      (0, 1, 5, 256, 0x4000, 32), (1, 1, 6, 384, 0x8000, 48), (2, 0x6474_e552, 4, 384, 0x8000, 48),
+    ] {
+      let h = 64 + i * 56
+      set(h, k, 4)
+      set(h + 4, fl, 4)
+      set(h + 8, o, 8)
+      set(h + 16, v, 8)
+      set(h + 32, n, 8)
+      set(h + 40, n, 8)
+    }
+    for i in 0..<4 { set(384 + i * 4, 1, 4) }
+    set(267, 0xb8, 1)
+    set(268, tag, 4)
+    set(272, 0xd503_245f, 4)
+    func check(_ m: UInt16 = ElfMachine.aarch64) -> Bool {
+      let bytes = file + records.serialized()
+      return bytes.withUnsafeBytes { b in
+        let r = ELFReader(bytes: b)
+        let s = file.count..<b.count
+        guard let dir = inspectLoaderRecords(.init(rebasing: b[s]), addressLimit: 0x10000) else {
+          return false
+        }
+        let i = InspectedImage(
+          entry: 0, notes: ImageNotes(), programHeaders: 64..<232, loaderRecords: s)
+        return r.validImportSlots(i, directory: dir, section: s, machine: m)
+      }
+    }
+    XCTAssertTrue(check())
+    for at in [68, 124, 176, 184, 268, 272, 384, 400, 1168, 1176, 1184] {
+      let saved = file[at]
+      file[at] ^= 1
+      XCTAssertFalse(check(), "offset \(at)")
+      file[at] = saved
+    }
+    set(208, 47, 8)
+    XCTAssertFalse(check())
+    set(208, 48, 8)
+    set(1160, 7, 8)
+    XCTAssertFalse(check())
+    set(1160, 3, 8)
+    records.tables[2] = data + fun
+    XCTAssertFalse(check())
+    records.tables[2] = fun + data
+    records.tables[0] = le(0x8008, 8)
+    records.counts[0] = 1
+    XCTAssertFalse(check())
+    records.tables[0] = []
+    records.counts[0] = 0
+    set(272, 0xfa1e_0ff3, 4)
+    XCTAssertTrue(check(ElfMachine.x64))
+    set(267, 0, 1)
+    XCTAssertFalse(check(ElfMachine.x64))
+    set(272, (tag << 12) & 0xffff_ffff | 0x17, 4)
+    XCTAssertTrue(check(ElfMachine.rv64))
+    set(272, 0x17, 4)
+    XCTAssertFalse(check(ElfMachine.rv64))
+  }
   func testAllEightTables() throws {
     let fixture = Records()
     let dir = try XCTUnwrap(readRecords(fixture.serialized()))

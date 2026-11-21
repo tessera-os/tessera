@@ -171,6 +171,9 @@ public func inspectUnsignedArtifact(
     let records = inspectLoaderRecords(
       UnsafeRawBufferPointer(rebasing: bytes[section]), addressLimit: addressLimit)
   else { return nil }
+  guard r.validImportSlots(image, directory: records, section: section, machine: machine) else {
+    return nil
+  }
   let count = r.u32(section.lowerBound + records[.gpu].bytes.lowerBound)
   switch r.findMetadataSection(".tirgpu", programs: image.programHeaders, unloaded: true) {
   case .invalid: return nil

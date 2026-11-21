@@ -53,6 +53,8 @@ Validate every destination, cross-table overlap, target, section count and bindi
 
 Carry UUIDs, module kinds and function tags from the source metadata through the linker; do not infer them from names. Main-executable local-exec TLS constants resolve at link time per TVISA §19.2 and need no record. Shared/framework TLS requiring load-time resolution uses a RELRO slot, never a text patch. An empty feature table is valid only when no feature bytes remain to be filled.
 
+For v1, `.tirimport` follows TVISA A.2: four u32 counts (function imports, data imports, runtime entries, dispatch sets), then initially zero contiguous u64 slots for function imports, runtime entries, dispatch sets, and finally data imports. Its file extent and RVA must correspond in both a writable non-executable PT_LOAD and PT_GNU_RELRO. Each descriptor class is in ascending slot order; function import records precede data import records. No other record may patch the header or slots. Dispatch candidates are 16-byte-aligned file-backed local RX entries with the set's tag and the ISA landing pad per TVISA §17.2. These checks do not prove a callee's semantic type or resolve a remote import.
+
 ## Producer/consumer check
 
 From the loader package run `swift run inspect-unsigned aarch64 path/to/output.elf` (also `x64`, `rv64`; add `--finalized` if note 6 is present and `--no-entry` for a library). This checks an actual producer artifact without a signing key: notes, TLD1 record structure, and BLAKE3 over the whole file with the ID field zeroed. It never executes the file and is not an alternate launch path.
