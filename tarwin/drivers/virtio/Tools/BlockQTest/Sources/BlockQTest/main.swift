@@ -14,15 +14,20 @@ final class QTest {
   private var buffered = Data()
   private(set) var error: Error?
 
-  init(binary: String, disk: URL) throws {
+  init(binary: String, machine: Machine, disk: URL) throws {
     process.executableURL = URL(fileURLWithPath: binary)
     process.arguments = [
-      "-machine", "virt", "-accel", "qtest", "-cpu", "cortex-a57", "-m", "64M",
+      "-machine", machine == .x64 ? "q35" : "virt", "-accel", "qtest", "-m", "64M",
       "-display", "none", "-nodefaults", "-monitor", "none", "-serial", "none",
-      "-qtest", "stdio", "-qtest-log", "/dev/null", "-global", "virtio-mmio.force-legacy=off",
+      "-qtest", "stdio", "-qtest-log", "/dev/null",
       "-drive", "if=none,id=scratch,format=raw,file=" + disk.path,
-      "-device", "virtio-blk-device,drive=scratch,iommu_platform=on",
+      "-device",
+      machine == .x64
+        ? "virtio-blk-pci,disable-legacy=on,addr=04.0,drive=scratch,iommu_platform=on"
+        : "virtio-blk-device,drive=scratch,iommu_platform=on",
     ]
+    if machine != .x64 { process.arguments! += ["-global", "virtio-mmio.force-legacy=off"] }
+    if machine == .arm { process.arguments! += ["-cpu", "cortex-a57"] }
     process.standardInput = input
     process.standardOutput = output
     try process.run()
@@ -76,31 +81,59 @@ final class QTest {
   }
 }
 
-func testBlock(_ q: QTest) throws {
-  // The QEMU Arm virt machine has 32 transports at stride 0x200.
-  guard
-    let base = (0..<32).map({ UInt64(0x0a00_0000 + 0x200 * $0) })
-      .first(where: { q.read("l", $0 + 8) == 2 })
-  else {
+enum Machine: String {
+  case arm = "qemu-system-aarch64"
+  case rv = "qemu-system-riscv64"
+  case x64 = "qemu-system-x86_64"
+  var ram: UInt64 {
+    switch self {
+    case .arm: 0x4000_0000
+    case .rv: 0x8000_0000
+    case .x64: 0
+    }
+  }
+}
+struct DiskTransport {
+  let features: UInt64
+  let capacity: UInt64
+  let notify: () -> Void
+  let acknowledge: () -> Void
+}
+func mmioTransport(_ q: QTest, _ machine: Machine, _ mem: QueueMemory) throws -> DiskTransport {
+  let candidates: [UInt64] =
+    machine == .rv
+    ? (0..<8).map { UInt64(0x1000_1000 + 0x1000 * $0) }
+    : (0..<32).map { UInt64(0x0a00_0000 + 0x200 * $0) }
+  guard let base = candidates.first(where: { q.read("l", $0 + 8) == 2 }) else {
     throw q.error ?? Failure("No virtio-blk MMIO transport")
   }
   let read: (UInt32) -> UInt32 = { UInt32(q.read("l", base + UInt64($0))) }
   let write: (UInt32, UInt32) -> Void = { q.write("l", base + UInt64($0), $1) }
   let expiry = ContinuousClock.now + .seconds(2)
   guard case .negotiated(let features) = negotiateMmio(2, 0x2220, read, write, { .now >= expiry })
-  else {
-    throw q.error ?? Failure("Modern, ACCESS_PLATFORM feature negotiation failed")
-  }
-  let mem = QueueMemory(
-    count: 8, descriptors: 0x4010_0000, available: 0x4010_1000, used: 0x4010_2000)
+  else { throw q.error ?? Failure("MMIO feature negotiation failed") }
   try q.require(
     installSplitQueue(0, mem, read, write) && driverReady(read, write), "Queue activation failed")
-  let capacity = UInt64(read(0x100)) | UInt64(read(0x104)) << 32
+  return DiskTransport(
+    features: features, capacity: UInt64(read(0x100)) | UInt64(read(0x104)) << 32,
+    notify: { write(0x50, 0) },
+    acknowledge: {
+      let irq = read(0x60)
+      if irq != 0 { write(0x64, irq) }
+    })
+}
+func testBlock(_ q: QTest, _ machine: Machine) throws {
+  let mem = QueueMemory(
+    count: 8, descriptors: machine.ram + 0x100000, available: machine.ram + 0x101000,
+    used: machine.ram + 0x102000)
+  let transport = try machine == .x64 ? pciTransport(q, mem) : mmioTransport(q, machine, mem)
+  let capacity = transport.capacity
+  let features = transport.features
   var queue = SplitQueue()
   try q.require(queue.initialize(Int(mem.count)) && capacity > 7, "Invalid disk geometry")
-  let header: UInt64 = 0x4011_0000
-  let data: UInt64 = 0x4011_1000
-  let status: UInt64 = 0x4011_2000
+  let header: UInt64 = machine.ram + 0x110000
+  let data: UInt64 = machine.ram + 0x111000
+  let status: UInt64 = machine.ram + 0x112000
   let pattern = (0..<512).map { String(format: "%02x", ($0 ^ 0xa5) & 255) }.joined()
   for (i, op) in [GuestBlockOp.write, .flush, .read].enumerated() {
     let flush = op == .flush
@@ -128,7 +161,7 @@ func testBlock(_ q: QTest) throws {
       { index, head in q.write("w", mem.available + 4 + UInt64(index) * 2, head) },
       { idx in q.write("w", mem.available + 2, idx) })
     try q.require(submitted, "Request \(cookie) submission failed")
-    write(0x50, 0)
+    transport.notify()
     let deadline = ContinuousClock.now + .seconds(3)
     while q.read("w", mem.used + 2) == UInt64(queue.consumed) && q.error == nil && .now < deadline {
       usleep(200)
@@ -147,23 +180,25 @@ func testBlock(_ q: QTest) throws {
     if op == .read {
       try q.require(q.send("read \(data) 512") == "0x" + pattern, "512-byte disk readback mismatch")
     }
-    let irq = read(0x60)
-    if irq != 0 { write(0x64, irq) }
+    transport.acknowledge()
   }
 }
 
 func run() throws {
-  guard CommandLine.arguments.count == 2 else {
-    throw Failure("Usage: BlockQTest /path/to/qemu-system-aarch64")
+  guard CommandLine.arguments.count == 2,
+    let machine = Machine(
+      rawValue: URL(fileURLWithPath: CommandLine.arguments[1]).lastPathComponent)
+  else {
+    throw Failure("Usage: BlockQTest /path/to/qemu-system-{aarch64,x86_64,riscv64}")
   }
   let disk = FileManager.default.temporaryDirectory.appendingPathComponent(
     UUID().uuidString + ".raw")
   try Data(repeating: 0, count: 1 << 20).write(to: disk, options: .withoutOverwriting)
   defer { try? FileManager.default.removeItem(at: disk) }
-  let q = try QTest(binary: CommandLine.arguments[1], disk: disk)
+  let q = try QTest(binary: CommandLine.arguments[1], machine: machine, disk: disk)
   do {
     defer { q.close() }
-    try testBlock(q)
+    try testBlock(q, machine)
   }
   let contents = try Data(contentsOf: disk)
   let sector = 7 * 512
@@ -174,7 +209,7 @@ func run() throws {
 }
 do {
   try run()
-  print("PASS: QEMU virtio-blk modern MMIO write, flush and 512-byte readback")
+  print("PASS: QEMU virtio-blk write, flush and 512-byte readback")
 } catch {
   FileHandle.standardError.write(Data("\(error)\n".utf8))
   exit(1)
