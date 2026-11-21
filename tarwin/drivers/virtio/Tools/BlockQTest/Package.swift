@@ -12,6 +12,7 @@ let package = Package(
       name: "BlockQTest",
       dependencies: [
         .product(name: "TarwinBlock", package: "tarwin-block"),
+        .product(name: "TarwinIoCompletion", package: "tarwin-device"),
         .product(name: "TarwinDevice", package: "tarwin-device"),
         .product(name: "TarwinIPC", package: "tarwin-ipc"),
         .product(name: "VirtioBlockService", package: "virtio"),

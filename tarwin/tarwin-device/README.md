@@ -27,3 +27,9 @@ Native dispatch uses the generated TarwinSyscall call constants, not new ordinal
 ## Driver rings
 
 A fresh pinned, cache-coherent Memory mapping contains the A.4 ring pair. Initialize it before sharing, then open exactly one lane per direction and role. The mapping is initialized as atomic words and attaches TarwinIPC RingEndpoint directly: that shared implementation owns geometry validation, private cursors, record snapshots and the idle handshake. Use a latched Event so a notification just before sleeping is retained. Any impossible peer cursor poisons the lane. Reattach only to a **new**, quiesced epoch, never reset a live ring. Device-specific records, object grants and process mappings remain the subsystem's responsibility.
+
+## Port-bound interrupts
+
+Arm a masked vector through `PortInterrupt` using the validated slot epoch, interrupt KOID and driver binding. A full/closed port refuses arming without unmasking. Each arm reserves one Device packet; IRQ entry acknowledges/masks before finishing it, and rearm requires a fresh credit. A cancelled or closed port never re-enables the line. Teardown must mask and drain; a failed drain keeps its reservation alive.
+
+The kernel's `IoPorts` implementation must retain the actual port object, serialize access under its lock and wake the number of waiters returned by `TarwinIPC.CompletionPort`. Enqueue cancellation work under the port lock and execute it outside that lock, never recursively acquire the device lock. Release a retained port after recording its last buffer access and notifying waiters.

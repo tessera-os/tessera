@@ -74,17 +74,25 @@ public struct BlockQueue: Equatable {
   public internal(set) var count: Int = 0
   public internal(set) var entries: [BlockTicket] = []
 
-  public mutating func enqueue(_ cmd: BlockCommand) -> UInt64 {
+  func accepts(_ cmd: BlockCommand) -> Bool {
     if offline || cmd.queue >= queueCount || depth == 0 || count >= pendingLimit
       || lastId == 0xffff_ffff_ffff_ffff
     {
-      return 0
+      return false
     }
     if cmd.op == .flush {
-      if cmd.lba != 0 || cmd.blocks != 0 { return 0 }
+      if cmd.lba != 0 || cmd.blocks != 0 { return false }
     } else {
-      if cmd.blocks == 0 || cmd.lba >= capacity || cmd.blocks > capacity - cmd.lba { return 0 }
+      if cmd.blocks == 0 || cmd.lba >= capacity || cmd.blocks > capacity - cmd.lba { return false }
     }
+    return true
+  }
+
+  public mutating func enqueue(_ cmd: BlockCommand) -> UInt64 {
+    guard accepts(cmd) else { return 0 }
+    return enqueueAccepted(cmd)
+  }
+  mutating func enqueueAccepted(_ cmd: BlockCommand) -> UInt64 {
     lastId += 1
     let ticket = BlockTicket(command: cmd, id: lastId, state: .pending, replay: false)
     if count < entries.count { entries[count] = ticket } else { entries.append(ticket) }
@@ -166,17 +174,25 @@ public struct BlockQueue: Equatable {
     return true
   }
 
-  public mutating func complete(_ queue: UInt32, _ sourceEpoch: UInt64, _ id: UInt64) -> Bool {
-    if offline || sourceEpoch != epoch { return false }
-    for at in 0..<count {
-      if entries[at].id == id && entries[at].command.queue == queue && entries[at].state == .issued
-      {
-        for src in (at + 1)..<count { entries[src - 1] = entries[src] }
-        count -= 1
-        return true
-      }
+  func lookup(_ id: UInt64) -> BlockTicket? {
+    for i in 0..<count where entries[i].id == id { return entries[i] }
+    return nil
+  }
+
+  mutating func forget(_ id: UInt64) {
+    for i in 0..<count where entries[i].id == id {
+      for j in (i + 1)..<count { entries[j - 1] = entries[j] }
+      count -= 1
+      return
     }
-    return false
+  }
+
+  public mutating func complete(_ queue: UInt32, _ sourceEpoch: UInt64, _ id: UInt64) -> Bool {
+    guard !offline, sourceEpoch == epoch, let t = lookup(id), t.command.queue == queue,
+      t.state == .issued
+    else { return false }
+    forget(id)
+    return true
   }
 
   // Only called once old queues and DMA have been quiesced and reset.

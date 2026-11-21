@@ -6,6 +6,7 @@ import TarwinBlock
 import TarwinBlockWire
 import TarwinDevice
 import TarwinIPC
+import TarwinIoCompletion
 import VirtioBlockService
 import VirtioGuest
 
@@ -147,6 +148,22 @@ func transport(
       if irq != 0 { write(0x64, irq) }
     })
 }
+// Single-threaded hosted client, not a kernel port table or an IOMMU.
+private struct TestClient: IoPorts, ~Copyable {
+  var port: CompletionPort, references = 0, notifications = 0
+  mutating func retainPort(_ id: UInt64) -> Bool {
+    guard id == 1 else { return false }
+    references += 1
+    return true
+  }
+  mutating func withLockedPort(_ id: UInt64, _ visit: (inout CompletionPort) -> Void) {
+    precondition(id == 1)
+    visit(&port)
+  }
+  mutating func releasePort(_ id: UInt64) { references -= 1 }
+  mutating func wakePort(_ id: UInt64, count: Int) { notifications += count }
+}
+
 func testBlock(_ q: QTest, _ machine: Machine) throws {
   let mem = QueueMemory(
     count: 8, descriptors: machine.ram + 0x100000, available: machine.ram + 0x101000,
@@ -168,16 +185,30 @@ func testBlock(_ q: QTest, _ machine: Machine) throws {
     var replies = mapping.endpoint(completion: true, producer: true),
     var client = mapping.endpoint(completion: true, producer: false)
   else { throw Failure("Bad block ring") }
-  var scheduler = BlockQueue(capacity: capacity, queueCount: 1, pendingLimit: 4, depth: 1)
+  let credits = UnsafeMutableBufferPointer<PortSlot>.allocate(capacity: 1)
+  credits.initialize(repeating: PortSlot())
+  let bindings = UnsafeMutableBufferPointer<BlockPortSlot>.allocate(capacity: 1)
+  bindings.baseAddress!.initialize(to: BlockPortSlot())
+  defer {
+    bindings.deinitialize()
+    bindings.deallocate()
+    credits.deinitialize()
+    credits.deallocate()
+  }
+  var user = TestClient(port: CompletionPort(storage: credits)!)
+  var scheduler = PortBlockQueue(
+    capacity: capacity, blockBytes: 512, queueCount: 1, depth: 1, slots: bindings)!
   let list = machine.ram + 0x113000
   q.write("q", list, data)
   q.write("l", list + 8, 512)
   q.write("l", list + 12, 0)
   for operation in [TarwinBlockWire.BlockOp.write, .flush, .read] {
     let flush = operation == .flush
-    let cookie = scheduler.enqueue(
+    let key = UInt64(operation.rawValue)
+    let cookie = scheduler.submit(
       BlockCommand(
-        op: operation, lba: flush ? 0 : 7, blocks: flush ? 0 : 1, qos: .interactive, queue: 0))
+        op: operation, lba: flush ? 0 : 7, blocks: flush ? 0 : 1, qos: .interactive, queue: 0),
+      object: 2, key: key, port: 1, ports: &user)
     let payload = flush ? BlockPayload() : BlockPayload(list: list, vectors: 1)
     guard cookie != 0,
       case .ring(.transferred) = scheduler.publish(
@@ -236,17 +267,17 @@ func testBlock(_ q: QTest, _ machine: Machine) throws {
         cookie: buffer.cookie, status: UInt8(q.read("b", status)), written: buffer.written),
       case .transferred = replies.push(done.record()), case .transferred = client.pop(into: &record)
     else { throw q.error ?? Failure("Malformed driver completion") }
-    var success = false
-    try q.require(
-      scheduler.finish(queue: 0, record: record) { id, result in
-        success = id == cookie && result == .ok
-      }
-        && success, "Block client did not receive success")
+    guard scheduler.receive(queue: 0, record: record) == cookie,
+      scheduler.release(id: cookie, at: 77, ports: &user, retireBuffers: { $0 == buffer.cookie }),
+      let packet = user.port.take(), packet.kind == 3, packet.key == key,
+      packet.error == 0, packet.result0 == (flush ? 0 : 512), user.references == 0
+    else { throw Failure("Block completion did not reach the client port") }
     if op == .read {
       try q.require(q.send("read \(data) 512") == "0x" + pattern, "512-byte disk readback mismatch")
     }
     transport.acknowledge()
   }
+  try q.require(user.notifications == 3, "Expected one wake per terminal packet")
 }
 
 func run() throws {

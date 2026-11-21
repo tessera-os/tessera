@@ -7,17 +7,22 @@ let package = Package(
     .library(name: "TarwinBlockWire", targets: ["TarwinBlockWire"]),
     .library(name: "TarwinBlock", targets: ["TarwinBlock"]),
   ],
-  dependencies: [.package(path: "../tarwin-ipc")],
+  dependencies: [.package(path: "../tarwin-ipc"), .package(path: "../tarwin-device")],
   targets: [
     .target(
       name: "TarwinBlockWire", dependencies: [.product(name: "TarwinIPC", package: "tarwin-ipc")]),
     .target(
       name: "TarwinBlock",
-      dependencies: ["TarwinBlockWire", .product(name: "TarwinIPC", package: "tarwin-ipc")]),
+      dependencies: [
+        "TarwinBlockWire", .product(name: "TarwinIoCompletion", package: "tarwin-device"),
+        .product(name: "TarwinIPC", package: "tarwin-ipc"),
+      ]),
     .testTarget(
       name: "TarwinBlockTests",
       dependencies: [
-        "TarwinBlock", "TarwinBlockWire", .product(name: "TarwinIPC", package: "tarwin-ipc"),
+        "TarwinBlock", "TarwinBlockWire", .product(name: "TarwinDevice", package: "tarwin-device"),
+        .product(name: "TarwinIoCompletion", package: "tarwin-device"),
+        .product(name: "TarwinIPC", package: "tarwin-ipc"),
       ], path: "tests/TarwinBlockTests"),
   ]
 )
