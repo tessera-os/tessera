@@ -46,6 +46,26 @@ architecture variants before running untrusted guests.
 
 ### Guest-profile debug kernel
 
+The protection diagnostics also trap WFI with no pending interrupt and a delegated
+read of ID_AA64PFR0_EL1 or satp, resume the guest with the supplied value, and check it
+at the next hypercall. RV64 handles compressed MMIO stores/loads and sign extension;
+when htinst is zero it fetches text only from an immutable Bare-mode guest mapping.
+Unknown register selectors and side-effecting RV CSR operations are not delegated.
+
+Run `sh run.sh arm irq` and `sh run.sh rv64 irq` for interrupt delivery. Arm uses
+a software-backed GIC list register: an SPI is pending while masked, then acknowledged
+and EOI'ed by EL1. The monitor verifies the virtual comparator has expired before
+forwarding timer PPI 27. RV64 uses QEMU virt AIA with an IMSIC VS file: the guest
+claims its message, arms vstimecmp, receives the delegated timer interrupt and disarms
+it. Both guests observe their virtual counter offset. These single-vCPU diagnostics
+run neither a production IRQ route nor a physical interrupt or timing acceptance case.
+
+The Arm and RV64 monitors also re-arm a RAM write trap across two dirty-log epochs,
+retry the original store after setting the bit and verify the changed backing and
+bitmap. Only one CPU can walk the diagnostic root, and there are no DMA writers.
+
+#### Separately linked console workload
+
 Run `sh run.sh arm kernel`, `sh run.sh rv64 kernel` and `sh run.sh x64 kernel`.
 Each invocation links an independent, allocation-disabled [kernel](../DebugGuest/Kernel.swift)
 at GPA 0x10000. Its only segment is RX; the monitor supplies a private RW/NX
@@ -64,3 +84,11 @@ vTPM, signed init, virtual timer interrupt or production scheduling. A
 bare-metal EL2/VHE W1 image cannot be entered at EL1h by changing its PC.
 Signed W1 guest integration needs the platform owner's guest entry, segment
 and admission contracts. No §34 guest OS result or W8 exit is implied.
+
+The optional Metal profile uses the same kernel components and the device owner's
+Embedded encoder. Run `sh conformance/check-metal-guest.sh` from the Tarwin root on
+a Metal-capable Mac. A fixed mailbox, not a guest pointer or device register, carries
+two commands and four receipts across hypercalls. The monitor forwards them over a
+private serial socket to TVMM. Mosaic copies the completed frame to an independent
+offscreen backbuffer and emits its release receipt after that GPU copy. Both textures
+are read back and checked; this involves no display latch, physical scanout or production transport.

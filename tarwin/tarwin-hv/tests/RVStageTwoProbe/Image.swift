@@ -1,3 +1,4 @@
+let irq = CommandLine.arguments.dropFirst().first == "irq"
 let kernel = CommandLine.arguments.dropFirst().first == "kernel"
 // A dedicated QEMU hart enters VS-mode from OpenSBI's S-mode payload.
 // No production trap vector, interrupt path or untrusted guest is installed.
@@ -19,8 +20,9 @@ print(
     csrw vsatp, zero
     csrw vsie, zero
     csrw vsstatus, zero
+    \(irq || kernel ? "" : "li t0, (1<<20)|(1<<21)\n  csrs hstatus,t0") // VTVM and VTW
     la a0, arena
-    la a1, guest_page
+    la a1, \(irq ? "irq_guest" : "guest_page")
     la a2, data_page
     la a3, bank
     call run_rv_probe
@@ -39,7 +41,7 @@ print(
      j 1b
   2: wfi
      j 2b
-  pass_string: .asciz "TARWIN \(kernel ? "DEBUG CONSOLE" : "RV64 GSTAGE") PASS\\n"
+  pass_string: .asciz "TARWIN \(irq ? "rv64 IRQ TIMER" : kernel ? "DEBUG CONSOLE" : "RV64 GSTAGE") PASS\\n"
   fail_string: .asciz "TARWIN RV64 GSTAGE FAIL\\n"
   .balign 4
   .global rv_enter
@@ -96,6 +98,10 @@ print(
     sd t0, 272(t6)
     csrr t0, htval
     sd t0, 280(t6)
+    csrr t0, htinst
+    sd t0, 296(t6)
+    csrr t0, vsatp
+    sd t0, 304(t6)
     csrr t0, hstatus
     sd t0, 288(t6)
     andi t0, t0, 128
@@ -127,13 +133,33 @@ print(
     li a2, 0xdead
     sd a2, 0(a1)
     ld a3, 0(a1)
+    li s0,0x400000
+    li a0,0x12345678
+    .option push
+    .option arch,+c
+    c.sw a0,0(s0)
+    c.lw a0,4(s0)
+    .option pop
+    slli a4,a0,8
+    lbu a5,3(s0)
+    or a4,a4,a5
+    ecall
+    wfi
+    csrr a6,satp
+    ecall
+    li t0,0x7101
+    sd t0,0(a1)
+    ecall
+    addi t0,t0,1
+    sd t0,0(a1)
+    ecall
     jr a1
   .balign 4096
   .section .bss,"aw",%nobits
   .balign 16384
   arena: .skip \(kernel ? 65536 : 32768)
   data_page: .skip 4096
-  bank: .skip 296
+  bank: .skip 312
   .balign 16
   .skip 32768
   stack_top:

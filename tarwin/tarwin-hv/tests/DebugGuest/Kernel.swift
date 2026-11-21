@@ -57,6 +57,9 @@ public func guestKernel(_ launch: UnsafePointer<UInt64>) -> UInt64 {
     boot.service(.sleepRunning, counter: deadline)?.next == 1,
     line("BOOT CPU ONLINE", &console, &count)
   else { return 0 }
+  #if METAL_GUEST
+    guard presentFrames(screen.advanced(by: 14848)) else { return 0 }
+  #endif
   screen.storeBytes(of: UInt64(count), toByteOffset: 16376, as: UInt64.self)
   return 0x4b44
 }

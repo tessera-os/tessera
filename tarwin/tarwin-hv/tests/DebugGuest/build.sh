@@ -17,10 +17,15 @@ for src in "$t"/kcore/Sources/KCore "$t"/tarwin-time/Sources/TarwinTime "$t"/tar
   module=${src##*/}
   "$tc/swiftc" "$@" -module-name "$module" -emit-module -emit-module-path "$dir/$module.swiftmodule" "$src/"*.swift
 done
-"$tc/swift" "$here/GuestEntry.swift" "$arch" > "$dir/start.s"
+profile=${GUEST_PROFILE:-kernel}
+"$tc/swift" "$here/GuestEntry.swift" "$arch" "$profile" > "$dir/start.s"
 "$tc/clang" -target "$target" -march="$march" -c "$dir/start.s" -o "$dir/entry.o"
+if [ "$profile" = metal ]; then
+  driver=${TVGPU_PACKAGE:-"$t/drivers/tvgpu"}/Sources/TvGpuGuest/MetalPresentation.swift
+  set -- "$@" -D METAL_GUEST "$driver" "$here/MetalGuest.swift"
+fi
 "$tc/swiftc" "$@" -module-name TarwinDebugGuest -c "$here/Kernel.swift" "$t/tarboot/tests/FirmwareProbe/Memory.swift" -o "$dir/kernel.o"
 "$tc/ld.lld" -T "$here/kernel.ld" --gc-sections -o "$dir/kernel.elf" "$dir/entry.o" "$dir/kernel.o"
 "$tc/llvm-objcopy" -O binary "$dir/kernel.elf" "$dir/kernel.bin"
 if [ -n "${GUEST_ELF_DIR:-}" ]; then mkdir -p "$GUEST_ELF_DIR"; cp "$dir/kernel.elf" "$GUEST_ELF_DIR/$arch.elf"; fi
-"$tc/swift" "$here/Pack.swift" "$arch" "$dir/kernel.bin"
+"$tc/swift" "$here/Pack.swift" "$arch" "$dir/kernel.bin" "$profile"

@@ -35,3 +35,11 @@ case "x64":
     """)
 default: fatalError("unknown guest architecture")
 }
+if CommandLine.arguments.last == "metal" {
+  print(".global guest_exchange\nguest_exchange:")
+  switch arch {
+  case "arm": print("hvc #0x4b\nret")
+  case "rv64": print("ecall\nret")
+  default: print("mov %rdi,%rax\nvmmcall\nret")
+  }
+}

@@ -3,6 +3,46 @@ import TarwinSyscall
 @_silgen_name("debug_layout") private func layout() -> UnsafePointer<UInt64>
 @_silgen_name("debug_putchar") private func putchar(_ value: UInt32)
 
+#if METAL_GUEST
+  @_silgen_name("debug_getchar") private func getchar() -> UInt32
+#endif
+
+private func guestCalls(_ resume: () -> UInt64?) -> Bool {
+  #if METAL_GUEST
+    guard let screen = UnsafeMutableRawPointer(bitPattern: UInt(layout()[4])) else { return false }
+    let p = screen + 14848
+    func send(_ s: StaticString) {
+      for i in 0..<s.utf8CodeUnitCount { putchar(UInt32(s.utf8Start[i])) }
+    }
+    func hex(_ n: UInt8) { putchar(UInt32(n < 10 ? 48 + n : 87 + n)) }
+    for step in 0..<5 {
+      var size = 32
+      switch step {
+      case 0:
+        guard resume() == 0x4d10 else { return false }
+        send("TM-BEGIN\n")
+        size = 16
+      case 1, 3:
+        guard resume() == 0x4d11 else { return false }
+        send("TMS1 ")
+        for i in 0..<64 {
+          let byte = p.load(fromByteOffset: i, as: UInt8.self)
+          hex(byte >> 4)
+          hex(byte & 15)
+        }
+        putchar(10)
+      default:
+        guard resume() == 0x4d12 else { return false }
+        send("TM-RENDERED\n")
+      }
+      for i in 0..<size {
+        p.storeBytes(of: UInt8(truncatingIfNeeded: getchar()), toByteOffset: 64 + i, as: UInt8.self)
+      }
+    }
+  #endif
+  return resume() == 0x4b44
+}
+
 // The monitor links the immutable text/rodata image and reserves private
 // backing for each guest extent. No physical address comes from the guest.
 private func mapImage(_ page: UInt64, _ install: (UInt64, UInt64, UInt64, UInt64) -> Bool) -> Bool {
@@ -57,13 +97,15 @@ private func boot(_ operation: () -> Bool) -> UInt32 {
     guard var t = ArmStageTwo(arena: .init(start: arena, count: 6144), physicalBase: root),
       mapImage(16384, { t.install(ipa: $0, bytes: $1, pinnedPA: $2, permissions: $3) })
     else { return 0 }
-    for i in 0..<36 { regs[i] = 0 }
+    for i in 0..<37 { regs[i] = 0 }
     regs[0] = 0x180000
     regs[31] = 0x10000
     regs[32] = 0x3c5
     return boot {
-      enter(root, ArmStageTwo.vtcr, regs)
-      return regs[33] >> 26 == 0x16 && regs[33] & 0xffff == 0x4b && regs[0] == 0x4b44
+      guestCalls {
+        enter(root, ArmStageTwo.vtcr, regs)
+        return regs[33] >> 26 == 0x16 && regs[33] & 0xffff == 0x4b ? regs[0] : nil
+      }
     }
   }
 #elseif arch(riscv64)
@@ -83,8 +125,12 @@ private func boot(_ operation: () -> Bool) -> UInt32 {
     regs[11] = 0x180000
     regs[32] = 0x10000
     return boot {
-      enter((UInt64(9) << 60) | (root >> 12), regs)
-      return regs[33] == 10 && regs[36] & 128 != 0 && regs[10] == 0x4b44
+      guestCalls {
+        enter((UInt64(9) << 60) | (root >> 12), regs)
+        guard regs[33] == 10, regs[36] & 128 != 0 else { return nil }
+        regs[32] += 4
+        return regs[10]
+      }
     }
   }
 #elseif arch(x86_64)
@@ -108,10 +154,15 @@ private func boot(_ operation: () -> Bool) -> UInt32 {
     configureSVM(vmcb, root: root, cr3: pt, rip: 0x10000)
     rdi(0x180000)
     return boot {
-      vmcb.storeBytes(of: UInt8(1), toByteOffset: 0x5c, as: UInt8.self)
-      enter()
-      return vmcb.load(fromByteOffset: 0x70, as: UInt64.self) == 0x81
-        && vmcb.load(fromByteOffset: 0x5f8, as: UInt64.self) == 0x4b44
+      guestCalls {
+        vmcb.storeBytes(of: UInt8(1), toByteOffset: 0x5c, as: UInt8.self)
+        enter()
+        guard vmcb.load(fromByteOffset: 0x70, as: UInt64.self) == 0x81 else { return nil }
+        // The linked test guest uses an unprefixed three-byte VMMCALL.
+        let rip = vmcb.load(fromByteOffset: 0x578, as: UInt64.self)
+        vmcb.storeBytes(of: rip + 3, toByteOffset: 0x578, as: UInt64.self)
+        return vmcb.load(fromByteOffset: 0x5f8, as: UInt64.self)
+      }
     }
   }
 #endif

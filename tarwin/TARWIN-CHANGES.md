@@ -14,7 +14,25 @@ Initial development train; not certified. See [coverage](docs/coverage.md).
 
 **Encoding changes:** Initial TBIB rev. 1, private train-specific syscall index and panic-record rev. 1. No canonical TRFS disk encoding asserted here.
 
+**Presentation:** Metal replaces the earlier Ember graphics target. TVMM validates the guest
+driver's TMS1 clear/blit and TMC1 completion contract on a prebound client channel; it does
+not add these commands to virtio-gpu. Hosted offscreen execution is separate from display
+acceptance. Three QEMU debug kernels also exercise this exchange over a diagnostic monitor
+relay using the Embedded guest driver. Separate receipts follow GPU rendering and the
+compositor's completed offscreen copy; pixels are checked in both textures, not at scanout.
+New acceptance receipts bind W0/W1 QEMU runs separately from physical devices.
+
+**Probes and tracing:** Bounded fixed-size probe ring writes and source-bound Perfetto ring
+draining are tested in isolation. Live signed probe attachment, PMU delivery and measured
+hook overhead remain unverified.
+
+**Hypervisor diagnostics:** The [three-ISA execution check](tarwin-hv/tests/StageTwoHarness/README.md) enters test guests under QEMU TCG and verifies second-level RAM permissions and revocation. Bochs separately executes the Intel VMX/EPT path. Debug-profile guest kernels exercise the allocator, scheduler and console on all three QEMU targets. Neither signed W1 nor physical acceptance is established.
+
 **Producer notes:** Use train-matched LibTessera and generated call names. Use non-allocating Embedded Swift on pre-heap and interrupt paths, Embedded Swift for other kernel code, and regular Swift for hosted tools. Kernel artifacts still require the KLF Swift TIR kernel profile. Keep debug-only code and host tools out of release images.
+
+**Dirty tracking:** Arm and RV64 debug monitors collect two consecutive write epochs on a
+private guest RAM page without dropping the backing pin. DMA tracking, multi-CPU shootdown
+and production snapshot restore are not established.
 
 **System calls:** See [generated index](tarwin-syscall/Sources/TarwinSyscall/CallNumbers.swift) and [numbering contract](tarwin-syscall/decisions.md). VM/vCPU, probe and performance operations have names; they are not all linked into a running kernel.
 

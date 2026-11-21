@@ -1,3 +1,4 @@
+let irq = CommandLine.arguments.dropFirst().first == "irq"
 let kernel = CommandLine.arguments.dropFirst().first == "kernel"
 // Hosted emitter for the standalone TCG diagnostic. Its dedicated EL2 core
 // never runs W1 host code or an untrusted guest. Not a kernel variant body.
@@ -17,6 +18,7 @@ print(
     mov x0, #(1 << 34)
     orr x0, x0, #(1 << 31)
     orr x0, x0, #(1 << 27)
+    \(irq || kernel ? "" : "orr x0,x0,#(1<<13)\n  orr x0,x0,#(1<<18)") // TWI/TID3 in the exit diagnostic
     msr hcr_el2, x0
     isb
     mrs x0, hcr_el2
@@ -27,7 +29,7 @@ print(
     msr cptr_el2, x0
     isb
     ldr x0, =arena
-    ldr x1, =guest_page
+    ldr x1, =\(irq ? "irq_guest" : "guest_page")
     ldr x2, =data_page
     ldr x3, =exit_bank
     bl run_probe
@@ -45,7 +47,7 @@ print(
     b 1b
   2: wfe
      b 2b
-  passed: .asciz "TARWIN \(kernel ? "DEBUG CONSOLE" : "EL2 STAGE2") PASS\\n"
+  passed: .asciz "TARWIN \(irq ? "arm IRQ TIMER" : kernel ? "DEBUG CONSOLE" : "EL2 STAGE2") PASS\\n"
   failed: .asciz "TARWIN EL2 STAGE2 FAIL\\n"
   .balign 2048
   vectors:
@@ -73,7 +75,8 @@ print(
     // at stage 1. Only stage 2 can translate the guest's code/data IPAs.
     ldr x9, =0x30d00800
     msr sctlr_el12, x9
-    msr sp_el1, xzr
+    ldr x9, [x2, #288]
+    msr sp_el1, x9
     ldp x9, x10, [x2, #248]
     msr elr_el2, x9
     msr spsr_el2, x10
@@ -106,6 +109,8 @@ print(
     stp x9, x10, [x0, #264]
     mrs x9, hpfar_el2
     str x9, [x0, #280]
+    mrs x9, sp_el1
+    str x9, [x0, #288]
     mrs x9, hcr_el2
     bic x9, x9, #1
     orr x9, x9, #(1 << 27)
@@ -151,6 +156,15 @@ print(
     strh w2, [x4, #2]
     ldrsb x5, [x4, #1]
     hvc #0x43
+    wfi
+    mrs x7, ID_AA64PFR0_EL1
+    hvc #0x44
+    mov x8, #0x7101
+    str x8, [x1]
+    hvc #0x45
+    add x8, x8, #1
+    str x8, [x1]
+    hvc #0x45
     // Host restored a data page; executing from it must fault.
     br x1
     .balign 16384
@@ -158,7 +172,7 @@ print(
   .balign 16384
   arena: .skip 49152
   data_page: .skip 16384
-  exit_bank: .skip 288
+  exit_bank: .skip 296
   .balign 16
   .skip 32768
   stack_top:

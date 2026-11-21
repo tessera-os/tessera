@@ -30,6 +30,23 @@ public struct DirtyPages {
     }
     return true
   }
+  // Caller has classified a stage-2 write fault against a private, CPU-only
+  // tracked page. Record dirtiness before making the page writable. If the
+  // table change fails the bit remains conservatively set and the VM stays stopped.
+  public func retryWrite(
+    ipa: UInt64, pageSize: UInt64, extent: inout GuestExtent,
+    load: (UInt64) -> UInt64, store: (UInt64, UInt64) -> Void,
+    detach: (UInt64, UInt64) -> Bool, invalidate: (UInt64, UInt64) -> Bool,
+    install: (UInt64, UInt64, UInt64, UInt64) -> Bool
+  ) -> Bool {
+    guard pageSize == 4096 || pageSize == 16384, extent.size == pageSize,
+      extent.phase == .mapped, extent.writeTrapped, extent.guestPermissions == 3,
+      ipa >= extent.start, ipa - extent.start < pageSize,
+      mark(extent.start / pageSize, 1, load, store)
+    else { return false }
+    return extent.trapWrites(false, detach: detach, invalidate: invalidate, install: install)
+  }
+
   public func collectWord(
     _ index: UInt64, _ load: (UInt64) -> UInt64,
     _ rearmAndWait: (UInt64, UInt64) -> Bool, _ store: (UInt64, UInt64) -> Void,

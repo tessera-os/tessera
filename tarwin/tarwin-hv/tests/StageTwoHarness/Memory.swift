@@ -9,3 +9,13 @@ public func probeFill(_ dst: UnsafeMutableRawPointer, _ value: Int32, _ count: I
   }
   return dst
 }
+
+@_optimize(none) @_cdecl("memcpy")
+public func probeCopy(_ dst: UnsafeMutableRawPointer, _ src: UnsafeRawPointer, _ count: Int)
+  -> UnsafeMutableRawPointer
+{
+  for i in 0..<count {
+    dst.storeBytes(of: src.load(fromByteOffset: i, as: UInt8.self), toByteOffset: i, as: UInt8.self)
+  }
+  return dst
+}

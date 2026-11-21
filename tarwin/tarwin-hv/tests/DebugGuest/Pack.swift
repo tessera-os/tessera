@@ -32,6 +32,19 @@ case "x64":
     """)
 default: fatalError("unknown guest architecture")
 }
+if CommandLine.arguments.last == "metal" {
+  print(".global debug_getchar\ndebug_getchar:")
+  switch arch {
+  case "arm":
+    print("ldr x1,=0x09000000\n1: ldr w2,[x1,#24]\ntbnz w2,#4,1b\nldr w0,[x1]\nand w0,w0,#255\nret")
+  case "rv64":
+    print("li t0,0x10000000\n1: lbu a0,5(t0)\nandi a0,a0,1\nbeqz a0,1b\nlbu a0,0(t0)\nret")
+  default:
+    print(
+      "mov $0x3fd,%dx\n1: in (%dx),%al\ntest $1,%al\njz 1b\nmov $0x3f8,%dx\nxor %eax,%eax\nin (%dx),%al\nret"
+    )
+  }
+}
 print(
   """
   .section .rodata
