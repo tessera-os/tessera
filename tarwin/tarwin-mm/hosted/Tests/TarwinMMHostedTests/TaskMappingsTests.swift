@@ -100,26 +100,55 @@ private final class ProbeBundleAnchor {}
 
 @Test func twoSpawnedTasksExecuteTheSameSealedMemoryEntry() throws {
   let testBundle = Bundle(for: ProbeBundleAnchor.self).bundleURL
-  let probe = testBundle.deletingLastPathComponent().appendingPathComponent("HostedMemoryTaskProbe")
-  let first = try TaskSpawner.spawn(executable: probe.path)
+  let executable = testBundle.deletingLastPathComponent().appendingPathComponent("tarwin-task")
+  let size = hostedPageSize
+  let firstAddress = TaskWindow.base
+  let secondAddress = firstAddress + 2 * size
+  let first = try TaskSpawner.spawn(executable: executable.path)
   var firstReaped = false
   defer { if !firstReaped { kill(first.pid, SIGKILL); waitpid(first.pid, nil, 0) } }
-  let second = try TaskSpawner.spawn(executable: probe.path)
+  let second = try TaskSpawner.spawn(executable: executable.path)
   var secondReaped = false
   defer { if !secondReaped { kill(second.pid, SIGKILL); waitpid(second.pid, nil, 0) } }
   #expect(first.pid != second.pid)
-  let size = hostedPageSize
-  let code = try [UInt32(0x5280_0540), 0xd65f_03c0].withUnsafeBytes {
+  let code = try [UInt32(0x5280_0541), 0xb900_0001, 0x1400_0000].withUnsafeBytes {
     try HostedMemoryEntry.sealedCode(size: size, verifiedBytes: $0)
   }
 
   func execute(in task: SpawnedTask, at address: UInt64) throws {
     let transport = HostedTaskCommandMappings(task: task) { _ in kill(task.pid, SIGKILL) }
-    let space = try HostedAddressSpace(window: address..<(address + size), task: transport)
+    let space = try HostedAddressSpace(
+      window: TaskWindow.base..<(TaskWindow.base + TaskWindow.size), task: transport)
     try space.map(.init(address: address, size: size, entry: code, protection: [.read, .execute]))
+    let rw = HostedProtection.read.union(.write)
+    let writableCode = try task.command(.protect(
+      address: address, length: size, protection: UInt32(rw.rawValue))).get()
+    #expect(writableCode.status == KERN_PROTECTION_FAILURE)
+    let data = address + size
+    let stack = try HostedMemoryEntry.anonymous(size: size)
+    let result = try stack.mapLocally(protection: .read)
+    try space.map(.init(address: data, size: size, entry: stack, protection: rw))
+    try #require(try task.command(.createThread(
+      id: 1, entry: address, argument: data, stack: data + size - 16, tls: data)).get().status
+      == KERN_SUCCESS)
+    try #require(try task.command(.resumeThread(id: 1)).get().status == KERN_SUCCESS)
+    let deadline = DispatchTime.now() + .seconds(5)
+    var value: UInt32 = 0
+    repeat {
+      var bytesRead: UInt64 = 0
+      let status = withUnsafeMutablePointer(to: &value) {
+        mach_vm_read_overwrite(
+          mach_task_self_, result.address, UInt64(MemoryLayout<UInt32>.size),
+          UInt64(UInt(bitPattern: $0)), &bytesRead)
+      }
+      try #require(status == KERN_SUCCESS)
+      if value != 0 { break }
+      usleep(1_000)
+    } while DispatchTime.now() < deadline
+    try #require(value == 42)
   }
-  try execute(in: first, at: 1 << 34)
-  try execute(in: second, at: 1 << 35)
+  try execute(in: first, at: firstAddress)
+  try execute(in: second, at: secondAddress)
   func waitForExecution(_ task: SpawnedTask, reaped: inout Bool) throws {
     let reply = try task.command(.terminate).get()
     #expect(reply.status == KERN_SUCCESS)

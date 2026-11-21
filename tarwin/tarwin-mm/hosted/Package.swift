@@ -16,10 +16,9 @@ let package = Package(
       .product(name: "TarwinTaskTransport", package: "tarwin-task"),
       .product(name: "TarwinArchHosted", package: "tarwin-arch-hosted"),
     ]),
-    .executableTarget(
-      name: "HostedMemoryTaskProbe",
-      dependencies: [.product(name: "TarwinTaskTransport", package: "tarwin-task")],
-      path: "Tests/HostedMemoryTaskProbe"),
-    .testTarget(name: "TarwinMMHostedTests", dependencies: ["TarwinMMHosted", "HostedMemoryTaskProbe"]),
+    .testTarget(name: "TarwinMMHostedTests", dependencies: [
+      "TarwinMMHosted",
+      .product(name: "tarwin-task", package: "tarwin-task"),
+    ]),
   ]
 )
