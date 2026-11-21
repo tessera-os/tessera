@@ -7,13 +7,16 @@ compiler=${SWIFTC:-swiftc}
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
 for target in aarch64-none-none-elf x86_64-unknown-none-elf riscv64-none-none-eabi; do
-  if [ "$(basename "$package")" = tarwin-device ]; then
-    for dep in tarwin-object:TarwinObject tarwin-syscall:TarwinSyscall; do
-      name=${dep#*:}
-      "$compiler" -target "$target" -enable-experimental-feature Embedded -O -wmo -parse-as-library -emit-module \
-        -module-name "$name" "$here/../${dep%:*}/Sources/$name"/*.swift -emit-module-path "$out/$name.swiftmodule"
-    done
-  fi
+  case "$(basename "$package")" in
+    tarwin-device) deps="tarwin-object:TarwinObject tarwin-syscall:TarwinSyscall" ;;
+    trfs) deps="kcore:KCore tarwin-mm:TarwinMM" ;;
+    *) deps="" ;;
+  esac
+  for dep in $deps; do
+    name=${dep#*:}
+    "$compiler" -I "$out" -target "$target" -enable-experimental-feature Embedded -O -wmo -parse-as-library -emit-module \
+      -module-name "$name" "$here/../${dep%:*}/Sources/$name"/*.swift -emit-module-path "$out/$name.swiftmodule"
+  done
   "$compiler" -I "$out" -target "$target" -enable-experimental-feature Embedded -O -wmo -parse-as-library -emit-object \
     -module-name TarwinIO "$package"/Sources/*/*.swift -o "$out/$target.o"
   if [ "$(basename "$package")" = tarwin-device ]; then
