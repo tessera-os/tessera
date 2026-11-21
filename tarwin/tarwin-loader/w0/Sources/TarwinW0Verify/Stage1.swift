@@ -25,7 +25,8 @@ public func authorizeQEMUStage1(
   hashes: UnsafeMutableBufferPointer<BlakeCv>, polynomials: UnsafeMutableBufferPointer<Int32>,
   message: UnsafeMutableRawBufferPointer
 ) -> W1BootSet? {
-  verifyStage1(
+  guard contract.isW1ProcessCurrent else { return nil }
+  return verifyStage1(
     archive: archive, signature: signature, enrollment: enrollment,
     systemEnrollment: systemEnrollment, policy: policy, initEntryTag: 0x4d3e_7643,
     contract: contract, hashes: hashes, polynomials: polynomials, message: message)

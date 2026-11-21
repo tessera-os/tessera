@@ -53,6 +53,9 @@ be installed independently. Do not copy any from the archive or assume a
 platform-dependent symbol RVA or a fixed load address. The verifier requires
 the AArch64 process-entry tag from Tarwin §11.2 (`0x4d3e7643`); callers
 cannot substitute the W0 handoff tag or an interoperability fixture's tag.
+The installed contract must also match the published 26.11.1
+`LibTessera.processCurrent` freeze. Matching the unsigned freeze proves
+compatibility only: it does not supply a signing identity or enrollment.
 
 The accepted TIRA has four disjoint, uncompressed, hash-verified members:
 `boot.json`, `kernel`, `tessera.init` and `LibTessera`. Each native image has

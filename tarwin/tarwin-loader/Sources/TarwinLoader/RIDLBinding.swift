@@ -20,6 +20,22 @@ public struct EarlyRIDLContract {
     self.textSHA256 = textSHA256
     self.typeTag = typeTag
   }
+
+  /// Equality with the published 26.11.1 first-call ABI, not a trust decision
+  /// about the source of this contract or either image.
+  public var isW1ProcessCurrent: Bool {
+    let name: StaticString = "_RIDL110LibTessera14processCurrentF_v6f1b36cbca464ed8"
+    func word(_ bytes: UnsafeRawBufferPointer, _ offset: Int) -> UInt64 {
+      UInt64(bigEndian: bytes.loadUnaligned(fromByteOffset: offset, as: UInt64.self))
+    }
+    return typeTag == 0x8b65_40d3 && uuid.count == 16 && textSHA256.count == 32
+      && bytesMatch(symbol, .init(start: name.utf8Start, count: name.utf8CodeUnitCount))
+      && word(uuid, 0) == 0x6f1b_36cb_ca46_4ed8 && word(uuid, 8) == 0x9885_486f_ccf2_a255
+      && word(textSHA256, 0) == 0x9550_fe8c_d1b4_1327
+      && word(textSHA256, 8) == 0x7580_27c1_2678_b58f
+      && word(textSHA256, 16) == 0x41f1_8a72_fe26_29b3
+      && word(textSHA256, 24) == 0x43cc_20c8_80ef_71bc
+  }
 }
 
 extension ELFReader {
@@ -112,12 +128,22 @@ public func inspectEarlyRIDLBinding(
     let (caller, dir, section) = parsedSigningCandidate(
       executable, machine: machine,
       addressLimit: addressLimit, finalized: false, requiresEntry: true, scratch: scratch),
-    let ep = caller.notes.profile, executable[ep.lowerBound] == 1,
-    executable[ep.lowerBound + 1] == 0,
-    dir[.imports].count == 1,
     let lib = inspectSigningCandidate(
       framework, machine: machine, addressLimit: addressLimit,
-      finalized: false, requiresEntry: false, scratch: scratch), lib.entry == 0,
+      finalized: false, requiresEntry: false, scratch: scratch)
+  else { return nil }
+  return checkedRIDLBinding(
+    executable: executable, framework: framework, caller: caller,
+    dir: dir, section: section, lib: lib, machine: machine, contract: contract)
+}
+
+func checkedRIDLBinding(
+  executable: UnsafeRawBufferPointer, framework: UnsafeRawBufferPointer, caller: InspectedImage,
+  dir: LoaderDirectory, section: Range<Int>, lib: InspectedImage, machine: UInt16,
+  contract: EarlyRIDLContract?
+) -> NativeFunctionBinding? {
+  guard let ep = caller.notes.profile, executable[ep.lowerBound] == 1,
+    executable[ep.lowerBound + 1] == 0, dir[.imports].count == 1, lib.entry == 0,
     let fp = lib.notes.profile, framework[fp.lowerBound] == 1, framework[fp.lowerBound + 1] == 1
   else { return nil }
   let imp = dir[.imports].bytes

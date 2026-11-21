@@ -147,6 +147,19 @@ public func inspectUnsignedArtifact(
   finalized: Bool, requiresEntry: Bool, scratch: UnsafeMutableBufferPointer<BlakeCv>
 ) -> UnsignedArtifact? {
   guard
+    let (image, directory, section, root) = parsedUnsignedArtifact(
+      bytes, machine: machine,
+      addressLimit: addressLimit, finalized: finalized, requiresEntry: requiresEntry,
+      scratch: scratch)
+  else { return nil }
+  return UnsignedArtifact(buildID: root, notes: image.notes, records: directory, section: section)
+}
+
+func parsedUnsignedArtifact(
+  _ bytes: UnsafeRawBufferPointer, machine: UInt16, addressLimit: UInt64,
+  finalized: Bool, requiresEntry: Bool, scratch: UnsafeMutableBufferPointer<BlakeCv>
+) -> (InspectedImage, LoaderDirectory, Range<Int>, BlakeCv)? {
+  guard
     let image = inspectLayout(
       bytes, target: machine, addressLimit: addressLimit,
       finalized: finalized, requiresEntry: requiresEntry, requiresLoaderRecords: true),
@@ -156,7 +169,7 @@ public func inspectUnsignedArtifact(
       bytes, image: image, machine: machine, addressLimit: addressLimit, finalized: finalized,
       root: root)
   else { return nil }
-  return UnsignedArtifact(buildID: root, notes: image.notes, records: parsed.0, section: parsed.1)
+  return (image, parsed.0, parsed.1, root)
 }
 
 func validatedMetadata(
