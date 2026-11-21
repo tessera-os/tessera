@@ -40,10 +40,13 @@ let package = Package(
         .product(name: "TarwinArchAarch64", package: "tarwin-arch-aarch64"),
         .product(name: "TarwinBoot", package: "tarwin-boot"),
         .product(name: "TarwinW0Verify", package: "w0"),
+        .product(name: "TarwinLoader", package: "tarwin-loader"),
         .product(name: "TarwinMM", package: "tarwin-mm"),
       ]),
     .testTarget(name: "TarwinW1BootstrapTests", dependencies: [
       "TarwinW1Bootstrap", .product(name: "TarwinLoader", package: "tarwin-loader"),
+      .product(name: "TarwinArchAarch64", package: "tarwin-arch-aarch64"),
+      .product(name: "Tarboot", package: "tarboot"), .product(name: "KCore", package: "kcore"),
       .product(name: "TarwinMM", package: "tarwin-mm"),
     ]),
   ])
