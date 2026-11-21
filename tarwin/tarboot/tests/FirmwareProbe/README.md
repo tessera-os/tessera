@@ -209,6 +209,23 @@ from swtpm and checks that kernel RNG initialization refuses the absent
 generation. The host requires the post-exit serial marker. This negative
 probe does not supply an epoch, an ASLR draw or permission to launch W1.
 
+### Detached W1 evidence after EFI exit (debug QEMU only)
+
+Add `TARBOOT_TEST_W1_EVIDENCE=1` to the generation/FIFO test. After EFI
+exit the guest rejects the wrong archive PA, then copies the exact bytes of
+an inert fw_cfg file once, without overwriting the adjacent sentinel. In
+the absence of independent trust inputs, verification refuses it. No image
+is staged and this mode never enters a process.
+
+For a provisioned debug launcher the transport is
+`-fw_cfg name=opt/org.tessera/tarwin/w1.sig,file=BOOT.SIG`.
+This carries only the detached TSG1; it does not carry keys, pins, policy,
+SDK, a pointer or a verified bit. Keep the original TBIB archive pinned and
+immutable, with no DMA aliases. Copy into private storage, supply separately
+installed trust inputs and verify the snapshot with `authorizeQEMUStage1`
+before staging. A successful copy is not authorization. The W0 kernel
+self-test does not currently call this launcher.
+
 ### Debug VMGenID restore
 
 Stock QEMU 11.1.3 does not register VMGenID on ARM virt. The optional

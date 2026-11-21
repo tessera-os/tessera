@@ -61,6 +61,12 @@ for isa in "${@:-all}"; do
                       "$root/tarwin-security/random/Sources/TarwinKernelRandom"
                       "$composition/Sources/TarwinW1Generation")
         fi
+        if [[ ${TARBOOT_TEST_W1_EVIDENCE:-0} == 1 ]]; then
+            [[ ${TARBOOT_TEST_GENERATION:-0} == 1 && ${TARBOOT_ENTER_W0:-0} == 0 ]] || exit 2
+            modules+=("$root/tarwin-loader/w0/Sources/TarwinW0Verify")
+            flags+=(-D TARBOOT_TEST_W1_EVIDENCE)
+            entry_source+=("$composition/Sources/TarwinW1Bootstrap/QEMUReverification.swift" "$here/W1EvidenceProbe.swift")
+        fi
         if [[ ${TARBOOT_TEST_PSCI:-0} == 1 ]]; then
             [[ $arch == aarch64 && ${TARBOOT_TEST_CPU:-0} == 1 && ${TARBOOT_TEST_SMP_TABLES:-0} == 1 ]] || exit 2
             flags+=(-D TARBOOT_TEST_PSCI)

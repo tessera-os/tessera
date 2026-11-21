@@ -6,15 +6,7 @@
     import TarwinKernelRandom
     import TarwinRandomCore
 
-    @_extern(c, "tarwin_mmio_write16") private func write16(_ p: UnsafeRawPointer, _ v: UInt16)
     @_extern(c, "tarwin_mmio_write32") private func write32(_ p: UnsafeRawPointer, _ v: UInt32)
-
-    // QEMU virt diagnostic bindings only: fw-cfg@9020000 and pl011@9000000.
-    private struct VirtConfig: QEMUConfigReader {
-      let base = UnsafeRawPointer(bitPattern: 0x0902_0000)!
-      mutating func select(_ key: UInt16) { write16(base + 8, key.bigEndian) }
-      mutating func readByte() -> UInt8 { read8(base) }
-    }
 
     @inline(never) private func refusesRandom(_ seed: UnsafeRawBufferPointer,
       _ sample: UnsafeRawBufferPointer, _ generation: RandomEpoch?) -> Bool {
@@ -35,6 +27,9 @@
       }
       return true
     }
+    #if TARBOOT_TEST_W1_EVIDENCE
+    func emitW1Refusal() -> Bool { emit("TARWIN-W1-EVIDENCE-COPIED-UNAUTHORIZED\r\n") }
+    #endif
     #if TARBOOT_TEST_RESTORE
     import TarwinW1Generation
     @_extern(c, "tarwin_mmio_read64") private func read64(_ p: UnsafeRawPointer) -> UInt64
@@ -44,7 +39,7 @@
     }
     #endif
     func exerciseGeneration(bootSeed: UnsafeRawBufferPointer, regions: UnsafeBufferPointer<FirmwareRegion>) -> Bool {
-      var cfg = VirtConfig()
+      var cfg = QEMUVirtConfig(mapped: UnsafeRawPointer(bitPattern: 0x0902_0000)!)
       guard bootSeed.count == 64 else { return false }
       #if TARBOOT_TEST_RESTORE
       guard let source = W1GenerationSource(policy: .rotatingDevice, reader: &cfg,

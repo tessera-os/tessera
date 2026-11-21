@@ -49,6 +49,7 @@ let package = Package(
     .target(
       name: "TarwinW1Bootstrap", dependencies: [
         "TarwinW1Generation",
+        .product(name: "Tarboot", package: "tarboot"),
         .product(name: "TarwinChannelCalls", package: "channel-calls"),
         .product(name: "TarwinABI", package: "tarwin-syscall"),
         .product(name: "TarwinArmBootstrap", package: "first-entry"),

@@ -264,6 +264,12 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
           guard exerciseGeneration(bootSeed: .init(start: p + 96, count: 64),
             regions: .init(rebasing: buffer[..<n])) else { return false }
         #endif
+        #if TARBOOT_TEST_W1_EVIDENCE
+          guard exerciseW1Evidence(block: .init(start: p, count: 4096), at: storage.base,
+            map: .init(start: p + 4096, count: Int(storage.length) - 4096),
+            archive: .init(start: archiveBase, count: size), at: archive.base),
+            emitW1Refusal() else { return false }
+        #endif
       #endif
       #if TARBOOT_ENTER_W0
         cleanRange(owned.base, owned.base + owned.length)

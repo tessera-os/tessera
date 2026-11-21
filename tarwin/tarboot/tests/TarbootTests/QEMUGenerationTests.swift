@@ -1,17 +1,24 @@
 @testable import Tarboot
 import Testing
 
-private struct Config: QEMUConfigReader {
+private struct Config: QEMUFileReader {
   let directory: [UInt8]
   var signature = Array("QEMU".utf8)
   var files: [UInt16: [UInt8]] = [:]
   var selected: UInt16 = .max
   var offset = 0
+  var copies = 0
   mutating func select(_ key: UInt16) { selected = key; offset = 0 }
   mutating func readByte() -> UInt8 {
     let data = selected == 0 ? signature : (selected == 0x19 ? directory : files[selected] ?? [])
     defer { offset += 1 }
     return offset < data.count ? data[offset] : 0
+  }
+  mutating func readSelected(into output: UnsafeMutableRawBufferPointer) -> Int {
+    copies += 1
+    let n = min(output.count, files[selected]?.count ?? 0)
+    for i in 0..<n { output[i] = readByte() }
+    return n
   }
 }
 
@@ -19,6 +26,36 @@ private func entry(_ name: String, _ size: UInt16, _ key: UInt8) -> [UInt8] {
     let n = Array(name.utf8)
     return [0, 0, UInt8(size >> 8), UInt8(truncatingIfNeeded: size), 0, key, 0, 0]
       + n + Array(repeating: 0, count: 56 - n.count)
+}
+
+@Test func payloadCopyRequiresAnUnambiguousDirectoryAndExactTransfer() {
+  let name: StaticString = "opt/org.tessera/tarwin/w1.sig"
+  let file = entry(name.description, 7, 47)
+  let data: [UInt8] = [0, 2, 3, 4, 5, 6, 0]
+  func check(_ entries: [[UInt8]], _ payload: [UInt8], _ capacity: Int = 8)
+    -> (length: Int?, copies: Int, bytes: [UInt8]) {
+    var reader = Config(directory: [0, 0, 0, UInt8(entries.count)] + entries.flatMap { $0 },
+      files: [47: payload])
+    var bytes = [UInt8](repeating: 0xcc, count: capacity)
+    let length = bytes.withUnsafeMutableBytes {
+      copyQEMUFile(&reader, named: name, sizes: 1...65536, into: $0)?.count
+    }
+    return (length, reader.copies, bytes)
+  }
+  let ok = check([file], data)
+  #expect(ok.length == data.count && ok.copies == 1 && ok.bytes == data + [0xcc])
+  let short = check([file], Array(data.dropLast()))
+  #expect(short.length == nil && short.copies == 1 && short.bytes.last == 0xcc)
+  var oversized = file
+  oversized[1] = 1
+  for directory in [[entry("etc/other", 7, 47)], [file, entry(name.description, 7, 48)],
+    [file, entry("etc/alias", 7, 47)], [file, entry("etc/invalid", 1, 2)],
+    [entry(name.description, 0, 47)], [oversized]] {
+    let result = check(directory, data, 65544)
+    #expect(result.length == nil && result.copies == 0)
+  }
+  let small = check([file], data, 6)
+  #expect(small.length == nil && small.copies == 0)
 }
 @Test func catalogueCannotSupplyAnEpochOrPartiallyAdvertiseTheDevice() {
   let addr = entry("etc/vmgenid_addr", 8, 32)

@@ -128,8 +128,10 @@ func check() throws {
   let generationArgs = restore ? ["-device", "vmgenid,x-rotate-on-load=on", "-blockdev",
     "driver=file,filename=" + d + "/state.qcow2,node-name=statefile", "-blockdev",
     "driver=qcow2,file=statefile,node-name=state"] : []
+  let evidence = ProcessInfo.processInfo.environment["TARBOOT_TEST_W1_EVIDENCE"] == "1"
+  let evidenceArgs = evidence ? ["-fw_cfg", "name=opt/org.tessera/tarwin/w1.sig,string=not-a-signature"] : []
   process.arguments =
-    ["qemu-system-" + a] + machine + tpmArgs + displayArgs + rngArgs + generationArgs + [
+    ["qemu-system-" + a] + machine + tpmArgs + displayArgs + rngArgs + generationArgs + evidenceArgs + [
       "-m", "512", "-smp", multiple ? "4" : "1", "-display", "none", "-rtc", "base=utc",
       "-serial", "file:" + serial, "-monitor", "none", "-qmp", "stdio", "-nic", "none",
       "-drive", "if=pflash,format=raw,readonly=on,file=" + code, "-drive",
@@ -247,6 +249,11 @@ func check() throws {
     throw Failure("\(a): guest did not shut down normally")
   }
   let uart = try Data(contentsOf: URL(fileURLWithPath: serial))
+  if evidence {
+    guard uart.range(of: Data("TARWIN-W1-EVIDENCE-COPIED-UNAUTHORIZED".utf8)) != nil
+    else { throw Failure("missing post-exit W1 evidence refusal") }
+    print("\(a): copied the untrusted fw_cfg payload after EFI exit; wrong archive and absent W1 authority refused")
+  }
   guard !denied else { throw Failure("no explicit unsigned boot rejection") }
   if let cpuCheck,cpuCheck != "0" {
     let expected = a == "aarch64" ? (cpuCheck=="refusal" ? "TARWIN-CPU-AARCH64-INSUFFICIENT" : "TARWIN-CPU-AARCH64-BASE-EL2") :
