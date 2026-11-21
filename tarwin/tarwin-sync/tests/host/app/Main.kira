@@ -1,0 +1,17 @@
+import TarwinSync
+
+@Main
+function main() -> Int {
+    let source = WaitAddress { frame: U64(18), offset: U32(4) }
+    let dest = WaitAddress { frame: U64(25), offset: U32(8) }
+    let wrong = WaitAddress { frame: U64(19), offset: U32(4) }
+    var wait = AddressWait { key: WaitAddress { frame: U64(0), offset: U32(0) }, queued: false, owner: U64(0) }
+    if source.valid(U32(4096), U32(8)) { return 1 }
+    if wait.arm(source, U32(4096), U32(4), U64(5), U64(6), U64(9)) { return 2 }
+    if !wait.arm(source, U32(4096), U32(4), U64(5), U64(5), U64(9)) { return 3 }
+    if wait.arm(source, U32(4096), U32(4), U64(5), U64(5), U64(9)) { return 4 }
+    if wait.remove(wrong) || wait.requeue(wrong, dest, U32(4096), U32(4), U64(8)) { return 5 }
+    if !wait.requeue(source, dest, U32(4096), U32(4), U64(8)) || wait.owner != U64(8) { return 6 }
+    if wait.remove(source) || !wait.remove(dest) || wait.owner != U64(0) || wait.remove(dest) { return 7 }
+    return 0
+}

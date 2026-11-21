@@ -1,0 +1,25 @@
+// The arch entry provider supplies the address of the instruction, not its
+// return PC. VM supplies the verified executable mapping (not the image span).
+public function syscallOriginAllowed(instruction: U64, width: U64, start: U64, end: U64) -> Bool {
+    if width != U64(2) && width != U64(4) { return false }
+    if start >= end || instruction < start || instruction >= end { return false }
+    return width <= end - instruction
+}
+
+// Number of user-copy bytes required by Appendix A.3. registerCount is
+// trusted arch metadata, slots is the trusted signature, never user input.
+public function syscallTailBytes(slots: U32, registerCount: U32) -> U64 {
+    if slots <= registerCount { return U64(0) }
+    return (U64(slots) - U64(registerCount) + U64(1)) * U64(8)
+}
+
+public function syscallTailInRange(address: U64, bytes: U64, first: U64, end: U64) -> Bool {
+    if bytes == U64(0) || (bytes & U64(7)) != U64(0) { return false }
+    if (address & U64(7)) != U64(0) || address < first || address >= end { return false }
+    return bytes <= end - address
+}
+
+public function syscallStatus(code: U32, subsystem: U16) -> U64 {
+    if code == U32(0) { return U64(0) }
+    return U64(code) | (U64(subsystem) << U64(32))
+}

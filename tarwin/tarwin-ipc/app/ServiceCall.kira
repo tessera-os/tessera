@@ -1,0 +1,59 @@
+public enum ServiceState {
+    Waiting
+    Serving
+    Replied
+    TimedOut
+    PeerClosed
+    Cancelled
+}
+
+// Owned by the service's transaction table, never shared with users. The
+// table holds the channel's lock across each transition. Only its winner
+// completes the caller and releases any donated scheduling context.
+public struct ServiceCall {
+    let transaction: U64
+    let deadline: U64
+    let context: U64
+    var server: U64
+    var state: ServiceState
+
+    function live(borrow self) -> Bool { return state == .Waiting || state == .Serving }
+
+    function expire(borrow mut self, now: U64) -> Bool {
+        if !live() || deadline == U64(0xffffffffffffffff) || now < deadline { return false }
+        state = .TimedOut
+        return true
+    }
+
+    function receive(borrow mut self, worker: U64, now: U64) -> Bool {
+        if state != .Waiting || worker == U64(0) || expire(now) { return false }
+        server = worker
+        state = .Serving
+        return true
+    }
+
+    function reply(borrow mut self, txid: U64, worker: U64, now: U64) -> Bool {
+        if state != .Serving || transaction != txid || server != worker || expire(now) { return false }
+        state = .Replied
+        return true
+    }
+
+    function cancel(borrow mut self, peerDied: Bool) -> Bool {
+        if !live() { return false }
+        if peerDied { state = .PeerClosed } else { state = .Cancelled }
+        return true
+    }
+
+    function donatedTo(borrow self, worker: U64) -> U64 {
+        if state == .Serving && server == worker { return context }
+        return U64(0)
+    }
+}
+
+public function inlineCall(bytes: U32, handles: U32) -> Bool {
+    return bytes <= U32(128) && handles <= U32(4)
+}
+
+public function channelMessageFits(bytes: U64, handles: U64) -> Bool {
+    return bytes <= U64(65536) && handles <= U64(64)
+}

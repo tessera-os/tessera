@@ -1,0 +1,83 @@
+public namespace ElfMachine {
+    let aarch64: U16 = 183
+    let x64: U16 = 62
+    let rv64: U16 = 243
+}
+
+public function imagePage(machine: U16) -> U64 {
+    if machine == ElfMachine.aarch64 { return U64(16384) }
+    if machine == ElfMachine.x64 || machine == ElfMachine.rv64 { return U64(4096) }
+    return U64(0)
+}
+
+public function imageContains(size: U64, offset: U64, length: U64) -> Bool {
+    return offset <= size && length <= size - offset
+}
+
+// The ELF reader supplies little-endian fields, not host-native pointers.
+// No segment is mapped until the entire image, records and signature pass.
+public struct ImageHeader {
+    let magic: U32
+    let wordClass: U8
+    let encoding: U8
+    let identVersion: U8
+    let version: U32
+    let kind: U16
+    let machine: U16
+    let headerBytes: U16
+    let programOffset: U64
+    let entryBytes: U16
+    let count: U16
+
+    function accepts(borrow self, target: U16, bytes: U64) -> Bool {
+        if magic != U32(0x464c457f) || wordClass != U8(2) || encoding != U8(1) { return false }
+        if identVersion != U8(1) || version != U32(1) || kind != U16(3) { return false }
+        if machine != target || imagePage(machine) == U64(0) { return false }
+        if headerBytes != U16(64) || entryBytes != U16(56) || count == U16(0) { return false }
+        if programOffset < U64(headerBytes) || (programOffset & U64(7)) != U64(0) { return false }
+        return imageContains(bytes, programOffset, U64(count) * U64(entryBytes))
+    }
+}
+
+public struct LoadSegment {
+    let fileOffset: U64
+    let fileBytes: U64
+    let virtualAddress: U64
+    let memoryBytes: U64
+    let alignment: U64
+    let flags: U32
+
+    function valid(borrow self, machine: U16, fileSize: U64, addressLimit: U64) -> Bool {
+        let page = imagePage(machine)
+        if page == U64(0) || alignment < page || (alignment & (alignment - U64(1))) != U64(0) { return false }
+        if (virtualAddress % alignment) != (fileOffset % alignment) { return false }
+        if (flags & U32(3)) == U32(3) || fileBytes > memoryBytes { return false }
+        return imageContains(fileSize, fileOffset, fileBytes) && imageContains(addressLimit, virtualAddress, memoryBytes)
+    }
+}
+
+// Validate PT_LOAD in program-header order (ELF requires ascending virtual
+// addresses). Never allow distinct segments to share a protection page.
+public struct LoadOrder {
+    var afterLastPage: U64
+    var seen: Bool
+
+    function append(borrow mut self, segment: borrow LoadSegment, machine: U16, fileSize: U64,
+                    addressLimit: U64) -> Bool {
+        if !segment.valid(machine, fileSize, addressLimit) { return false }
+        if segment.memoryBytes == U64(0) { return true }
+        if seen && segment.virtualAddress < afterLastPage { return false }
+        let end = segment.virtualAddress + segment.memoryBytes
+        let page = imagePage(machine)
+        let pad = (page - end % page) % page
+        if pad > addressLimit - end { return false }
+        afterLastPage = end + pad
+        seen = true
+        return true
+    }
+}
+
+public function forbiddenProgramHeader(kind: U32) -> Bool {
+    // PT_DYNAMIC and PT_INTERP.
+    return kind == U32(2) || kind == U32(3)
+}

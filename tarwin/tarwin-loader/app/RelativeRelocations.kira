@@ -1,0 +1,52 @@
+// Decode one RELR table. An even word selects an explicit 8-byte slot;
+// an odd word selects a bitmap of the next 63 slots. Each accepted word
+// exposes pending offsets one at a time, in order, without allocating.
+// Callers still check every slot is in a relocatable non-code segment.
+public struct RelativeCursor {
+    var anchorSeen: Bool
+    var nextBase: U64
+    var bits: U64
+    var at: U64
+    let imageSize: U64
+
+    function accept(borrow mut self, word: U64) -> Bool {
+        if bits != U64(0) { return false }
+        if (word & U64(1)) == U64(0) {
+            if (word & U64(7)) != U64(0) || !imageContains(imageSize, word, U64(8)) { return false }
+            if anchorSeen && word < nextBase { return false }
+            at = word
+            bits = U64(1)
+            nextBase = word + U64(8)
+            anchorSeen = true
+            return true
+        }
+        if !anchorSeen || nextBase > U64(0xfffffffffffffe07) { return false }
+        let selected = word >> U64(1)
+        // A final sparse bitmap may extend beyond the image in unset bits.
+        if selected != U64(0) {
+            var high = selected
+            var extent: U64 = 8
+            while high > U64(1) { high = high >> U64(1)
+                extent += U64(8)
+            }
+            if !imageContains(imageSize, nextBase, extent) { return false }
+        }
+        at = nextBase
+        bits = selected
+        nextBase += U64(504)
+        return true
+    }
+
+    // Valid only while bits != 0. The sentinel cannot be an aligned slot.
+    function take(borrow mut self) -> U64 {
+        if bits == U64(0) { return U64(0xffffffffffffffff) }
+        while (bits & U64(1)) == U64(0) {
+            bits = bits >> U64(1)
+            at += U64(8)
+        }
+        let slot = at
+        at += U64(8)
+        bits = bits >> U64(1)
+        return slot
+    }
+}

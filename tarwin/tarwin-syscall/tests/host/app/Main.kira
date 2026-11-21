@@ -1,0 +1,18 @@
+import TarwinSyscall
+
+@Main
+function main() -> Int {
+    if !syscallOriginAllowed(U64(124), U64(4), U64(100), U64(128)) { return 1 }
+    if syscallOriginAllowed(U64(126), U64(4), U64(100), U64(128)) { return 2 }
+    if syscallOriginAllowed(U64(98), U64(2), U64(100), U64(128)) { return 3 }
+    if syscallTailBytes(U32(6), U32(6)) != U64(0) { return 4 }
+    if syscallTailBytes(U32(7), U32(6)) != U64(16) { return 5 }
+    if syscallTailBytes(U32(9), U32(8)) != U64(16) { return 6 }
+    if syscallTailBytes(U32(9), U32(7)) != U64(24) { return 7 }
+    if !syscallTailInRange(U64(112), U64(16), U64(100), U64(128)) { return 8 }
+    if syscallTailInRange(U64(113), U64(8), U64(100), U64(128)) { return 9 }
+    if syscallTailInRange(U64(120), U64(16), U64(100), U64(128)) { return 10 }
+    if syscallStatus(U32(0), U16(9)) != U64(0) { return 11 }
+    if syscallStatus(U32(4), U16(1)) != U64(0x100000004) { return 12 }
+    return 0
+}

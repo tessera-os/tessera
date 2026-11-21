@@ -1,0 +1,67 @@
+public namespace SchedClass {
+    let idle: U8 = 0
+    let background: U8 = 1
+    let utility: U8 = 2
+    let normal: U8 = 3
+    let initiated: U8 = 4
+    let interactive: U8 = 5
+    let deadline: U8 = 6
+}
+
+public struct DispatchKey {
+    let qos: U8
+    let readySince: U64
+    let virtualStart: U64
+    let virtualDeadline: U64
+    let classVirtualTime: U64
+    let absoluteDeadline: U64
+    let remainingBudget: U64
+    let threadId: U64
+
+    function effective(borrow self) -> U8 {
+        if qos == SchedClass.deadline && remainingBudget == U64(0) { return SchedClass.interactive }
+        return qos
+    }
+
+    function starvationWait(borrow self, now: U64) -> U64 {
+        var bound: U64 = 0
+        if qos == SchedClass.normal { bound = U64(100000000) }
+        if qos == SchedClass.utility { bound = U64(250000000) }
+        if qos == SchedClass.background { bound = U64(1000000000) }
+        if bound == U64(0) || now < readySince || now - readySince < bound { return U64(0) }
+        // Oldest violated bound first. Nonzero includes an exact-bound wait.
+        return now - readySince - bound + U64(1)
+    }
+}
+
+// Strict ordering on runnable candidates on one CPU. The selected thread's
+// readySince resets after its quantum. Class clocks come from the run queue.
+public function dispatchBefore(a: borrow DispatchKey, b: borrow DispatchKey, now: U64) -> Bool {
+    let aq = a.effective()
+    let bq = b.effective()
+    if aq == SchedClass.deadline || bq == SchedClass.deadline {
+        if aq != bq { return aq == SchedClass.deadline }
+        if a.absoluteDeadline != b.absoluteDeadline { return a.absoluteDeadline < b.absoluteDeadline }
+        return a.threadId < b.threadId
+    }
+    let aw = a.starvationWait(now)
+    let bw = b.starvationWait(now)
+    if aw != bw { return aw > bw }
+    if aq != bq { return aq > bq }
+    let ae = a.virtualStart <= a.classVirtualTime
+    let be = b.virtualStart <= b.classVirtualTime
+    if ae != be { return ae }
+    // If no one is eligible, advance to the first candidate's start.
+    if !ae && a.virtualStart != b.virtualStart { return a.virtualStart < b.virtualStart }
+    if a.virtualDeadline != b.virtualDeadline { return a.virtualDeadline < b.virtualDeadline }
+    return a.threadId < b.threadId
+}
+
+// Nanoseconds charged in a single 1–20 ms request, scaled by base weight 17.
+// Relative priorities −16…15 map monotonically to weights 1…32.
+public function virtualSlice(sliceNs: U64, relativePriority: Int) -> U64 {
+    if sliceNs < U64(1000000) || sliceNs > U64(20000000) { return U64(0) }
+    if relativePriority < -16 || relativePriority > 15 { return U64(0) }
+    let weight = U64(relativePriority + 17)
+    return (sliceNs * U64(17) + weight - U64(1)) / weight
+}

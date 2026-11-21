@@ -1,0 +1,57 @@
+public struct WaitAddress {
+    var frame: U64
+    var offset: U32
+
+    // width isn't part of the wake key: Sync.wake takes only an address.
+    function same(borrow self, other: borrow WaitAddress) -> Bool {
+        return frame == other.frame && offset == other.offset
+    }
+
+    // Validate after translating and pinning the shared physical page.
+    function valid(borrow self, pageBytes: U32, width: U32) -> Bool {
+        if pageBytes != U32(4096) && pageBytes != U32(16384) { return false }
+        if width != U32(4) && width != U32(8) { return false }
+        return offset <= pageBytes - width && (offset & (width - U32(1))) == U32(0)
+    }
+
+    function bucketHash(borrow self) -> U64 {
+        return frame ^ (frame >> U64(29)) ^ (U64(offset) << U64(11)) ^ (frame << U64(17))
+    }
+}
+
+// One intrusive wait record. The hash bucket lock serializes register,
+// requeue, wake, timeout and cancellation, including the final word load.
+// The scheduler owns the block/wake transition and inherited context.
+public struct AddressWait {
+    var key: WaitAddress
+    var queued: Bool
+    var owner: U64
+
+    function arm(borrow mut self, target: borrow WaitAddress, pageBytes: U32, width: U32,
+                 observed: U64, expected: U64, ownerId: U64) -> Bool {
+        if queued || !target.valid(pageBytes, width) || observed != expected { return false }
+        if width == U32(4) && (observed >> U64(32)) != U64(0) { return false }
+        key.frame = target.frame
+        key.offset = target.offset
+        owner = ownerId
+        queued = true
+        return true
+    }
+
+    function remove(borrow mut self, from: borrow WaitAddress) -> Bool {
+        if !queued || !key.same(from) { return false }
+        queued = false
+        owner = U64(0)
+        return true
+    }
+
+    // Caller holds both bucket locks in increasing index order.
+    function requeue(borrow mut self, from: borrow WaitAddress, to: borrow WaitAddress,
+                     pageBytes: U32, width: U32, newOwner: U64) -> Bool {
+        if !queued || !key.same(from) || !to.valid(pageBytes, width) { return false }
+        key.frame = to.frame
+        key.offset = to.offset
+        owner = newOwner
+        return true
+    }
+}

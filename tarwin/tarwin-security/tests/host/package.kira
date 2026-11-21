@@ -1,0 +1,4 @@
+construct SecurityCases extends Package {
+    let kind: PackageKind = .App
+    let dependencies: [Dependency] = [Dependency { name: "TarwinSecurity", path: "../.." }]
+}

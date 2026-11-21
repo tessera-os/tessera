@@ -1,0 +1,36 @@
+import TarwinLoader
+
+function segment(addr: U64, flags: U32, bytes: U64) -> LoadSegment {
+    return LoadSegment { fileOffset: U64(0), fileBytes: U64(64), virtualAddress: addr,
+        memoryBytes: bytes, alignment: U64(4096), flags: flags }
+}
+
+@Main
+function main() -> Int {
+    let hdr = ImageHeader { magic: U32(0x464c457f), wordClass: U8(2), encoding: U8(1),
+        identVersion: U8(1), version: U32(1), kind: U16(3), machine: ElfMachine.rv64,
+        headerBytes: U16(64), programOffset: U64(64), entryBytes: U16(56), count: U16(2) }
+    if !hdr.accepts(ElfMachine.rv64, U64(176)) || hdr.accepts(ElfMachine.rv64, U64(175)) { return 1 }
+    if hdr.accepts(ElfMachine.x64, U64(176)) { return 2 }
+    if imageContains(U64(18446744073709551615), U64(18446744073709551608), U64(8)) { return 3 }
+    let text = segment(U64(4096), U32(5), U64(4097))
+    let data = segment(U64(12288), U32(6), U64(4096))
+    let overlap = segment(U64(8192), U32(6), U64(4096))
+    let wx = segment(U64(4096), U32(7), U64(4096))
+    let short = segment(U64(4096), U32(4), U64(63))
+    if text.valid(ElfMachine.aarch64, U64(64), U64(65536)) { return 4 }
+    if wx.valid(ElfMachine.rv64, U64(64), U64(65536)) || short.valid(ElfMachine.rv64, U64(64), U64(65536)) { return 5 }
+    var order = LoadOrder { seen: false, afterLastPage: U64(0) }
+    if !order.append(text, ElfMachine.rv64, U64(64), U64(65536)) { return 6 }
+    if order.append(overlap, ElfMachine.rv64, U64(64), U64(65536)) { return 7 }
+    if !order.append(data, ElfMachine.rv64, U64(64), U64(65536)) { return 8 }
+    if !forbiddenProgramHeader(U32(3)) || !forbiddenProgramHeader(U32(2)) { return 9 }
+    var relr = RelativeCursor { anchorSeen: false, nextBase: U64(0), bits: U64(0), at: U64(0), imageSize: U64(4096) }
+    if relr.accept(U64(3)) || relr.accept(U64(6)) { return 10 }
+    if !relr.accept(U64(8)) || relr.accept(U64(3)) || relr.take() != U64(8) { return 11 }
+    if !relr.accept(U64(11)) || relr.take() != U64(16) || relr.take() != U64(32) { return 12 }
+    if relr.take() != U64(0xffffffffffffffff) || relr.accept(U64(8)) { return 13 }
+    if !relr.accept(U64(4080)) || relr.take() != U64(4080) { return 14 }
+    if relr.accept(U64(5)) || !relr.accept(U64(3)) || relr.take() != U64(4088) { return 15 }
+    return 0
+}

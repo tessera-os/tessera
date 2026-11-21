@@ -1,0 +1,41 @@
+// Protected by the port lock. Reserve storage before accepting an operation
+// so a completion (including cancellation) never needs to allocate. The
+// shared completion ring has its own space; do not recycle the credit until
+// the record is published there or dequeued directly.
+public struct PortCredits {
+    let capacity: U32
+    var pending: U32
+    var available: U32
+
+    function free(borrow self) -> U32 {
+        if capacity > U32(65536) || pending > capacity || available >= capacity - pending { return U32(0) }
+        return capacity - pending - available
+    }
+
+    function reserve(borrow mut self) -> Bool {
+        if free() == U32(0) { return false }
+        pending += U32(1)
+        return true
+    }
+
+    function postUser(borrow mut self) -> Bool {
+        if free() == U32(0) { return false }
+        available += U32(1)
+        return true
+    }
+
+    // Caller owns exactly one pending operation; cancelling it uses the same
+    // completion path as success and changes only the packet's error.
+    function complete(borrow mut self) -> Bool {
+        if pending == U32(0) { return false }
+        pending -= U32(1)
+        available += U32(1)
+        return true
+    }
+
+    function take(borrow mut self) -> Bool {
+        if available == U32(0) { return false }
+        available -= U32(1)
+        return true
+    }
+}

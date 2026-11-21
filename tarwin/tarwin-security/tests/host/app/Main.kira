@@ -1,0 +1,22 @@
+import TarwinSecurity
+
+@Main
+function main() -> Int {
+    let rx = MappingRights { writable: false, executable: true, user: true }
+    let rw = MappingRights { writable: true, executable: false, user: true }
+    let kw = MappingRights { writable: true, executable: false, user: false }
+    let wx = MappingRights { writable: true, executable: true, user: true }
+    if !mappingAllowed(.SignedImageCode, rx) || mappingAllowed(.SignedImageCode, rw) { return 1 }
+    if mappingAllowed(.Anonymous, rx) || mappingAllowed(.SealedCompileCode, wx) { return 2 }
+    if mappingAllowed(.KernelData, rw) || mappingAllowed(.PageTable, kw) { return 3 }
+    if mappingAllowed(.DeviceMemory, rx) || mappingAllowed(.GuestRam, rx) { return 4 }
+    if protectedRightsMayNarrow(U64(1), U64(3)) { return 5 }
+    if signerPermitted(.EnrolledPlatform, .System, true, false, true, U32(1), false) { return 6 }
+    if signerPermitted(.Developer, .Application, false, true, false, U32(183), false) { return 7 }
+    if signerPermitted(.Developer, .Application, false, false, false, U32(90), false) { return 8 }
+    if signerPermitted(.Device, .DynamicCode, true, false, false, U32(0), false) { return 9 }
+    if signerPermitted(.Release, .Driver, true, false, false, U32(0), true) { return 10 }
+    if !signerPermitted(.Device, .Finalized, true, false, true, U32(0), false) { return 11 }
+    if processEntitlements(U64(5), U64(3)) != U64(1) { return 12 }
+    return 0
+}

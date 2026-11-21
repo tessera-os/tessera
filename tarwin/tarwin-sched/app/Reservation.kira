@@ -1,0 +1,56 @@
+// Round up to parts per billion; never round a reservation down. Long
+// division avoids overflowing even for nanosecond periods near U64.max.
+public function reservationPpb(budget: U64, period: U64, deadline: U64) -> U64 {
+    if budget == U64(0) || budget > deadline || deadline > period { return U64(0) }
+    if budget == period { return U64(1000000000) }
+    var result: U64 = 0
+    var remainder = budget
+    for digit in 0..9 {
+        let add = remainder
+        var carry: U64 = 0
+        remainder = U64(0)
+        for step in 0..10 {
+            if remainder >= period - add {
+                remainder -= period - add
+                carry += U64(1)
+            } else { remainder += add }
+        }
+        result = result * U64(10) + carry
+    }
+    if remainder != U64(0) { result += U64(1) }
+    return result
+}
+
+// clusterCapacityPpb is the normalized available CPU capacity, i.e. 1e9
+// per full core. The caller holds the cluster and job accounting locks.
+public function canAdmit(request: U64, clusterUsed: U64, clusterCapacityPpb: U64,
+                         jobUsed: U64, jobLimit: U64, entitled: Bool) -> Bool {
+    if !entitled || request == U64(0) || request > U64(1000000000) { return false }
+    let limit = clusterCapacityPpb / U64(10) * U64(9) + clusterCapacityPpb % U64(10) * U64(9) / U64(10)
+    if clusterUsed > limit || jobUsed > jobLimit { return false }
+    return request <= limit - clusterUsed && request <= jobLimit - jobUsed
+}
+
+public struct PeriodBudget {
+    var release: U64
+    var remaining: U64
+    let period: U64
+    let capacity: U64
+
+    // Move the release anchor by complete periods, never by dispatch time.
+    function replenish(borrow mut self, now: U64) {
+        if period == U64(0) || now < release { return }
+        let elapsed = now - release
+        if elapsed >= period {
+            release = now - elapsed % period
+            remaining = capacity
+        }
+    }
+
+    // Accounting is against the scheduling context, including a donated one.
+    // Split an interval at the next release before charging it here.
+    function charge(borrow mut self, runtime: U64) {
+        if runtime >= remaining { remaining = U64(0) }
+        else { remaining -= runtime }
+    }
+}

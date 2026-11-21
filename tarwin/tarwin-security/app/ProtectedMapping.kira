@@ -1,0 +1,41 @@
+public enum PageRole {
+    Anonymous
+    SignedImageCode
+    SealedCompileCode
+    KernelCode
+    KernelData
+    PageTable
+    ProtectedRecord
+    GuestRam
+    DeviceMemory
+}
+
+public struct MappingRights {
+    let writable: Bool
+    let executable: Bool
+    let user: Bool
+}
+
+// The gated writer gets role from protected physical-page metadata, never
+// from the requested PTE. This check covers normal mappings, not the
+// per-CPU edit alias itself, which is private to the architecture primitive.
+public function mappingAllowed(role: borrow PageRole, wanted: borrow MappingRights) -> Bool {
+    if wanted.writable && wanted.executable { return false }
+    return match role {
+        KernelCode -> !wanted.user && !wanted.writable
+        KernelData -> !wanted.user && !wanted.executable
+        PageTable -> !wanted.user && !wanted.executable && !wanted.writable
+        ProtectedRecord -> !wanted.user && !wanted.executable && !wanted.writable
+        SignedImageCode -> !wanted.writable && (!wanted.executable || wanted.user)
+        SealedCompileCode -> !wanted.writable && (!wanted.executable || wanted.user)
+        DeviceMemory -> !wanted.executable
+        GuestRam -> !wanted.executable
+        Anonymous -> !wanted.executable
+    }
+}
+
+// Used by the gated writer for a rights update, not for minting a fresh
+// boot resource. The reference and resource kind remain immutable.
+public function protectedRightsMayNarrow(old: U64, requested: U64) -> Bool {
+    return (old & requested) == requested
+}
