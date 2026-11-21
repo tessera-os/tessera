@@ -67,7 +67,7 @@ func passiveInterop(
     throw Failure("No matching inbound TCP segment")
   }
   try withAcceptedEndpoint(
-    local: local, port: service,
+    local: local, port: service, receiveCount: request.count,
     handshake: { l in
       for _ in 0..<8 {
         let p = try next()
@@ -83,21 +83,16 @@ func passiveInterop(
       }
       throw Failure("Passive handshake did not complete")
     },
-    exchange: { c in
-      var received: [UInt8] = []
-      for _ in 0..<8 {
-        _ = c.read(upTo: request.count) {
-          received += Array($0)
-          return true
-        }
-        _ = c.pump(at: now, emit: emit)
-        if let txError { throw txError }
-        if received.count >= request.count { break }
-        let segment = try next()
-        guard c.input(segment, at: now, admit: { _ in true }) else {
-          throw Failure("Rejected peer data")
-        }
+    advance: { c in
+      _ = c.pump(at: now, emit: emit)
+      if let txError { throw txError }
+      guard c.input(try next(), at: now, admit: { _ in true }) else {
+        throw Failure("Rejected peer data")
       }
+    },
+    exchange: { c, received in
+      _ = c.pump(at: now, emit: emit)
+      if let txError { throw txError }
       guard received == request, c.write(response[...], at: now, emit: emit) == response.count
       else {
         throw txError ?? Failure("Passive stream data mismatch")

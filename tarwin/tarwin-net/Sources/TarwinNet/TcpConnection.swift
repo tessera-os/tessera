@@ -191,6 +191,12 @@ public struct TcpConnection: ~Copyable {
   }
   public var readable: Int { state == .reset || state == .timedOut ? 0 : rx.readable }
   public var endOfInput: Bool { rx.atEnd }
+  var inputFinished: Bool { rx.finished }
+  var inputLimit: Int { rx.capacity }
+  func peek(upTo: Int, copy: (ArraySlice<UInt8>) -> Void) -> Int {
+    guard state != .reset, state != .timedOut else { return 0 }
+    return rx.peek(upTo: upTo, copy: copy)
+  }
   public var unacknowledged: UInt32 { next &- una }
   /// Policy revocation or interface removal cancels the connection locally.
   public mutating func abort() {

@@ -40,6 +40,15 @@ public struct TcpReceiveWindow: ~Copyable {
         } : [])
   }
   public var readable: Int { ready }
+  var capacity: Int { bytes.count }
+  var finished: Bool { fin == ready }
+  func peek(upTo: Int, copy: (ArraySlice<UInt8>) -> Void) -> Int {
+    let n = max(0, min(upTo, ready))
+    let first = min(n, bytes.count - head)
+    if first > 0 { copy(bytes[head..<head + first]) }
+    if first < n { copy(bytes[0..<n - first]) }
+    return n
+  }
   public var atEnd: Bool { ready == 0 && fin == 0 }
 
   /// False means control/policy processing owns this packet. An admitted

@@ -6,7 +6,7 @@ import XCTest
 
 @testable import TarwinNet
 
-private struct AcceptPorts: IoPorts, ~Copyable {
+struct AcceptPorts: IoPorts, ~Copyable {
   let id: UInt64
   var port: CompletionPort, refs = 0, wakes = 0
   mutating func retainPort(_ k: UInt64) -> Bool {
@@ -27,7 +27,7 @@ private struct AcceptPorts: IoPorts, ~Copyable {
     visit(&port)
   }
 }
-private enum Outcome { case accepted, cancelled, closed, reset, quota, denied, withdrawn }
+private enum Outcome { case accepted, receive, cancelled, closed, reset, quota, denied, withdrawn }
 private func acceptScenario(_ outcome: Outcome, v6: Bool = false) {
   let ids = KoidSource()
   let headers = UnsafeMutableBufferPointer<ObjectHeader>.allocate(capacity: 5)
@@ -163,7 +163,7 @@ private func acceptScenario(_ outcome: Outcome, v6: Bool = false) {
     XCTAssertNil(result)
     XCTAssertEqual(ports.wakes, 0)
   }
-  if outcome == .accepted {
+  if outcome == .accepted || outcome == .receive {
     XCTAssertEqual(result?.error, 0)
     XCTAssertEqual(service.ready, 0)
     guard let name = result?.result0,
@@ -173,13 +173,19 @@ private func acceptScenario(_ outcome: Outcome, v6: Bool = false) {
     XCTAssertEqual(g.header, UnsafePointer(child))
     XCTAssertEqual(g.rights, 4)
     g.drop(retire: { _ in XCTFail() })
-    var bytes: [UInt8] = []
-    XCTAssertEqual(
-      payload?.connection.read(upTo: 20) {
-        bytes += Array($0)
-        return true
-      }, 4)
-    XCTAssertEqual(bytes, [0, 1, 2, 255])
+    if outcome == .receive {
+      checkReceive(
+        caller: &caller, name: name, denied: denied, port: p, ports: &ports, child: .init(child),
+        stream: payload!, incoming: incoming)
+    } else {
+      var bytes: [UInt8] = []
+      XCTAssertEqual(
+        payload?.connection.read(upTo: 20) {
+          bytes += Array($0)
+          return true
+        }, 4)
+      XCTAssertEqual(bytes, [0, 1, 2, 255])
+    }
     var expected = [UInt8](repeating: 0, count: 32)
     expected[0] = v6 ? 1 : 0
     expected[4] = 0x2b
@@ -244,6 +250,10 @@ final class EndpointAcceptTests: XCTestCase {
   func testHandleRightsAddressesAndQueuedData() {
     acceptScenario(.accepted)
     acceptScenario(.accepted, v6: true)
+  }
+  func testStreamReceiveThroughAcceptedHandle() {
+    acceptScenario(.receive)
+    acceptScenario(.receive, v6: true)
   }
   func testCancellationAndClosedPortNeverPublish() {
     for o in [Outcome.cancelled, .withdrawn, .closed] { acceptScenario(o) }

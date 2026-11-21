@@ -59,7 +59,8 @@ public struct EndpointAccept: ~Copyable {
         return .denied
       case .found(let p):
         let credit = IoReservation(
-          port: p.header.pointee.koid, object: service.koid, key: key, kind: 7, ports: &ports)
+          port: p.header.pointee.koid, object: service.koid, key: key, kind: 7,
+          owner: OperationHandle(process: process, name: name), ports: &ports)
         p.drop(retire: retire)
         guard let credit else {
           e.drop(retire: retire)

@@ -6,8 +6,9 @@ import TarwinSyscall
 /// Hosted process and port storage. The network worker receives a checksum-
 /// validated handshake, and the client can only use the returned type-13 handle.
 func withAcceptedEndpoint(
-  local: [UInt8], port: UInt16, handshake: (inout TcpService) throws -> Void,
-  exchange: (inout TcpConnection) throws -> Void
+  local: [UInt8], port: UInt16, receiveCount: Int,
+  handshake: (inout TcpService) throws -> Void, advance: (inout TcpConnection) throws -> Void,
+  exchange: (inout TcpConnection, [UInt8]) throws -> Void
 ) throws {
   let ids = KoidSource()
   let headers = UnsafeMutableBufferPointer<ObjectHeader>.allocate(capacity: 5)
@@ -98,5 +99,36 @@ func withAcceptedEndpoint(
   guard matchesChild, peer[0] == 0, Array(peer[8..<12]) == path.remote,
     UInt16(peer[4]) | UInt16(peer[5]) << 8 == path.remotePort
   else { throw Failure("Wrong endpoint identity or peer") }
-  try exchange(&payload.connection)
+  guard receiveCount >= 2 else { throw Failure("Need two scatter buffers") }
+  let bytes = UnsafeMutableRawBufferPointer.allocate(byteCount: receiveCount + 3, alignment: 8)
+  defer { bytes.deallocate() }
+  bytes.initializeMemory(as: UInt8.self, repeating: 0xcd)
+  let a = UnsafeMutableRawBufferPointer(rebasing: bytes[1..<3])
+  let b = UnsafeMutableRawBufferPointer(rebasing: bytes[4..<4 + receiveCount - 2])
+  guard
+    case .ready(var read) = EndpointReceive.begin(
+      call: TarwinCall.endpointReceive, caller: caller, name: completion.result0, port: dest,
+      key: 45, flags: 2, buffers: [a, b], maxVectors: 4, ports: &ports, permitted: true,
+      resolve: { $0 == UnsafePointer(child) ? payload : nil },
+      retire: { _ in preconditionFailure() })
+  else { throw Failure("Cannot submit receive through accepted handle") }
+  defer {
+    _ = read.withdraw(
+      at: 12, ports: &ports, releasePins: {}, retire: { _ in preconditionFailure() })
+  }
+  var released = 0
+  for i in 0..<8 {
+    if read.poll(
+      at: UInt64(3 + i), ports: &ports, permitted: true,
+      releasePins: { released += 1 }, retire: { _ in preconditionFailure() }) == .finished
+    {
+      break
+    }
+    try advance(&payload.connection)
+  }
+  guard let rx = ports.port.take(), rx.key == 45, rx.kind == 7, rx.error == 0,
+    rx.result0 == UInt64(receiveCount), released == 1, ports.references == 0,
+    bytes[0] == 0xcd, bytes[3] == 0xcd, bytes[bytes.count - 1] == 0xcd
+  else { throw Failure("Incomplete or out-of-bounds scatter receive") }
+  try exchange(&payload.connection, Array(a) + b)
 }
