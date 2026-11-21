@@ -1,8 +1,5 @@
 import TarwinSyscall
 
-// After entry checks and typed handle pinning, under the VM control lock.
-// The architecture provider performs an atomic armed-entry/kick handshake. It
-// cannot sleep holding the lock. 'enter' must return with the lock reacquired.
 public struct ExitRecord {
   public let reason: GuestExit
   public let address: UInt64
@@ -27,27 +24,30 @@ public func canceledExit() -> ExitRecord {
   return ExitRecord(
     reason: .canceled, address: 0, width: 0, write: false, data: 0, registerIndex: 0)
 }
+// The control path pins the vCPU throughout. Each state access (arm, finish,
+// request) takes its lock separately; no exclusive Swift access spans guest
+// execution. The platform's armed-entry/kick handshake must not lose a kick.
 public func runCpu(
-  _ number: UInt64, _ cpu: inout VirtualCpuState, _ thread: UInt64,
-  _ enter: () -> ExitRecord
+  _ number: UInt64, thread: UInt64, arm: (UInt64) -> RunAction,
+  enter: () -> ExitRecord, finish: (GuestExit) -> GuestExit
 ) -> Result<ExitRecord, HvError> {
-  if number != TarwinCall.virtualCpuRun { return .failure(.invalid) }
-  switch cpu.begin(thread) {
+  guard number == TarwinCall.virtualCpuRun else { return .failure(.invalid) }
+  switch arm(thread) {
   case .deny: return .failure(.wrongThread)
   case .busy: return .failure(.busy)
   case .cancel: return .success(canceledExit())
   case .enter: break
   }
   let record = enter()
-  if cpu.finish(record.reason) == GuestExit.canceled { return .success(canceledExit()) }
-  return .success(record)
+  return .success(finish(record.reason) == .canceled ? canceledExit() : record)
 }
-public func interruptRun(_ number: UInt64, _ cpu: inout VirtualCpuState, _ kick: () -> Void) -> Bool
-{
-  if number != TarwinCall.virtualCpuRequestExit { return false }
-  if cpu.requestExit() { kick() }
+
+public func interruptRun(_ number: UInt64, request: () -> Bool, kick: () -> Void) -> Bool {
+  guard number == TarwinCall.virtualCpuRequestExit else { return false }
+  if request() { kick() }
   return true
 }
+
 public func changeMapping(
   _ number: UInt64, _ extent: inout GuestExtent, _ guest: UInt64,
   _ offset: UInt64, _ length: UInt64, _ guestLimit: UInt64, _ objectSize: UInt64,

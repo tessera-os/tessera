@@ -3,6 +3,7 @@ import PackageDescription
 
 let package = Package(
   name: "TarwinHV",
+  platforms: [.macOS("26.0")],
   products: [.library(name: "TarwinHV", targets: ["TarwinHV"])],
   dependencies: [.package(path: "../tarwin-syscall")],
   targets: [
