@@ -35,7 +35,9 @@ preloaded local name. The descriptor test does not initialize a real TCB,
 execute mapped code, authenticate an image or enter EL0.
 The AArch64 guest also generates one five-pair key bank from deterministic
 test input, checks IA access before start and thread access after start,
-and checks that retirement wipes every word. It never installs those keys.
+then changes the synthetic VM epoch and checks that restoring its old
+value cannot revive the bank. Destruction wipes every word. This neither
+installs keys nor exercises a VM restore.
 It checks a descendant's footprint against the root's budget, then
 marks its thread runnable, freezes and thaws it, and dispatches process exit
 with a negative code. Exit requests a thread stop rather than a return.

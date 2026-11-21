@@ -411,13 +411,15 @@ private func serviceRoundTrip(
 
 #if arch(arm64)
   // Fixed diagnostic material, never a launch input or hardware entropy.
+  private func fixtureEpoch() -> RandomEpoch? { .virtualMachine(low: 1, high: 2) }
+
   private func fixtureKeys(
     _ child: inout ProcessExecution, tree: borrowing JobTree, root: UInt64,
     bank: UnsafeMutableBufferPointer<UInt64>
   ) -> ArmProcessKeys? {
     var seed = InlineArray<96, UInt8>(repeating: 0x5a)
     return withUnsafeMutableBytes(of: &seed) { input in
-      let epoch = RandomEpoch.virtualMachine(low: 1, high: 2)
+      let epoch = fixtureEpoch()
       guard
         var random = KernelRandom(
           policy: .debugQEMU, bootSeed: .init(rebasing: UnsafeRawBufferPointer(input)[..<64]),
@@ -482,8 +484,11 @@ private func jobQuota(_ arena: inout Arena, _ limit: UInt64) -> Bool {
       defer { bank.deinitialize() }
       let root = initialMap!
       guard let keys = fixtureKeys(&p, tree: tree, root: root, bank: bank),
-        keys.withImportIA(child: p, root: root, tree: tree, { $0.count == 2 ? 1 : nil }) == 1,
-        keys.withImportIA(child: p, root: root + 16384, tree: tree, { _ in 1 }) == nil
+        keys.withImportIA(
+          child: p, root: root, tree: tree, current: fixtureEpoch, { $0.count == 2 ? 1 : nil })
+          == 1,
+        keys.withImportIA(
+          child: p, root: root + 16384, tree: tree, current: fixtureEpoch, { _ in 1 }) == nil
       else { return false }
     #endif
     guard
@@ -508,10 +513,18 @@ private func jobQuota(_ arena: inout Arena, _ limit: UInt64) -> Bool {
         #if arch(arm64)
           guard
             keys.withThreadKeys(
-              child: p, thread: tp.pointee, root: root, tree: tree,
+              child: p, thread: tp.pointee, root: root, tree: tree, current: fixtureEpoch,
               {
                 $0.count == 10 && $0.baseAddress == UnsafePointer(bank.baseAddress)
-              }), keys.withImportIA(child: p, root: root, tree: tree, { _ in 1 }) == nil
+              }),
+            keys.withImportIA(child: p, root: root, tree: tree, current: fixtureEpoch, { _ in 1 })
+              == nil,
+            !keys.withThreadKeys(
+              child: p, thread: tp.pointee, root: root, tree: tree,
+              current: { .virtualMachine(low: 1, high: 3) }, { _ in true }),
+            !keys.withThreadKeys(
+              child: p, thread: tp.pointee, root: root, tree: tree,
+              current: fixtureEpoch, { _ in true })
           else { return false }
         #endif
         guard case let own = selfHandle(&p, tree: tree), own != 0,

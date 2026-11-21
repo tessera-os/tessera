@@ -35,6 +35,12 @@ Provide ten aligned words of exclusive kernel memory, never user-, dump- or
 DMA-accessible. A sibling, different root or disabled return gate cannot
 borrow the bank. Only IA is available during private import signing; the
 full bank is available for a runnable thread at its final return gate.
+Both borrows read a trusted live generation under the platform's exclusive
+restore/task gate. A missing or changed generation permanently retires the
+bank, even if the old ID reappears or the RNG is reseeded. On a known
+rotation, retire all affected banks under that gate before any CPU can use
+old keys; retire those children rather than rekeying them in place. The
+provider cannot detect a restore while a key callback or guest is running.
 The trusted leaf must not retain or log either view. The platform owns
 architectural installation/restoration and clearing any transient state.
 After all CPUs and readers retire the child, consume the owner to scrub the

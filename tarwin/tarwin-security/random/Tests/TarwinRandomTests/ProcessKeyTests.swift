@@ -27,6 +27,86 @@ private func withChild(
 }
 
 final class ProcessKeyTests: XCTestCase {
+  func testRestoredVMCannotReviveAnIssuedBank() {
+    let issued = RandomEpoch.virtualMachine(low: 4, high: 9)
+    let invalid: [RandomEpoch?] = [
+      nil, .physical, .virtualMachine(low: 0, high: 0),
+      .virtualMachine(low: 5, high: 9), .virtualMachine(low: 4, high: 10),
+    ]
+    for observed in invalid {
+      for retireBeforeStart in [true, false] {
+        let ids = KoidSource()
+        let job = ObjectHeader(source: ids, ownerJob: 0, kind: TarwinKind.job, maximumRights: 0)!
+        var nodes = [JobNode()]
+        var members = [JobMember()]
+        let limits = JobLimits(
+          processes: 1, threadsPerProcess: 2, handlesPerProcess: 4, footprint: 4096, cpuShare: 1,
+          maxQos: 1, jetsamBand: 1, ioRank: 1, entitlements: 0, denials: 0, killOnClose: false)
+        nodes.withUnsafeMutableBufferPointer { jobs in
+          members.withUnsafeMutableBufferPointer { slots in
+            let tree = JobTree(jobs: jobs, members: slots, root: job, limits: limits)!
+            let root: UInt64 = 0x4000
+            withChild(ids, tree, root) { child in
+              var storage = [UInt64](repeating: 0, count: 10)
+              storage.withUnsafeMutableBufferPointer { bank in
+                [UInt8](0..<96).withUnsafeBytes { seed in
+                  let sample = UnsafeRawBufferPointer(rebasing: seed[64...])
+                  var rng = KernelRandom(
+                    policy: .debugQEMU, bootSeed: .init(rebasing: seed[..<64]), hardware: sample,
+                    source: .emulatedTPM, generation: issued)!
+                  guard
+                    let keys = ArmProcessKeys(
+                      child: &child, root: root, tree: tree, storage: bank, random: &rng,
+                      generation: issued)
+                  else { return XCTFail() }
+                  var borrows = 0
+                  func sign(_ epoch: RandomEpoch?) -> UInt64? {
+                    keys.withImportIA(child: child, root: root, tree: tree, current: { epoch }) {
+                      _ in
+                      borrows += 1
+                      return 1
+                    }
+                  }
+                  XCTAssertEqual(sign(issued), 1)
+                  if retireBeforeStart {
+                    XCTAssertNil(sign(observed))
+                    XCTAssertNil(sign(issued))
+                  }
+                  let header = ObjectHeader(
+                    source: ids, ownerJob: job.koid, kind: TarwinKind.thread, maximumRights: 0)!
+                  withUnsafePointer(to: header) { h in
+                    var t = ThreadExecution(header: h, process: child.member, job: tree.root)!
+                    withUnsafeMutablePointer(to: &t) { th in
+                      XCTAssertEqual(
+                        child.join(th, qos: 0, realtimeEntitled: false, tree: tree), .added)
+                      XCTAssertTrue(child.start(h.pointee.koid, tree: tree))
+                      func install(_ epoch: RandomEpoch?) -> Bool {
+                        keys.withThreadKeys(
+                          child: child, thread: th.pointee, root: root,
+                          tree: tree, current: { epoch }
+                        ) { _ in
+                          borrows += 1
+                          return true
+                        }
+                      }
+                      XCTAssertEqual(install(issued), !retireBeforeStart)
+                      XCTAssertFalse(install(observed))
+                      XCTAssertTrue(
+                        rng.reseed(hardware: sample, source: .emulatedTPM, generation: issued))
+                      XCTAssertFalse(install(issued))
+                    }
+                  }
+                  XCTAssertEqual(borrows, retireBeforeStart ? 1 : 2)
+                }
+                XCTAssertTrue(bank.allSatisfy { $0 == 0 })
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   func testOwnerGatesFreshnessAndErase() {
     let ids = KoidSource()
     let j = ObjectHeader(source: ids, ownerJob: 0, kind: TarwinKind.job, maximumRights: 0)!
@@ -81,27 +161,40 @@ final class ProcessKeyTests: XCTestCase {
                   bank[2 * $0] != other[2 * $0] || bank[2 * $0 + 1] != other[2 * $0 + 1]
                 })
               XCTAssertNil(
-                keys.withImportIA(child: sibling, root: root, tree: tree) { _ in
+                keys.withImportIA(child: sibling, root: root, tree: tree, current: { .physical }) {
+                  _ in
                   XCTFail()
                   return 1
                 })
               XCTAssertNil(
-                keys.withImportIA(child: child, root: root + 1, tree: tree) { _ in
+                keys.withImportIA(child: child, root: root + 1, tree: tree, current: { .physical })
+                { _ in
                   XCTFail()
                   return 1
                 })
               XCTAssertEqual(
-                keys.withImportIA(child: child, root: root, tree: tree) {
+                keys.withImportIA(child: child, root: root, tree: tree, current: { .physical }) {
                   $0.count == 2 && $0.baseAddress == UnsafePointer(bank.baseAddress) ? 7 : nil
                 }, 7)
-              XCTAssertNil(keys.withImportIA(child: child, root: root, tree: tree) { _ in nil })
+              XCTAssertNil(
+                keys.withImportIA(child: child, root: root, tree: tree, current: { .physical }) {
+                  _ in nil
+                })
               XCTAssertTrue(tree.setFrozen(true, job: tree.root))
               XCTAssertNil(
-                keys.withImportIA(child: child, root: root, tree: tree) { _ in
+                keys.withImportIA(child: child, root: root, tree: tree, current: { .physical }) {
+                  _ in
                   XCTFail()
                   return 1
                 })
               XCTAssertTrue(tree.setFrozen(false, job: tree.root))
+              peer.retire()
+              XCTAssertNil(
+                peer.withImportIA(child: sibling, root: root, tree: tree, current: { .physical }) {
+                  _ in
+                  XCTFail("retired bank borrowed")
+                  return 1
+                })
               peer.erase()
               XCTAssertTrue(other.allSatisfy { $0 == 0 })
               XCTAssertTrue(issue(&sibling, root: root, other) == nil)
@@ -112,7 +205,8 @@ final class ProcessKeyTests: XCTestCase {
                 withUnsafeMutablePointer(to: &t) { thread in
                   func canInstall() -> Bool {
                     keys.withThreadKeys(
-                      child: child, thread: thread.pointee, root: root, tree: tree
+                      child: child, thread: thread.pointee, root: root, tree: tree,
+                      current: { .physical }
                     ) {
                       $0.count == 10 && $0.baseAddress == UnsafePointer(bank.baseAddress)
                     }
@@ -124,7 +218,8 @@ final class ProcessKeyTests: XCTestCase {
                   XCTAssertTrue(child.start(th.koid, tree: tree))
                   XCTAssertTrue(canInstall())
                   XCTAssertNil(
-                    keys.withImportIA(child: child, root: root, tree: tree) { _ in
+                    keys.withImportIA(child: child, root: root, tree: tree, current: { .physical })
+                    { _ in
                       XCTFail()
                       return 1
                     })
