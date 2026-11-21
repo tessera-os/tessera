@@ -6,9 +6,9 @@ let package = Package(
   platforms: [.macOS(.v26)],
   products: [.library(name: "TarwinMMHosted", targets: ["TarwinMMHosted"])],
   dependencies: [
-    .package(path: ".."), .package(path: "../../tarwin-task"),
-    .package(path: "../../tarwin-arch-hosted"),
-    .package(path: "../../trfs/hosted/trfs-hosted"),
+    .package(path: "../.."), .package(path: "../../../tarwin-task"),
+    .package(path: "../../../tarwin-arch-hosted"),
+    .package(path: "../../../trfs/hosted/trfs-hosted"),
   ],
   targets: [
     .target(name: "TarwinMMHosted", dependencies: [

@@ -7,7 +7,7 @@ let package = Package(
   products: [.library(name: "TarwinLoaderHosted", targets: ["TarwinLoaderHosted"])],
   dependencies: [
     .package(path: "../.."),
-    .package(name: "TarwinMMHosted", path: "../../../tarwin-mm/hosted"),
+    .package(name: "TarwinMMHosted", path: "../../../tarwin-mm/hosted/TarwinMMHosted"),
   ],
   targets: [
     .target(name: "TarwinLoaderHosted", dependencies: [
