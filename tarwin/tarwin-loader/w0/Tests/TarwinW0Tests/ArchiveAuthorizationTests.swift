@@ -64,6 +64,9 @@ final class ArchiveAuthorizationTests: XCTestCase {
                   XCTAssertEqual(result.bytes.count, result.range.count)
                   XCTAssertEqual(result.image.entry, entry)
                   XCTAssertEqual(result.securityVersion, 1)
+                  do { try checkExecutablePages(result, machine: machine) } catch {
+                    XCTFail("page verification: \(error)")
+                  }
                   return true
                 }
               }

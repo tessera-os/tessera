@@ -1,6 +1,6 @@
 /// Logical file offsets omit the raw signature bytes. Substitution of the
 /// ID uses physical offsets, including when the ID follows the signatures.
-private struct DigestView {
+struct DigestView {
   let bytes: UnsafeRawBufferPointer
   let zeros: Range<Int>
   let omit: Range<Int>
@@ -28,6 +28,19 @@ private struct DigestView {
       w3: word(at + 12, end), w4: word(at + 16, end), w5: word(at + 20, end),
       w6: word(at + 24, end), w7: word(at + 28, end))
   }
+
+  func leaf(_ index: Int, size: UInt64) -> BlakeCv? {
+    var leaf = imageChunk(size, UInt64(index))
+    var at = index * 1024
+    repeat {
+      let n = Int(min(leaf.remaining, 64))
+      let end = at + n
+      let block = BlakeBlock(low: cv(at, end), high: cv(at + 32, end))
+      guard leaf.absorb(block, UInt32(n)) else { return nil }
+      at = end
+    } while !leaf.hashed
+    return leaf.chain
+  }
 }
 
 // Trees are left-balanced: merge completed equal-sized subtrees, then
@@ -46,17 +59,8 @@ func digestImage(
   guard stack.count >= levels else { return nil }
   let view = DigestView(bytes: bytes, zeros: zeros, omit: omit)
   var used = 0
-  var at = 0
   for index in 0...last {
-    var leaf = imageChunk(size, UInt64(index))
-    repeat {
-      let n = Int(min(leaf.remaining, 64))
-      let end = at + n
-      let block = BlakeBlock(low: view.cv(at, end), high: view.cv(at + 32, end))
-      guard leaf.absorb(block, UInt32(n)) else { return nil }
-      at = end
-    } while !leaf.hashed
-    var cv = leaf.chain
+    guard var cv = view.leaf(index, size: size) else { return nil }
     if index == last {
       while used > 0 {
         used -= 1
