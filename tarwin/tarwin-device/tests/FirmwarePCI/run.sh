@@ -27,11 +27,12 @@ for arch in "$@"; do
         shift
         "$bin/swiftc" "${flags[@]}" -module-name "$mod" -emit-module -emit-module-path "$d/$mod.swiftmodule" "$@"
     }
-    for name in kcore/KCore tarwin-boot/TarwinBoot tarboot/Tarboot; do
+    for name in kcore/KCore tarwin-boot/TarwinBoot tarboot/Tarboot tarwin-object/TarwinObject tarwin-syscall/TarwinABI tarwin-syscall/TarwinSyscall; do
         module "${name#*/}" "$r/${name%/*}/Sources/${name#*/}"/*.swift
     done
-    module TarwinDevice "$r/tarwin-device/Sources/TarwinDevice/PciWalk.swift"
-    "$bin/swiftc" "${flags[@]}" -module-name FirmwarePCI -emit-ir -o "$d/main.ll" "$here/Probe.swift" "$r/tarboot/tests/FirmwareProbe/Memory.swift"
+    src="$r/tarwin-device/Sources/TarwinDevice"
+    module TarwinDevice "$src"/{PciWalk,Pci,Range,Native,Slot,ConfigCalls}.swift
+    "$bin/swiftc" "${flags[@]}" -module-name FirmwarePCI -emit-ir -o "$d/main.ll" "$here/Probe.swift" "$here/ConfigAccess.swift" "$r/tarboot/tests/FirmwareProbe/Memory.swift"
     if [[ $arch == riscv64 ]]; then
         edk=${EDK_BASETOOLS:?set EDK_BASETOOLS to edk2-stable202408 BaseTools}
         "$bin/clang" -target "$triple" -mcmodel=medany -msmall-data-limit=0 -mno-relax -flto -O2 -c "$d/main.ll" -o "$d/main.o"

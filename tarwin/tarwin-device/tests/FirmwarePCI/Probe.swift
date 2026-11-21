@@ -4,8 +4,6 @@ import TarwinDevice
 private typealias Locate =
   @convention(c) (UnsafeRawPointer, UnsafeRawPointer?, UnsafeMutablePointer<UnsafeRawPointer?>) ->
   UInt
-private typealias Read =
-  @convention(c) (UnsafeRawPointer, UInt32, UInt64, UInt, UnsafeMutableRawPointer) -> UInt
 private typealias Output = @convention(c) (UnsafeRawPointer, UnsafePointer<UInt16>) -> UInt
 private typealias Reset = @convention(c) (UInt32, UInt, UInt, UnsafeRawPointer?) -> Void
 nonisolated(unsafe) private var scratch = PciWalkScratch()
@@ -21,7 +19,7 @@ private func discover(_ system: UnsafeRawPointer) -> Bool {
   var root: UnsafeRawPointer?
   guard withUnsafeBytes(of: &guid, { locate($0.baseAddress!, nil, &root) }) == 0,
     let root, root.load(fromByteOffset: 144, as: UInt32.self) == 0,
-    let read = root.load(fromByteOffset: 56, as: Read?.self)
+    let read = root.load(fromByteOffset: 56, as: PciRead?.self)
   else { return false }
   var disk = false
   var rng = false
@@ -41,7 +39,7 @@ private func discover(_ system: UnsafeRawPointer) -> Bool {
       guard f.parent >= 0, f.parent < count, f.bus > 0, bridges & (1 << f.parent) != 0 else {
         return false
       }
-      rng = true
+      rng = checkConfig(root: root, read: read, function: f)
     }
     count += 1
     return true

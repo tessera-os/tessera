@@ -24,6 +24,17 @@ This emits freestanding ELF objects for arm64, x86-64, and riscv64. It neither l
 
 Native dispatch uses the generated TarwinSyscall call constants, not new ordinals. Under the caller's object-table read epoch, resolve its slot and call `withPinnedIoHandle` with the actual table salt/index and kernel pin/release functions. It checks the live name and kind, pins the object across the borrowing closure and releases it on return. Dispatch must still bind the actual device/domain and map remaining handles under their locks. A handle snapshot alone is not a lifetime guarantee.
 
+For PCI configuration, register `DeviceConfigCalls` as the provider for
+`DeviceSlot.configRead` and `configWrite`. Register words are the slot name,
+byte offset, width (1, 2 or 4), and write value for writes only. The first
+result word carries a successful, zero-extended read; writes return no data.
+The provider pins a typed handle in the submitting process, requires Read
+or Manage respectively, and checks ownership against the slot's grant epoch.
+Composition supplies the process read epoch and looks up the **retained
+header** in the slot registry; hold the hotplug/config lock across validation
+and the entire register transaction. Unknown or side-effect registers must
+never be classified as plain writable registers.
+
 ## Driver rings
 
 A fresh pinned, cache-coherent Memory mapping contains the A.4 ring pair. Initialize it before sharing, then open exactly one lane per direction and role. The mapping is initialized as atomic words and attaches TarwinIPC RingEndpoint directly: that shared implementation owns geometry validation, private cursors, record snapshots and the idle handshake. Use a latched Event so a notification just before sleeping is retained. Any impossible peer cursor poisons the lane. Reattach only to a **new**, quiesced epoch, never reset a live ring. Device-specific records, object grants and process mappings remain the subsystem's responsibility.
@@ -62,10 +73,15 @@ edk2-stable202408 BaseTools, set `EMBEDDED_SWIFTC`, `QEMU_FIRMWARE` and
 The same non-allocating Swift walk executes **inside** an unsigned EFI
 diagnostic on aarch64, x86-64 and riscv64. It reads PCI config via EFI's
 root-bridge protocol, finds the boot disk, and checks the RNG's parent
-against the discovered bridge. Moving the RNG onto the root bus must fail
+against the discovered bridge. With a synthetic slot binding, the guest then
+reads the discovered RNG's PCI identity through the generated selector,
+native register dispatcher, object table and EFI config accessor. A BAR write
+and an access through the closed name must not reach that accessor. Moving
+the RNG onto the root bus must fail
 that check. Both cases require a console verdict and a guest-requested
-shutdown. This tests discovery before ExitBootServices, not native ECAM
-access, an IOMMU group, a booted Tarwin kernel or physical hardware.
+shutdown. This tests firmware config reads and register dispatch, not an
+actual user trap, native ECAM access, DMA isolation, a booted Tarwin kernel or
+physical hardware.
 
 The kernel accepts a complete parent-first firmware/PCI inventory, not driver-reported MMIO, group membership or identity. The platform supplies the salted stable ID; the registry separately issues boot-local IDs that never repeat. Missing group coverage permits enumeration but never slot assignment. DeviceRoot holders may snapshot or read the latest delta; a lapped reader must take a full snapshot. This is the privileged inventory, not the public DeviceKit matching service.
 

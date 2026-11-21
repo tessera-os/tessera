@@ -24,6 +24,7 @@ let package = Package(
         .product(name: "TarwinBoot", package: "tarwin-boot"),
         .product(name: "TarwinIPC", package: "tarwin-ipc"),
         .product(name: "TarwinObject", package: "tarwin-object"),
+        .product(name: "TarwinABI", package: "tarwin-syscall"),
         .product(name: "TarwinSyscall", package: "tarwin-syscall"),
       ]),
     .testTarget(
