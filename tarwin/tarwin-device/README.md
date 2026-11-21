@@ -1,6 +1,6 @@
 # Tarwin device mechanisms (26.11.1)
 
-Use `kira test .` for the portable package tests. They exercise ECAM traversal, range arithmetic, IOVA selection, retire ordering, interrupt backpressure and configuration/Driver API filtering. These are not tests of a booted kernel.
+Use `swift test` for the portable package tests. They exercise ECAM traversal, range arithmetic, IOVA selection, retire ordering, interrupt backpressure configuration/Driver API filtering, resolved object rights and DMA quarantine. These are not tests of a booted kernel.
 
 Integration contract:
 
@@ -11,3 +11,15 @@ Integration contract:
 - Configuration access policy comes from trusted enumeration, never a driver bitmap. Unknown/side-effect registers are not raw-writable. The version predicate covers released Driver API months only, starting 26.11.
 
 No architecture interrupt, IOMMU, MMU, registry service or capability table is supplied by this package yet. Neither DMA isolation on physical hardware nor restart timing has been measured.
+
+## Swift profiles
+
+Build the library as Embedded Swift; host tests run as regular Swift. IRQ delivery, revocation, range selection, DMA retirement, and filtered config access can be checked separately without allocation:
+
+```sh
+SWIFTC=/path/to/swift-6.3.3/usr/bin/swiftc ./check-profile.sh
+```
+
+This emits freestanding ELF objects for arm64, x86-64, and riscv64. It neither links them into a kernel nor provides the allocator, stack guard, entropy, pinning, and device primitives needed at that boundary. Apple Xcode's compiler alone may not ship the Embedded standard library; the signed Swift.org macOS 6.3.3 release does.
+
+The generated native dispatcher must map its call index to `DeviceOperation` and pin a validated handle-table entry, checking the caller, name, generation and rights before supplying `PinnedIoHandle`. These Swift enum tags have no ABI ordinal.
