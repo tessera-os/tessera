@@ -94,8 +94,32 @@ print("""
   add x27, x27, #1
   cmp x27, #4
   b.lo .Lrefusals
+  #ifdef TEST_PROCESS
+  mov x0, x19
+  ldr x1, =private_b
+  ldr x2, =host_root
+  ldr x3, =stack_base
+  add x3, x3, x20
+  add x4, x3, #8, lsl #12
+  ldr x5, =lib_end-lib_start
+  bl tarwin_test_process_current
+  cbz w0, failed
+  adr x1, .Lprocess_ok
+  mov x0, #4
+  hlt #0xf000
+  adr x1, exit_ok
+  b exit_host
+  .Lprocess_ok: .asciz "VHE-EL0-LIBTESSERA-SELF-HANDLE-BAD-ORIGIN-STOPPED\\n"
+  .p2align 2
+  #else
   mov x26, #0
   .Ltest_slice:
+  #ifdef TEST_TIME_PAGE
+  mov x0, x19
+  mov x1, x26
+  bl tarwin_test_cpu_begin
+  cbz w0, failed
+  #endif
   #ifdef TEST_HIGH_GENID
   mov x0, x19
   bl tarwin_vhe_sample_generation
@@ -111,6 +135,11 @@ print("""
   add x6, x5, #8, lsl #12
   bl tarwin_w1_guarded_slice
   cbz w0, failed
+  #ifdef TEST_TIME_PAGE
+  mov x0, x19
+  bl tarwin_test_cpu_end
+  cbz w0, failed
+  #endif
   mrs x9, ttbr0_el2
   cmp x9, x21
   b.ne failed
@@ -155,6 +184,14 @@ for (i,k) in keys.enumerated() {
 }
 print("""
   cbnz x26, .Ltest_resumed
+  #ifdef TEST_TIME_PAGE
+  ldr x9, [x24, #32] // reader result at the first diagnostic SVC
+  cmp x9, #1
+  b.ne failed
+  mov x0, x19
+  bl tarwin_test_update_clock
+  cbz w0, failed
+  #endif
   ldr x9, [x24]
   cmp x9, #57
   b.ne failed
@@ -170,6 +207,11 @@ print("""
   b.ne failed
   b .Ltest_slice
   .Ltest_resumed:
+  #ifdef TEST_TIME_PAGE
+  ldr x9, [x24, #32] // same user mapping, newly published clock
+  cmp x9, #2
+  b.ne failed
+  #endif
   ldr x9, [x24, #40]
   ldr x10, =0x10000000a // unavailable syscall
   cmp x9, x10
@@ -185,8 +227,25 @@ print("""
   adr x1, .Lslice_ok
   mov x0, #4
   hlt #0xf000
+  #ifdef TEST_TIME_PAGE
+  adr x1, .Lclock_ok
+  mov x0, #4
+  hlt #0xf000
+  adr x1, .Lclock_refresh
+  mov x0, #4
+  hlt #0xf000
+  adr x1, .Lcpu_clock
+  mov x0, #4
+  hlt #0xf000
+  #endif
   adr x1, exit_ok
   b exit_host
   .Lslice_ok: .asciz "VHE-EL0-SVC-HOST-KEYS-AND-ROOT-RESTORED\\n"
+  #ifdef TEST_TIME_PAGE
+  .Lclock_ok: .asciz "VHE-EL0-SHARED-CLOCK-READ\\n"
+  .Lclock_refresh: .asciz "VHE-EL0-SMEARED-UTC-AND-KERNEL-UPDATE\\n"
+  .Lcpu_clock: .asciz "VHE-THREAD-PROCESS-CPU-TWO-RUNS-NO-HOST-GAP\\n"
+  #endif
   .p2align 2
+  #endif
   """)

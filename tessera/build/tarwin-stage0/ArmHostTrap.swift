@@ -276,6 +276,24 @@
     mov w0, #1
     ret
 
+    // No MMIO in the independently selected cold fixed-ID profile.
+    .global tarwin_w1_active_host_root
+    .hidden tarwin_w1_active_host_root
+    tarwin_w1_active_host_root:
+    bti c
+    mrs x1, CurrentEL
+    cmp x1, #8
+    b.ne .Lbad_mode
+    mrs x1, hcr_el2
+    tbz x1, #34, .Lbad_mode
+    tbz x1, #27, .Lbad_mode
+    mrs x1, sctlr_el2
+    tbz x1, #0, .Lbad_mode
+    mrs x1, ttbr1_el2
+    cmp x1, x0
+    cset w0, eq
+    ret
+
     // Caller has pinned this exclusive host root. Check the actual MMIO
     // translation before the load, preserving the caller's PAR even on failure.
     .global tarwin_w1_read_generation_register

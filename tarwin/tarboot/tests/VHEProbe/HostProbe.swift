@@ -48,6 +48,11 @@ _start:
   orr x0, x0, #(1 << 27)
   msr hcr_el2, x0
   isb
+  #ifdef TEST_TIME_PAGE
+  mov x0, #2 // VHE: permit only EL0 virtual counter access, not timer control.
+  msr cnthctl_el2, x0
+  isb
+  #endif
   ldr x0, =tarwin_w1_vectors
   msr vbar_el2, x0
   ldr x0, =root
@@ -115,6 +120,11 @@ _start:
   add x19, x19, x20
   msr tpidr_el2, x19
   isb
+  #ifdef TEST_TIME_PAGE
+  mov x0, x19
+  bl tarwin_publish_shared_clock
+  cbz w0, failed
+  #endif
   #ifdef TEST_GCS
   #ifdef TEST_SLICE
   #include "slice.inc"
@@ -148,6 +158,24 @@ _start:
   b exit_host
   #endif
   cbz w0, failed
+  #ifdef TEST_TIME_PAGE
+  ldr x21, =0x7ff000000000
+  at s1e0r, x21
+  isb
+  mrs x9, par_el1
+  tbnz x9, #0, failed
+  ubfx x9, x9, #12, #36
+  ldr x10, =0x40224 // sample + nine 16 KiB pages
+  cmp x9, x10
+  b.ne failed
+  at s1e0w, x21
+  isb
+  mrs x9, par_el1
+  tbz x9, #0, failed
+  adr x1, time_ro
+  mov x0, #4
+  hlt #0xf000
+  #endif
   #ifdef TEST_HIGH_GENID
   // The identity root is gone. Prove type, PA and both privilege levels
   // before using the live read-only device in the private host mapping.
@@ -452,6 +480,7 @@ wrong_ok: .asciz "VHE-REFUSED-MISMATCHED-PIE-BANK\\n"
 pac_ok: .asciz "VHE-IMPORT-IA-HOST-KEY-RESTORED\\n"
 stopped: .asciz "VHE-STOP-ON-SEPARATE-SCHEDULER-STACK\\n"
 genid_ok: .asciz "VHE-VMGEN-KERNEL-READONLY-NO-IDENTITY-OR-USER-ACCESS\\n"
+time_ro: .asciz "VHE-TIME-PAGE-EL0-RO\\n"
 .p2align 3
 exit_ok: .quad 0x20026,0
 exit_bad: .quad 0x20026,1
@@ -484,7 +513,7 @@ user: .quad 0x0060000040200fc3,0,0x0060000040204783,0x0060000040208f43
 .p2align 14
 host_root: .space 65536
 private_a: .space 65536
-private_b: .space 114688
+private_b: .space 163840
 context: .space 16384
   .space 16384
 stack_base:
@@ -505,6 +534,19 @@ sample:
 .p2align 14
 slice_start:
   .inst 0xd503245f // BTI c
+  #ifdef TEST_PROCESS
+  bl slice_start + 16384  // distinct user RX mapping of the actual LibTessera body
+  mov x16, #88
+  svc #0                 // outside the library, x0 holds the body return value
+  b .
+  #else
+  #ifdef TEST_TIME_PAGE
+  str x0, [sp, #-16]!
+  mov w0, #1
+  bl .Lclock_reader
+  mov w4, w0
+  ldr x0, [sp], #16
+  #endif
   mov x10, #0x2567
   mov x11, #0x4819
   mov x12, x10
@@ -524,12 +566,44 @@ slice_start:
   svc #0
 slice_after_first:
   mov x5, x0
+  #ifdef TEST_TIME_PAGE
+  // Preserve the dispatch and register oracles across this user call.
+  stp x5, x6, [sp, #-16]!
+  stp x7, x9, [sp, #-16]!
+  stp x12, x13, [sp, #-16]!
+  stp x14, x15, [sp, #-16]!
+  stp x17, x30, [sp, #-16]!
+  mov w0, #2
+  bl .Lclock_reader
+  mov w4, w0
+  ldp x17, x30, [sp], #16
+  ldp x14, x15, [sp], #16
+  ldp x12, x13, [sp], #16
+  ldp x7, x9, [sp], #16
+  ldp x5, x6, [sp], #16
+  mov x0, x5
+  #endif
   svc #0
 slice_after_second:
   b .
   .Ltest_leaf:
   ret
+  #endif
+  #ifdef TEST_TIME_PAGE
+  .balign 4096
+  .Lclock_reader:
+  .incbin "reader.bin"
+  #endif
   .p2align 14
   .space 32768
+  #ifdef TEST_PROCESS
+  lib_start:
+  .incbin "process-body.bin"
+  lib_end:
+  .p2align 14
+  #endif
+  #ifdef TEST_TIME_PAGE
+  .space 16384
+  #endif
 #endif
 """)

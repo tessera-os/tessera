@@ -31,8 +31,12 @@ public func buildRoots(
   #endif
   guard var k = ArmKernelTranslation(backing: arena(kernel), physical: kernel, layout: layout),
     var p = ArmUserTranslation(backing: arena(a), physical: a),
-    var q = ArmUserTranslation(backing: arena(b, pages: 7), physical: b, layout: layout)
+    var q = ArmUserTranslation(backing: arena(b, pages: 10), physical: b, layout: layout)
   else { return 1 }
+  #if TEST_PROCESS
+    guard q.insert(virtual: base + 5 * page, physical: sample + 9 * page, write: false, execute: true)
+    else { return 8 }
+  #endif
   #if TEST_HIGH_GENID
     let result = installGeneration(in: &k, context: context)
     guard result == 0 else { return result }
@@ -55,6 +59,13 @@ public func buildRoots(
     let storage = UnsafeMutablePointer<ArmStopStacks>(bitPattern: UInt(context + 64))
   else { return 3 }
   storage.initialize(to: stacks)
+  #if TEST_TIME_PAGE
+    let timePA = sample + 9 * page
+    guard let reserved = W1ClockReservation(physical: timePA, kernelVA: high + timePA, host: &k),
+      reserved.install(in: &q, privatePool: b..<b + 10 * page)
+    else { return 7 }
+    UnsafeMutablePointer<W1ClockReservation>(bitPattern: UInt(context + 4096))!.initialize(to: consume reserved)
+  #endif
   #if TEST_GCS
     let shadow = (UInt64(1) << 43) + page
     let ro = base + 2 * page

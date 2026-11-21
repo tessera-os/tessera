@@ -12,7 +12,7 @@ swift "$here/HostProbe.swift" > "$d/start.S"
 swift "$here/EL0SliceProbe.swift" > "$d/slice.inc"
 flags=(-target aarch64-none-none-elf -enable-experimental-feature Embedded -no-allocations
        -enable-experimental-feature Extern -swift-version 6 -Osize -wmo -parse-as-library
-       -Xfrontend -disable-stack-protector -Xcc -mgeneral-regs-only -I "$d")
+       -Xfrontend -disable-stack-protector -Xcc -mgeneral-regs-only -Xcc -mbranch-protection=bti -I "$d")
 "$bin/swiftc" "${flags[@]}" -emit-module -module-name TarwinArchAarch64 -emit-module-path \
   "$d/TarwinArchAarch64.swiftmodule" "$arch"/*.swift
 "$bin/swiftc" "${flags[@]}" -emit-ir "$here/Probe.swift" "$here/../FirmwareProbe/Memory.swift" -o "$d/probe.ll"
@@ -107,11 +107,84 @@ if grep -Fxq 'VHE-CPU-GCS-S1PIE-TCRX=111' "$d/log"; then
      $(grep -Fc '...from EL0 to EL2' "$d/exceptions") == 2 &&
      $(grep -Fc '...with ESR 0x15/0x56000000' "$d/exceptions") == 2 ]]
   grep -Fx 'VHE-EL0-SVC-HOST-KEYS-AND-ROOT-RESTORED' "$d/log"
+  if [[ ${TARBOOT_TEST_PROCESS_CURRENT:-0} == 1 ]]; then
+    bash "$pkgs/libtessera/app/Backend/Tarwin/tests/w1-framework-body.sh" "$d/body.o"
+    cat > "$d/body.ld" <<'LD'
+ENTRY(libtessera_tarwin_process_current_body)
+SECTIONS {
+  . = 0x100014000;
+  .text : { *(.text.libtessera_tarwin_process_current_body) *(.text*) *(.rodata*) }
+  ASSERT(libtessera_tarwin_process_current_body == 0x100014000, "unexpected library entry")
+  ASSERT(SIZEOF(.text) <= 16384, "diagnostic RX page overflow")
+  .data : { *(.data*) *(.bss*) }
+  ASSERT(SIZEOF(.data) == 0, "user body must not need writable globals")
+}
+LD
+    "$bin/ld.lld" --gc-sections -T "$d/body.ld" "$d/body.o" -o "$d/body.elf"
+    "$bin/llvm-objcopy" -O binary --only-section=.text "$d/body.elf" "$d/process-body.bin"
+    "$bin/swiftc" "${flags[@]}" -module-name TarwinObject -emit-module -emit-module-path "$d/TarwinObject.swiftmodule" \
+      "$pkgs/tarwin/tarwin-object/Sources/TarwinObject"/*.swift
+    "$bin/swiftc" "${flags[@]}" -D TEST_GCS -D TEST_PROCESS -emit-ir \
+      "$here/"{Probe,ProcessProbe}.swift "$here/../FirmwareProbe/Memory.swift" \
+      "$pkgs/tessera/build/tarwin/Sources/TarwinW1Bootstrap/TrapDispatch.swift" \
+      "$pkgs/tarwin/tarwin-syscall/providers/Sources/TarwinObjectCalls/ProcessCurrentCalls.swift" -o "$d/process.ll"
+    "$bin/clang" -target aarch64-none-none-elf -mno-outline-atomics -ffunction-sections -fdata-sections -Oz \
+      -c "$d/process.ll" -o "$d/process.o"
+    "$bin/clang" -target aarch64-none-none-elf -march=armv9.4-a+gcs -DTEST_GCS -DTEST_PROCESS -DTEST_SLICE \
+      -I "$d" -c "$d/start.S" -o "$d/process-start.o"
+    "$bin/ld.lld" --gc-sections -T "$d/sections" "$d/process-start.o" "$d/host.o" "$d/process.o" -o "$d/current.elf"
+    run_guest current
+    grep -Fx 'VHE-EL0-LIBTESSERA-SELF-HANDLE-BAD-ORIGIN-STOPPED' "$d/log"
+    [[ $(grep -Fc 'Exception return from AArch64 EL2 to AArch64 EL0 PC ' "$d/exceptions") == 2 &&
+       $(grep -Fc '...from EL0 to EL2' "$d/exceptions") == 2 &&
+       $(grep -Fc '...with ESR 0x15/0x56000000' "$d/exceptions") == 2 ]]
+  fi
+  if [[ ${TARBOOT_TEST_TIME_PAGE:-0} == 1 ]]; then
+    timepkg="$pkgs/tarwin/tarwin-time"
+    "$bin/swiftc" "${flags[@]}" -module-name TarwinTime -emit-module -emit-module-path "$d/TarwinTime.swiftmodule" \
+      "$timepkg/Sources/TarwinTime"/*.swift
+    swift "$timepkg/tools/ArmCounter.swift" > "$d/counter.S"
+    "$bin/clang" -target aarch64-none-none-elf -c "$d/counter.S" -o "$d/counter.o"
+    for part in reader publisher; do
+      if [[ $part == reader ]]; then files=(-D CLOCK_READER)
+      else files=(-D TEST_TIME_PAGE -D TEST_GCS "$here/Probe.swift" "$pkgs/tessera/build/tarwin/Sources/TarwinW1Bootstrap/ClockPage.swift"); fi
+      "$bin/swiftc" "${flags[@]}" "${files[@]}" -emit-ir "$here/ClockProbe.swift" "$here/../FirmwareProbe/Memory.swift" -o "$d/$part.ll"
+      "$bin/clang" -target aarch64-none-none-elf -ffunction-sections -fdata-sections -Oz -c "$d/$part.ll" -o "$d/$part.o"
+    done
+    cat > "$d/reader.ld" <<'LD'
+ENTRY(tarwin_test_clock_read)
+SECTIONS {
+  . = 0x100011000;
+  .text : { *(.text.tarwin_test_clock_read) *(.text*) *(.rodata*) }
+  ASSERT(tarwin_test_clock_read == 0x100011000, "reader entry")
+  ASSERT(. <= 0x100014000, "reader exceeds RX page")
+  .data : { *(.data*) *(.bss*) }
+  ASSERT(SIZEOF(.data) == 0, "user reader must have no writable globals")
+}
+LD
+    "$bin/ld.lld" --gc-sections -T "$d/reader.ld" "$d/reader.o" "$d/counter.o" -o "$d/reader.elf"
+    "$bin/llvm-objcopy" -O binary --only-section=.text "$d/reader.elf" "$d/reader.bin"
+    for mode in clock-ro clock-el0; do
+      opts=()
+      if [[ $mode == clock-el0 ]]; then opts=(-DTEST_SLICE); fi
+      "$bin/clang" -target aarch64-none-none-elf -march=armv9.4-a+gcs -DTEST_GCS -DTEST_TIME_PAGE \
+        ${opts[@]+"${opts[@]}"} -I "$d" -c "$d/start.S" -o "$d/clock-start.o"
+      "$bin/ld.lld" --gc-sections -T "$d/sections" "$d/clock-start.o" "$d/host.o" "$d/publisher.o" \
+        "$d/counter.o" "$d/dispatch.o" -o "$d/$mode.elf"
+      run_guest "$mode"
+      if [[ $mode == clock-el0 ]]; then
+        grep -Fx 'VHE-EL0-SHARED-CLOCK-READ' "$d/log"
+        grep -Fx 'VHE-EL0-SMEARED-UTC-AND-KERNEL-UPDATE' "$d/log"
+        grep -Fx 'VHE-THREAD-PROCESS-CPU-TWO-RUNS-NO-HOST-GAP' "$d/log"
+        [[ $(grep -Fc '...from EL0 to EL2' "$d/exceptions") == 2 ]]
+      else grep -Fx 'VHE-TIME-PAGE-EL0-RO' "$d/log"; fi
+    done
+  fi
   "$bin/clang" -target aarch64-none-none-elf -march=armv9.4-a+gcs -DTEST_GCS -DTEST_WRONG_BANK -c "$d/start.S" -o "$d/wrong.o"
   "$bin/ld.lld" --gc-sections -T "$d/sections" "$d/wrong.o" "$d/host.o" "$d/gcs-probe.o" -o "$d/wrong.elf"
   run_guest wrong
   grep -Fx 'VHE-REFUSED-MISMATCHED-PIE-BANK' "$d/log"
-elif [[ ${TARBOOT_TEST_RO_GENID:-0} == 1 ]]; then
-  echo 'guarded high generation diagnostic requires GCS, S1PIE and TCRX' >&2
+elif [[ ${TARBOOT_TEST_RO_GENID:-0} == 1 || ${TARBOOT_TEST_TIME_PAGE:-0} == 1 || ${TARBOOT_TEST_PROCESS_CURRENT:-0} == 1 ]]; then
+  echo 'requested guarded diagnostic requires GCS, S1PIE and TCRX' >&2
   exit 1
 fi

@@ -90,3 +90,30 @@ The guarded-interval guest also checks a fresh versioned sample before
 each diagnostic EL0 entry. The measured import and entry APIs accept the
 kernel mapping, not a caller-supplied word reader. Neither test logs the
 ID or serves as a restore fence or signed process authorization.
+
+Set `TARBOOT_TEST_TIME_PAGE=1` to exercise the W1 clock mapping primitive
+on stock QEMU. The kernel publishes through its high RW/NX alias, and the
+child gets the first page of the A.2 shared region, not an image page.
+One guest checks the EL0 read and write translations
+of the same physical clock page. A second runs the Embedded Swift reader
+at EL0 with CNTVCT access; it checks monotonic, boot and UTC in the
+middle of a 24-hour positive leap smear, after a synthetic 12-hour sleep.
+The user checks the interpolation against the ideal linear correction (within
+one nanosecond of rounding). After the first diagnostic SVC the kernel
+publishes a test administrative UTC step; the resumed process checks the
+new offset through the unchanged mapping. No time syscall, signed application, SMP counter
+calibration, or live power transition is exercised.
+
+This guest also brackets both EL0 runs and their entry/return overhead with
+the kernel's thread and process CPU clocks. Each SVC ends one interval;
+neither clock advances during host work between runs. The clocks are not
+published in the shared time page. This does not test a LibTessera CPU-time
+query or SMP scheduling. Hosted tests cover two simultaneously running
+threads, migration between counters with different origins, and stale stops.
+
+With `TARBOOT_TEST_PROCESS_CURRENT=1`, a separate unsigned process runs
+the actual generated LibTessera body on a private RX page. Its first SVC
+reaches the current-process provider; the returned handle names that process
+with the expected rights. A second SVC outside LibTessera must stop without
+invoking the provider again. The active-host-root check accepts TTBR1 and
+rejects the user root before each interval. This is not signed init staging.
