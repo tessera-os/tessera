@@ -1,5 +1,8 @@
 # HOSTED composition checks
 
+Canonical package path: `tarwin/conformance/tarwind-hosted`. The distinct folder
+name avoids SwiftPM's root identity collision with `tarwin-syscall/hosted`.
+
 Run `swift build` and `swift test` here on Apple silicon macOS 26 with the
 neighboring `tessera/build/tarwin-hosted` package present. For separate Cairn
 mounts, set `TARWIN_HOSTED_ROOT` to that package and `TARWIN_SOURCE_ROOT` to the

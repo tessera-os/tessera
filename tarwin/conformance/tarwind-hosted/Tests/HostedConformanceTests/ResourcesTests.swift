@@ -11,7 +11,7 @@ import TarwinIPC
 import TarwinNetHosted
 import TarwinReadOnlyFS
 import TarwinSyscall
-import TarwindKernel
+@testable import TarwindKernel
 
 private final class ResourceHost: TarwindSystemVolumeVerifier, @unchecked Sendable {
   var root: [UInt8] = []
@@ -175,6 +175,11 @@ final class ResourcesTests: XCTestCase {
     let kernel = try Tarwind.boot(config, host: host)
     defer { kernel.shutdown() }
     let process = kernel.createKernelProcess(name: "network")
+    XCTAssertThrowsError(try kernel.connectNetwork(process: process, to: .loopback(.v4, port: 9))) {
+      guard case NetError.denied = $0 else { return XCTFail("\($0)") }
+    }
+    XCTAssertEqual(kernel.networkDecisions(process: process).last?.socketCreated, false)
+    try kernel.grant(process: process, .network(NetPolicy(rules: [NetRule(.allow)])))
     let listener = try kernel.listenNetwork(process: process, on: .loopback(.v4))
     let client = try kernel.connectNetwork(process: process, to: XCTUnwrap(listener.local))
     try awaitReady(listener, mask: 1, kernel: kernel, process: process)
@@ -223,6 +228,7 @@ final class ResourcesTests: XCTestCase {
     let kernel = try Tarwind.boot(config, host: host, devices: registry)
     defer { kernel.shutdown() }
     let process = kernel.createKernelProcess(name: "driver")
+    try kernel.grant(process: process, .device(kind: "fake"))
     let send = try kernel.openHostDevice(process: process, kind: "fake", slot: 0)
     let events = try HostEventQueue()
     let token = try events.registerMachPort(provider.receive)
