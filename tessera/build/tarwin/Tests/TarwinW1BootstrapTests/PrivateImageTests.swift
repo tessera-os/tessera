@@ -90,6 +90,7 @@ private func stageImages(
   var sign = true
   var calls = 0
   var signedCalls = 0
+  var generationLow: UInt64 = 1
   func signSlot(
     _ target: UInt64, _ modifier: UInt64, root: UInt64, child: borrowing ProcessExecution,
     tree: borrowing JobTree
@@ -97,7 +98,7 @@ private func stageImages(
     let host: UInt64 = 0x80000
     return signProcessImport(
       target, modifier, plan: plan, root: root, host: host, child: child,
-      tree: tree, keys: keys
+      tree: tree, keys: keys, current: { .virtualMachine(low: generationLow, high: 2) }
     ) { addr, mod, p, ttbr1 in
       signedCalls += 1
       #expect(addr == plan.targetAddress && mod == plan.storageModifier && ttbr1 == host)
@@ -211,5 +212,11 @@ private func stageImages(
         images, child: &other, tree: otherTree, ids: ids, accepted: false, stack: stack)
     }
   }
+  let beforeRotation = signedCalls
+  for id: UInt64 in [3, 1] {
+    generationLow = id
+    #expect(signSlot(plan.targetAddress, plan.storageModifier, root: base, child: child, tree: tree) == nil)
+  }
+  #expect(signedCalls == beforeRotation)
   try checkStartupFrame(images, child: &child, tree: tree, ids: ids, accepted: true, stack: stack)
 }

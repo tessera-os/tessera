@@ -2,7 +2,9 @@ import TarwinArchAarch64
 import TarwinLoader
 import TarwinObject
 import TarwinProcessKeys
+import TarwinRandomCore
 import TarwinW0Verify
+import TarwinW1Generation
 
 #if hasFeature(Embedded) && arch(arm64) && os(none)
   @_extern(c, "tarwin_w1_sign_private_import")
@@ -14,12 +16,13 @@ import TarwinW0Verify
 func signProcessImport(
   _ target: UInt64, _ modifier: UInt64, plan: W1AddressPlan, root: UInt64, host: UInt64,
   child: borrowing ProcessExecution, tree: borrowing JobTree, keys: borrowing ArmProcessKeys,
+  current: () -> RandomEpoch?,
   _ sign: (UInt64, UInt64, UnsafePointer<UInt64>, UInt64) -> UInt64
 ) -> UInt64? {
   guard root != host, target == plan.targetAddress, modifier == plan.storageModifier else {
     return nil
   }
-  return keys.withImportIA(child: child, root: root, tree: tree) { ia in
+  return keys.withImportIA(child: child, root: root, tree: tree, current: current) { ia in
     guard ia.count == 2, let p = ia.baseAddress else { return nil }
     let result = sign(target, modifier, p, host)
     return result == 0 ? nil : result
@@ -30,12 +33,14 @@ func signProcessImport(
 /// physical base as initialMap, then provision its non-exportable key bank.
 /// Keep the tree, task and map locked and the archive, scratch and key bank
 /// disjoint from the pool. On failure retire the unpublished child and keys.
+/// Serialize live generation sampling and signing against VM restoration.
 @unsafe public func preparePrivateW1Images(
   _ set: borrowing W1BootSet, plan: W1AddressPlan,
   archive: UnsafeRawBufferPointer, storage: UnsafeMutableRawBufferPointer,
   physical: UInt64, tableBytes: Int, nodes: UnsafeMutableBufferPointer<BlakeCv>,
   witnesses: UnsafeMutableRawBufferPointer, cleanToPoU: (UnsafeRawBufferPointer) -> Bool,
   child: borrowing ProcessExecution, tree: borrowing JobTree, keys: borrowing ArmProcessKeys,
+  generation: W1GenerationSource, readWord: (UInt64) -> UInt64?,
   host: borrowing ArmFinishedKernelRoot, firstThread: consuming W1ThreadPlacement
 ) -> W1PrivateImages? {
   guard host.physical != physical else { return nil }
@@ -46,7 +51,7 @@ func signProcessImport(
     signImport: { target, modifier in
       signProcessImport(
         target, modifier, plan: plan, root: physical, host: host.physical,
-        child: child, tree: tree, keys: keys
+        child: child, tree: tree, keys: keys, current: { generation.current(readWord: readWord) }
       ) { address, slot, pair, ttbr1 in
         #if hasFeature(Embedded) && arch(arm64) && os(none)
           signIA(address, slot, pair, ttbr1)

@@ -3,7 +3,9 @@ import TarwinBoot
 import TarwinIPCChannels
 import TarwinObject
 import TarwinProcessKeys
+import TarwinRandomCore
 import TarwinSyscall
+import TarwinW1Generation
 
 #if hasFeature(Embedded) && arch(arm64) && os(none)
   @_extern(c, "tarwin_w1_guarded_slice")
@@ -34,9 +36,11 @@ public struct W1GuardedExecution: ~Copyable {
   /// This is a single synchronous interval, not a scheduler. A successful
   /// call captured an exception, not necessarily a syscall or a valid entry.
   /// Nothing can re-enter this thread until dispatch accepts the capture.
+  /// Exclude restoration across the fresh live generation read and use.
   @unsafe public mutating func enter(
     child: borrowing ProcessExecution, selected: borrowing ThreadExecution,
     tree: borrowing JobTree, keys: borrowing ArmProcessKeys,
+    generation: W1GenerationSource, readWord: (UInt64) -> UInt64?,
     host: borrowing ArmFinishedKernelRoot, stacks: ArmStopStacks
   ) -> Bool {
     guard phase == .ready, child.header == task, selected.header == thread,
@@ -45,7 +49,8 @@ public struct W1GuardedExecution: ~Copyable {
     else { return false }
     let root = user.physical
     let upper = host.physical
-    let ran = keys.withThreadKeys(child: child, thread: selected, root: root, tree: tree) { words in
+    let ran = keys.withThreadKeys(child: child, thread: selected, root: root, tree: tree,
+      current: { generation.current(readWord: readWord) }) { words in
       guard words.count == 10, let bank = words.baseAddress else { return false }
       #if hasFeature(Embedded) && arch(arm64) && os(none)
         return runSlice(
