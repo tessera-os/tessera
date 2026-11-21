@@ -10,7 +10,7 @@ Integration contract:
 - Slot operations resolve their handle, rights and epoch before entry. Invoke the interrupt methods under the binding lock. Revocation must complete before a replacement receives an interrupt or MMIO grant.
 - Configuration access policy comes from trusted enumeration, never a driver bitmap. Unknown/side-effect registers are not raw-writable. The version predicate covers released Driver API months only, starting 26.11.
 
-A legacy Intel VT-d backend is described below; architecture interrupt entry, the MMU, registry service and capability table are not supplied here. Neither DMA isolation on physical hardware nor restart timing has been measured.
+A legacy Intel VT-d backend is described below; architecture interrupt entry, MMU and capability-table bindings are not supplied here. Neither DMA isolation on physical hardware nor restart timing has been measured.
 
 ## Swift profiles
 
@@ -45,3 +45,11 @@ The kernel-only backend binds an isolated PCI requester to a nonzero domain with
 Leaf permissions follow the pin's DMA direction. Clearing a leaf's permissions leaves its IOVA occupied until synchronous global IOTLB invalidation (including drain reads/writes) acknowledges. A failed invalidate quarantines it for retry. Context teardown similarly prevents requester reassignment until both caches acknowledge. The caller retains all frames, tables, domain IDs and group ownership until teardown succeeds. This profile has no device ATCs, queued invalidation, PASIDs, interrupt remapping, reserved-region/ACPI discovery, or device assignment to guests. It does not admit an ATS-capable attachment unless ATS remains disabled at the requester.
 
 See the optional virtio QTest for a device-model readback with a fresh IOVA and a same-IOVA remap. Real platform route/group discovery, cache management, pinning, physical DMA and restart-time budgets remain unverified.
+
+## Physical device registry
+
+The kernel accepts a complete parent-first firmware/PCI inventory, not driver-reported MMIO, group membership or identity. The platform supplies the salted stable ID; the registry separately issues boot-local IDs that never repeat. Missing group coverage permits enumeration but never slot assignment. DeviceRoot holders may snapshot or read the latest delta; a lapped reader must take a full snapshot. This is the privileged inventory, not the public DeviceKit matching service.
+
+Freeze admission on any topology change before resampling, under the same hardware hotplug lock that stops bus mastering. The registry invalidates each changed node, its provider descendants and every inseparable group peer. It publishes removals leaf first and additions parent first. Before replacements can acquire slots it masks interrupts, revokes CPU mappings and drains DMA for all affected groups, resetting surviving groups. Failed drain keeps grants frozen. A notification during a retry requires another snapshot before thaw. A replacement at the same physical address receives a new boot ID even when the original group number or slot epoch would otherwise match.
+
+The q35 QTest now discovers its disk and NIC requester IDs through PCI header enumeration and a read-only registry snapshot rather than assuming device addresses. The synthetic inventory does not infer IOMMU groups from PCI addresses. Real platforms must verify ACS/alias topology and supply stable-ID generation, DeviceRoot resource lookup, hotplug notifications and synchronous group teardown. Physical hot-plug is not verified.

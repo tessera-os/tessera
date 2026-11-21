@@ -35,12 +35,14 @@ private struct Registers: VtdRegisters {
 final class TranslatedDisk {
   private let domain: VtdDomain, unit: VtdLegacyUnit
   private var tables: Tables, registers: Registers, binding: VtdBinding
+  private let requester: UInt16
   let bias: UInt64
   private(set) var retired = 0
 
   init(_ q: QTest) throws {
-    for device in 4...6 {
-      _ = q.send("outl 0xcf8 \(0x8000_0004 + device * 0x800)")
+    requester = try q.requester(type: 2)
+    for rid in [requester, try q.requester(type: 1), try q.requester(type: 1, instance: 1)] {
+      _ = q.send("outl 0xcf8 \(0x8000_0004 + Int(rid) * 0x100)")
       let response = q.send("inw 0xcfc")
       guard response.hasPrefix("0x"), let command = UInt16(response.dropFirst(2), radix: 16),
         command & 4 == 0
@@ -50,7 +52,7 @@ final class TranslatedDisk {
     var reg = Registers(q: q)
     guard let unit = VtdLegacyUnit(registerBytes: 4096, registers: &reg), unit.maxDomain >= 1,
       let root = mem.allocateTable(), let d = VtdDomain(id: 1, physicalBits: 39, memory: &mem),
-      let binding = d.bind(rootTable: root, requester: 4 << 3, unit: unit, memory: &mem)
+      let binding = d.bind(rootTable: root, requester: requester, unit: unit, memory: &mem)
     else { throw Failure("Missing legacy VT-d unit or private domain") }
     var selected: UInt64?
     var rng = SystemRandomNumberGenerator()
@@ -80,7 +82,7 @@ final class TranslatedDisk {
   }
   func close(_ q: QTest) throws {
     // No pending virtqueue chains; block new DMA before clearing the context.
-    _ = q.send("outl 0xcf8 0x80002004")
+    _ = q.send("outl 0xcf8 \(0x8000_0004+Int(requester)*0x100)")
     _ = q.send("outw 0xcfc 2")
     let value = q.send("inw 0xcfc")
     guard value.hasPrefix("0x"), let command = UInt16(value.dropFirst(2), radix: 16),

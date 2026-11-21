@@ -25,6 +25,7 @@ private struct DeviceTreeBlob: ByteSource {
 final class QTest {
   private let process = Process(), input = Pipe(), output = Pipe()
   private var buffered = Data()
+  private(set) var pciNodes: [RegistryNode] = []
   private(set) var mmio: [DeviceRange] = []
   private(set) var error: Error?
 
@@ -77,6 +78,19 @@ final class QTest {
     process.standardInput = input
     process.standardOutput = output
     try process.run()
+    if machine == .x64 {
+      do { pciNodes = try enumerateQ35(self) } catch {
+        close()
+        throw error
+      }
+    }
+  }
+  func requester(type: UInt16, instance: Int = 0) throws -> UInt16 {
+    let identity = ((0x1040 + UInt64(type)) << 16) | 0x1af4
+    let match = pciNodes.filter { $0.device.identity == identity }
+    guard match.indices.contains(instance), case .pci(0, let bdf) = match[instance].device.location
+    else { throw Failure("Missing modern PCI function") }
+    return bdf
   }
   func close() {
     if process.isRunning { process.terminate() }

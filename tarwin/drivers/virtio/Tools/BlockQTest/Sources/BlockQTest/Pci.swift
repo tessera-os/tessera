@@ -1,4 +1,5 @@
 import Foundation
+import TarwinDevice
 import VirtioGuest
 
 // QTest boots no firmware. Assign the scratch virtio function's memory BARs
@@ -8,9 +9,10 @@ func pciTransport(
   _ q: QTest, type: UInt16, instance: Int, supported: UInt32,
   queues: [QueueMemory]
 ) throws -> DeviceTransport {
-  let function = type == 2 ? 4 : 5 + instance
+  let bdf = try q.requester(type: type, instance: instance)
+  let barWindow = type == 2 ? 0 : 1 + instance
   func select(_ offset: Int) {
-    _ = q.send("outl 0xcf8 \(0x8000_0000 + function * 0x800 + (offset & ~3))")
+    _ = q.send("outl 0xcf8 \(0x8000_0000 + Int(bdf) * 0x100 + (offset & ~3))")
   }
   func cfg(_ offset: Int) throws -> UInt32 {
     select(offset)
@@ -29,7 +31,7 @@ func pciTransport(
   _ = q.send("outw 0xcfc 0")
   var bars = [UInt64](repeating: 0, count: 6)
   var sizes = bars
-  var next: UInt64 = 0xc000_0000 + UInt64(function - 4) * 0x1000000
+  var next: UInt64 = 0xc000_0000 + UInt64(barWindow) * 0x1000000
   var i = 0
   while i < 6 {
     let off = 16 + i * 4
@@ -51,7 +53,7 @@ func pciTransport(
         throw Failure("Invalid BAR size")
       }
       next = (next + size - 1) & ~(size - 1)
-      guard next + size <= 0xc000_0000 + UInt64(function - 3) * 0x1000000 else {
+      guard next + size <= 0xc000_0000 + UInt64(barWindow + 1) * 0x1000000 else {
         throw Failure("Synthetic BAR aperture exhausted")
       }
       bars[i] = next
@@ -96,4 +98,47 @@ func pciTransport(
     features: features, config: { UInt8(q.read("b", cfgBase + UInt64($0))) },
     notify: { q.write("w", notifications[$0], UInt16($0)) },
     acknowledge: { _ = q.read("b", isr) })
+}
+
+// QTest grants no DeviceRoot to a guest. This read-only host-side enumeration
+// uses q35 PCI mechanism #1 for the standard header fields that ECAM shares.
+private struct InventoryOnly: GroupTeardown {
+  func maskInterrupts(group: UInt64) -> Bool { false }
+  func revokeMaps(group: UInt64) -> Bool { false }
+  func retireDma(group: UInt64) -> Bool { false }
+  func reset(group: UInt64) -> Bool { false }
+}
+func enumerateQ35(_ q: QTest) throws -> [RegistryNode] {
+  var bad = false
+  let functions = enumerateEcam(0, 255) { offset in
+    let reg = offset & 4095
+    guard reg < 256 else {
+      bad = true
+      return .max
+    }
+    _ = q.send("outl 0xcf8 \(0x8000_0000|(offset>>12)<<8|reg)")
+    let word = q.send("inl 0xcfc")
+    guard word.hasPrefix("0x"), let v = UInt32(word.dropFirst(2), radix: 16) else {
+      bad = true
+      return .max
+    }
+    return v
+  }
+  guard !bad else { throw q.error ?? Failure("Failed PCI enumeration") }
+  func location(_ p: PciFunction) -> DeviceLocation {
+    .pci(segment: 0, requester: UInt16(p.bus << 8 | p.device << 3 | p.functionNumber))
+  }
+  let devices = functions.map { p in
+    HardwareDevice(
+      location: location(p), parent: p.parent < 0 ? nil : location(functions[p.parent]),
+      stable: StableDeviceID(high: 1, low: UInt64(p.bus << 8 | p.device << 3 | p.functionNumber)),
+      identity: UInt64(p.identity), deviceClass: p.classRevision >> 8,
+      group: nil, mmio: [], wiredInterrupts: 0, powerStates: 0, wakeCapable: false)
+  }
+  var r = HardwareRegistry(limit: 4096)!
+  var provider = InventoryOnly()
+  guard r.stage(devices, reason: .orderly), r.commit(&provider),
+    case .snapshot(_, let nodes) = r.changes(deviceRoot: true, after: nil)
+  else { throw Failure("Invalid PCI registry snapshot") }
+  return nodes
 }
