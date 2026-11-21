@@ -128,7 +128,7 @@ Each piece owns its paths; a change outside them goes through the owner. Interfa
 
 | Piece | Owns | Delivers | Needs first |
 | --- | --- | --- | --- |
-| H1 Hosted kernel | `tarwin/tarwin-arch-hosted/`, `tessera/build/tarwin-hosted/` (the `tarwind` composition), `tarwin/conformance/hosted/` | Layer 0 for macOS, `tarwind` linking layers 1-5, scheduling (HS-010), time (section 8), exceptions, hosted suite runs | none |
+| H1 Hosted kernel | `tarwin/tarwin-arch-hosted/`, `tessera/build/tarwin-hosted/` (the `tarwind` composition), `tarwin/conformance/tarwind-hosted/` | Layer 0 for macOS, `tarwind` linking layers 1-5, scheduling (HS-010), time (section 8), exceptions, hosted suite runs | none |
 | H2 Task host and gate | `tarwin/tarwin-task/`, `tarwin/tarwin-syscall/hosted/`, `libtessera/app/Backend/Tarwin/hosted/` | Task creation, command protocol, sandbox, gate stub and dispatch, trap-site rewriting, TLS check | none; publishes the protocol first |
 | H3 Hosted memory and loader | `tarwin/tarwin-mm/hosted/`, `tarwin/tarwin-loader/hosted/` | Memory entries, purgeable, file-backed faults, footprint and jetsam, image placement, sealing, shared code pages | H2 protocol |
 | H4 Storage and network | `tarwin/tarwin-block/hosted/`, `tarwin/tarwin-net/hosted/`, `tarwin/trfs/` (hosted mount) | File-backed block device, TRFS disk, shared-folder server, socket endpoints and filtering | H1 |
