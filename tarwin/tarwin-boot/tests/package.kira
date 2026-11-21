@@ -1,4 +1,0 @@
-construct TarwinBootTests extends Package {
-    let kind: PackageKind = .App
-    let dependencies: [Dependency] = [Dependency { name: "TarwinBoot", path: ".." }, Dependency { name: "KCore", path: "../../kcore" }]
-}

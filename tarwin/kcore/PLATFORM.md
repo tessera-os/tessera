@@ -1,12 +1,16 @@
 # Platform implementation status — 26.11.1
 
-Run `sh tessera-packages/tarwin/platform-tests.sh` on a host with Kira and its matching KLF distribution. Set `KIRA` to the driver path and `KLF_HOME` to the extracted KLF distribution when not using knvm. Kira 26.10.4 on macOS arm64 builds these as host executables, not kernel images.
+The eight Swift packages keep freestanding source under `Sources/` and hosted tests under `tests/`. Run from the repository root on macOS using Swift 6.3.3:
+
+    sh tessera-packages/tarwin/platform-tests.sh
+
+Set `SWTPM_REPLAY=1` (requires swtpm) and `QEMU_TREES=1` (requires QEMU aarch64/riscv64 and dtc) for interop tests. Set `EMBEDDED_SWIFTC` to the swift.org release toolchain's swiftc to also compile each module as a non-allocating Embedded Swift ELF object for aarch64, x64 and rv64. Xcode's bundled toolchain may lack the bare-metal standard library modules. Nothing here links the hosted runtime into a kernel.
 
 | Package | Portable code exercised by the host programs | Not implied |
 | --- | --- | --- |
 | kcore | Checked unsigned intervals and alignment | Kernel standard library or verified context/stack discipline |
 | tarboot | Slot choice, counter transition calculation, version floor, TIRA table and member validation | Writing firmware variables, verifying member hashes or release signatures, recovery entry |
-| tarwin-boot | Little-endian TBIB revision 1 encoder, streaming decoder, sorted memory map validation, SHA-256 TPM extend and TCG Event2 bytes | Physical address ownership, train history validation, live CRB/TIS or DICE, CPU entry |
+| tarwin-boot | Little-endian TBIB revision 1 encoder, streaming decoder, sorted memory map validation, SHA-256 TPM extend and TCG Event2 bytes, flattened device tree RAM and static reservations | Physical address ownership, train history validation, live CRB/TIS or DICE, CPU entry |
 | arch packages | Stage-one user leaf descriptors and walk indices for the ordinary page granule on each ISA | Live page tables, TLB maintenance, trap/interrupt handling or an instruction executed on that ISA |
 | tarwin-mm | Physical page arenas, mapping restrictions, A.2 regions, zero/copy/tag restoration, LZ4 blocks, file-cache leases, footprint, purge and jetsam selection | Live page faults, a running reclamation thread, TRFS backing, swap, zstd compaction or a kernel heap |
 | tarwin-time | Integer counter conversion, slew and coalescence arithmetic, watchdog thresholds | Clock sampling, timer delivery, wake sources, or a watchdog interrupt |
@@ -21,6 +25,6 @@ Run `sh tessera-packages/tarwin/platform-tests.sh` on a host with Kira and its m
 
 ### Pending gates
 
-**Software TPM interop:** set `SWTPM_REPLAY=1` when running the platform tests on a host with Python 3 and `swtpm`. The additional test sends the Kira-generated PCR_Extend command to a fresh TPM 2.0 emulator, reads PCR 8 before and after and compares it to replay of the Kira-generated event. The digest is test data; this does not verify firmware provenance, real boot-set hashing, signature checks or DICE.
+The TPM test sends a Swift-encoded PCR_Extend command to a fresh software TPM and checks PCR 8 against SHA-256 replay of its Event2 digest. The firmware tests consume QEMU-generated device trees, not a running kernel.
 
-The released driver has no kernel-profile TIR output. In Swift KLF, `KLFKira/KiraSyntax.swift` explicitly reports lexing and parsing as unsupported. Do not link a KIR host executable, general std, Linux kernel or foreign assembly as a substitute. Boot hardware discovery, freestanding linking, firmware services, kernel entry and the end-to-end §34 suites remain outstanding. No QEMU boot, three-ISA kernel execution, reference hardware, canonical TRFS verification or ten-run same-device Linux comparison has been verified here.
+Compiler object checks do not verify generic specializations for unknown future callers, kernel-profile TIR, interrupt/stack discipline or a linked kernel. W0 entry, firmware authentication, live page faults, three-ISA execution, reference hardware, canonical TRFS and same-device performance comparisons remain unverified.

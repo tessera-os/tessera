@@ -1,6 +1,0 @@
-construct Tarboot extends Package {
-    let version: String = "26.11.1"
-    let kind: PackageKind = .Library
-    let dependencies: [Dependency] = [Dependency { name: "KCore", path: "../kcore" }]
-    let moduleRoot: String = "Tarboot"
-}

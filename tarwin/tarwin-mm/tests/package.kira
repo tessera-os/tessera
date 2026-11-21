@@ -1,7 +1,0 @@
-construct TarwinMMTests extends Package {
-    let kind: PackageKind = .App
-    let dependencies: [Dependency] = [
-        Dependency { name: "KCore", path: "../../kcore" },
-        Dependency { name: "TarwinMM", path: ".." }
-    ]
-}

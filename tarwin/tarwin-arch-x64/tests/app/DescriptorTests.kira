@@ -1,9 +1,0 @@
-import TarwinArchX64
-
-@Main
-function main() -> I32 {
-    if x64UserPage(0x3000, 48, true, false) != 0x8000000000003007 || x64UserPage(0x3000, 48, false, true) != 0x3005 { return 1 }
-    if x64UserPage(4095, 48, true, false) != 0 || x64UserPage(0, 48, true, true) != 0 || x64UserPage(U64(1) << 40, 40, false, true) != 0 { return 2 }
-    if x64WalkIndex(0x1ff000, 0, false) != 511 || x64WalkIndex(U64(1) << 48, 4, true) != 1 { return 3 }
-    return 0
-}
