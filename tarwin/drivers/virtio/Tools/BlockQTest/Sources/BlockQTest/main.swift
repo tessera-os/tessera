@@ -32,7 +32,8 @@ final class QTest {
 
   init(
     binary: String, machine: Machine, disk: URL, translated: Bool, neighbors: Bool,
-    extraDevices: [String] = [], tcpFixture: Bool = false, listenerSocket: String? = nil
+    extraDevices: [String] = [], tcpFixture: Bool = false, listenerSocket: String? = nil,
+    nvme: Bool = false
   ) throws {
     process.executableURL = URL(fileURLWithPath: binary)
     process.arguments = [
@@ -41,9 +42,11 @@ final class QTest {
       "-qtest", "stdio", "-qtest-log", "/dev/null",
       "-drive", "if=none,id=scratch,format=raw,file=" + disk.path,
       "-device",
-      machine == .x64
-        ? "virtio-blk-pci,disable-legacy=on,addr=04.0,drive=scratch,iommu_platform=on"
-        : "virtio-blk-device,drive=scratch,iommu_platform=on",
+      nvme
+        ? "nvme,serial=tarwin-test,drive=scratch"
+        : machine == .x64
+          ? "virtio-blk-pci,disable-legacy=on,addr=04.0,drive=scratch,iommu_platform=on"
+          : "virtio-blk-device,drive=scratch,iommu_platform=on",
     ]
     process.arguments! += extraDevices
     if translated {
@@ -255,27 +258,7 @@ func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?, encrypted
   let data: UInt64 = machine.ram + 0x111000
   let status: UInt64 = machine.ram + 0x112000
   let pattern = (0..<512).map { String(format: "%02x", ($0 ^ 0xa5) & 255) }.joined()
-  let memory = UnsafeMutableRawBufferPointer.allocate(byteCount: 4096 + 8192, alignment: 4096)
-  defer { memory.deallocate() }
-  guard let mapping = IoRingMapping(initializing: memory, count: 64, stride: 64),
-    var requests = mapping.endpoint(completion: false, producer: true),
-    var service = mapping.endpoint(completion: false, producer: false),
-    var replies = mapping.endpoint(completion: true, producer: true),
-    var client = mapping.endpoint(completion: true, producer: false)
-  else { throw Failure("Bad block ring") }
-  let credits = UnsafeMutableBufferPointer<PortSlot>.allocate(capacity: 1)
-  credits.initialize(repeating: PortSlot())
-  let bindings = UnsafeMutableBufferPointer<BlockPortSlot>.allocate(capacity: 1)
-  bindings.baseAddress!.initialize(to: BlockPortSlot())
-  defer {
-    bindings.deinitialize()
-    bindings.deallocate()
-    credits.deinitialize()
-    credits.deallocate()
-  }
-  var user = TestClient(port: CompletionPort(storage: credits)!)
-  var scheduler = PortBlockQueue(
-    capacity: capacity, blockBytes: 512, queueCount: 1, depth: 1, slots: bindings)!
+  let channel = BlockChannel(capacity: capacity, blockBytes: 512)
   let list = machine.ram + 0x113000
   let scatter = dma == nil
   let firstBytes = scatter ? 193 : 512
@@ -314,20 +297,15 @@ func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?, encrypted
       try dma.mapData(frame: physicalData, access: operation == .read ? .deviceWrite : .deviceRead)
     }
     let key = UInt64(operation.rawValue)
-    let cookie = scheduler.submit(
-      BlockCommand(
-        op: operation, lba: lba, blocks: blocks, qos: .interactive, queue: 0),
-      object: 2, key: key, port: 1, ports: &user)
     let payload =
       hasVector ? BlockPayload(list: list + bias, vectors: scatter ? 2 : 1) : BlockPayload()
-    guard cookie != 0,
-      case .ring(.transferred) = scheduler.publish(
-        queue: 0, payload: { _, _ in payload }, ring: &requests)
-    else { throw Failure("Block scheduler did not publish a request") }
     var record = RingRecord()
-    guard case .transferred = service.pop(into: &record),
+    let cookie = try channel.request(
+      BlockCommand(op: operation, lba: lba, blocks: blocks, qos: .interactive, queue: 0), key: key,
+      payload: payload, record: &record)
+    guard
       case .ready(let pending) = prepareBlockIo(
-        record, epoch: scheduler.epoch, queue: 0,
+        record, epoch: channel.epoch, queue: 0,
         config: config, header: header + bias, status: status + bias,
         rangeBuffer: dma == nil ? machine.ram + 0x114000 : nil,
         allows: { addr, n, writable in
@@ -398,21 +376,14 @@ func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?, encrypted
     }
     guard
       let done = pending.complete(
-        cookie: buffer.cookie, status: UInt8(q.read("b", status)), written: buffer.written),
-      case .transferred = replies.push(done.record()), case .transferred = client.pop(into: &record)
+        cookie: buffer.cookie, status: UInt8(q.read("b", status)), written: buffer.written)
     else { throw q.error ?? Failure("Malformed driver completion") }
-    guard scheduler.receive(queue: 0, record: record) == cookie,
-      scheduler.release(
-        id: cookie, at: 77, ports: &user,
-        retireBuffers: {
-          guard $0 == buffer.cookie else { return false }
-          let retire = { !hasVector || dma?.retireData(frame: physicalData) != false }
-          if let xts { return xts.finish(q, success: done.status == .ok, retire: retire) }
-          return retire()
-        }),
-      let packet = user.port.take(), packet.kind == 3, packet.key == key,
-      packet.error == 0, packet.result0 == (hasVector ? 512 : 0), user.references == 0
-    else { throw Failure("Block completion did not reach the client port") }
+    try channel.finish(done, id: cookie, key: key, bytes: hasVector ? 512 : 0) {
+      guard $0 == buffer.cookie else { return false }
+      let retire = { !hasVector || dma?.retireData(frame: physicalData) != false }
+      if let xts { return xts.finish(q, success: done.status == .ok, retire: retire) }
+      return retire()
+    }
     if op == .read {
       if dma != nil {
         try q.require(
@@ -441,7 +412,7 @@ func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?, encrypted
       dma.retired == 2 && q.read("l", 0xfed9_0034) == 0,
       "Unexpected remapping fault or missing drain")
   }
-  try q.require(user.notifications == ops.count, "Expected one wake per terminal packet")
+  try q.require(channel.notifications == ops.count, "Expected one wake per terminal packet")
 }
 
 func run() throws {
@@ -453,8 +424,10 @@ func run() throws {
   let tcp = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--tcp-receive"
   let listen = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--tcp-listen"
   let intx = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--intx"
+  let nvme = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--nvme"
   guard
-    CommandLine.arguments.count == 2 || translated || neighbors || streams || tcp || listen || intx,
+    CommandLine.arguments.count == 2 || translated || neighbors || streams || tcp || listen || intx
+      || nvme,
     let machine = Machine(
       rawValue: URL(fileURLWithPath: CommandLine.arguments[1]).lastPathComponent)
   else {
@@ -462,10 +435,15 @@ func run() throws {
   }
   guard !translated || machine == .x64 else { throw Failure("--vtd requires q35") }
   guard !intx || machine == .x64 else { throw Failure("--intx requires q35") }
+  guard !nvme || machine == .x64 else { throw Failure("--nvme requires q35") }
   let disk = FileManager.default.temporaryDirectory.appendingPathComponent(
     UUID().uuidString + ".raw")
   try Data(repeating: 0x6c, count: 1 << 20).write(to: disk, options: .withoutOverwriting)
   defer { try? FileManager.default.removeItem(at: disk) }
+  if nvme {
+    try testNVMe(binary: CommandLine.arguments[1], disk: disk)
+    return
+  }
   if listen {
     let dir = URL(fileURLWithPath: "/tmp").appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(
@@ -535,21 +513,23 @@ func run() throws {
 do {
   try run()
   print(
-    CommandLine.arguments.last == "--intx"
-      ? "PASS: observed disk INTx, IOAPIC masking, Device notifications and handle-authorized rearm on q35"
-      : CommandLine.arguments.last == "--tcp-receive"
-        ? "PASS: TCP active open, bidirectional stream, lost-segment retransmit and acknowledged FIN against isolated libslirp"
-        : CommandLine.arguments.last == "--tcp-listen"
-          ? "PASS: passive TCP handshake and bidirectional stream against restricted libslirp via a private Unix socket"
-          : CommandLine.arguments.last == "--byte-streams"
-            ? "PASS: bidirectional single-port virtio-console and short uncredited virtio-rng input"
-            : CommandLine.arguments.last == "--vtd-xts"
-              ? "PASS: AES-256-XTS known-answer sector over q35 VT-d, retired before decryption"
-              : CommandLine.arguments.last == "--vtd"
-                ? "PASS: q35 VT-d translated disk DMA, IOTLB drain and same-IOVA remap"
-                : CommandLine.arguments.last == "--neighbors"
-                  ? "PASS: router advertisement, SLAAC/DAD, ARP and IPv6 neighbor discovery against restricted libslirp"
-                  : "PASS: QEMU virtio-blk scatter/gather write/flush/readback, zero/discard extents and paced UDP delivery across isolated NICs"
+    CommandLine.arguments.last == "--nvme"
+      ? "PASS: discovered NVMe namespace, split-PRP FUA write, flush, readback, shutdown and backing-byte check on q35"
+      : CommandLine.arguments.last == "--intx"
+        ? "PASS: observed disk INTx, IOAPIC masking, Device notifications and handle-authorized rearm on q35"
+        : CommandLine.arguments.last == "--tcp-receive"
+          ? "PASS: TCP active open, bidirectional stream, lost-segment retransmit and acknowledged FIN against isolated libslirp"
+          : CommandLine.arguments.last == "--tcp-listen"
+            ? "PASS: passive TCP handshake and bidirectional stream against restricted libslirp via a private Unix socket"
+            : CommandLine.arguments.last == "--byte-streams"
+              ? "PASS: bidirectional single-port virtio-console and short uncredited virtio-rng input"
+              : CommandLine.arguments.last == "--vtd-xts"
+                ? "PASS: AES-256-XTS known-answer sector over q35 VT-d, retired before decryption"
+                : CommandLine.arguments.last == "--vtd"
+                  ? "PASS: q35 VT-d translated disk DMA, IOTLB drain and same-IOVA remap"
+                  : CommandLine.arguments.last == "--neighbors"
+                    ? "PASS: router advertisement, SLAAC/DAD, ARP and IPv6 neighbor discovery against restricted libslirp"
+                    : "PASS: QEMU virtio-blk scatter/gather write/flush/readback, zero/discard extents and paced UDP delivery across isolated NICs"
   )
 } catch {
   FileHandle.standardError.write(Data("\(error)\n".utf8))

@@ -10,6 +10,17 @@ func pciTransport(
   queues: [QueueMemory]
 ) throws -> DeviceTransport {
   let bdf = try q.requester(type: type, instance: instance)
+  let (config, bars, sizes) = try assignTestBars(
+    q, bdf: bdf, identity: (0x1040 + UInt32(type)) << 16 | 0x1af4)
+  guard case .found(let windows) = discoverVirtioPci(config, sizes, type),
+    windows.config.length >= (type == 2 ? 8 : type == 1 ? 6 : 0)
+  else { throw Failure("Invalid modern PCI capability list or device config") }
+  return try startVirtio(
+    q, type: type, supported: supported, queues: queues, bars: bars, windows: windows)
+}
+func assignTestBars(_ q: QTest, bdf: UInt16, identity: UInt32) throws -> (
+  [UInt8], [UInt64], [UInt64]
+) {
   guard bdf < 256, bdf & 7 == 0 else { throw Failure("Unsupported synthetic BAR topology") }
   let barWindow = Int(bdf >> 3)
   func select(_ offset: Int) {
@@ -27,7 +38,7 @@ func pciTransport(
     select(offset)
     _ = q.send("outl 0xcfc \(value)")
   }
-  try q.require(try cfg(0) == (0x1040 + UInt32(type)) << 16 | 0x1af4, "Missing modern PCI function")
+  try q.require(try cfg(0) == identity, "PCI function identity changed before BAR assignment")
   select(4)
   _ = q.send("outw 0xcfc 0")
   var bars = [UInt64](repeating: 0, count: 6)
@@ -75,9 +86,12 @@ func pciTransport(
     let value = try cfg(off)
     for j in 0..<4 { config.append(UInt8(truncatingIfNeeded: value >> (j * 8))) }
   }
-  guard case .found(let windows) = discoverVirtioPci(config, sizes, type),
-    windows.config.length >= (type == 2 ? 8 : type == 1 ? 6 : 0)
-  else { throw Failure("Invalid modern PCI capability list or device config") }
+  return (config, bars, sizes)
+}
+private func startVirtio(
+  _ q: QTest, type: UInt16, supported: UInt32, queues: [QueueMemory], bars: [UInt64],
+  windows: TransportWindows
+) throws -> DeviceTransport {
   let common = bars[Int(windows.common.bar)] + windows.common.offset
   func width(_ bytes: UInt32) -> String { bytes == 4 ? "l" : bytes == 2 ? "w" : "b" }
   let read: (UInt32, UInt32) -> UInt32 = { UInt32(q.read(width($1), common + UInt64($0))) }
