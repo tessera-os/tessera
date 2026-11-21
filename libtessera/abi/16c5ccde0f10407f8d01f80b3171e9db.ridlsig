@@ -1,0 +1,8 @@
+ridlsig 1
+uuid 16c5ccde0f10407f8d01f80b3171e9db
+added
+struct Rights { let raw : U64 }
+struct TesseraError { let code : U32 let subsystem : U16 let flags : U16 let detail : U64 }
+function handleClose ( handle : Handle ) -> Result < Void , TesseraError >
+function handleDuplicate ( handle : Handle , rights : Rights ) -> Result < Handle , TesseraError >
+superseded

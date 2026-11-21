@@ -47,6 +47,14 @@ Expanded Linux system interfaces for partitions, remote processors, kernel loggi
   `abi/6f1b36cbca464ed89885486fccf2a255.ridlsig`: `struct Handle { let raw: U64 }`
   and `function processCurrent() -> Handle`. This is the first additive slice of
   the RIDL surface, which Tarwin W1 needs. It is not the full SDK surface.
+- Three more additive, unsigned records, one per area:
+  `16c5ccde0f10407f8d01f80b3171e9db` handles (`handleClose`, `handleDuplicate`,
+  `Rights`, `TesseraError` as §4 lays it out, with integer `code`/`subsystem`),
+  `42aaa29dec7f48ec8dc4d4fe42b2835b` channels (`channelPeek`, `channelRead`,
+  `UNumber` as Kira's 16-byte word, `Buffer`, `MessageSize`, `ReceivedMessage`) and
+  `f7296b66ea6741c498d7c1a54ae66a28` exit (`processExit(code: I64)`, the source's
+  `endProcessNow`; it never returns, and RIDL writes that as `Void`).
+  `abi/LibTessera.ridlmeta` lists all four records.
 
 ## Changed
 

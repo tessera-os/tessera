@@ -6,3 +6,48 @@ struct Handle {
 }
 
 function processCurrent() -> Handle
+
+// Handles slice (§3, §4). TesseraError is laid out as §4 states; `code` and `subsystem` carry the
+// ErrorCode and Subsystem values of §4 as integers, since RIDL enums number cases by ordinal (§21.3).
+struct TesseraError {
+    let code: U32
+    let subsystem: U16
+    let flags: U16
+    let detail: U64
+}
+
+struct Rights {
+    let raw: U64
+}
+
+function handleClose(handle: Handle) -> Result<Void, TesseraError>
+function handleDuplicate(handle: Handle, rights: Rights) -> Result<Handle, TesseraError>
+
+// Channels slice (§2.1, §7). UNumber is Kira's 16-byte number word (KLF-RIDL §27.5), low half first.
+struct UNumber {
+    let low: U64
+    let high: U64
+}
+
+struct Buffer {
+    let address: RawPtr
+    let length: UNumber
+}
+
+struct MessageSize {
+    let bytes: UNumber
+    let handles: UNumber
+}
+
+struct ReceivedMessage {
+    let bytes: UNumber
+    let handles: [Handle]
+}
+
+function channelPeek(channel: Handle) -> Result<MessageSize, TesseraError>
+function channelRead(channel: Handle, bytes: borrow Buffer, handleCapacity: UNumber) -> Result<ReceivedMessage, TesseraError>
+
+// Process exit slice (§11.2). Source `endProcessNow(code: Number)` is exported as `processExit`, with
+// the signed 64-bit code §11.2 states. It never returns; RIDL has no never-returning result, so `Void`
+// stands in and a caller MUST NOT treat a return as success.
+function processExit(code: I64)

@@ -1,0 +1,10 @@
+ridlsig 1
+uuid 42aaa29dec7f48ec8dc4d4fe42b2835b
+added
+struct Buffer { let address : RawPtr let length : UNumber }
+struct MessageSize { let bytes : UNumber let handles : UNumber }
+struct ReceivedMessage { let bytes : UNumber let handles : [ Handle ] }
+struct UNumber { let low : U64 let high : U64 }
+function channelPeek ( channel : Handle ) -> Result < MessageSize , TesseraError >
+function channelRead ( channel : Handle , bytes : borrow Buffer , handleCapacity : UNumber ) -> Result < ReceivedMessage , TesseraError >
+superseded
