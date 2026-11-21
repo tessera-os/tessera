@@ -46,6 +46,42 @@ final class FrozenSDKTests: XCTestCase {
     }
   }
 
+  func testSupportedRecordDoesNotSubstituteForThePinnedW1Module() throws {
+    // Producer metadata from the unsigned four-slice SDK. The hash in
+    // §24.3 covers the whole module, not the supported UUID's declarations.
+    let file = try XCTUnwrap(Bundle.module.resourceURL)
+      .appendingPathComponent("InteropW1/sdk-additive-2387.ridlmeta")
+    let data = try Data(contentsOf: file)
+    XCTAssertEqual(
+      SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(),
+      "b54aceb082921a3610994275048a6d142083dbaac104d5be750f77886dd9b105")
+    let module = Data("LibTessera".utf8)
+    let digest = Data([
+      0xd2, 0x26, 0xcb, 0xbc, 0xb7, 0x5b, 0x5d, 0x36, 0x8b, 0x6d, 0xd1, 0xdf, 0x32, 0xf5, 0xbd,
+      0x89,
+      0xf7, 0xa4, 0xfc, 0x35, 0xa7, 0x26, 0x42, 0x41, 0x63, 0xce, 0x73, 0x59, 0xc2, 0xf4, 0x9d,
+      0x38,
+    ])
+    withContract { c in
+      data.withUnsafeBytes { bytes in
+        module.withUnsafeBytes { name in
+          let m = RIDLMetadata(bytes: bytes)
+          let id = RIDLIdentity(name: name, uuid: c.uuid)
+          XCTAssertTrue(m.supports(id))
+          XCTAssertFalse(m.supports(id, textSHA256: c.textSHA256))
+          digest.withUnsafeBytes { d in
+            XCTAssertTrue(m.supports(id, textSHA256: d))
+            XCTAssertFalse(
+              EarlyRIDLContract(
+                uuid: c.uuid, symbol: c.symbol, textSHA256: d,
+                typeTag: c.typeTag
+              ).isW1ProcessCurrent)
+          }
+        }
+      }
+    }
+  }
+
   // Optional producer cross-check only; do not sign, enroll or execute these files.
   func testUnsignedPairFromWriter() throws {
     let env = ProcessInfo.processInfo.environment
