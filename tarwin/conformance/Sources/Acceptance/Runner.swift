@@ -39,7 +39,7 @@ public func run(_ args: [String]) -> Int32 {
   }
   for ref in refs {
     print("reference \(ref.serial) (\(ref.arch))")
-    if args.count == 3 && !collect(args[2], root, ref) {
+    if (args.count == 3 && !collect(args[2], root, ref)) || !completedCollection(root, ref) {
       report("lab collection: " + ref.serial, .missing)
     }
     for key in deviceCases(ref) {
