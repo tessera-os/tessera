@@ -35,6 +35,7 @@ public enum FirmwareExit {
       ) -> UInt
     private typealias Exit = @convention(c) (UnsafeRawPointer, UInt) -> UInt
     private let image: UnsafeRawPointer
+    private let system: UnsafeRawPointer
     private let protocolFor: HandleProtocol?
     private let locate: LocateProtocol?
     private enum Measurement { case notAttempted, stopped, complete }
@@ -55,6 +56,7 @@ public enum FirmwareExit {
         let exit = boot.load(fromByteOffset: 232, as: Exit?.self)
       else { return nil }
       self.image = image
+      self.system = system
       self.protocolFor = boot.load(fromByteOffset: 152, as: HandleProtocol?.self)
       self.locate =
         boot.load(fromByteOffset: 12, as: UInt32.self) >= 328
@@ -74,6 +76,9 @@ public enum FirmwareExit {
         self.count = count
       }
     }
+
+    /// Snapshot firmware directory entries, without following their addresses.
+    @unsafe public func locateTables() -> FirmwareTableLocations? { tableLocations(system) }
 
     /// Fill only the dedicated 64-byte TBIB field. Verify the firmware/source
     /// provenance separately. No partial seed may escape a failed GetRNG.

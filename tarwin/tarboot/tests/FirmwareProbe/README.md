@@ -34,6 +34,21 @@ probe rechecks it in the final map and exercises it after exit; no seed or
 address is logged. This does not map a kernel at the chosen VA or establish the
 entropy quality of any physical source.
 
+The probe snapshots ACPI 2.0 and FDT directory entries before exit. After exit
+it checks the RSDP and XSDT lengths and checksums, and walks the supplied FDT
+to its final token. Reads are bounded by the final firmware descriptors. These
+checks do not establish ACPI 6.4 platform conformance or interpret child SDTs.
+
+The RNG-enabled run builds an Appendix A.1 block in its own EFI reservation,
+followed by the serialized memory map. Only the exact boot-set and boot-info
+reservations are retyped, including when firmware coalesces adjacent loader
+allocations. Boot-services pages remain reserved; no consumer may infer
+reclamation authority from this map. The reader checks all 32-byte records and
+coverage of the actual TBIB, map and archive before returning the decoded block.
+GOP is included when requested. The image bases name a test reservation, not
+executable code. The train and slot are fixture values. The block reports a debug
+image, not Secure Boot, and does not yet contain the measured firmware event log.
+
 With `swtpm` installed, run `TARBOOT_TEST_TPM=1 bash run.sh aarch64 x86_64`. This starts a fresh software TPM for each guest. Before exit, the probe reads SHA-256 PCRs 8 and 9, uses UEFI TCG2 to hash, log and extend the archive and a fixed canonical config, then reads both PCRs again. The host independently hashes each payload and checks the resulting PCR against the previous PCR and that hash. A partially logged/extended pair is terminal; the guest never retries or treats a skipped measurement as success. This verifies PCR values, not the complete firmware event log or signer provenance. The bundled RV64 EDK II firmware returns `EFI_NOT_FOUND` for TCG2 with a TPM device attached, so measured boot on RV64 is **not verified**.
 
 This calls firmware on emulated CPUs. It does **not** authenticate firmware or boot sets, establish CPU admission, produce kernel-profile TIR, or enter the Tarwin kernel. The Swift/LLVM diagnostic link (including the x64 PE call ABI and the RV64 EDK II image converter) is not release build wiring.

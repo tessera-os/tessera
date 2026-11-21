@@ -156,7 +156,7 @@ func check() throws {
   }
   guard guestShutdown(try Data(contentsOf: URL(fileURLWithPath: monitor)))
     else { throw Failure("\(a): missing guest-initiated shutdown event") }
-  if rngEnabled { print("\(a): EFI RNG seed read and randomized exact-address reservation passed post-exit checks") }
+  if rngEnabled { print("\(a): physical TBIB, EFI RNG seed, randomized reservation and typed archive/map extents passed readback") }
   if displayEnabled {
     guard captured else { throw Failure("no scanout recorded") }
     let frame = try Data(contentsOf: URL(fileURLWithPath: d + "/scanout.ppm"))

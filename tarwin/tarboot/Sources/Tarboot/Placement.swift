@@ -9,7 +9,7 @@ struct CandidateSpan {
   init?(_ r: FirmwareRegion, bytes: UInt64, alignment: UInt64) {
     // Ordinary write-back conventional memory; exclude read/write-protected,
     // persistent, special-purpose, ISA-specific and firmware runtime memory.
-    guard r.type == 7, r.attributes & 8 != 0, r.attributes & 0xc000_0000_0006_a000 == 0,
+    guard r.type == 7, r.ordinaryWritableRAM,
       bytes > 0, isPowerOfTwo(alignment), validExtent(r.base, length: r.length)
     else { return nil }
     let skip = r.base == 0 ? alignment : (0 &- r.base) & (alignment - 1)

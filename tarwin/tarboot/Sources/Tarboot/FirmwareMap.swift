@@ -27,6 +27,11 @@ public struct FirmwareRegion {
 
   public static var empty: Self { Self(base: 0, length: 0, type: 0, attributes: 0) }
 
+  var ordinaryWritableRAM: Bool {
+    // Write-back capable, not WP, RP, NV, RO, special-purpose or runtime.
+    attributes & 8 != 0 && attributes & 0xffff_ffff_0006_b000 == 0
+  }
+
   public func bootMapKind(afterExit: Bool) -> UInt32 {
     switch type {
     case 5: return 2  // runtime code

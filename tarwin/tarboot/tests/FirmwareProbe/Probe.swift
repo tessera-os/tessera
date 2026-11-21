@@ -42,14 +42,22 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
       #else
         let pageSize: UInt64 = 4096
       #endif
-      guard var boot = FirmwareBootServices(image: image, system: system) else { return false }
+      guard var boot = FirmwareBootServices(image: image, system: system),
+        let tables = boot.locateTables()
+      else { return false }
       #if TARBOOT_TEST_DISPLAY
         guard let display = boot.display() else {
           writeDiagnostic("TARWIN-GOP-UNAVAILABLE\r\n", console: console, output: output)
           return false
         }
       #endif
-      guard exerciseFile(&boot, system: system, console: console, output: output) else { return false }
+      guard let archive = boot.reserveLoaderPages(1),
+        let storage = boot.reserveLoaderPages(6),
+        let archiveBase = UnsafeMutableRawPointer(bitPattern: UInt(archive.base)),
+        let size = exerciseFile(
+          &boot, system: system, console: console, output: output,
+          into: UnsafeMutableRawBufferPointer(start: archiveBase, count: Int(archive.length)))
+      else { return false }
       #if TARBOOT_TEST_RNG
         var seed = InlineArray<64, UInt8>(repeating: 0)
         guard withUnsafeMutableBytes(of: &seed, { boot.readBootSeed(into: $0) }) else {
@@ -57,17 +65,76 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
           return false
         }
         let window: Range<UInt64> = 0xffff_8000_0000_0000..<0xffff_c000_0000_0000
-        guard let placed = boot.reserveImage(count: UInt(64 * pageSize / 4096), alignment: 64 * pageSize,
-          virtualRegion: window, map: raw, into: &buffer), window.contains(placed.virtual),
-          placed.virtual % (64 * pageSize) == 0, placed.pages.base % (64 * pageSize) == 0 else {
+        guard
+          let placed = boot.reserveImage(
+            count: UInt(64 * pageSize / 4096), alignment: 64 * pageSize,
+            virtualRegion: window, map: raw, into: &buffer), window.contains(placed.virtual),
+          placed.virtual % (64 * pageSize) == 0, placed.pages.base % (64 * pageSize) == 0
+        else {
           writeDiagnostic("TARWIN-PLACEMENT-FAILED\r\n", console: console, output: output)
           return false
         }
+        let virtual = placed.virtual
         let owned = placed.takePages()
       #else
-        guard let owned = boot.reserveLoaderPages(UInt(2 * 64 * pageSize / 4096 - 1)) else { return false }
+        guard let owned = boot.reserveLoaderPages(UInt(2 * 64 * pageSize / 4096 - 1)) else {
+          return false
+        }
       #endif
       guard case .exited(let n) = boot.finish(map: raw, into: &buffer) else { return false }
+      guard
+        let inspected = inspectFirmwareTables(
+          tables, in: UnsafeBufferPointer(rebasing: buffer[..<n])),
+        inspected.rsdp != 0 || inspected.treeBytes > 0
+      else { return false }
+      #if TARBOOT_TEST_RNG
+        var info = emptyBootInfo()
+        info.year = 26
+        info.month = 11
+        info.week = 1
+        info.security = 2  // unsigned diagnostic image; never mark Secure Boot
+        info.rsdp = inspected.rsdp
+        info.deviceTree = inspected.deviceTree
+        info.uefiTable = UInt64(UInt(bitPattern: system))
+        info.kernelVirtual = virtual
+        info.kernelPhysical = owned.base
+        withUnsafeBytes(of: &seed) { s in
+          func word(_ i: Int) -> UInt64 { s.loadUnaligned(fromByteOffset: i * 8, as: UInt64.self) }
+          info.entropy0 = word(0)
+          info.entropy1 = word(1)
+          info.entropy2 = word(2)
+          info.entropy3 = word(3)
+          info.entropy4 = word(4)
+          info.entropy5 = word(5)
+          info.entropy6 = word(6)
+          info.entropy7 = word(7)
+        }
+        #if TARBOOT_TEST_DISPLAY
+          info.framebuffer = display.base
+          info.width = UInt32(display.mode.width)
+          info.height = UInt32(display.mode.height)
+          info.stride = UInt32(display.mode.stride)
+          info.format = display.mode.format
+        #endif
+        guard
+          writeHandoff(
+            info, regions: UnsafeBufferPointer(rebasing: buffer[..<n]),
+            storage: storage, archive: archive, archiveBytes: UInt64(size)),
+          let p = UnsafeRawPointer(bitPattern: UInt(storage.base)),
+          let received = readHandoff(
+            block: UnsafeRawBufferPointer(start: p, count: 4096), at: storage.base,
+            map: UnsafeRawBufferPointer(
+              start: p.advanced(by: 4096), count: Int(storage.length) - 4096),
+            at: storage.base + 4096), received.bootSet == archive.base,
+          received.bootSetSize == UInt64(size),
+          received.kernelVirtual == virtual, received.kernelPhysical == owned.base,
+          received.rsdp == inspected.rsdp, received.deviceTree == inspected.deviceTree,
+          received.entropy0 == info.entropy0 && received.entropy1 == info.entropy1
+            && received.entropy2 == info.entropy2 && received.entropy3 == info.entropy3
+            && received.entropy4 == info.entropy4 && received.entropy5 == info.entropy5
+            && received.entropy6 == info.entropy6 && received.entropy7 == info.entropy7
+        else { return false }
+      #endif
       var usable = false
       var runtime = false
       var covered = false
@@ -82,15 +149,20 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
           covered = true
         }
       }
-      guard usable && runtime && covered
-        && checkPage(base: owned.base, length: owned.length, pageSize: pageSize)
-        && runBootCPU(UInt64(n)) else { return false }
+      guard
+        usable && runtime && covered
+          && checkPage(base: owned.base, length: owned.length, pageSize: pageSize)
+          && runBootCPU(UInt64(n))
+      else { return false }
       #if TARBOOT_TEST_DISPLAY
         // Dedicated debug VM. Its GOP aperture remains identity mapped after
         // exit; no graphics driver or other CPU is using the framebuffer.
-        let mapped = UnsafeMutableRawBufferPointer(start: UnsafeMutableRawPointer(bitPattern: UInt(display.base)),
+        let mapped = UnsafeMutableRawBufferPointer(
+          start: UnsafeMutableRawPointer(bitPattern: UInt(display.base)),
           count: display.mode.byteCount)
-        guard var debug = DebugConsole(mapped: mapped, mode: display.mode, debugImage: true) else { return false }
+        guard var debug = DebugConsole(mapped: mapped, mode: display.mode, debugImage: true) else {
+          return false
+        }
         return debug.write("TARWIN TEST")
       #else
         return true

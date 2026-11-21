@@ -30,6 +30,11 @@ The TPM test sends a Swift-encoded PCR_Extend command to a fresh software TPM an
 
 ### Pending gates
 
+All three QEMU firmware diagnostics also build and read back a physical TBIB
+with a RAW firmware seed, validated RSDP/XSDT or FDT, the randomized test
+reservation, and the ESP archive. Its map tags exactly the loader's archive
+and handoff reservations. Readback validates their extents, not kernel entry.
+
 The [KLF Swift preflight](../../tessera/build/tarwin-profile/README.md) compiles actual KCore input and fails on compiler diagnostics or a non-kernel profile. A standalone scalar function reaches app-profile emission; it is not relabeled as kernel.
 
 Compiler object checks do not verify generic specializations for unknown future callers, kernel-profile TIR, interrupt/stack discipline or a linked kernel. W0 entry, firmware authentication, live page faults, three-ISA kernel execution, reference hardware, canonical TRFS and same-device performance comparisons remain unverified.
