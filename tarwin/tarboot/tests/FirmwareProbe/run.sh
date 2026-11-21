@@ -49,6 +49,36 @@ for isa in "${@:-all}"; do
         fi
         modules=()
         entry_source=("$here/CompressedPages.swift")
+        if [[ ${TARBOOT_TEST_FIXED_GENID:-0} == 1 ]]; then
+            [[ $arch == aarch64 && ${TARBOOT_TEST_RNG:-0} == 1 && ${TARBOOT_TEST_FIFO:-0} == ${TARBOOT_TEST_FIXED_RNG:-0} &&
+               ${TARBOOT_TEST_GENERATION:-0} == 0 && ${TARBOOT_TEST_RESTORE:-0} == 0 &&
+               -z ${TARBOOT_TEST_SIGNATURE:-} ]] || exit 2
+            export TARBOOT_FIXED_BINARY
+            TARBOOT_FIXED_BINARY=$(command -v qemu-system-aarch64)
+            [[ $TARBOOT_FIXED_BINARY == /* ]] || exit 2
+            swift "$here/NoMigrationCheck.swift" "$TARBOOT_FIXED_BINARY" "$d"
+            flags+=(-D TARBOOT_TEST_FIXED_GENID -enable-experimental-feature Extern)
+            entry_source+=("$here/FixedProbe.swift")
+            if [[ ${TARBOOT_TEST_FIXED_RNG:-0} == 0 ]]; then
+                swift "$composition-stage0/ArmFIFOAccess.swift" > "$d/fixed.ll"
+                "$bin/clang" -target aarch64-unknown-windows-msvc -Wno-override-module -O2 -c "$d/fixed.ll" -o "$d/fixed.obj"
+                extra+=("$d/fixed.obj")
+            fi
+        fi
+        if [[ ${TARBOOT_TEST_FIXED_RNG:-0} == 1 ]]; then
+            [[ ${TARBOOT_TEST_FIXED_GENID:-0} == 1 && ${TARBOOT_TEST_FIFO:-0} == 1 ]] || exit 2
+            flags+=(-D TARBOOT_TEST_FIXED_RNG -D TARWIN_NON_RESTORABLE_DEBUG)
+            modules+=("$root/tarwin-security/random/Sources/TarwinRandomCore"
+                      "$root/tarwin-security/random/Sources/TarwinKernelRandom")
+        fi
+        if [[ ${TARBOOT_TEST_Q35_GENID:-0} != 0 ]]; then
+            [[ $arch == x86_64 && ${TARBOOT_TEST_MCA:-0} == 0 ]] || exit 2
+            flags+=(-D TARBOOT_TEST_Q35_GENID -enable-experimental-feature Extern)
+            entry_source+=("$here/Q35Generation.swift")
+            swift "$here/Q35Access.swift" > "$d/q35.ll"
+            "$bin/clang" -target x86_64-unknown-windows-msvc -Wno-override-module -O2 -c "$d/q35.ll" -o "$d/q35.obj"
+            extra+=("$d/q35.obj")
+        fi
         if [[ ${TARBOOT_TEST_MCA:-0} != 0 ]]; then
             [[ $arch == x86_64 && ${TARBOOT_TEST_SMP_TABLES:-0} == 0 && -z ${TARBOOT_TEST_SIGNATURE:-} ]] || exit 2
             flags+=(-D TARBOOT_TEST_MCA -enable-experimental-feature Extern)
@@ -88,14 +118,17 @@ for isa in "${@:-all}"; do
             fi
         fi
         if [[ ${TARBOOT_TEST_W1_EVIDENCE:-0} == 1 ]]; then
-            [[ ${TARBOOT_TEST_GENERATION:-0} == 1 && ${TARBOOT_ENTER_W0:-0} == 0 ]] || exit 2
+            [[ (${TARBOOT_TEST_GENERATION:-0} == 1 ||
+                (${TARBOOT_TEST_FIXED_RNG:-0} == 1 && ${TARBOOT_TEST_COLD_FENCE:-0} == 1)) &&
+                ${TARBOOT_ENTER_W0:-0} == 0 ]] || exit 2
             modules+=("$root/tarwin-loader/w0/Sources/TarwinW0Verify")
             flags+=(-D TARBOOT_TEST_W1_EVIDENCE)
             entry_source+=("$composition/Sources/TarwinW1Bootstrap/QEMUReverification.swift" "$here/W1EvidenceProbe.swift")
             printf '%s' 'not-a-signature' > "$d/esp/BOOT.SIG"
         fi
         if [[ ${TARBOOT_TEST_COLD_FENCE:-0} == 1 ]]; then
-            [[ ${TARBOOT_TEST_RO_GENID:-0} == 1 && ${TARBOOT_TEST_RESTORE:-0} == 0 && ${TARBOOT_TEST_W1_EVIDENCE:-0} == 1 ]] || exit 2
+            [[ (${TARBOOT_TEST_RO_GENID:-0} == 1 || ${TARBOOT_TEST_FIXED_RNG:-0} == 1) &&
+               ${TARBOOT_TEST_RESTORE:-0} == 0 && ${TARBOOT_TEST_W1_EVIDENCE:-0} == 1 ]] || exit 2
             flags+=(-D TARBOOT_TEST_COLD_FENCE)
             if [[ ${TARBOOT_TEST_HIGH_PCI:-0} != 0 ]]; then flags+=(-D TARBOOT_TEST_HIGH_PCI); fi
             device="$root/tarwin-device/Sources/TarwinDevice"

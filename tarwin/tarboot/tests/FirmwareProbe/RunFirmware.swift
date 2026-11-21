@@ -65,6 +65,13 @@ func check() throws {
   guard ["0", "1", "wide"].contains(mca), mca == "0" || a == "x86_64"
   else { throw Failure("invalid MCA diagnostic target") }
   let mcaLog = d + "/mca.log"
+  let gen = ProcessInfo.processInfo.environment["TARBOOT_TEST_Q35_GENID"] ?? "0"
+  guard ["0", "present", "absent"].contains(gen), gen == "0" || (a == "x86_64" && mca == "0")
+  else { throw Failure("invalid q35 VMGenID diagnostic") }
+  let q35ID = UUID()
+  let genLog = d + "/genid.log"
+  let q35Args = gen == "0" ? [] : ["-debugcon", "file:" + genLog]
+    + (gen == "present" ? ["-device", "vmgenid,guid=" + q35ID.uuidString] : [])
   let mcaArgs = mca == "0" ? [] : ["-accel", "tcg", "-cpu", "max,vendor=GenuineIntel", "-debugcon", "file:" + mcaLog]
   let monitor = d + "/monitor.log"
   let input = Pipe()
@@ -76,6 +83,9 @@ func check() throws {
   let restore = ProcessInfo.processInfo.environment["TARBOOT_TEST_RESTORE"] == "1"
   let ro = ProcessInfo.processInfo.environment["TARBOOT_TEST_RO_GENID"] == "1"
   let cold = ProcessInfo.processInfo.environment["TARBOOT_TEST_COLD_FENCE"] == "1"
+  let fixed = ProcessInfo.processInfo.environment["TARBOOT_TEST_FIXED_GENID"] == "1"
+  let fixedRNG = ProcessInfo.processInfo.environment["TARBOOT_TEST_FIXED_RNG"] == "1"
+  let isolatedPCI = ro || cold
   let extraPCI = ProcessInfo.processInfo.environment["TARBOOT_TEST_EXTRA_PCI"] == "1"
   guard !extraPCI || cold else { throw Failure("extra PCI control requires the cold fixture") }
   let highMode = ProcessInfo.processInfo.environment["TARBOOT_TEST_HIGH_PCI"] ?? "0"
@@ -83,8 +93,8 @@ func check() throws {
   let highPCI = highMode != "0", wrongWindow = highMode == "wrong-window"
   guard !highPCI || (cold && !extraPCI) else { throw Failure("invalid high PCI profile") }
   let windows = highPCI && !wrongWindow ? ",highmem-mmio=on,highmem-mmio-size=512G" : (cold ? ",highmem-mmio=off" : "")
-  let board = ro ? "virt-11.1,accel=tcg,iommu=smmuv3,default-bus-bypass-iommu=off,msi=off" + windows : (restore ? "virt-11.1,accel=tcg" : "virt")
-  let armMachine = cpuCheck == "1" || ro ? ["-machine",board + ",gic-version=3,virtualization=on","-cpu","max"]
+  let board = isolatedPCI ? "virt-11.1,accel=tcg,iommu=smmuv3,default-bus-bypass-iommu=off,msi=off" + windows : (restore ? "virt-11.1,accel=tcg" : "virt")
+  let armMachine = cpuCheck == "1" || isolatedPCI ? ["-machine",board + ",gic-version=3,virtualization=on","-cpu","max"]
     : ["-machine",board + ",gic-version=3","-cpu","cortex-a72"]
   let machine =
     a == "x86_64"
@@ -96,8 +106,8 @@ func check() throws {
   let displayEnabled = ProcessInfo.processInfo.environment["TARBOOT_TEST_DISPLAY"] == "1"
   let displayArgs = !displayEnabled ? [] : (a == "x86_64" ? ["-vga", "std"] : ["-device", "ramfb"]) + ["-no-shutdown"]
   let rngEnabled = ProcessInfo.processInfo.environment["TARBOOT_TEST_RNG"] == "1"
-  let endpoint = ro ? ",iommu_platform=on,disable-legacy=on" : ""
-  let rngArgs = rngEnabled ? ["-object", "rng-random,filename=/dev/urandom,id=entropy", "-device", "virtio-rng-pci,rng=entropy" + endpoint + (ro ? ",addr=2" : "")] : []
+  let endpoint = isolatedPCI ? ",iommu_platform=on,disable-legacy=on" : ""
+  let rngArgs = rngEnabled ? ["-object", "rng-random,filename=/dev/urandom,id=entropy", "-device", "virtio-rng-pci,rng=entropy" + endpoint + (isolatedPCI ? ",addr=2" : "")] : []
   let tpmEnabled = ProcessInfo.processInfo.environment["TARBOOT_TEST_TPM"] == "1"
   let state = URL(fileURLWithPath: "/tmp/tarwin-tpm-" + UUID().uuidString)
   let socket = state.appendingPathComponent("ctrl").path
@@ -151,18 +161,33 @@ func check() throws {
   let limits = ro ? ["-nodefaults", "-no-user-config", "-global", "fw_cfg_mem.dma_enabled=off"] : []
   let generationArgs = restore ? limits + ["-device", genDevice, "-blockdev",
     "driver=file,filename=" + d + "/state.qcow2,node-name=statefile", "-blockdev",
-    "driver=qcow2,file=statefile,node-name=state"] : (cold ? limits + ["-device", genDevice] : [])
+    "driver=qcow2,file=statefile,node-name=state"] : (cold && !fixed ? limits + ["-device", genDevice] : [])
+  let fixedBytes = withUnsafeBytes(of: UUID().uuid) { Data($0) }
+  var fixedArgs: [String] = []
+  if fixed {
+    guard a == "aarch64", !restore, (!cold || fixedRNG), !ro, !multiple, !secure, !displayEnabled,
+      tpmEnabled == fixedRNG, rngEnabled, gen == "0", generationArgs.isEmpty,
+      let binary = ProcessInfo.processInfo.environment["TARBOOT_FIXED_BINARY"], binary.hasPrefix("/") else {
+      throw Failure("fixed ID requires an isolated cold debug machine")
+    }
+    process.executableURL = URL(fileURLWithPath: binary)
+    let path = d + "/fixed-id"
+    try fixedBytes.write(to: URL(fileURLWithPath: path))
+    fixedArgs = ["-no-user-config", "-nodefaults", "-no-migration",
+      "-fw_cfg", "name=opt/org.tessera/tarwin/debug-fixed-epoch,file=" + path]
+    if cold { fixedArgs += ["-global", "fw_cfg_mem.dma_enabled=off"] }
+  }
   let evidence = ProcessInfo.processInfo.environment["TARBOOT_TEST_W1_EVIDENCE"] == "1"
   let evidenceArgs = (evidence ? ["-fw_cfg", "name=opt/org.tessera/tarwin/w1.sig,string=not-a-signature"] : [])
     + (extraPCI ? ["-device", "virtio-balloon-pci,addr=3,iommu_platform=on,disable-legacy=on"] : [])
   process.arguments =
-    ["qemu-system-" + a] + machine + tpmArgs + displayArgs + rngArgs + generationArgs + evidenceArgs + mcaArgs + [
+    (fixed ? [] : ["qemu-system-" + a]) + machine + tpmArgs + displayArgs + rngArgs + generationArgs + evidenceArgs + (mcaArgs + q35Args + fixedArgs) + [
       "-m", "512", "-smp", multiple ? "4" : "1", "-display", "none", "-rtc", "base=utc",
       "-serial", "file:" + serial, "-monitor", "none", "-qmp", "stdio", "-nic", "none",
       "-drive", "if=pflash,format=raw,readonly=on,file=" + code, "-drive",
       "if=pflash,format=raw,file=" + d + "/vars.fd",
       "-drive", "if=none,id=esp,format=raw,readonly=on,file=fat:" + d + "/esp", "-device",
-      secure ? "virtio-blk-pci,drive=esp,addr=0x6,bootindex=1" : "virtio-blk-pci,drive=esp" + endpoint + (ro ? ",addr=1" : ""),
+      secure ? "virtio-blk-pci,drive=esp,addr=0x6,bootindex=1" : "virtio-blk-pci,drive=esp" + endpoint + (isolatedPCI ? ",addr=1" : ""),
     ]
   process.standardInput = input
   process.standardOutput = qmp
@@ -338,6 +363,24 @@ func check() throws {
     throw Failure("\(a): guest did not shut down normally")
   }
   let uart = try Data(contentsOf: URL(fileURLWithPath: serial))
+  if fixed {
+    let wanted = "TARWIN-DEBUG-FIXED-TBIB=" + fixedBytes.map { String(format: "%02x", $0) }.joined() + "\r\n"
+    guard uart.range(of: Data(wanted.utf8)) != nil else { throw Failure("fixed debug TBIB mismatch") }
+    print("aarch64: fixed debug TBIB matches this cold launch; ordinary reader refused")
+    if fixedRNG && !extraPCI && !wrongWindow {
+      guard uart.range(of: Data("TARWIN-DEBUG-FIXED-TBIB-SWTPM-RNG-ACCEPTED".utf8)) != nil
+      else { throw Failure("checked fixed-ID random launch did not complete") }
+      print("TARWIN-DEBUG-FIXED-TBIB-SWTPM-RNG-ACCEPTED")
+    }
+  }
+  if gen != "0" {
+    let wire = withUnsafeBytes(of: q35ID.uuid) { Array($0) }
+    let order = [3,2,1,0,5,4,7,6,8,9,10,11,12,13,14,15]
+    let expected = gen == "present" ? [1] + order.map { wire[$0] } : [0]
+    guard try Data(contentsOf: URL(fileURLWithPath: genLog)) == Data(expected)
+    else { throw Failure("q35 ACPI VMGenID differs from host") }
+    print("x86_64: q35 ACPI VMGenID " + (gen == "present" ? "matches host GUID" : "absent"))
+  }
   if mca != "0" {
     let log = try String(contentsOfFile: mcaLog, encoding: .utf8)
     let marker = mca == "wide" ? "MCA-WIDE-RETAINED" : "MCA-CORRECTED-FRAME-RETIRED"
@@ -349,13 +392,14 @@ func check() throws {
     let log = String(decoding: uart, as: UTF8.self)
     if let line = log.split(whereSeparator: \.isNewline).first(where: { $0.contains("TARWIN-FENCE-REFUSED-") }) {
       for row in log.split(whereSeparator: \.isNewline) where row.contains("TARWIN-COLD-") { print(row) }
-      if (extraPCI || wrongWindow) && line.contains("TARWIN-FENCE-REFUSED-PLATFORM") && !log.contains("TARWIN-W1-EVIDENCE-COPIED") {
+      if (extraPCI || wrongWindow) && line.contains("TARWIN-FENCE-REFUSED-PLATFORM") && !log.contains("TARWIN-W1-EVIDENCE-COPIED") && !log.contains("TARWIN-DEBUG-FIXED-TBIB-SWTPM-RNG-ACCEPTED") {
         print("aarch64: \(extraPCI ? "unexpected PCI endpoint" : "wrong PCI window") refused before detached signature copy")
         return
       }
       throw Failure("cold W1 closed before signature copy: " + String(line))
     }
-    guard !extraPCI && !wrongWindow, log.contains("TARWIN-FENCE-STREAMS-DENIED"), log.contains("TARWIN-COLD-VMGEN-ACCEPTED")
+    guard !extraPCI && !wrongWindow, log.contains("TARWIN-FENCE-STREAMS-DENIED"),
+      log.contains(fixed ? "TARWIN-DEBUG-FIXED-TBIB-SWTPM-RNG-ACCEPTED" : "TARWIN-COLD-VMGEN-ACCEPTED")
     else { throw Failure("missing cold generation or device fence") }
     print("aarch64: post-EFI disk/RNG streams denied before detached signature copy (\(highPCI ? "high" : "low") BARs)")
   }

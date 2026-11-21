@@ -105,6 +105,39 @@
     func send(_ v: UInt8) { write8(base + 0x24, v) }
   }
 
+  #if TARBOOT_TEST_FIXED_RNG
+    import TarwinKernelRandom
+    import TarwinRandomCore
+
+    func exerciseFixedRandom(block: UnsafeRawBufferPointer, at base: UInt64,
+      map: UnsafeRawBufferPointer, id: DebugQEMUFixedGeneration,
+      beforeRetirement: (borrowing FixedDebugRandomLaunch) -> Bool = { _ in true }) -> Bool {
+      var command = InlineArray<1100, UInt8>(repeating: 0)
+      var sample = InlineArray<32, UInt8>(repeating: 0)
+      defer { sample = .init(repeating: 0) }
+      return withUnsafeMutableBytes(of: &command) { scratch in
+        guard var port = TPMFIFO(registers: VirtFIFO(), scratch: scratch, pollLimit: 500000),
+          readTPMEntropy32(&port, into: &sample) else { return false }
+        return withUnsafeBytes(of: &sample) { hardware in
+          func launch(_ policy: KernelEntropyPolicy, migration: Bool = false, snapshots: Bool = false)
+            -> FixedDebugRandomLaunch? {
+            FixedDebugRandomLaunch(policy: policy, allowsMigration: migration, allowsSnapshots: snapshots,
+              block: block, at: base, map: map, at: base + 4096, hardware: hardware, source: .emulatedTPM)
+          }
+          guard launch(.certified) == nil, launch(.debugQEMU, migration: true) == nil,
+            launch(.debugQEMU, snapshots: true) == nil, var accepted = launch(.debugQEMU),
+            accepted.generation == .fixedDebugQEMU(low: id.low, high: id.high),
+            accepted.random.word(generation: accepted.generation) != nil,
+            beforeRetirement(accepted),
+            accepted.random.word(generation: .virtualMachine(low: id.low, high: id.high)) == nil,
+            accepted.random.word(generation: accepted.generation) == nil
+          else { return false }
+          return reportFixedMarker("TARWIN-DEBUG-FIXED-TBIB-SWTPM-RNG-ACCEPTED\r\n")
+        }
+      }
+    }
+  #endif
+
   func exerciseKernelFIFO(
     _ fixture: UnsafeRawBufferPointer, log: UnsafeMutableRawBufferPointer,
     used: Int

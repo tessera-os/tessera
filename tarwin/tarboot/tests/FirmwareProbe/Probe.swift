@@ -177,6 +177,9 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
       #else
         guard case .exited(let n) = boot.finish(map: raw, into: &buffer) else { return false }
       #endif
+      #if TARBOOT_TEST_Q35_GENID
+        reportQ35Generation(tables, UnsafeBufferPointer(rebasing: buffer[..<n]))
+      #endif
       #if TARBOOT_TEST_SMP_TABLES
         #if arch(arm64)
           let family = ProcessorFamily.arm64
@@ -257,16 +260,32 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
           info.stride = UInt32(display.mode.stride)
           info.format = display.mode.format
         #endif
+        #if TARBOOT_TEST_FIXED_GENID
+          guard let fixed = readFixedClaim() else { return false }
+          let claim: DebugQEMUFixedGeneration? = fixed
+        #else
+          let claim: DebugQEMUFixedGeneration? = nil
+        #endif
         guard
           writeHandoff(
             info, regions: UnsafeBufferPointer(rebasing: buffer[..<n]),
-            storage: storage, archive: archive, archiveBytes: UInt64(size)),
-          let p = UnsafeRawPointer(bitPattern: UInt(storage.base)),
-          let received = readHandoff(
-            block: UnsafeRawBufferPointer(start: p, count: 4096), at: storage.base,
-            map: UnsafeRawBufferPointer(
-              start: p.advanced(by: 4096), count: Int(storage.length) - 4096),
-            at: storage.base + 4096), received.bootSet == archive.base,
+            storage: storage, archive: archive, archiveBytes: UInt64(size), debugFixedGeneration: claim),
+          let p = UnsafeRawPointer(bitPattern: UInt(storage.base)) else { return false }
+        let block = UnsafeRawBufferPointer(start: p, count: 4096)
+        let map = UnsafeRawBufferPointer(start: p + 4096, count: Int(storage.length) - 4096)
+        let standard = readHandoff(block: block, at: storage.base, map: map, at: storage.base + 4096)
+        #if TARBOOT_TEST_FIXED_GENID
+          guard standard == nil, let debug = readFixedDebugQEMUHandoff(block: block, at: storage.base,
+            map: map, at: storage.base + 4096), debug.generation == fixed, reportFixedClaim(debug.generation)
+          else { return false }
+          let received = debug.boot
+          #if TARBOOT_TEST_FIXED_RNG && !TARBOOT_TEST_COLD_FENCE
+            guard exerciseFixedRandom(block: block, at: storage.base, map: map, id: fixed) else { return false }
+          #endif
+        #else
+          guard let received = standard else { return false }
+        #endif
+        guard received.bootSet == archive.base,
           received.bootSetSize == UInt64(size),
           received.security == info.security,
           received.kernelVirtual == virtual, received.kernelPhysical == owned.base,

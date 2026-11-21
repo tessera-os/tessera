@@ -14,6 +14,13 @@ each report before clearing it, and excludes the frame after release.
 the guest must leave the report in the bank and not charge any one page.
 No uncorrectable exception, ECC hardware or process termination is tested.
 
+On x64, run with `TARBOOT_TEST_Q35_GENID=present` and `=absent`.
+After firmware exit the same guest walks the RSDP and XSDT, requires
+one VMGENID SSDT with the q35 AML layout, and reads the GUID only from
+the firmware-relocated, write-back ACPI NVS page. The runner compares
+the sample against a fresh host GUID. Stock QEMU discovery does not
+establish that an internal snapshot load rotates the ID.
+
 On each architecture, the post-exit probe compresses two different page
 patterns into one reserved RAM page, frees and overwrites the source frames,
 then restores both into a different frame. Discarding the first block
@@ -259,7 +266,34 @@ does not certify an arbitrary hypervisor. Only use this single-vCPU, stopped
 snapshot profile; do not accept a boot-set flag as management authorization.
 The guest polls the page; it does not rely on a VMGenID IRQ.
 
-To reproduce, apply `qemu-11.1.3-virt-vmgenid.patch` with `patch -p1` to
+The **debug-only fixed-ID** test is a separate cold launch, not an Arm
+generation device. Apply `qemu-11.1.3-no-migration.patch` to QEMU 11.1.3,
+rebuild, and put the resulting emulator first on PATH. With the usual
+firmware and Embedded toolchain variables set, run
+`TARBOOT_TEST_RNG=1 TARBOOT_TEST_FIXED_GENID=1 bash run.sh aarch64`.
+Stock QEMU does not implement this flag and the runner must refuse it.
+The runner first checks that the same binary refuses incoming and outgoing
+migration and snapshot save/load on a disposable control VM. The actual
+guest uses raw drives, no saved state, no savevm, and a new UUID per launch.
+After EFI exit the debug TBIB reader must see exactly that UUID, and the
+ordinary reader must reject the entire block. This is not entropy, a signed
+process, a live generation signal or authorization for certified entry.
+
+To check the execution owner's fixed-ID RNG, add `TARBOOT_TEST_FIXED_RNG=1
+TARBOOT_TEST_TPM=1 TARBOOT_TEST_FIFO=1`. This build needs
+`FixedDebugRandomLaunch` from TarwinKernelRandom. The guest uses a fresh
+post-exit TPM2_GetRandom result; only the verified fixed-ID source can draw.
+For the complete cold refusal test also set `TARBOOT_TEST_COLD_FENCE=1
+TARBOOT_TEST_W1_EVIDENCE=1`. The fence runs before opening the fixed launch
+or copying the detached signature. A third PCI endpoint
+(`TARBOOT_TEST_EXTRA_PCI=1`) must block both. No test pins authorize an image.
+
+For **x64 q35 ACPI discovery**, run the stock x86_64 probe with
+`TARBOOT_TEST_Q35_GENID=present`, then `absent`. The former compares live
+page bytes with the host-configured GUID; the latter omits the device.
+Neither checks rotation on restore.
+
+To reproduce the rotating Arm device, apply `qemu-11.1.3-virt-vmgenid.patch` with `patch -p1` to
 QEMU 11.1.3 (release tar.xz SHA256
 `5a8289c7940dc77d3873c81a6c29ba3afe1446fc9d36e77fa1658cdbecb84b22`).
 Configure with `--target-list=aarch64-softmmu --enable-tcg --disable-docs`,

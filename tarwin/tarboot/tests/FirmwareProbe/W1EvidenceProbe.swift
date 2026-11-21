@@ -6,6 +6,11 @@
   // Negative transport test only. No pin, SDK authorization or valid
   // signature is compiled in; no path from here to measurement or entry.
   private var expected: StaticString { "not-a-signature" }
+  #if TARBOOT_TEST_FIXED_RNG
+  import TarwinKernelRandom
+  func emit(_ marker: StaticString) -> Bool { reportFixedMarker(marker) }
+  func emitW1Refusal() -> Bool { emit("TARWIN-W1-EVIDENCE-COPIED-UNAUTHORIZED\r\n") }
+  #endif
   nonisolated(unsafe) private var work = InlineArray<704, SIMD2<UInt64>>(repeating: .zero)
   private var absent: UnsafeRawBufferPointer { .init(start: nil, count: 0) }
   private var policy: W0Policy {
@@ -32,7 +37,20 @@
         #endif
         guard QEMUW1Evidence.coldBootSet(work: pages, layout: layout, block: block, map: map,
           archive: archive, reader: &cfg, into: dest, enrollment: absent, systemEnrollment: absent,
-          policy: policy, contract: contract, scratch: scratch, onRefusal: { refusal = $0 }) == nil,
+          policy: policy, contract: contract, scratch: scratch, afterFence: {
+            #if TARBOOT_TEST_FIXED_RNG
+              var profile: W1HandoffProfile?
+              guard let fixed = readFixedClaim(), exerciseFixedRandom(block: block,
+                at: UInt64(UInt(bitPattern: block.baseAddress)), map: map, id: fixed,
+                beforeRetirement: { launch in
+                  profile = W1HandoffProfile(nonRestorable: launch)
+                  return profile != nil
+                }) else { return nil }
+              return profile
+            #else
+              return .ordinary
+            #endif
+          }, onRefusal: { refusal = $0 }) == nil,
           dest[15] == 0xcc else { return false }
         if let refusal {
           let marker: StaticString
