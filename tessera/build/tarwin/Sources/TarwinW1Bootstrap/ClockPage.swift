@@ -36,7 +36,9 @@ public struct W1ClockReservation: ~Copyable {
   @unsafe public consuming func start(
     in host: borrowing ArmFinishedKernelRoot, clock: SystemClocks
   ) -> W1ClockPage? {
-    guard let p = UnsafeMutableRawPointer(bitPattern: UInt(kernelVA)) else { return nil }
+    guard host.physical == hostRoot, host.layout == layout,
+      host.permitsLocalWrite(virtual: kernelVA, physical: physical),
+      let p = UnsafeMutableRawPointer(bitPattern: UInt(kernelVA)) else { return nil }
     return startMapped(in: host, clock: clock, bytes: .init(start: p, count: 16384))
   }
 

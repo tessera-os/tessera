@@ -294,6 +294,45 @@
     cset w0, eq
     ret
 
+    // Pinned normal host frame. No data access; preserve PAR on every exit.
+    .global tarwin_w1_check_host_write
+    .hidden tarwin_w1_check_host_write
+    tarwin_w1_check_host_write:
+    bti c
+    mrs x3, CurrentEL
+    cmp x3, #8
+    b.ne .Lbad_mode
+    mrs x3, hcr_el2
+    tbz x3, #34, .Lbad_mode
+    tbz x3, #27, .Lbad_mode
+    mrs x3, sctlr_el2
+    tbz x3, #0, .Lbad_mode
+    mrs x3, ttbr1_el2
+    cmp x3, x0
+    b.ne .Lbad_mode
+    mrs x3, tcr_el2
+    ubfx x3, x3, #30, #2 // TG1 = 16 KiB
+    cmp x3, #1
+    b.ne .Lbad_mode
+    mrs x5, par_el1
+    at s1e2w, x1
+    isb
+    mrs x3, par_el1
+    tbnz x3, #0, .Lbad_register
+    lsr x4, x3, #56 // Normal WB, read/write allocate
+    cmp x4, #0xff
+    b.ne .Lbad_register
+    ubfx x3, x3, #12, #40
+    cmp x3, x2, lsr #12
+    b.ne .Lbad_register
+    at s1e0r, x1
+    isb
+    mrs x3, par_el1
+    tbz x3, #0, .Lbad_register
+    msr par_el1, x5
+    mov w0, #1
+    ret
+
     // Caller has pinned this exclusive host root. Check the actual MMIO
     // translation before the load, preserving the caller's PAR even on failure.
     .global tarwin_w1_read_generation_register

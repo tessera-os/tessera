@@ -80,7 +80,12 @@ private func ticks() -> UInt64
     let storage = UnsafeMutablePointer<W1ClockReservation>(bitPattern: UInt(context + 4096))!
     let roots = UnsafePointer<ProbeRoots>(bitPattern: UInt(context + 128))!
     let start = ticks()
-    guard let clock = SystemClocks(frequency: hz(), counter: start, utc: 1_000_000_000),
+    let va = storage.pointee.kernelVA, pa = storage.pointee.physical
+    guard !roots.pointee.host.permitsLocalWrite(virtual: va, physical: pa + 16384),
+      !roots.pointee.host.permitsLocalWrite(virtual: va + 16384, physical: pa + 16384),
+      !roots.pointee.host.permitsLocalWrite(virtual: 0xffff_8000_4008_0000, physical: 0x4008_0000),
+      !roots.pointee.host.permitsLocalWrite(virtual: TimePageReader.address47, physical: pa),
+      let clock = SystemClocks(frequency: hz(), counter: start, utc: 1_000_000_000),
       var page = storage.move().start(in: roots.pointee.host, clock: clock),
       page.update(.leap(.insertion, startingAtBoot: 0), counter: start),
       page.update(.suspend, counter: start),

@@ -27,3 +27,14 @@ import Testing
   let refused = mapping.startMapped(in: wrong, clock: clock, bytes: buffer) == nil
   #expect(refused && buffer.allSatisfy { $0 == 0xa7 })
 }
+
+@Test func matchingUninstalledHostCannotStartTheClockPublisher() {
+  let bytes = UnsafeMutableRawBufferPointer.allocate(byteCount: 4 * 16384, alignment: 16384)
+  defer { bytes.deallocate() }
+  guard var kernel = ArmKernelTranslation(backing: bytes, physical: 0x100000, layout: .guarded),
+    let reservation = W1ClockReservation(physical: 0x200000, kernelVA: 0xffff800000000000, host: &kernel),
+    let root = kernel.finish(), let clock = SystemClocks(frequency: 1, counter: 0)
+  else { Issue.record("clock mapping"); return }
+  let refused = reservation.start(in: root, clock: clock) == nil
+  #expect(refused)
+}

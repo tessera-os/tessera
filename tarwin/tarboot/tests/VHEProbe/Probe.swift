@@ -92,6 +92,10 @@ public func buildRoots(
     kr.physical == kernel, ar.physical == a, br.physical == b,
     kr.layout == layout, ar.layout == .direct, br.layout == layout
   else { return 4 }
+  #if TEST_TIME_PAGE
+    // Before MMU activation even the correctly constructed owner must fail.
+    guard !kr.permitsLocalWrite(virtual: high + timePA, physical: timePA) else { return 7 }
+  #endif
   UnsafeMutablePointer<ProbeRoots>(bitPattern: UInt(context + 128))!.initialize(
     to: ProbeRoots(host: kr, a: ar, b: br))
   return 0
