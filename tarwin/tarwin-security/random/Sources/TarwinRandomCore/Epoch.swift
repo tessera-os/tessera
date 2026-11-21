@@ -3,11 +3,18 @@
 public enum RandomEpoch: Equatable {
   case physical
   case virtualMachine(low: UInt64, high: UInt64)
-  public var available: Bool {
+  /// Only for an independently enforced, non-restorable debug harness.
+  case fixedDebugQEMU(low: UInt64, high: UInt64)
+
+  public var wireWords: (low: UInt64, high: UInt64) {
     switch self {
-    case .physical: return true
-    case .virtualMachine(let lo, let hi): return lo | hi != 0
+    case .physical: return (0, 0)
+    case .virtualMachine(let lo, let hi), .fixedDebugQEMU(let lo, let hi): return (lo, hi)
     }
+  }
+
+  public var available: Bool {
+    self == .physical || wireWords.low | wireWords.high != 0
   }
 }
 

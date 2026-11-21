@@ -10,7 +10,7 @@ let package = Package(
     .library(name: "TarwinRandomCalls", targets: ["TarwinRandomCalls"]),
   ], dependencies: [
     .package(path: "../../tarwin-loader"), .package(path: "../../tarwin-syscall"),
-    .package(path: "../../tarwin-object"),
+    .package(path: "../../tarwin-object"), .package(path: "../../tarwin-boot"),
   ],
   targets: [
     .target(name: "TarwinRandomCore"),
@@ -31,12 +31,14 @@ let package = Package(
       name: "TarwinKernelRandom",
       dependencies: [
         "TarwinRandomCore",
+        .product(name: "TarwinBoot", package: "tarwin-boot"),
         .product(name: "TarwinLoader", package: "tarwin-loader"),
       ]),
     .testTarget(
       name: "TarwinRandomTests",
       dependencies: [
         "TarwinRandomCore", "TarwinKernelRandom", "TarwinProcessKeys",
+        .product(name: "TarwinBoot", package: "tarwin-boot"),
         .product(name: "TarwinObject", package: "tarwin-object"),
         .product(name: "TarwinLoader", package: "tarwin-loader"),
       ]),

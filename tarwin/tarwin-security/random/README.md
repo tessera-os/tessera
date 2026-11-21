@@ -12,8 +12,11 @@ is exhausted), and supplies an independently trusted generation
 on each request. A restore must update that generation before any guest
 CPU resumes. Nil, or a changed generation, disables output until successful
 reseed. Never classify a snapshot-capable VM as physical. Debug QEMU
-may use swtpm only with a trusted VM-generation witness; certified mode
-never credits swtpm or virtio-rng.
+may use swtpm with a trusted rotating VM-generation witness or an
+independently enforced non-restorable launch. Only the latter may pass
+`fixedDebugQEMU` from the validated debug TBIB. It contributes no
+entropy. A fixed generator cannot switch ID or mode, even by reseeding.
+Certified mode never accepts a fixed generation or credits swtpm or virtio-rng.
 
 Use `word(generation:)` as the input to the W1 placement sampler. This
 library does not detect hardware, furnish a generation witness or schedule

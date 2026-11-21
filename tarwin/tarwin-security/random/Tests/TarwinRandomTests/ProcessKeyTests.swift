@@ -30,7 +30,7 @@ final class ProcessKeyTests: XCTestCase {
   func testRestoredVMCannotReviveAnIssuedBank() {
     let issued = RandomEpoch.virtualMachine(low: 4, high: 9)
     let invalid: [RandomEpoch?] = [
-      nil, .physical, .virtualMachine(low: 0, high: 0),
+      nil, .physical, .virtualMachine(low: 0, high: 0), .fixedDebugQEMU(low: 4, high: 9),
       .virtualMachine(low: 5, high: 9), .virtualMachine(low: 4, high: 10),
     ]
     for observed in invalid {

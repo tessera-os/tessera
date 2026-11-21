@@ -33,10 +33,8 @@ public struct RandomCalls<C: KernelRandomCallContext>: CallProvider {
       guard context.copyOut(to: words[0], from: .init(bytes)) else {
         return .init(status: syscallStatus(1, 1))
       }
-      switch e {
-      case .physical: return .init()
-      case .virtualMachine(let lo, let hi): return .init(first: lo, second: hi)
-      }
+      let (lo, hi) = e.wireWords
+      return .init(first: lo, second: hi)
     }
   }
 }

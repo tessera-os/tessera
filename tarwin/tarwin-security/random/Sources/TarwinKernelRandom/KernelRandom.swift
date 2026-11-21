@@ -12,7 +12,7 @@ public struct KernelRandom: ~Copyable {
   public private(set) var remainingBlocks = blocksPerSample
   private var stream: ChaChaStream
   private let policy: KernelEntropyPolicy
-  private let physical: Bool
+  private let bootEpoch: RandomEpoch
   private var epoch: RandomEpoch?
 
   private static func accepts(
@@ -20,9 +20,11 @@ public struct KernelRandom: ~Copyable {
   ) -> Bool {
     guard let gen, gen.available else { return false }
     switch mode {
-    case .certified: return source == .physicalHardware
+    case .certified:
+      if case .fixedDebugQEMU = gen { return false }
+      return source == .physicalHardware
     case .debugQEMU:
-      guard case .virtualMachine = gen else { return false }
+      guard gen != .physical else { return false }
       return source == .emulatedTPM || source == .physicalHardware
     }
   }
@@ -34,12 +36,13 @@ public struct KernelRandom: ~Copyable {
     dst[0] = policy == .certified ? 1 : 2
     switch gen {
     case .physical: dst[1] = 0
-    case .virtualMachine(let lo, let hi):
-      dst[1] = 1
-      for i in 0..<8 {
-        dst[2 + i] = UInt8(truncatingIfNeeded: lo >> (8 * i))
-        dst[10 + i] = UInt8(truncatingIfNeeded: hi >> (8 * i))
-      }
+    case .virtualMachine: dst[1] = 1
+    case .fixedDebugQEMU: dst[1] = 2
+    }
+    let (lo, hi) = gen.wireWords
+    for i in 0..<8 {
+      dst[2 + i] = UInt8(truncatingIfNeeded: lo >> (8 * i))
+      dst[10 + i] = UInt8(truncatingIfNeeded: hi >> (8 * i))
     }
   }
   private static func words(_ c: BlakeCv) -> InlineArray<8, UInt32> {
@@ -49,7 +52,17 @@ public struct KernelRandom: ~Copyable {
     policy: KernelEntropyPolicy, bootSeed: UnsafeRawBufferPointer,
     hardware: UnsafeRawBufferPointer, source: CheckedEntropySource, generation: RandomEpoch?
   ) {
-    guard let generation, Self.accepts(policy, source, generation), bootSeed.count == 64,
+    guard let generation else { return nil }
+    if case .fixedDebugQEMU = generation { return nil }
+    self.init(policy: policy, bootSeed: bootSeed, hardware: hardware, source: source,
+      validated: generation)
+  }
+
+  init?(
+    policy: KernelEntropyPolicy, bootSeed: UnsafeRawBufferPointer,
+    hardware: UnsafeRawBufferPointer, source: CheckedEntropySource, validated generation: RandomEpoch
+  ) {
+    guard Self.accepts(policy, source, generation), bootSeed.count == 64,
       hardware.count == 32
     else { return nil }
     var input = InlineArray<114, UInt8>(repeating: 0)
@@ -62,7 +75,7 @@ public struct KernelRandom: ~Copyable {
     guard let cv else { return nil }
     stream = ChaChaStream(keyWords: Self.words(cv))
     self.policy = policy
-    physical = generation == .physical
+    bootEpoch = generation
     epoch = generation
   }
 
@@ -71,11 +84,19 @@ public struct KernelRandom: ~Copyable {
   public mutating func reseed(
     hardware: UnsafeRawBufferPointer, source: CheckedEntropySource, generation: RandomEpoch?
   ) -> Bool {
+    let previous = epoch
     epoch = nil
-    guard let generation, (generation == .physical) == physical,
+    guard let generation,
       Self.accepts(policy, source, generation), hardware.count == 32
     else {
       return false
+    }
+    switch (bootEpoch, generation) {
+    case (.physical, .physical), (.virtualMachine, .virtualMachine): break
+    case (.fixedDebugQEMU, .fixedDebugQEMU):
+      // A changed or lost fixed ID contradicts the launch contract. Boot again.
+      guard previous == bootEpoch, generation == bootEpoch else { return false }
+    default: return false
     }
     var input = InlineArray<82, UInt8>(repeating: 0)
     let cv = withUnsafeMutableBytes(of: &input) { buf in
