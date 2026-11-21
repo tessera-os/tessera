@@ -77,7 +77,9 @@ final class VolumeTests: XCTestCase {
     crossed.data[root + 32] = 65
     XCTAssertThrowsError(try FatVolume(crossed))
   }
-  func testMtoolsFormattedImage() throws {
+  func testMtoolsFormattedImage() throws { try mtoolsImage(wide: false) }
+  func testMtoolsFormattedFAT32Image() throws { try mtoolsImage(wide: true) }
+  private func mtoolsImage(wide: Bool) throws {
     let fm = FileManager.default
     let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
     guard
@@ -100,7 +102,8 @@ final class VolumeTests: XCTestCase {
       p.waitUntilExit()
       guard p.terminationStatus == 0 else { throw FatError.io }
     }
-    try run("mformat", ["-C", "-h", "8", "-n", "32", "-t", "64", "-c", "1", "::"])
+    let geometry = wide ? ["-F", "-T", "73728"] : ["-h", "8", "-n", "32", "-t", "64"]
+    try run("mformat", ["-C"] + geometry + ["-c", "1", "::"])
     try run("mmd", ["::/DOCS"])
     try run("mcopy", [source.path, "::/DOCS/NOTES.TXT"])
     let v = try FatVolume(Media(data: Array(try Data(contentsOf: URL(fileURLWithPath: img)))))

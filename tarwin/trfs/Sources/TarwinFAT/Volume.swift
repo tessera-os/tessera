@@ -36,7 +36,7 @@ private func canonical(_ bytes: [UInt8]) throws -> String {
   return String(decoding: bytes.map { (97...122).contains($0) ? $0 - 32 : $0 }, as: UTF8.self)
 }
 
-/// FAT16 with ASCII short filenames; metadata is verified before exposing
+/// FAT16 and FAT32 with ASCII short filenames; metadata is verified before exposing
 /// the root. Directory indices contain only discovered nodes, not raw sectors.
 public struct FatVolume<M: FatMedia> {
   public let root: UInt64 = 1
@@ -52,11 +52,12 @@ public struct FatVolume<M: FatMedia> {
     let entries = word(b, 17, 2)
     let small = word(b, 19, 2)
     let large = word(b, 32, 4)
-    let fatSectors = word(b, 22, 2)
+    let fat16Sectors = word(b, 22, 2)
+    let fatSectors = fat16Sectors == 0 ? word(b, 36, 4) : fat16Sectors
     guard b[510] == 0x55, b[511] == 0xaa, [512, 1024, 2048, 4096].contains(sector),
       spc > 0, spc.nonzeroBitCount == 1, sector * spc <= 32768, reserved > 0,
       (1...2).contains(copies),
-      entries > 0, fatSectors > 0, (small == 0) != (large == 0)
+      fatSectors > 0, (small == 0) != (large == 0)
     else { throw FatError.invalidMedia }
     let total = max(small, large)
     let rootSector = reserved + copies * fatSectors
@@ -67,15 +68,33 @@ public struct FatVolume<M: FatMedia> {
     let clusters = (total - first) / spc
     let cb = spc * sector
     let data = first * sector
-    guard (4085...65518).contains(clusters), (clusters + 2) * 2 <= fatSectors * sector else {
+    let wide = clusters >= 65525
+    let width = wide ? 4 : 2
+    guard clusters <= 1_048_576 else { throw FatError.tooLarge }
+    guard (clusters + 2) * width <= fatSectors * sector else {
       throw FatError.invalidMedia
     }
-    let fat = try read(media, reserved * sector, (clusters + 2) * 2)
-    guard word(fat, 0, 2) == 0xff00 | Int(b[21]), word(fat, 2, 2) == 0xffff else {
+    let flags = wide ? word(b, 40, 2) : 0
+    let mirrored = flags & 0x80 == 0
+    let active = mirrored ? 0 : flags & 15
+    if wide {
+      guard entries == 0, small == 0, fat16Sectors == 0, word(b, 42, 2) == 0,
+        flags & 0xff70 == 0, active < copies
+      else { throw FatError.invalidMedia }
+    } else if !(4085...65518).contains(clusters) || entries == 0 || fat16Sectors == 0 {
       throw FatError.invalidMedia
     }
-    if copies == 2, try read(media, (reserved + fatSectors) * sector, fat.count) != fat {
+    let mask = wide ? 0x0fff_ffff : 0xffff
+    let fat = try read(media, (reserved + active * fatSectors) * sector, (clusters + 2) * width)
+    func entry(_ id: Int) -> Int { word(fat, id * width, width) & mask }
+    guard entry(0) == (mask & ~255) | Int(b[21]), entry(1) == mask else {
       throw FatError.invalidMedia
+    }
+    if mirrored && copies == 2 {
+      let mirror = try read(media, (reserved + fatSectors) * sector, fat.count)
+      for i in 0..<(clusters + 2) where entry(i) != word(mirror, i * width, width) & mask {
+        throw FatError.invalidMedia
+      }
     }
     var claimed = [Bool](repeating: false, count: clusters + 2)
     func chain(_ first: Int) throws -> [Int] {
@@ -85,11 +104,15 @@ public struct FatVolume<M: FatMedia> {
         guard id >= 2, id < claimed.count, !claimed[id] else { throw FatError.invalidMedia }
         claimed[id] = true
         ids.append(id)
-        id = word(fat, id * 2, 2)
-        if id >= 0xfff8 { return ids }
+        id = entry(id)
+        if id >= mask - 7 { return ids }
       }
     }
-    var index = [FatNode(id: 1, name: "", size: 0, directory: true, chain: [])]
+    var index = [
+      FatNode(
+        id: 1, name: "", size: 0, directory: true,
+        chain: wide ? try chain(word(b, 44, 4)) : [])
+    ]
     var byParent: [UInt64: [String: UInt64]] = [:]
     var order: [UInt64: [UInt64]] = [:]
     var scanned = 0
@@ -111,8 +134,9 @@ public struct FatVolume<M: FatMedia> {
         let name = try canonical(base + (ext.isEmpty ? [] : [46] + ext))
         let isDir = attr & 16 != 0
         let size = word(bytes, p + 28, 4)
-        let cluster = word(bytes, p + 26, 2)
-        guard attr & 0xc0 == 0, word(bytes, p + 20, 2) == 0, index.count < 65536,
+        let hi = word(bytes, p + 20, 2)
+        let cluster = (hi << 16) | word(bytes, p + 26, 2)
+        guard attr & 0xc0 == 0, wide || hi == 0, index.count < 65536,
           byParent[directory.id]?[name] == nil,
           !isDir || size == 0
         else { throw FatError.invalidMedia }
@@ -127,8 +151,8 @@ public struct FatVolume<M: FatMedia> {
       }
       return true
     }
-    _ = try scan(index[0], read(media, rootSector * sector, entries * 32))
-    var i = 1
+    if !wide { _ = try scan(index[0], read(media, rootSector * sector, entries * 32)) }
+    var i = wide ? 0 : 1
     while i < index.count {
       let node = index[i]
       i += 1
