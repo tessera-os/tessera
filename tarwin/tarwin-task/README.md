@@ -39,3 +39,19 @@ version (u32) followed by the Mach return status (i32; zero means success).
 The Swift codecs take exact payload slices and do not allocate or require
 aligned pointers. Mach header, descriptor and trailer validation is the
 transport's responsibility.
+
+## Check-in
+
+`TaskSpawner.spawn` starts the task with no environment or inherited
+descriptors and a private bootstrap port. The task sends one complex message
+with ID `TaskCheckIn.messageID` on that port using `COPY_SEND`. The body
+contains two port descriptors, in order:
+
+1. Command port `MAKE_SEND`: the task retains its receive right.
+2. Gate port `MOVE_RECEIVE`: the task retains only a send right.
+
+The eight payload bytes are version (u32) and reserved zero (u32). There
+is no reply right. The spawner accepts this message only from its spawned
+PID, using the Mach audit trailer. It owns both returned rights until the
+`SpawnedTask` is released. The hosted kernel separately owns process exit
+observation and reaping.
