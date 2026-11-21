@@ -49,8 +49,7 @@ private func disjoint(_ a: UnsafeRawBufferPointer, _ b: UnsafeRawBufferPointer) 
     tableBytes >= 16384, tableBytes < storage.count, (tableBytes | storage.count) & 16383 == 0,
     physical != 0, physical & 16383 == 0, physical < 1 << 48,
     UInt64(storage.count) <= (1 << 48) - physical,
-    !(physical..<physical + UInt64(storage.count)).overlaps(
-      clockPage.mapping.physical..<clockPage.mapping.physical + 16384),
+    clockPage.mapping.permitsPrivateStorage(physical..<physical + UInt64(storage.count)),
     !plan.processReservation.overlaps(plan.libraryReservation),
     disjoint(ram, cache), disjoint(ram, proof), disjoint(cache, proof),
     disjoint(archive, cache), disjoint(archive, proof),

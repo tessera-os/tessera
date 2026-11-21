@@ -5,7 +5,9 @@ import TarwinTime
 /// root and frame owned until the last process mapping and CPU have retired.
 /// The allocator must exclude DMA, device frames and other writable aliases.
 public struct W1ClockReservation: ~Copyable {
-  let hostRoot, physical, kernelVA: UInt64
+  let physical, kernelVA: UInt64
+  private let hostTables: Range<UInt64>
+  var hostRoot: UInt64 { hostTables.lowerBound }
   let layout: ArmPermissionLayout
 
   public init?(physical: UInt64, kernelVA: UInt64, host: inout ArmKernelTranslation) {
@@ -14,16 +16,18 @@ public struct W1ClockReservation: ~Copyable {
     }
     self.physical = physical
     self.kernelVA = kernelVA
-    hostRoot = host.physicalRoot
+    hostTables = host.tableReservation
     layout = host.layout
   }
 
-  /// Before any user can run. Refuse overlap with the entire process pool
-  /// (including future table/stack frames), not merely its current prefix.
+  /// Check before the user table builder zeroes any of the proposed RAM.
+  func permitsPrivateStorage(_ pool: Range<UInt64>) -> Bool {
+    !pool.isEmpty && !pool.overlaps(hostTables) && !pool.overlaps(physical..<physical + 16384)
+  }
+
   func install(in tables: inout ArmUserTranslation, privatePool: Range<UInt64>) -> Bool {
-    guard tables.physicalRoot == privatePool.lowerBound, !privatePool.isEmpty,
-      tables.physicalRoot != hostRoot, tables.layout == layout,
-      !privatePool.overlaps(physical..<physical + 16384) else { return false }
+    guard tables.physicalRoot == privatePool.lowerBound, tables.layout == layout,
+      permitsPrivateStorage(privatePool) else { return false }
     return tables.insert(virtual: TimePageReader.address47, physical: physical, write: false, execute: false)
   }
 

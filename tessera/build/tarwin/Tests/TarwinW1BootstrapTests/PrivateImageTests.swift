@@ -126,7 +126,7 @@ private func stageImages(
     signSlot(plan.targetAddress, plan.storageModifier, root: base + 16384, child: child, tree: tree)
       == nil)
   #expect(signedCalls == 0)
-  func build(_ size: Int) -> W1PrivateImages? {
+  func build(_ size: Int, clock: borrowing W1ClockPage) -> W1PrivateImages? {
     calls = 0
     let thread = W1ThreadPlacement(stackBytes: 81920, draw: { .max })
     return preparePrivateW1Images(
@@ -136,15 +136,29 @@ private func stageImages(
         calls += 1
         return clean
       },
-      child: child, tree: tree, layout: layout, clockPage: clockPage,
+      child: child, tree: tree, layout: layout, clockPage: clock,
       signImport: { target, modifier in
         signSlot(target, modifier, root: base, child: child, tree: tree)
       }, firstThread: consume thread)
   }
   func denied(_ size: Int) -> Bool {
     ram.initializeMemory(as: UInt8.self, repeating: 0xaa)
-    if build(size) != nil { return false }
+    if build(size, clock: clockPage) != nil { return false }
     return ram.prefix(size).allSatisfy { $0 == 0 } && ram.dropFirst(size).allSatisfy { $0 == 0xaa }
+  }
+  let alternateBytes = UnsafeMutableRawBufferPointer.allocate(byteCount: 5 * page, alignment: page)
+  defer { alternateBytes.deallocate() }
+  // Only the last, unused host table page overlaps; then only the last
+  // proposed child frame overlaps. Neither case may even zero the child root.
+  for reserved in [base - UInt64(4 * page), base + UInt64(ram.count - page)] {
+    guard var alternate = ArmKernelTranslation(backing: alternateBytes, physical: reserved, layout: layout),
+      let mapped = W1ClockReservation(physical: clockPA, kernelVA: 0xffff800000000000, host: &alternate),
+      let finished = alternate.finish(),
+      let clockOwner = mapped.startMapped(in: finished, clock: clock, bytes: clockBytes)
+    else { Issue.record("overlapping host reservation setup"); return }
+    ram.initializeMemory(as: UInt8.self, repeating: 0xaa)
+    let refused = build(ram.count, clock: clockOwner) == nil
+    #expect(refused && ram.allSatisfy { $0 == 0xaa } && calls == 0 && signedCalls == 0)
   }
   clean = false
   #expect(denied(ram.count) && calls == 1)
@@ -154,7 +168,7 @@ private func stageImages(
   sign = true
   #expect(denied(tableBytes + page) && calls == 1)
   #expect(denied(tableBytes + 5 * page) && calls == 2)
-  guard let images = build(ram.count) else {
+  guard let images = build(ram.count, clock: clockPage) else {
     Issue.record("private image set rejected")
     return
   }

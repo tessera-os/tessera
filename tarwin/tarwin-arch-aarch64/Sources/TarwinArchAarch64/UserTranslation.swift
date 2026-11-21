@@ -3,6 +3,7 @@
 private struct ArmPrivateRoot: ~Copyable {
   private let words: UnsafeMutableBufferPointer<UInt64>
   let physicalRoot: UInt64
+  var tableReservation: Range<UInt64> { physicalRoot..<physicalRoot + UInt64(words.count) * 8 }
   let layout: ArmPermissionLayout
   private(set) var usedPages: Int
 
@@ -22,7 +23,7 @@ private struct ArmPrivateRoot: ~Copyable {
 
   mutating func insert(virtual: UInt64, physical: UInt64, leaf: UInt64) -> Bool {
     guard virtual & 16383 == 0, physical != 0, leaf != 0,
-      physical < physicalRoot || physical >= physicalRoot + UInt64(words.count) * 8
+      !tableReservation.contains(physical)
     else { return false }
     var table = 0
     for level in 0..<3 {
@@ -210,6 +211,8 @@ public struct ArmUserTranslation: ~Copyable {
 public struct ArmKernelTranslation: ~Copyable {
   private var root: ArmPrivateRoot
   public var physicalRoot: UInt64 { root.physicalRoot }
+  /// Includes reserved table pages that have not acquired any descriptors yet.
+  public var tableReservation: Range<UInt64> { root.tableReservation }
   public var usedPages: Int { root.usedPages }
   public var layout: ArmPermissionLayout { root.layout }
 
