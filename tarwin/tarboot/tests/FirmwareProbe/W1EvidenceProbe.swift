@@ -25,7 +25,12 @@
       withUnsafeMutableBytes(of: &work) { scratch in
         var refusal: VirtBootFenceResult?
         var cfg = QEMUVirtConfig(mapped: UnsafeRawPointer(bitPattern: 0x0902_0000)!)
-        guard QEMUW1Evidence.coldBootSet(work: pages, block: block, map: map,
+        #if TARBOOT_TEST_HIGH_PCI
+        let layout = VirtBootPCILayout.virt11High512GiB
+        #else
+        let layout = VirtBootPCILayout.lowOnly
+        #endif
+        guard QEMUW1Evidence.coldBootSet(work: pages, layout: layout, block: block, map: map,
           archive: archive, reader: &cfg, into: dest, enrollment: absent, systemEnrollment: absent,
           policy: policy, contract: contract, scratch: scratch, onRefusal: { refusal = $0 }) == nil,
           dest[15] == 0xcc else { return false }

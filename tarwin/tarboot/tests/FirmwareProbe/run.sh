@@ -75,6 +75,7 @@ for isa in "${@:-all}"; do
         if [[ ${TARBOOT_TEST_COLD_FENCE:-0} == 1 ]]; then
             [[ ${TARBOOT_TEST_RO_GENID:-0} == 1 && ${TARBOOT_TEST_RESTORE:-0} == 0 && ${TARBOOT_TEST_W1_EVIDENCE:-0} == 1 ]] || exit 2
             flags+=(-D TARBOOT_TEST_COLD_FENCE)
+            if [[ ${TARBOOT_TEST_HIGH_PCI:-0} != 0 ]]; then flags+=(-D TARBOOT_TEST_HIGH_PCI); fi
             device="$root/tarwin-device/Sources/TarwinDevice"
             "$bin/swiftc" "${flags[@]}" -module-name TarwinDevice -emit-module -emit-module-path "$d/TarwinDevice.swiftmodule" \
                 "$device"/{Range,ColdVirtPCI,VirtBootFence}.swift

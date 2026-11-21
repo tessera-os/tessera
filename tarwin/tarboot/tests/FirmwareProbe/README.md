@@ -301,6 +301,14 @@ Do not enable hotplug or restore in this cold machine. The restore probe
 above only tests generation and never calls the cold verifier. This is a
 post-exit verifier in the EFI diagnostic, not a signed kernel launch.
 
+Optional `TARBOOT_TEST_HIGH_PCI=1` pins the 512 GiB high PCI window.
+Before the first endpoint reset the guest requires both assigned 16 KiB
+BAR4s in that window and checks each 4 KiB page with AT S1E2W: it must
+be writable Device memory at the same physical address. A failed walk or
+cacheable alias is not a usable mapping. `TARBOOT_TEST_HIGH_PCI=wrong-window`
+runs that high-only check against a low-only machine; no signature may be
+copied. The default launcher still uses only low MMIO.
+
 `TARBOOT_TEST_TPM=1 TARBOOT_TEST_FIFO=1 bash run.sh aarch64` binds a single
 QEMU virt platform-bus TIS device to disposable swtpm. After ExitBootServices,
 TarwinBoot requests locality zero and streams the ESP fixture bytes through

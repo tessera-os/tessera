@@ -26,3 +26,17 @@ define void @tarwin_publish_device_tables() nounwind {
   ret void
 }
 """)
+
+// Check a proposed high PCI page with the current hardware translation
+// regime. Never change mappings or use an identity guess on a failed walk.
+let walk = [
+  "mrs x1, CurrentEL", "cmp x1, #8", "b.ne 1f", "mrs x2, PAR_EL1",
+  "at s1e2w, x0", "isb", "mrs x0, PAR_EL1", "msr PAR_EL1, x2", "ret",
+  "1: mov x0, #1", "ret",
+]
+print("""
+define i64 @tarwin_cold_el2_write_translation(i64 %address) naked nounwind {
+  call void asm sideeffect "\(walk.joined(separator: "\\0A"))", "~{memory}"()
+  unreachable
+}
+""")

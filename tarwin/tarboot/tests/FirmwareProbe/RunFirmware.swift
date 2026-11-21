@@ -73,7 +73,11 @@ func check() throws {
   let cold = ProcessInfo.processInfo.environment["TARBOOT_TEST_COLD_FENCE"] == "1"
   let extraPCI = ProcessInfo.processInfo.environment["TARBOOT_TEST_EXTRA_PCI"] == "1"
   guard !extraPCI || cold else { throw Failure("extra PCI control requires the cold fixture") }
-  let windows = cold ? ",highmem-mmio=off" : ""
+  let highMode = ProcessInfo.processInfo.environment["TARBOOT_TEST_HIGH_PCI"] ?? "0"
+  guard ["0", "1", "wrong-window"].contains(highMode) else { throw Failure("unknown PCI layout") }
+  let highPCI = highMode != "0", wrongWindow = highMode == "wrong-window"
+  guard !highPCI || (cold && !extraPCI) else { throw Failure("invalid high PCI profile") }
+  let windows = highPCI && !wrongWindow ? ",highmem-mmio=on,highmem-mmio-size=512G" : (cold ? ",highmem-mmio=off" : "")
   let board = ro ? "virt-11.1,accel=tcg,iommu=smmuv3,default-bus-bypass-iommu=off,msi=off" + windows : (restore ? "virt-11.1,accel=tcg" : "virt")
   let armMachine = cpuCheck == "1" || ro ? ["-machine",board + ",gic-version=3,virtualization=on","-cpu","max"]
     : ["-machine",board + ",gic-version=3","-cpu","cortex-a72"]
@@ -318,15 +322,15 @@ func check() throws {
     let log = String(decoding: uart, as: UTF8.self)
     if let line = log.split(whereSeparator: \.isNewline).first(where: { $0.contains("TARWIN-FENCE-REFUSED-") }) {
       for row in log.split(whereSeparator: \.isNewline) where row.contains("TARWIN-COLD-") { print(row) }
-      if extraPCI && line.contains("TARWIN-FENCE-REFUSED-PLATFORM") && !log.contains("TARWIN-W1-EVIDENCE-COPIED") {
-        print("aarch64: unexpected PCI endpoint refused before detached signature copy")
+      if (extraPCI || wrongWindow) && line.contains("TARWIN-FENCE-REFUSED-PLATFORM") && !log.contains("TARWIN-W1-EVIDENCE-COPIED") {
+        print("aarch64: \(extraPCI ? "unexpected PCI endpoint" : "wrong PCI window") refused before detached signature copy")
         return
       }
       throw Failure("cold W1 closed before signature copy: " + String(line))
     }
-    guard !extraPCI, log.contains("TARWIN-FENCE-STREAMS-DENIED"), log.contains("TARWIN-COLD-VMGEN-ACCEPTED")
+    guard !extraPCI && !wrongWindow, log.contains("TARWIN-FENCE-STREAMS-DENIED"), log.contains("TARWIN-COLD-VMGEN-ACCEPTED")
     else { throw Failure("missing cold generation or device fence") }
-    print("aarch64: post-EFI disk/RNG streams denied before detached signature copy")
+    print("aarch64: post-EFI disk/RNG streams denied before detached signature copy (\(highPCI ? "high" : "low") BARs)")
   }
   if evidence {
     guard uart.range(of: Data("TARWIN-W1-FIRMWARE-KERNEL-REFUSED".utf8)) != nil,

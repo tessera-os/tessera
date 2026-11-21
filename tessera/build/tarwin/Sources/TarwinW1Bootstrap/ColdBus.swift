@@ -10,9 +10,28 @@ import TarwinDevice
 @_extern(c, "tarwin_mmio_write32") private func store32(_ p: UnsafeRawPointer, _ v: UInt32)
 @_extern(c, "tarwin_mmio_write64") private func store64(_ p: UnsafeRawPointer, _ v: UInt64)
 @_extern(c, "tarwin_publish_device_tables") private func publish()
+@_extern(c, "tarwin_cold_el2_write_translation") private func translation(_ p: UInt64) -> UInt64
 
 // Only the fixed, identity-mapped early machine; an abort is terminal.
 struct ColdBus: VirtBootFenceBus {
+  let layout: VirtBootPCILayout
+  mutating func permitsHighEndpoints() -> Bool {
+    guard layout == .virt11High512GiB else { return true }
+    for i in 1...2 {
+      let function = 0x40_1000_0000 + UInt64(i * 0x8000)
+      let lo = load32(pointer(function + 0x20)), hi = load32(pointer(function + 0x24))
+      let base = UInt64(hi) << 32 | UInt64(lo & ~15)
+      guard lo & 0x3fff == 12, base >= 0x80_0000_0000, base <= 0x100_0000_0000 - 16384
+      else { return false }
+      for page in 0..<4 {
+        let address = base + UInt64(page * 4096), par = translation(address)
+        // Successful 48-bit identity mapping, Device-nGnRnE/nGnRE/nGRE/GRE.
+        guard par & 1 == 0, par & 0x000f_ffff_ffff_f000 == address,
+          par >> 56 & ~UInt64(12) == 0 else { return false }
+      }
+    }
+    return true
+  }
   private func pointer(_ address: UInt64) -> UnsafeRawPointer { UnsafeRawPointer(bitPattern: UInt(address))! }
   func read8(_ p: UInt64) -> UInt8? { load8(pointer(p)) }
   func read32(_ p: UInt64) -> UInt32? { load32(pointer(p)) }

@@ -11,7 +11,7 @@ extension QEMUW1Evidence {
   /// snapshot, device restart or user mapping may invalidate the exclusion.
   /// Never resume a snapshot using this cold path.
   @unsafe public static func coldBootSet<R: QEMUFileReader>(
-    work: borrowing FirmwareBootServices.ColdWorkspace,
+    work: borrowing FirmwareBootServices.ColdWorkspace, layout: VirtBootPCILayout = .lowOnly,
     block: UnsafeRawBufferPointer, map: UnsafeRawBufferPointer, archive: UnsafeRawBufferPointer,
     reader: inout R, into storage: UnsafeMutableRawBufferPointer,
     enrollment: UnsafeRawBufferPointer, systemEnrollment: UnsafeRawBufferPointer,
@@ -33,10 +33,11 @@ extension QEMUW1Evidence {
     if !contract.uuid.isEmpty { extents[7] = span(contract.uuid) }
     if !contract.symbol.isEmpty { extents[8] = span(contract.symbol) }
     if !contract.textSHA256.isEmpty { extents[9] = span(contract.textSHA256) }
-    var bus = ColdBus()
+    var bus = ColdBus(layout: layout)
+    guard bus.permitsHighEndpoints() else { onRefusal(.unsupported); return nil }
     let result = withUnsafeBytes(of: &extents) {
       denyVirtBootDMA(table: work.table, commands: work.table + 4096,
-        protected: $0.bindMemory(to: DeviceRange.self), bus: &bus)
+        protected: $0.bindMemory(to: DeviceRange.self), layout: layout, bus: &bus)
     }
     guard result == .streamsDenied else { onRefusal(result); return nil }
     return verify(block: block, at: span(block).base, map: map, at: span(map).base,
