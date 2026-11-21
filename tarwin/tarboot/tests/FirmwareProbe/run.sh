@@ -19,16 +19,16 @@ for isa in "${@:-all}"; do
         d="$out/$arch"
         mkdir -p "$d/esp/EFI/BOOT"
         image="$d/esp/EFI/BOOT/BOOT$suffix.EFI"
-        flags=(-target "$triple" -enable-experimental-feature Embedded -no-allocations -wmo -Osize
+        flags=(-target "$triple" -enable-experimental-feature Embedded -no-allocations -wmo -O
                -Xfrontend -disable-stack-protector -parse-as-library -I "$d")
         if [[ $arch == x86_64 ]]; then flags+=(-D TARBOOT_EFI_PE_COFF); fi
-        for pkg in kcore tarboot; do
+        for pkg in kcore tarboot tarwin-mm tarwin-time tarwin-sched ../tessera/build/tarwin; do
             for src in "$root/$pkg"/Sources/*; do
                 mod=$(basename "$src")
                 "$bin/swiftc" "${flags[@]}" -module-name "$mod" -emit-module -emit-module-path "$d/$mod.swiftmodule" "$src"/*.swift
             done
         done
-        "$bin/swiftc" "${flags[@]}" -module-name Probe -emit-ir -o "$d/probe.ll" "$here/Probe.swift"
+        "$bin/swiftc" "${flags[@]}" -module-name Probe -emit-ir -o "$d/probe.ll" "$here/Probe.swift" "$here/Memory.swift"
         if [[ $arch == riscv64 ]]; then
             edk=${EDK_BASETOOLS:?set EDK_BASETOOLS to built edk2 BaseTools for riscv64}
             "$bin/clang" -target "$triple" -mcmodel=medany -msmall-data-limit=0 -mno-relax -flto -O2 -c "$d/probe.ll" -o "$d/main.o"

@@ -13,6 +13,17 @@ public struct PageArena {
   public internal(set) var ends: UInt64
 }
 
+/// Carve one aligned 64-page leaf out of a caller-owned physical extent.
+/// The caller retains the padding. A firmware map descriptor alone is not ownership.
+public func arenaFromReservation(base: UInt64, length: UInt64, pageSize: UInt64) -> PageArena? {
+  guard base != 0, validExtent(base, length: length), pageSize == 4096 || pageSize == 16384
+  else { return nil }
+  let span = 64 * pageSize
+  let skip = (0 &- base) & (span - 1)
+  guard skip <= length, span <= length - skip else { return nil }
+  return makeArena(base + skip, pageSize: pageSize, usable: .max)
+}
+
 public func makeArena(_ base: UInt64, pageSize: UInt64, usable: UInt64) -> PageArena {
   var eligible = usable
   if (pageSize != 4096 && pageSize != 16384) || !alignedTo(base, alignment: pageSize * 64)

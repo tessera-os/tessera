@@ -62,7 +62,7 @@ func check() throws {
     return data["guest"] as? Bool == true && data["reason"] as? String == "guest-shutdown"
   }
   guard shutdown else { throw Failure("\(a): missing guest-initiated shutdown event") }
-  print("\(a): EFI map decoded; ExitBootServices and runtime shutdown passed")
+  print("\(a): EFI exit, physical page round-trip, boot queue and guest shutdown passed")
 }
 
 do { try check() } catch {

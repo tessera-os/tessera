@@ -25,7 +25,7 @@ Set `SWTPM_REPLAY=1` (requires swtpm) and `QEMU_TREES=1` (requires QEMU aarch64/
 
 ### Firmware and TPM interop
 
-The TPM test sends a Swift-encoded PCR_Extend command to a fresh software TPM and checks PCR 8 against SHA-256 replay of its Event2 digest. The device-tree tests consume QEMU-generated trees. A separate [firmware probe](../tarboot/tests/FirmwareProbe/README.md) executes the Swift UEFI memory-map and exit code on all three QEMU targets and shuts down the guest via runtime services. The probe is not a signed Tarwin boot set or a kernel.
+The TPM test sends a Swift-encoded PCR_Extend command to a fresh software TPM and checks PCR 8 against SHA-256 replay of its Event2 digest. The device-tree tests consume QEMU-generated trees. A separate [firmware probe](../tarboot/tests/FirmwareProbe/README.md) exercises UEFI exit, a real reserved physical page, and the [bootstrap run queue and clock binding](../../tessera/build/tarwin/Sources/TarwinBootstrap/BootCPU.swift) in all three QEMU guests. Dispatch uses test clock samples; there is no timer interrupt or context switch. The probe is not a signed Tarwin boot set or a kernel.
 
 ### Pending gates
 

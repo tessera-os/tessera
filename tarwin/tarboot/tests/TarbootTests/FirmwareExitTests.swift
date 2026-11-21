@@ -8,6 +8,9 @@ import Testing
       UnsafeMutablePointer<UInt>, UnsafeMutablePointer<UInt32>
     ) -> UInt
   private typealias ExitFunction = @convention(c) (UnsafeRawPointer, UInt) -> UInt
+  private typealias Allocate =
+    @convention(c) (UInt32, UInt32, UInt, UnsafeMutablePointer<UInt64>) -> UInt
+  private typealias Release = @convention(c) (UInt64, UInt) -> UInt
   private struct Trace {
     var calls = 0
     var expectedKey: UInt = 1
@@ -51,13 +54,37 @@ import Testing
     }
     var system = [UInt64](repeating: 0, count: 15)
     var boot = [UInt64](repeating: 0, count: 30)
+    let allocate: Allocate = { method, type, count, base in
+      precondition(method == 0 && type == 2 && count > 0)
+      if count == 2 { return 0x8000_0000_0000_0009 }  // EFI_OUT_OF_RESOURCES
+      base.pointee = count == 3 ? 1 : 0x80_000
+      return 0
+    }
+    let release: Release = { base, count in
+      precondition((base == 0x80_000 && count == 1) || (base == 1 && count == 3))
+      return 0
+    }
     boot.withUnsafeMutableBytes { services in
+      services.storeBytes(of: allocate, toByteOffset: 40, as: Allocate.self)
+      services.storeBytes(of: release, toByteOffset: 48, as: Release.self)
       services.storeBytes(of: map, toByteOffset: 56, as: MapFunction.self)
       services.storeBytes(of: exit, toByteOffset: 232, as: ExitFunction.self)
       header(services, 0x5652_4553_544f_4f42)
       system.withUnsafeMutableBytes { st in
         st.storeBytes(of: services.baseAddress!, toByteOffset: 96, as: UnsafeMutableRawPointer.self)
         header(st, 0x5453_5953_2049_4249)
+        guard let fw = FirmwareBootServices(image: st.baseAddress!, system: st.baseAddress!),
+          let pages = fw.reserveLoaderPages(1)
+        else {
+          Issue.record("could not reserve pages")
+          return
+        }
+        #expect(pages.base == 0x80_000 && pages.length == 4096)
+        let released = fw.releaseLoaderPages(consume pages)
+        #expect(released)
+        for count: UInt in [0, 2, 3, UInt.max] {
+          if case .some = fw.reserveLoaderPages(count) { Issue.record("invalid reservation") }
+        }
         for (stale, capacity, otherError, calls) in [
           (0, 64, false, 1), (1, 64, false, 2), (8, 64, false, 4), (0, 8, false, 0),
           (0, 64, true, 1),

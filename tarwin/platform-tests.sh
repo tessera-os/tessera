@@ -7,6 +7,7 @@ trap 'rm -rf "$out"' EXIT
 for pkg in kcore tarboot tarwin-boot tarwin-arch-aarch64 tarwin-arch-x64 tarwin-arch-rv64 tarwin-mm tarwin-time; do
     swift test --package-path "$root/$pkg" --scratch-path "$out/host-$pkg"
 done
+swift test --package-path "$root/../tessera/build/tarwin" --scratch-path "$out/host-bootstrap"
 
 if [ -n "${EMBEDDED_SWIFTC:-}" ]; then
     for target in aarch64-none-none-elf x86_64-unknown-none-elf riscv64-none-none-eabi; do

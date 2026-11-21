@@ -25,6 +25,9 @@ public enum FirmwareExit {
   }
 
   public struct FirmwareBootServices: ~Copyable {
+    private typealias Allocate =
+      @convention(c) (UInt32, UInt32, UInt, UnsafeMutablePointer<UInt64>) -> UInt
+    private typealias Release = @convention(c) (UInt64, UInt) -> UInt
     private typealias GetMap =
       @convention(c) (
         UnsafeMutablePointer<UInt>, UnsafeMutableRawPointer,
@@ -32,6 +35,8 @@ public enum FirmwareExit {
       ) -> UInt
     private typealias Exit = @convention(c) (UnsafeRawPointer, UInt) -> UInt
     private let image: UnsafeRawPointer
+    private let allocate: Allocate?
+    private let release: Release?
     private let getMap: GetMap
     private let exitBoot: Exit
 
@@ -46,8 +51,40 @@ public enum FirmwareExit {
         let exit = boot.load(fromByteOffset: 232, as: Exit?.self)
       else { return nil }
       self.image = image
+      self.allocate = boot.load(fromByteOffset: 40, as: Allocate?.self)
+      self.release = boot.load(fromByteOffset: 48, as: Release?.self)
       self.getMap = map
       self.exitBoot = exit
+    }
+
+    public struct LoaderPages: ~Copyable {
+      public let base: UInt64
+      public let count: UInt
+      public var length: UInt64 { UInt64(count) * 4096 }
+      fileprivate init(base: UInt64, count: UInt) {
+        self.base = base
+        self.count = count
+      }
+    }
+
+    /// Reserve a private EfiLoaderData extent while boot services are live.
+    /// Holding this reservation, not seeing loader data in a descriptor, confers ownership.
+    public func reserveLoaderPages(_ count: UInt) -> LoaderPages? {
+      guard count > 0, count <= UInt.max >> 12, let allocate, let release else { return nil }
+      var address: UInt64 = 0
+      guard allocate(0, 2, count, &address) == 0 else { return nil }
+      guard address != 0, address & 4095 == 0, validExtent(address, length: UInt64(count) << 12)
+      else {
+        _ = release(address, count)
+        return nil
+      }
+      return LoaderPages(base: address, count: count)
+    }
+
+    /// Only before the first exit attempt, using the same firmware instance.
+    public func releaseLoaderPages(_ pages: consuming LoaderPages) -> Bool {
+      guard let release else { return false }
+      return release(pages.base, pages.count) == 0
     }
 
     /// Firmware guarantees a mapped EFI_TABLE_HEADER prefix. Cap its declared extent
