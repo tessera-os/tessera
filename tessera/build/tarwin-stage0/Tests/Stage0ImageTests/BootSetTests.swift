@@ -38,6 +38,45 @@ import Testing
   }
 }
 
+@Test func systemRootProfileKeepsItsFiveRawMembersSeparate() throws {
+  let root = Array(UInt8(0)..<32), kernel: [UInt8] = [7], library: [UInt8] = [9, 2]
+  let process: [UInt8] = [1, 8, 0], config = Array(#"{"flags":["debug"],"securityVersion":1,"slot":"A"}"#.utf8)
+  func make(_ digest: [UInt8]) throws -> [UInt8] {
+    try systemRootBootSet(kernel: kernel, initialProcess: process, library: library,
+      metadataHeadSHA256: digest)
+  }
+  func extent(_ bytes: [UInt8], _ name: String) -> Range<Int>? {
+    var scratch = DigestScratch()
+    return bytes.withUnsafeBytes { archive in
+      Array(name.utf8).withUnsafeBytes { path in
+        guard case .intact(let r) = inspectRawMember(archive, path: path, scratch: &scratch)
+        else { return nil }
+        return r
+      }
+    }
+  }
+  var bytes = try make(root)
+  #expect(bytes == (try make(root)))
+  #expect(Array(bytes[8..<16]) == [5, 0, 0, 0, 0, 0, 0, 0])
+  var end = 24
+  for (name, body) in [("LibTessera", library), ("boot.json", config), ("kernel", kernel),
+    ("system.trfs.root", root), ("tessera.init", process)] {
+    let range = try #require(extent(bytes, name))
+    #expect(range == end..<(end + body.count))
+    #expect(Array(bytes[range]) == body)
+    end = range.upperBound
+  }
+  let range = try #require(extent(bytes, "system.trfs.root"))
+  bytes[range.lowerBound] ^= 1
+  #expect(extent(bytes, "system.trfs.root") == nil)
+  let ordinary = try stage1BootSet(kernel: kernel, initialProcess: process, library: library)
+  #expect(extent(ordinary, "system.trfs.root") == nil)
+  for length in [0, 31, 33, 64] {
+    #expect(throws: InputError.self) { try make([UInt8](repeating: 1, count: length)) }
+  }
+  #expect(throws: InputError.self) { try make([UInt8](repeating: 0, count: 32)) }
+}
+
 @Test func archiveRoundTrip() throws {
   let kernel = (0..<35337).map { UInt8(truncatingIfNeeded: $0) }
   var bytes = try bootSet(kernel: kernel)

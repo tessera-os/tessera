@@ -72,3 +72,15 @@ do not set member names or establish any executable identity. The packer
 neither verifies signatures nor makes an image launchable. W0 remains a
 two-member archive; the W1 guest needs separate role and RX-range checks
 and the kernel must measure the authorized init in PCR 10 before launch.
+
+### Assemble the opt-in system-root debug candidate
+
+    swift run Stage0Image w1-system-root-bootset KERNEL.elf INIT.elf LIBTESSERA.elf ROOT.bin NEW-ROOT.TIR
+
+This distinct profile adds `system.trfs.root` to the four W1 members. Supply
+the 32 raw SHA-256 bytes of the nonempty TRFS metadata head, not ASCII hex,
+a sector address, or a whole-disk hash. The full five-member archive needs
+its own detached signature. The mount must compare the digest returned by
+the system-root verifier with the independently read disk head, measure the
+match, then mount read-only. Packing bytes alone authorizes neither disk nor
+process. The ordinary W0 and W1 archives are unchanged.

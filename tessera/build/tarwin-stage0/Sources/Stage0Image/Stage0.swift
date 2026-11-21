@@ -3,16 +3,16 @@ import TIRCore
 import TIRImage
 import TarwinLoader
 
-private func readNativeImage(_ path: String) throws -> [UInt8] {
+private func readMember(_ path: String, limit: Int = maxNativeMemberBytes) throws -> [UInt8] {
   let file = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
   defer { try? file.close() }
   var bytes: [UInt8] = []
-  while let part = try file.read(upToCount: min(65536, maxNativeMemberBytes + 1 - bytes.count)),
+  while let part = try file.read(upToCount: min(65536, limit + 1 - bytes.count)),
     !part.isEmpty {
     bytes += part
-    guard bytes.count <= maxNativeMemberBytes else { throw InputError("oversized native image") }
+    guard bytes.count <= limit else { throw InputError("oversized member") }
   }
-  guard !bytes.isEmpty else { throw InputError("empty native image") }
+  guard !bytes.isEmpty else { throw InputError("empty member") }
   return bytes
 }
 
@@ -62,15 +62,23 @@ func packageKernel(_ object: ObjectFile) throws -> NativeImage {
   static func main() {
     do {
       let a = CommandLine.arguments
+      if a.count == 7, a[1] == "w1-system-root-bootset" {
+        let archive = try systemRootBootSet(kernel: readMember(a[2]),
+          initialProcess: readMember(a[3]), library: readMember(a[4]),
+          metadataHeadSHA256: readMember(a[5], limit: 32))
+        try Data(archive).write(to: URL(fileURLWithPath: a[6]), options: .withoutOverwriting)
+        print("System-root archive signing input: \(archive.count) bytes; no detached signature")
+        return
+      }
       if a.count == 6, a[1] == "w1-bootset" {
-        let archive = try stage1BootSet(kernel: readNativeImage(a[2]),
-          initialProcess: readNativeImage(a[3]), library: readNativeImage(a[4]))
+        let archive = try stage1BootSet(kernel: readMember(a[2]),
+          initialProcess: readMember(a[3]), library: readMember(a[4]))
         try Data(archive).write(to: URL(fileURLWithPath: a[5]), options: .withoutOverwriting)
         print("W1 archive signing input: \(archive.count) bytes; no detached signature")
         return
       }
       if a.count == 4, a[1] == "bootset" {
-        let archive = try bootSet(kernel: readNativeImage(a[2]))
+        let archive = try bootSet(kernel: readMember(a[2]))
         try Data(archive).write(to: URL(fileURLWithPath: a[3]), options: .withoutOverwriting)
         print("W0 archive signing input: \(archive.count) bytes; no detached signature")
         return

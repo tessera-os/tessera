@@ -13,6 +13,15 @@ func stage1BootSet(kernel: [UInt8], initialProcess: [UInt8], library: [UInt8]) t
     ("tessera.init", initialProcess)])
 }
 
+func systemRootBootSet(
+  kernel: [UInt8], initialProcess: [UInt8], library: [UInt8], metadataHeadSHA256: [UInt8]
+) throws -> [UInt8] {
+  guard metadataHeadSHA256.count == 32, metadataHeadSHA256.contains(where: { $0 != 0 })
+  else { throw InputError("expected a nonzero raw 32-byte TRFS head digest") }
+  return try pack([("LibTessera", library), ("boot.json", debugConfig), ("kernel", kernel),
+    ("system.trfs.root", metadataHeadSHA256), ("tessera.init", initialProcess)])
+}
+
 // Callers fix the names and their unsigned UTF-8 directory order.
 private func pack(_ members: [(String, [UInt8])]) throws -> [UInt8] {
   guard members.allSatisfy({ !$0.1.isEmpty && $0.1.count <= maxNativeMemberBytes }) else {
