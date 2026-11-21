@@ -1,21 +1,9 @@
-public enum BlockOp: Equatable {
-  case read
-  case write
-  case flush
-  case fua
-  case discard
-  case zero
-  case zone
-  case atomic
-}
-public enum IoQos: Equatable {
-  case deadline
-  case interactive
-  case initiated
-  case standard
-  case utility
-  case background
-}
+import TarwinBlockWire
+import TarwinIPC
+
+public typealias BlockOp = TarwinBlockWire.BlockOp
+public typealias IoQos = TarwinBlockWire.IoQos
+
 public enum BlockState: Equatable {
   case pending
   case issued
@@ -104,25 +92,25 @@ public struct BlockQueue: Equatable {
     return lastId
   }
 
-  public mutating func dispatch(_ queue: UInt32) -> UInt64 {
-    if offline || queue >= queueCount { return 0 }
+  private func next(_ queue: UInt32) -> Int? {
+    if offline || queue >= queueCount { return nil }
     var active: UInt32 = 0
     var lowInFlight = false
     for index in 0..<count {
       let ticket = entries[index]
       if ticket.command.queue == queue && ticket.state == .issued {
         active += 1
-        if priority(ticket.command.qos) <= 1 { lowInFlight = true }
+        if priority(ticket.command.qos) < priority(.interactive) { lowInFlight = true }
       }
     }
-    if active >= depth { return 0 }
+    if active >= depth { return nil }
     var best: Int = -1
     var rank: Int = -1
     for at in 0..<count {
       let t = entries[at]
       if t.command.queue != queue || t.state != .pending { continue }
       let qos = priority(t.command.qos)
-      if qos <= 1 && lowInFlight { continue }
+      if qos < priority(.interactive) && lowInFlight { continue }
       var blocked = false
       for earlier in 0..<at {
         if conflicts(entries[earlier].command, t.command)
@@ -139,9 +127,43 @@ public struct BlockQueue: Equatable {
         rank = score
       }
     }
-    if best < 0 { return 0 }
+    return best < 0 ? nil : best
+  }
+
+  public mutating func dispatch(_ queue: UInt32) -> UInt64 {
+    guard let best = next(queue) else { return 0 }
     entries[best].state = .issued
     return entries[best].id
+  }
+
+  /// Under the queue lock: resolve the payload for this epoch, then publish.
+  /// A full ring or failed mapping never converts a pending request to issued.
+  public mutating func publish(
+    queue: UInt32, payload: (UInt64, UInt64) -> BlockPayload?,
+    ring: inout RingEndpoint
+  ) -> BlockPublish {
+    guard let i = next(queue) else { return .idle }
+    let ticket = entries[i]
+    let c = ticket.command
+    guard let p = payload(ticket.id, epoch),
+      let request = BlockRequest(
+        id: ticket.id, epoch: epoch,
+        lba: c.lba, blocks: c.blocks, queue: queue, op: c.op, qos: c.qos, payload: p)
+    else { return .invalid }
+    let step = ring.push(request.record())
+    if case .transferred = step { entries[i].state = .issued }
+    return .ring(step)
+  }
+
+  public mutating func finish(
+    queue: UInt32, record: borrowing RingRecord,
+    reply: (UInt64, BlockStatus) -> Void
+  ) -> Bool {
+    guard let done = BlockCompletion(record: record), done.queue == queue,
+      complete(queue, done.epoch, done.id)
+    else { return false }
+    reply(done.id, done.status)
+    return true
   }
 
   public mutating func complete(_ queue: UInt32, _ sourceEpoch: UInt64, _ id: UInt64) -> Bool {
@@ -181,4 +203,9 @@ public struct BlockQueue: Equatable {
     self.pendingLimit = pendingLimit
     self.depth = depth
   }
+}
+
+public enum BlockPublish: Equatable {
+  case idle, invalid
+  case ring(RingStep)
 }

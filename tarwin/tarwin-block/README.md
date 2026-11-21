@@ -3,3 +3,11 @@
 Block scheduling, QoS bypass, barriers, replay epochs and removal. Hardware queue transport and timing are not verified.
 
 Run `swift test` on macOS. For an Embedded Swift object-only check, run `SWIFTC=/path/to/swift-6.3.3/usr/bin/swiftc ../tarwin-device/check-profile.sh "$PWD"`. Host tests and cross-compiled objects do not demonstrate a booted Tarwin kernel.
+
+## Block driver channel (26.11, A.4)
+
+`BlockQueue.publish` issues a request only after publication to the shared TarwinIPC ring succeeds. Completions must match the queue, driver epoch and an issued request. Protected payload grants are resolved again on replay; a restarted driver never inherits old IOVAs. The user driver imports the data-only `TarwinBlockWire` product, not the scheduler.
+
+Each 64-byte request is little endian. Word 0 holds version 1 (low 16), opcode and QoS (8 each); word 1 is zero. Request id, epoch, LBA, block count and vector-list IOVA are consecutive u64s at byte 8. List count, queue, zone action and zero occupy the final four u32s. An element is a u64 IOVA, u32 length and zero u32. A device must check total length, direction and current-domain grants, including the vector list. Completion word 0 holds version and status, word 1 the queue, followed by the request id and epoch. Unused words, including the tail on a 128-byte ring, are zero. The wire enums are train-private and distinct from syscall numbers.
+
+Geometry and feature limits gate flush, FUA, discard, zero, atomic-unit and whole-zone operations. There is no downgrade from FUA/atomic to an ordinary write. The baseline virtio service currently registers single-vector reads and writes plus negotiated flush. The package-local QTest in the guest driver drives this scheduler/driver exchange against a QEMU disk; it is not a Tarwin boot or a performance gate.

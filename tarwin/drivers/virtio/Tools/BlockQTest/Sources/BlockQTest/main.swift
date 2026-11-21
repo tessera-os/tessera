@@ -2,6 +2,11 @@
 // and virtio block/network protocols are under test, not Tarwin isolation or boot.
 import Darwin
 import Foundation
+import TarwinBlock
+import TarwinBlockWire
+import TarwinDevice
+import TarwinIPC
+import VirtioBlockService
 import VirtioGuest
 
 struct Failure: Error, CustomStringConvertible {
@@ -155,12 +160,45 @@ func testBlock(_ q: QTest, _ machine: Machine) throws {
   let data: UInt64 = machine.ram + 0x111000
   let status: UInt64 = machine.ram + 0x112000
   let pattern = (0..<512).map { String(format: "%02x", ($0 ^ 0xa5) & 255) }.joined()
-  for (i, op) in [GuestBlockOp.write, .flush, .read].enumerated() {
-    let flush = op == .flush
-    let p = BlockPacket(
-      op: op, sector: flush ? 0 : 7, bytes: flush ? 0 : 512, header: header, data: data,
-      status: status)
-    let cookie = UInt64(i + 1)
+  let memory = UnsafeMutableRawBufferPointer.allocate(byteCount: 4096 + 8192, alignment: 4096)
+  defer { memory.deallocate() }
+  guard let mapping = IoRingMapping(initializing: memory, count: 64, stride: 64),
+    var requests = mapping.endpoint(completion: false, producer: true),
+    var service = mapping.endpoint(completion: false, producer: false),
+    var replies = mapping.endpoint(completion: true, producer: true),
+    var client = mapping.endpoint(completion: true, producer: false)
+  else { throw Failure("Bad block ring") }
+  var scheduler = BlockQueue(capacity: capacity, queueCount: 1, pendingLimit: 4, depth: 1)
+  let list = machine.ram + 0x113000
+  q.write("q", list, data)
+  q.write("l", list + 8, 512)
+  q.write("l", list + 12, 0)
+  for operation in [TarwinBlockWire.BlockOp.write, .flush, .read] {
+    let flush = operation == .flush
+    let cookie = scheduler.enqueue(
+      BlockCommand(
+        op: operation, lba: flush ? 0 : 7, blocks: flush ? 0 : 1, qos: .interactive, queue: 0))
+    let payload = flush ? BlockPayload() : BlockPayload(list: list, vectors: 1)
+    guard cookie != 0,
+      case .ring(.transferred) = scheduler.publish(
+        queue: 0, payload: { _, _ in payload }, ring: &requests)
+    else { throw Failure("Block scheduler did not publish a request") }
+    var record = RingRecord()
+    guard case .transferred = service.pop(into: &record),
+      case .ready(let pending) = prepareBlockIo(
+        record, epoch: scheduler.epoch, queue: 0,
+        capacitySectors: capacity, features: features, header: header, status: status,
+        allows: { addr, n, writable in
+          (addr == list && n == 16 && !writable)
+            || (addr == data && n == 512 && writable == (operation == .read))
+        },
+        readVector: { addr in
+          guard q.read("l", addr + 12) == 0 else { return nil }
+          return BlockDmaVector(address: q.read("q", addr), bytes: UInt32(q.read("l", addr + 8)))
+        })
+    else { throw q.error ?? Failure("Guest driver rejected block request") }
+    let p = pending.packet
+    let op = p.op
     if op == .write { _ = q.send("write \(data) 512 0x\(pattern)") }
     if op == .read { _ = q.send("memset \(data) 512 0") }
     let submitted = submitBlock(
@@ -193,10 +231,17 @@ func testBlock(_ q: QTest, _ machine: Machine) throws {
     guard case .completed(let buffer) = completion else {
       throw q.error ?? Failure("Request \(cookie) has no valid used entry")
     }
+    guard
+      let done = pending.complete(
+        cookie: buffer.cookie, status: UInt8(q.read("b", status)), written: buffer.written),
+      case .transferred = replies.push(done.record()), case .transferred = client.pop(into: &record)
+    else { throw q.error ?? Failure("Malformed driver completion") }
+    var success = false
     try q.require(
-      buffer.cookie == cookie
-        && blockCompletion(UInt8(q.read("b", status)), op, p.bytes, buffer.written) == .ok,
-      "Request \(cookie) failed or returned an invalid length")
+      scheduler.finish(queue: 0, record: record) { id, result in
+        success = id == cookie && result == .ok
+      }
+        && success, "Block client did not receive success")
     if op == .read {
       try q.require(q.send("read \(data) 512") == "0x" + pattern, "512-byte disk readback mismatch")
     }

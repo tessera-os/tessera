@@ -24,6 +24,16 @@ final class QueueTests: XCTestCase {
     XCTAssertTrue(q.dispatch(0) == c)
   }
 
+  func testAtMostOneIssuedLowerClassPrecedesInteractiveRead() {
+    var q = BlockQueue(capacity: 64, queueCount: 1, pendingLimit: 8, depth: 8)
+    let active = q.enqueue(cmd(.read, 0, 1, .standard, 0))
+    XCTAssertEqual(q.dispatch(0), active)
+    _ = q.enqueue(cmd(.read, 1, 1, .initiated, 0))
+    XCTAssertEqual(q.dispatch(0), 0)
+    let ui = q.enqueue(cmd(.read, 2, 1, .interactive, 0))
+    XCTAssertEqual(q.dispatch(0), ui)
+  }
+
   func testFlushSpansQueuesAndRestartRejectsStaleCompletion() {
     var q = BlockQueue(capacity: 64, queueCount: 2, pendingLimit: 64, depth: 4)
     let a = q.enqueue(cmd(.write, 0, 1, .utility, 1))
