@@ -18,6 +18,7 @@ let package = Package(
     .package(path: "../../../tarwin/tarwin-loader/w0"),
     .package(path: "../../../tarwin/tarwin-mm"),
     .package(path: "../../../tarwin/tarwin-arch-aarch64"),
+    .package(path: "../../../tarwin/tarwin-syscall"),
   ],
   targets: [
     .target(
@@ -38,6 +39,7 @@ let package = Package(
     .target(
       name: "TarwinW1Bootstrap", dependencies: [
         .product(name: "TarwinArchAarch64", package: "tarwin-arch-aarch64"),
+        .product(name: "TarwinSyscall", package: "tarwin-syscall"),
         .product(name: "TarwinBoot", package: "tarwin-boot"),
         .product(name: "TarwinW0Verify", package: "w0"),
         .product(name: "TarwinLoader", package: "tarwin-loader"),
@@ -46,6 +48,8 @@ let package = Package(
     .testTarget(name: "TarwinW1BootstrapTests", dependencies: [
       "TarwinW1Bootstrap", .product(name: "TarwinLoader", package: "tarwin-loader"),
       .product(name: "TarwinArchAarch64", package: "tarwin-arch-aarch64"),
+      .product(name: "TarwinSyscall", package: "tarwin-syscall"),
+      .product(name: "TarwinABI", package: "tarwin-syscall"),
       .product(name: "Tarboot", package: "tarboot"), .product(name: "KCore", package: "kcore"),
       .product(name: "TarwinMM", package: "tarwin-mm"),
     ]),
