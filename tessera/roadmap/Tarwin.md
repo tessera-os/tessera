@@ -227,6 +227,10 @@ firmware (UEFI Secure Boot, or SoC verified boot)
 2. It reads the boot configuration, selects a slot (section 6.5), loads the slot's boot set into memory, verifies its signature against the platform key chain (section 25.5), measures it (section 6.4), applies kernel address randomization (section 7.6), exits boot services, and jumps to the kernel entry with the boot information block.
 3. It offers recovery when a key combination, a failed-boot counter or a recovery request selects it; it never offers a shell.
 
+**W1 UEFI handoff.** Authenticate and measure the selected archive and its canonical configuration while EFI services are live. Copy the complete archive and detached signature into disjoint reserved buffers with bounded, exact lengths. Reserve the final log and verification scratch before the first exit attempt. Closing the boot volume is not a DMA fence. A stale map key permits only the map/exit retry: do not reselect, reread or remeasure the archive.
+
+After a successful firmware exit, stop all other submitters, drain outstanding writes and establish acknowledged DMA exclusion. Keep the buffers pinned and exclusion in force through entry. Before installing any image, re-hash the frozen archive and its canonical configuration, check the TPM binding in §6.4, and repeat signature, member and policy verification on these same bytes against independent trust roots. Use only the members and options returned by that final authorization. Failure halts this attempt before kernel transfer, without fallback to a different image.
+
 ### 6.3 Boot set
 
 A boot set is one signed archive (the TIR archive container, TIR.md section 29.6) holding: the kernel image for the CPU target; the boot configuration (canonical JSON: slot, flags, kernel options allowed by the image's signature); the early processes `tessera.init`, `devicekit.manager`, the boot-device storage drivers and the compile-service-free subset of LibTessera they need; the device-tree overlays for the platform, if any; and the hashes of the system image snapshot it expects. Everything in it is native code for the device's CPU target; nothing in a boot set is finalized on the device.
@@ -236,6 +240,10 @@ A boot set is one signed archive (the TIR archive container, TIR.md section 29.6
 1. `tarboot` extends the TPM's PCR 8 with the boot set's hash and PCR 9 with the boot configuration's, and records events in the TCG event log format; on DICE platforms it derives the next compound device identifier from the same measurements.
 2. The kernel extends PCR 10 with each early process's image hash before running it, and PCR 11 with the system image snapshot's root hash before mounting it.
 3. Soft reboots (section 29.3) extend PCR 12 with the new boot set's hash, so the measurement log always describes the running software.
+
+**W1 UEFI/TPM binding.** After DMA exclusion, validate and replay the complete applicable TCG log (including final events) from the platform's trusted initial state. The expected measurement events must occur exactly once in order: PCR 8 for the exact archive and PCR 9 for its canonical configuration. Match both event digests to the frozen bytes and both replayed SHA-256 PCR values to consistent live TPM reads. Do not compare a file hash directly to a PCR, extend either PCR again, or trust a digest in RAM, the log or the boot information block alone.
+
+The launcher must protect the loader code, control state, independent policy anchors and TPM access path. Re-hashing the copy cannot restore a compromised verifier. Missing protection, an ambiguous measurement, an unavailable TPM or any mismatch forbids transfer. This route does not establish equivalent DICE support.
 
 ### 6.5 Slots, counters and rollback
 
