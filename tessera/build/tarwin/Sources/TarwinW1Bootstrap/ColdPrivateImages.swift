@@ -15,6 +15,7 @@ public struct W1ColdPrivateImages: ~Copyable {
   let layout: W1ColdLogLayout
   var tables: ArmUserTranslation
   let host: W1ColdHostPages
+  let hostEntry: UInt64
   let plan: W1AddressPlan
   let pool: W1FramePool
   let thread: W1ThreadStorage
@@ -40,12 +41,14 @@ extension W1ColdVerifiedSet {
     let tablesSize = 32 * page
     let frames = round(p) + round(l) + 16 * page
     let hostOffset = cache + proof + tablesSize + frames
-    let bytes = hostOffset + W1ColdHostPages.bytes
+    let kernelOffset = hostOffset + W1ColdHostPages.bytes
+    let bytes = kernelOffset + W1ColdHostPages.kernelBytes
     guard let layout = W1ColdLogLayout(boot: boot, map: map, privateBytes: UInt64(bytes)),
       let memory = UnsafeMutableRawPointer(bitPattern: UInt(layout.privatePages.lowerBound))
     else { return nil }
     let ram = UnsafeMutableRawBufferPointer(start: memory, count: bytes)
-    guard exactMember(set.process.bytes, in: archive, at: set.process.range, excluding: ram),
+    guard exactMember(set.kernel.bytes, in: archive, at: set.kernel.range, excluding: ram),
+      exactMember(set.process.bytes, in: archive, at: set.process.range, excluding: ram),
       exactMember(set.library.bytes, in: archive, at: set.library.range, excluding: ram) else { return nil }
     var keep = false
     defer { if !keep { ram.initializeMemory(as: UInt8.self, repeating: 0) } }
@@ -60,8 +63,11 @@ extension W1ColdVerifiedSet {
       let placement = W1ThreadPlacement(stackBytes: 4 * UInt64(page),
         random: &launch.random, generation: { generation }),
       let draw = launch.random.word(generation: generation),
-      let host = W1ColdHostPages(backing: .init(rebasing: ram[hostOffset...]),
+      var host = W1ColdHostPages(backing: .init(rebasing: ram[hostOffset..<kernelOffset]),
         physical: hostPA, privateAllocation: layout.privatePages.lowerBound..<hostPA, draw: draw),
+      let entry = host.stageKernel(set, archive: archive, virtual: boot.kernelVirtual,
+        physical: layout.privatePages.lowerBound + UInt64(kernelOffset),
+        copy: .init(rebasing: ram[kernelOffset...]), cleanToPoU: cleanToPoU),
       var tables = ArmUserTranslation(backing: .init(rebasing: ram[base..<base + tablesSize]),
         physical: root, layout: .guarded),
       host.clock.install(in: &tables, privatePool: root..<hostPA) else { return nil }
@@ -75,7 +81,7 @@ extension W1ColdVerifiedSet {
     else { return nil }
     keep = true
     return W1ColdPrivateImages(verified: self, layout: layout, tables: consume tables, host: consume host,
-      plan: plan, pool: pool, thread: thread)
+      hostEntry: entry, plan: plan, pool: pool, thread: thread)
   }
 }
 #endif

@@ -1,7 +1,7 @@
 import TarwinArchAarch64
 
-/// Unpublished EL2 resources for the fixed Arm cold intake. The root has
-/// no kernel text, vectors or direct map yet. Do not activate it.
+/// Unpublished EL2 resources for the fixed Arm cold intake. Stack and
+/// clock construction does not install a kernel image or activate a root.
 struct W1ColdHostPages: ~Copyable {
   static let page = 16384
   static let tableBytes = 32 * page

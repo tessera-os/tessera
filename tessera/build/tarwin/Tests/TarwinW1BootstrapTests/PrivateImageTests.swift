@@ -76,6 +76,7 @@ private func stageImages(
       contract: .init(
         uuid: raw(uuid), symbol: raw(symbol), textSHA256: raw(digest), typeTag: 0x5e57_0002),
       hashes: nodes, polynomials: poly, message: temp))
+  if layout == .guarded { checkColdHostImage(set, archive: archive) }
   let plan = try #require(
     set.addressPlan(occupied: .init(start: nil, count: 0), nextRandom: { UInt64.max }))
   let bank = UnsafeMutableBufferPointer<UInt64>.allocate(capacity: 10)
