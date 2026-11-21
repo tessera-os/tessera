@@ -1,0 +1,12 @@
+subsystem hosted_exc 2405;
+#include <mach/std_types.defs>
+#include <mach/mach_types.defs>
+import "CHostDarwin.h";
+ServerPrefix hcatch_;
+type hosted_exception_data_t = array[*:2] of int64_t;
+routine hosted_exception_raise(
+  exception_port: mach_port_t;
+  thread: mach_port_t;
+  task: mach_port_t;
+  exception: int;
+  code: hosted_exception_data_t);
