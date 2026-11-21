@@ -61,6 +61,7 @@ public struct ProcessExecution: ~Copyable {
   private let slots: UnsafeMutableBufferPointer<ThreadSlot>
   private var handles: HandleTable
   private var selfName: UInt64 = 0
+  private var issuedArmKeys = false
   public private(set) var threadCount: UInt32 = 0
   public private(set) var exit: TaskExit?
   private var started = false, suspended = false, cleaning = false, finished = false
@@ -110,6 +111,17 @@ public struct ProcessExecution: ~Copyable {
     return body(&handles)
   }
   public var handleReader: HandleReadView { handles.reader }
+  /// Under tree and task locks, permit exactly one successful generation
+  /// against the pinned initial root. Neither suspend nor teardown resets it.
+  public mutating func issueArmKeys(
+    root: UInt64, tree: borrowing JobTree, generate: () -> Bool
+  ) -> Bool {
+    guard !issuedArmKeys, phase == .created, initialMap == root, root != 0,
+      tree.returnGate(member) == .run, generate()
+    else { return false }
+    issuedArmKeys = true
+    return true
+  }
   /// Requires the table writer lock.
   public func soleStartupHandle(_ name: UInt64, channel: UnsafePointer<ObjectHeader>) -> Bool {
     phase == .created && channel.pointee.kind == TarwinKind.channel

@@ -6,10 +6,20 @@ let package = Package(
   products: [
     .library(name: "TarwinRandomCore", targets: ["TarwinRandomCore"]),
     .library(name: "TarwinKernelRandom", targets: ["TarwinKernelRandom"]),
+    .library(name: "TarwinProcessKeys", targets: ["TarwinProcessKeys"]),
     .library(name: "TarwinRandomCalls", targets: ["TarwinRandomCalls"]),
-  ], dependencies: [.package(path: "../../tarwin-loader"), .package(path: "../../tarwin-syscall")],
+  ], dependencies: [
+    .package(path: "../../tarwin-loader"), .package(path: "../../tarwin-syscall"),
+    .package(path: "../../tarwin-object"),
+  ],
   targets: [
     .target(name: "TarwinRandomCore"),
+    .target(
+      name: "TarwinProcessKeys",
+      dependencies: [
+        "TarwinKernelRandom", "TarwinRandomCore",
+        .product(name: "TarwinObject", package: "tarwin-object"),
+      ], swiftSettings: [.enableExperimentalFeature("Volatile")]),
     .target(
       name: "TarwinRandomCalls",
       dependencies: [
@@ -26,7 +36,8 @@ let package = Package(
     .testTarget(
       name: "TarwinRandomTests",
       dependencies: [
-        "TarwinRandomCore", "TarwinKernelRandom",
+        "TarwinRandomCore", "TarwinKernelRandom", "TarwinProcessKeys",
+        .product(name: "TarwinObject", package: "tarwin-object"),
         .product(name: "TarwinLoader", package: "tarwin-loader"),
       ]),
   ])

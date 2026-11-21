@@ -32,6 +32,11 @@ for arch in "$@"; do
     done
     module TarwinChannelCalls "$r/tarwin-syscall/channel-calls/Sources/TarwinChannelCalls"/*.swift
     if [[ $arch == aarch64 ]]; then
+        flags+=(-enable-experimental-feature Volatile)
+        module TarwinLoader "$r/tarwin-loader/Sources/TarwinLoader"/*.swift
+        for mod in TarwinRandomCore TarwinKernelRandom TarwinProcessKeys; do
+            module "$mod" "$r/tarwin-security/random/Sources/$mod"/*.swift
+        done
         module TarwinArchAarch64 "$r/tarwin-arch-aarch64/Sources/TarwinArchAarch64"/*.swift
         module TarwinArmBootstrap "$r/tarwin-syscall/first-entry/Sources/TarwinArmBootstrap"/*.swift
     fi

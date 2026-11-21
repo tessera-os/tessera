@@ -33,6 +33,9 @@ On AArch64 it also constructs two equally mapped, never-installed roots,
 checks that only the child's root yields a frame, and compares x0 to the
 preloaded local name. The descriptor test does not initialize a real TCB,
 execute mapped code, authenticate an image or enter EL0.
+The AArch64 guest also generates one five-pair key bank from deterministic
+test input, checks IA access before start and thread access after start,
+and checks that retirement wipes every word. It never installs those keys.
 It checks a descendant's footprint against the root's budget, then
 marks its thread runnable, freezes and thaws it, and dispatches process exit
 with a negative code. Exit requests a thread stop rather than a return.

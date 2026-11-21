@@ -14,6 +14,9 @@ import TarwinSyscall
 #if arch(arm64)
   import TarwinArchAarch64
   import TarwinArmBootstrap
+  import TarwinKernelRandom
+  import TarwinProcessKeys
+  import TarwinRandomCore
 #endif
 
 private struct Arena {
@@ -403,6 +406,26 @@ private func serviceRoundTrip(
   }
 #endif
 
+#if arch(arm64)
+  // Fixed diagnostic material, never a launch input or hardware entropy.
+  private func fixtureKeys(
+    _ child: inout ProcessExecution, tree: borrowing JobTree, root: UInt64,
+    bank: UnsafeMutableBufferPointer<UInt64>
+  ) -> ArmProcessKeys? {
+    var seed = InlineArray<96, UInt8>(repeating: 0x5a)
+    return withUnsafeMutableBytes(of: &seed) { input in
+      let epoch = RandomEpoch.virtualMachine(low: 1, high: 2)
+      guard var random = KernelRandom(
+        policy: .debugQEMU, bootSeed: .init(rebasing: UnsafeRawBufferPointer(input)[..<64]),
+        hardware: .init(rebasing: UnsafeRawBufferPointer(input)[64...]), source: .emulatedTPM,
+        generation: epoch)
+      else { return nil }
+      return ArmProcessKeys(
+        child: &child, root: root, tree: tree, storage: bank, random: &random, generation: epoch)
+    }
+  }
+#endif
+
 private func jobQuota(_ arena: inout Arena, _ limit: UInt64) -> Bool {
   #if arch(arm64)
     let padding = (0 &- UInt(bitPattern: arena.remaining.baseAddress)) & 16383
@@ -449,12 +472,22 @@ private func jobQuota(_ arena: inout Arena, _ limit: UInt64) -> Bool {
         initialMap: initialMap)
     else { return false }
     defer { cells.deinitialize() }
+    #if arch(arm64)
+      let bank = arena.take(UInt64.self, count: 10)
+      bank.initialize(repeating: 0)
+      defer { bank.deinitialize() }
+      let root = initialMap!
+      guard let keys = fixtureKeys(&p, tree: tree, root: root, bank: bank),
+        keys.withImportIA(child: p, root: root, tree: tree, { $0.count == 2 ? 1 : nil }) == 1,
+        keys.withImportIA(child: p, root: root + 16384, tree: tree, { _ in 1 }) == nil
+      else { return false }
+    #endif
     guard
       withUnsafePointer(
         to: child,
         { bootstrapChannel(&arena, process: &p, tree: tree, ids: ids, job: $0, roots: roots) })
     else { return false }
-    return withUnsafePointer(to: thread) { th in
+    let result = withUnsafePointer(to: thread) { th in
       guard var t = ThreadExecution(header: th, process: p.member, job: branch) else {
         return false
       }
@@ -466,8 +499,15 @@ private func jobQuota(_ arena: inout Arena, _ limit: UInt64) -> Bool {
           p.join(tp, qos: 2, realtimeEntitled: false, tree: tree) == .added,
           p.gate(id, tree: tree) == .hold,
           p.start(id, tree: tree),
-          p.gate(id, tree: tree) == .dispatch,
-          case let own = selfHandle(&p, tree: tree), own != 0,
+          p.gate(id, tree: tree) == .dispatch
+        else { return false }
+        #if arch(arm64)
+          guard keys.withThreadKeys(child: p, thread: tp.pointee, root: root, tree: tree, {
+            $0.count == 10 && $0.baseAddress == UnsafePointer(bank.baseAddress)
+          }), keys.withImportIA(child: p, root: root, tree: tree, { _ in 1 }) == nil
+          else { return false }
+        #endif
+        guard case let own = selfHandle(&p, tree: tree), own != 0,
           case .installed(let name)? = p.withHandles(tree: tree, { $0.install(th, rights: 0) }),
           tree.setFrozen(true, job: tree.root), p.gate(id, tree: tree) == .hold,
           tree.setFrozen(false, job: tree.root), exitCaller(&p, tree: tree, thread: id),
@@ -483,6 +523,11 @@ private func jobQuota(_ arena: inout Arena, _ limit: UInt64) -> Bool {
           && tree.remove(branch) && tree.usage(tree.root)?.footprint == 0
       }
     }
+    #if arch(arm64)
+      keys.erase()
+      for i in bank.indices where bank[i] != 0 { return false }
+    #endif
+    return result
   }
 }
 

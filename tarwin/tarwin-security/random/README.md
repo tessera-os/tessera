@@ -27,3 +27,16 @@ backend fills arbitrary buffers from private per-thread state; its coherent
 epoch reader is supplied by the platform. An output buffer may be used only
 after success. The provider does not install exception vectors, TLS or a
 shared page.
+
+TarwinProcessKeys issues exactly one five-pair AArch64 PAC bank to a child
+with a pinned initial map before it runs. Reserve the child/root *before*
+signing the imports. Hold the tree/task locks and RNG lock during creation.
+Provide ten aligned words of exclusive kernel memory, never user-, dump- or
+DMA-accessible. A sibling, different root or disabled return gate cannot
+borrow the bank. Only IA is available during private import signing; the
+full bank is available for a runnable thread at its final return gate.
+The trusted leaf must not retain or log either view. The platform owns
+architectural installation/restoration and clearing any transient state.
+After all CPUs and readers retire the child, consume the owner to scrub the
+bank with volatile stores before releasing the backing. This package neither
+supplies entropy provenance nor authorizes a launch or a user return.
