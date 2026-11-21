@@ -75,4 +75,14 @@ if isa == .aarch64 {
       unreachable
     }
     """.replacingOccurrences(of: "@NL@", with: "\\0A"))
+} else if isa == .x86_64 {
+  // PE x64 passes the frame size in RAX. Probe from the caller's SP without
+  // consuming the frame; retain RAX and every register except R10 and R11.
+  print(
+    """
+    define void @__chkstk() naked nounwind {
+      call void asm sideeffect "leaq 8(%rsp), %r10@NL@movq %rax, %r11@NL@1: cmpq $$4096, %r11@NL@jbe 2f@NL@subq $$4096, %r10@NL@testb $$0, (%r10)@NL@subq $$4096, %r11@NL@jmp 1b@NL@2: subq %r11, %r10@NL@testb $$0, (%r10)@NL@retq", "~{memory},~{cc}"()
+      unreachable
+    }
+    """.replacingOccurrences(of: "@NL@", with: "\\0A"))
 }

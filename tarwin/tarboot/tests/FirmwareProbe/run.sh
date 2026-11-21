@@ -37,7 +37,7 @@ for isa in "${@:-all}"; do
             extra+=("$d/processor.o")
         fi
         if [[ -n ${TARBOOT_TEST_STAGE0_ARCHIVE:-} ]]; then
-            [[ $arch == aarch64 ]] || { echo 'stage-0 intake requires aarch64' >&2; exit 2; }
+            [[ $arch == aarch64 || ($arch == x86_64 && ${TARBOOT_TEST_CPU:-0} == x64-refusal && -n ${TARBOOT_TEST_SIGNATURE:-}) ]] || exit 2
             flags+=(-D TARBOOT_TEST_STAGE0)
         fi
         modules=()
@@ -51,7 +51,13 @@ for isa in "${@:-all}"; do
             extra+=("$d/entry.obj")
         fi
         if [[ -n ${TARBOOT_TEST_SIGNATURE:-} ]]; then
-            [[ $arch == aarch64 && ${TARBOOT_TEST_CPU:-0} == 1 && ${TARBOOT_TEST_FLOOR:-0} == 1 && -n ${TARBOOT_TEST_STAGE0_ARCHIVE:-} && -f ${TARBOOT_QEMU_ENROLLMENT:-} ]] || exit 2
+            if [[ $arch == x86_64 && ${TARBOOT_TEST_CPU:-0} == x64-refusal ]]; then
+                [[ ${TARBOOT_BAD_SIGNATURE:-0} == 0 ]] || exit 2
+                flags+=(-D TARBOOT_TEST_X64_REFUSAL)
+            else
+                [[ $arch == aarch64 && ${TARBOOT_TEST_CPU:-0} == 1 ]] || exit 2
+            fi
+            [[ ${TARBOOT_TEST_FLOOR:-0} == 1 && -n ${TARBOOT_TEST_STAGE0_ARCHIVE:-} && -f ${TARBOOT_QEMU_ENROLLMENT:-} ]] || exit 2
             flags+=(-D TARBOOT_TEST_SIGNED)
             modules+=("$root/tarwin-loader/w0/Sources/TarwinW0Verify")
             cp "$TARBOOT_TEST_SIGNATURE" "$d/esp/BOOT.SIG"
@@ -74,7 +80,7 @@ for isa in "${@:-all}"; do
         if [[ ${TARBOOT_TEST_SMP_TABLES:-0} == 1 ]]; then flags+=(-D TARBOOT_TEST_SMP_TABLES); fi
         "$out/write-fixture" "$arch" "$d/esp/BOOT.TIR" "$d/FixtureHashes.swift"
         for src in "$root"/{kcore/Sources/KCore,tarwin-boot/Sources/TarwinBoot,tarboot/Sources/Tarboot,tarwin-mm/Sources/TarwinMM,tarwin-time/Sources/TarwinTime,tarwin-sched/Sources/TarwinSched,tarwin-loader/Sources/TarwinLoader} \
-                   "$root"/tarwin-arch-aarch64/Sources/TarwinArchAarch64 "$composition"/Sources/{TarbootPreflight,TarwinBootstrap} ${modules[@]+"${modules[@]}"}; do
+                   "$root"/tarwin-arch-{aarch64/Sources/TarwinArchAarch64,x64/Sources/TarwinArchX64} "$composition"/Sources/{TarbootPreflight,TarwinBootstrap} ${modules[@]+"${modules[@]}"}; do
                 mod=$(basename "$src")
                 "$bin/swiftc" "${flags[@]}" -module-name "$mod" -emit-module -emit-module-path "$d/$mod.swiftmodule" "$src"/*.swift
         done

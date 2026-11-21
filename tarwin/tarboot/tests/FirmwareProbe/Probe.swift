@@ -50,7 +50,7 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
       else { return false }
       #if TARBOOT_TEST_CPU
         let snapshotOK=processorEvidence(console:console,output:output)
-        #if TARBOOT_TEST_CPU_REFUSAL
+        #if TARBOOT_TEST_CPU_REFUSAL || TARBOOT_TEST_X64_REFUSAL
         guard !snapshotOK else { return false }
         #else
         guard snapshotOK else { return false }
@@ -101,7 +101,11 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
       #if TARBOOT_TEST_SIGNED
         let immutable = UnsafeRawBufferPointer(start: archiveBase, count: size)
         let candidate = verifyBootSet(immutable, services: &boot, system: system, floor: observedFloor, baseline: snapshotOK)
-        #if TARBOOT_BAD_SIGNATURE
+        #if TARBOOT_TEST_X64_REFUSAL
+          guard !snapshotOK, candidate == nil else { return false }
+          writeDiagnostic("TARWIN-X64-TARGET-REFUSED\r\n",console:console,output:output)
+          return true
+        #elseif TARBOOT_BAD_SIGNATURE
           guard candidate == nil else { return false }
           writeDiagnostic("TARWIN-SIGNATURE-REJECTED\r\n",console:console,output:output)
           return true

@@ -72,7 +72,7 @@ func check() throws {
     : ["-machine","virt,gic-version=3","-cpu","cortex-a72"]
   let machine =
     a == "x86_64"
-    ? (secure ? ["-machine","q35,smm=on","-global","driver=cfi.pflash01,property=secure,value=on"] : ["-machine", "q35"])
+    ? (secure ? ["-machine","q35,smm=on","-global","driver=cfi.pflash01,property=secure,value=on"] : ["-machine", "q35"]) + (cpuCheck == "x64-refusal" ? ["-cpu","max"] : [])
     : (a == "aarch64"
       ? armMachine : ["-machine", "virt"])
   let process = Process()
@@ -227,6 +227,14 @@ func check() throws {
     print("\(a): matched the provisioned TPM counter Name and read its persisted floor of 1")
   }
   if ProcessInfo.processInfo.environment["TARBOOT_TEST_SIGNATURE"] != nil {
+    if cpuCheck == "x64-refusal" {
+      let log = String(decoding: uart, as: UTF8.self)
+      let gaps = ["SHSTK","IBT","VPCLMULQDQ","INVTSC","TSC-DEADLINE"].filter { log.contains("TARWIN-X64-MISSING-" + $0) }
+      guard !gaps.isEmpty, log.contains("TARWIN-X64-TARGET-REFUSED"),
+        guestShutdown(try Data(contentsOf: URL(fileURLWithPath: monitor))) else { throw Failure("missing target refusal") }
+      print("x86_64: signed W0 refused before kernel entry; guest CPUID lacks " + gaps.joined(separator: ", "))
+      return
+    }
     let negative = ProcessInfo.processInfo.environment["TARBOOT_BAD_SIGNATURE"] == "1"
     let marker = negative ? "TARWIN-SIGNATURE-REJECTED" : "TARWIN-SIGNED-ARCHIVE-AND-KERNEL-VERIFIED"
     guard uart.range(of:Data(marker.utf8)) != nil else { throw Failure("missing verifier verdict") }

@@ -28,8 +28,13 @@
           return emulatorUTC(UnsafeRawBufferPointer(raw))
         })
     else { return nil }
+    #if arch(x86_64)
+      let machine = ElfMachine.x64
+    #else
+      let machine = ElfMachine.aarch64
+    #endif
     let policy = W0Policy(
-      machine: ElfMachine.aarch64, baselineSupported: baseline, trustedUTC: utc,
+      machine: machine, baselineSupported: baseline, trustedUTC: utc,
       train: (26, 11, 1), tir: (26, 11, 2), addressLimit: 1 << 30, securityFloor: floor,
       slot: 0, debugEmulator: true)
     var path: InlineArray<10, UInt16> = [92, 66, 79, 79, 84, 46, 83, 73, 71, 0]

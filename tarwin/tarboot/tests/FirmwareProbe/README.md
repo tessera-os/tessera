@@ -1,3 +1,14 @@
+### x64 W0 target refusal
+
+Use the x64 signed archive and detached signature in place of the AArch64
+fixtures. Keep the separately provisioned enrollment, TPM and floor settings.
+Set `TARBOOT_TEST_CPU=x64-refusal`, leave `TARBOOT_ENTER_W0` unset, and run
+`bash run.sh x86_64`. This check expects an **incompatible** TCG `-cpu max`
+guest, not a portable assertion that all QEMU versions must fail. It obtains
+CPUID in the guest, measures the archive, supplies the failed target check to
+the verifier and requires refusal before installation. A matching CPUID alone
+would not prove §5.1 supervisor setup, virtualization or working CET.
+
 # UEFI firmware interop
 
 Before firmware exit, the diagnostic opens a raw TIRA test archive on its own EFI System Partition using the loaded-image and simple-file-system protocols. It rejects a too-small destination, reopens the file read-only, checks the member’s BLAKE3 digest, and inspects the ELF for the current architecture. This unsigned test fixture is never mapped or executed.
