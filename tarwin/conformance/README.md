@@ -26,6 +26,14 @@ The checker compares per-workload geometric means, not an average across devices
 
 ### Development milestones versus physical evidence
 
+On a Mac, run `sh conformance/check-storage-guest.sh` with TRFS's GuestIO value-type
+transport present. Each ISA boots an independently linked debug guest twice against a
+monitor-owned, read-only virtual disk: the intact file page must verify, and changing
+one payload byte without changing the pinned metadata must be rejected. The runner
+requires the exact guest verdict in addition to console completion. Set `CAPTURE_DIR`
+to retain both UART logs for each ISA. These plaintext fixture runs are neither block
+controller tests nor signed boot, encrypted storage, physical I/O or W5 acceptance.
+
 On a Metal-capable Mac, `swift run --package-path conformance/metal-integration metal-present-check`
 checks the guest presentation encoder, TVMM and MosaicMetal against actual offscreen pixels.
 The package normally uses the device owner's `drivers/tvgpu`; set `TVGPU_PACKAGE` to an

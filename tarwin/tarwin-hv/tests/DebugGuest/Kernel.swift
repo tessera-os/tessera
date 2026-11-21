@@ -17,7 +17,7 @@ public func guestKernel(_ launch: UnsafePointer<UInt64>) -> UInt64 {
     launch[4] == 0x200000, launch[5] == 16384,
     var arena = arenaFromReservation(base: launch[2], length: launch[3], pageSize: page),
     let screen = UnsafeMutableRawPointer(bitPattern: UInt(launch[4])),
-    let mode = DisplayMode(width: 144, height: 24, stride: 144, format: 1, capacity: 14336),
+    let mode = DisplayMode(width: 108, height: 32, stride: 108, format: 1, capacity: 14336),
     var console = DebugConsole(
       mapped: .init(start: screen, count: mode.byteCount), mode: mode, debugImage: true)
   else { return 0 }
@@ -60,6 +60,22 @@ public func guestKernel(_ launch: UnsafePointer<UInt64>) -> UInt64 {
   #if METAL_GUEST
     guard presentFrames(screen.advanced(by: 14848)) else { return 0 }
   #endif
+  #if STORAGE_GUEST
+    guard let work = UnsafeMutableRawPointer(bitPattern: 0x540000) else { return 0 }
+    let ok = exerciseGuestStorage(.init(start: work, count: 16384), transport: DebugStorageTransport())
+    guard line(ok ? "TRFS PAGE VERIFIED" : "TRFS PAGE REJECTED", &console, &count) else { return 0 }
+  #endif
   screen.storeBytes(of: UInt64(count), toByteOffset: 16376, as: UInt64.self)
   return 0x4b44
 }
+
+#if STORAGE_GUEST
+  @_silgen_name("guest_exchange") private func storageExchange(_ op: UInt64)
+  private struct DebugStorageTransport: GuestStorageTransport {
+    func exchange(_ grant: UnsafeMutableRawBufferPointer) -> Bool {
+      guard UInt(bitPattern: grant.baseAddress) == 0x540000, grant.count == 8192 else { return false }
+      storageExchange(0x5342)
+      return true
+    }
+  }
+#endif

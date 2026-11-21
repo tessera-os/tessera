@@ -3,6 +3,8 @@
 let arch = CommandLine.arguments[1]
 let page = arch == "arm" ? 16384 : 4096
 let path = CommandLine.arguments[2]
+let storage = CommandLine.arguments.last == "storage"
+let disk = String(path.prefix(upTo: path.lastIndex(of: "/")!)) + "/storage.img"
 guard !path.contains("\"") && !path.contains("\n") && !path.contains("\\") else {
   fatalError("bad image path")
 }
@@ -50,6 +52,7 @@ print(
   .section .rodata
   .balign 8
   layout: .quad kernel_image,image_end-kernel_image,guest_stack,descriptor,screen,guest_ram
+  \(storage ? ".quad storage_work,storage_scratch,storage_disk" : "")
   .balign \(page)
   kernel_image: .incbin "\(path)"
   .balign \(page)
@@ -62,3 +65,13 @@ print(
   screen: .space 16384
   guest_ram: .space \(64*page)
   """)
+if storage {
+  print("""
+    .balign 16384
+    storage_work: .space 16384
+    storage_scratch: .space 8192
+    .section .rodata
+    .balign 4096
+    storage_disk: .incbin "\(disk)"
+    """)
+}

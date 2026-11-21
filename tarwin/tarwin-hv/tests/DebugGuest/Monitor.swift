@@ -8,6 +8,22 @@ import TarwinSyscall
 #endif
 
 private func guestCalls(_ resume: () -> UInt64?) -> Bool {
+  #if STORAGE_GUEST
+    let l = layout()
+    guard let work = UnsafeMutableRawPointer(bitPattern: UInt(l[6])),
+      let scratch = UnsafeMutableRawPointer(bitPattern: UInt(l[7])),
+      let disk = UnsafeRawPointer(bitPattern: UInt(l[8]))
+    else { return false }
+    var backend = ReadOnlyBlockGrant(), reads = 0
+    while let op = resume() {
+      if op == 0x4b44 { return reads != 0 }
+      guard op == 0x5342, reads < 256,
+        backend.read(grant: .init(start: work, count: 8192), scratch: .init(start: scratch, count: 8192),
+          disk: .init(start: disk, count: 1048576)) else { return false }
+      reads += 1
+    }
+    return false
+  #else
   #if METAL_GUEST
     guard let screen = UnsafeMutableRawPointer(bitPattern: UInt(layout()[4])) else { return false }
     let p = screen + 14848
@@ -41,12 +57,16 @@ private func guestCalls(_ resume: () -> UInt64?) -> Bool {
     }
   #endif
   return resume() == 0x4b44
+  #endif
 }
 
 // The monitor links the immutable text/rodata image and reserves private
 // backing for each guest extent. No physical address comes from the guest.
 private func mapImage(_ page: UInt64, _ install: (UInt64, UInt64, UInt64, UInt64) -> Bool) -> Bool {
   let l = layout()
+  #if STORAGE_GUEST
+    guard install(0x540000, 16384, l[6], 3) else { return false }
+  #endif
   return l[1] > 0 && l[1] <= 0xf0000 && l[1] % page == 0
     && install(0x10000, l[1], l[0], 5) && install(0x100000, 65536, l[2], 3)
     && install(0x180000, page, l[3], 1) && install(0x200000, 16384, l[4], 3)
@@ -68,10 +88,15 @@ private func boot(_ operation: () -> Bool) -> UInt32 {
   // Fixed frame: never follow an address from the launch result.
   let count = screen.load(fromByteOffset: 16376, as: UInt64.self)
   guard count > 0 && count <= 256 else { return 0 }
-  for row in 0..<3 {
+  #if STORAGE_GUEST
+    let rows = 4
+  #else
+    let rows = 3
+  #endif
+  for row in 0..<rows {
     var ink = false
-    for i in 0..<(144 * 8)
-    where screen.load(fromByteOffset: (row * 144 * 8 + i) * 4, as: UInt32.self) == 0xffffff {
+    for i in 0..<(108 * 8)
+    where screen.load(fromByteOffset: (row * 108 * 8 + i) * 4, as: UInt32.self) == 0xffffff {
       ink = true
     }
     if !ink { return 0 }

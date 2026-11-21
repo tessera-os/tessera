@@ -12,7 +12,11 @@ Initial development train; not certified. See [coverage](docs/coverage.md).
 
 **Development updates:** The VMM exposes guest PCI configuration, BARs, interrupt delivery and single-port virtio-console queues. Panic records budget backtraces across physical CPUs. The acceptance runner now binds capture hashes to the original inventory and collection; host tests and freestanding object checks do not supply target results.
 
-**Encoding changes:** Initial TBIB rev. 1, private train-specific syscall index and panic-record rev. 1. No canonical TRFS disk encoding asserted here.
+**Encoding changes:** Initial TBIB rev. 1, private train-specific syscall index and panic-record rev. 1. The [TRFS disk format](trfs/TRFS.md) is owned by TRFS.
+
+**Storage diagnostic:** Three QEMU debug guests read the pinned TRFS fixture through a
+read-only virtual disk. They verify every byte of the intact file page and refuse the
+same page with one corrupted byte. This does not establish controller I/O or signed boot.
 
 **Presentation:** Metal replaces the earlier Ember graphics target. TVMM validates the guest
 driver's TMS1 clear/blit and TMC1 completion contract on a prebound client channel; it does

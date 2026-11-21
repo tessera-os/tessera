@@ -92,3 +92,11 @@ two commands and four receipts across hypercalls. The monitor forwards them over
 private serial socket to TVMM. Mosaic copies the completed frame to an independent
 offscreen backbuffer and emits its release receipt after that GPU copy. Both textures
 are read back and checked; this involves no display latch, physical scanout or production transport.
+
+The optional `storage` profile maps 16 KiB of guest-private, RW/NX workspace at
+0x540000. Only its first 8 KiB are the block grant. The single-vCPU monitor snapshots
+the 128-byte request and 16-byte vector into its own scratch; it never follows an address
+from the guest. Valid reads cover eight sectors in the 1 MiB read-only fixture. The guest
+pins the known metadata head, resolves `system-version`, authenticates its file page,
+and compares every byte. Run `sh conformance/check-storage-guest.sh` at the Tarwin root
+for intact and corrupted payloads on each ISA. This is virtual-disk evidence only.

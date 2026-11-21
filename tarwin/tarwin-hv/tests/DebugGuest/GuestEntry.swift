@@ -35,7 +35,7 @@ case "x64":
     """)
 default: fatalError("unknown guest architecture")
 }
-if CommandLine.arguments.last == "metal" {
+if CommandLine.arguments.last == "metal" || CommandLine.arguments.last == "storage" {
   print(".global guest_exchange\nguest_exchange:")
   switch arch {
   case "arm": print("hvc #0x4b\nret")
