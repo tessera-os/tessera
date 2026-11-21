@@ -8,6 +8,7 @@ public struct PageArena {
   public internal(set) var base: UInt64
   public internal(set) var pageSize: UInt64
   public internal(set) var usable: UInt64
+  public internal(set) var retired: UInt64 = 0
   public internal(set) var occupied: UInt64
   public internal(set) var starts: UInt64
   public internal(set) var ends: UInt64
@@ -51,7 +52,7 @@ public func takePages(_ arena: inout PageArena, order: UInt8) -> Allocation {
     var index: UInt64 = 0
     while index < 64 {
       let mask = pageMask(pages) << index
-      if (arena.usable & mask) == mask && (arena.occupied & mask) == 0 {
+      if (arena.usable & mask) == mask && ((arena.occupied | arena.retired) & mask) == 0 {
         arena.occupied = arena.occupied | mask
         arena.starts = arena.starts | (UInt64(1) << index)
         arena.ends = arena.ends | (UInt64(1) << (index + pages - 1))

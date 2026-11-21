@@ -10,6 +10,20 @@ public protocol MatchTable {
   mutating func record(_ bucket: UInt16, positionPlusOne: UInt16)
 }
 
+/// Reusable per-worker scratch, exclusively held for an entire compression.
+public struct PageMatchTable: MatchTable {
+  private let entries: UnsafeMutableBufferPointer<UInt16>
+  public init?(_ entries: UnsafeMutableBufferPointer<UInt16>) {
+    guard entries.count == 4096 else { return nil }
+    self.entries = entries
+  }
+  public mutating func clear() { for i in entries.indices { entries[i] = 0 } }
+  public func previous(_ bucket: UInt16) -> UInt16 { entries[Int(bucket)] }
+  public mutating func record(_ bucket: UInt16, positionPlusOne: UInt16) {
+    entries[Int(bucket)] = positionPlusOne
+  }
+}
+
 public struct BlockSize {
   public internal(set) var ok: Bool
   public internal(set) var count: UInt64
