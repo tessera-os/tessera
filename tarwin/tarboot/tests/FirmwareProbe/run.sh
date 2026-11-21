@@ -158,6 +158,10 @@ for isa in "${@:-all}"; do
                 [[ ${TARBOOT_TEST_W1_GATE_ONLY:-0} == 1 ]] || exit 2
                 flags+=(-D TARBOOT_TEST_W1_CHANGED_COPY)
             fi
+            if [[ ${TARBOOT_TEST_W1_CHANGED_ENVELOPE:-0} == 1 ]]; then
+                [[ $TARBOOT_TEST_W1_GATE_ONLY == 1 && ${TARBOOT_TEST_W1_CHANGED_COPY:-0} == 0 ]] || exit 2
+                flags+=(-D TARBOOT_TEST_W1_CHANGED_ENVELOPE)
+            fi
             entry_source+=("$composition-stage0/QEMUEntry.swift" "$composition-stage0/Kernel/W1Authority.swift" "$here/W1IntakeTransfer.swift")
             cp "$TARBOOT_W1_SIGNATURE" "$d/esp/BOOT.SIG"
             swift "$composition-stage0/W1PublicInstallation.swift" "${TARBOOT_W1_INSTALL:?}" \

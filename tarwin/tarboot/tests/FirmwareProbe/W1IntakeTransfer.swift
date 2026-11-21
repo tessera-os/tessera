@@ -104,6 +104,12 @@ func transferW1(handoff: UInt64, image: borrowing FirmwareBootServices.LoaderPag
     intake.layout.containsSeparateArchive(archive.base, bytes: UInt64(size)) else { return false }
   let frozen = UnsafeRawBufferPointer(start: UnsafeRawPointer(bitPattern: UInt(archive.base)), count: size)
   let envelope = UnsafeRawBufferPointer(start: UnsafeRawPointer(bitPattern: UInt(signature.base)), count: signatureBytes)
+  #if TARBOOT_TEST_W1_CHANGED_ENVELOPE
+    #if !TARBOOT_TEST_W1_GATE_ONLY
+      #error("signature corruption is a no-transfer test")
+    #endif
+    UnsafeMutableRawBufferPointer(mutating: envelope)[signatureBytes - 1] ^= 1
+  #endif
   let events = UnsafeRawBufferPointer(start: UnsafeRawPointer(bitPattern: UInt(log.base)), count: logBytes)
   var command = InlineArray<1100, UInt8>(repeating: 0)
   var sample = InlineArray<32, UInt8>(repeating: 0)
@@ -133,7 +139,11 @@ func transferW1(handoff: UInt64, image: borrowing FirmwareBootServices.LoaderPag
       matchesFirmwarePCRs(&port, archive: replay.archive, configuration: replay.configuration)
     else { _ = reportFixedMarker("TARBOOT-W1-REFUSED-MEASUREMENT\r\n"); return nil }
     guard let verified = withW1Authority(port: &port, work: work, { policy, boot, system, contract in
-      authorizeW1(frozen, envelope, policy, boot, system, contract, work)
+      let set = authorizeW1(frozen, envelope, policy, boot, system, contract, work)
+      #if TARBOOT_TEST_W1_CHANGED_ENVELOPE
+        if set == nil { _ = reportFixedMarker("TARBOOT-W1-REFUSED-CHANGED-ENVELOPE\r\n") }
+      #endif
+      return set
     }) ?? nil else { return nil }
     for i in 0..<32 {
       guard verified.archiveSHA256[i] == archiveDigest[i],

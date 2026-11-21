@@ -184,8 +184,10 @@ func check() throws {
   let changedCopy = ProcessInfo.processInfo.environment["TARBOOT_TEST_W1_CHANGED_COPY"] == "1"
   guard !changedCopy || gateOnly else { throw Failure("copy mutation requires the no-transfer test") }
   let badPIO = ProcessInfo.processInfo.environment["TARBOOT_TEST_INVALID_W1_PIO"] == "1"
+  let changedEnvelope = ProcessInfo.processInfo.environment["TARBOOT_TEST_W1_CHANGED_ENVELOPE"] == "1"
+  guard !changedEnvelope || (gateOnly && !changedCopy && !badPIO) else { throw Failure("invalid signature control") }
   var sigPath = d + "/esp/BOOT.SIG"
-  if badPIO {
+  if badPIO || changedEnvelope {
     guard intake else { throw Failure("PIO refusal requires signed kernel intake") }
     var copy = try Data(contentsOf: URL(fileURLWithPath: sigPath))
     guard !copy.isEmpty else { throw Failure("empty W1 signature") }
@@ -283,6 +285,11 @@ func check() throws {
         throw Failure("gate-only firmware attempted kernel transfer")
       }
       if let failure = lines.first(where: { $0.hasPrefix("TARBOOT-W1-REFUSED") || $0.hasPrefix("TARWIN-W1-KERNEL-REFUSED") }) {
+        if changedEnvelope, failure == "TARBOOT-W1-REFUSED-CHANGED-ENVELOPE",
+           !lines.contains("TARBOOT-W1-FROZEN-COPY-CONFIRMED") {
+          print("aarch64: live PCRs matched; final signature authorization refused identical changed envelopes before kernel installation")
+          return
+        }
         if changedCopy, failure == "TARBOOT-W1-REFUSED-MEASUREMENT",
           lines.contains("TARBOOT-W1-TEST-CHANGED-COPY"), !lines.contains("TARBOOT-W1-FROZEN-COPY-CONFIRMED"),
           !lines.contains("TARBOOT-W1-VERIFIED-TRANSFER") {
@@ -297,7 +304,7 @@ func check() throws {
         throw Failure(failure)
       }
       if gateOnly, lines.contains("TARBOOT-W1-FROZEN-COPY-CONFIRMED") {
-        guard !badPIO, !changedCopy, !lines.contains("TARBOOT-W1-VERIFIED-TRANSFER") else { throw Failure("unexpected gate result") }
+        guard !badPIO, !changedCopy, !changedEnvelope, !lines.contains("TARBOOT-W1-VERIFIED-TRANSFER") else { throw Failure("unexpected gate result") }
         print("aarch64: fenced copy reauthorized; PCR 8 and 9 matched one live TPM read; stopped before kernel installation")
         return
       }

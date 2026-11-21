@@ -288,6 +288,7 @@ export TARBOOT_W1_INSTALL=/path/to/independent-public-installation
 export TARBOOT_TEST_W1_GATE_ONLY=1
 bash run.sh aarch64
 TARBOOT_TEST_W1_CHANGED_COPY=1 bash run.sh aarch64
+TARBOOT_TEST_W1_CHANGED_ENVELOPE=1 bash run.sh aarch64
 ```
 
 The default stops **before kernel installation**. The EFI application verifies
@@ -298,6 +299,11 @@ values in one TPM read, then independently authorizes the frozen set. The
 negative test changes one byte in the retained archive, never the input file;
 it must stop at measurement, not at signature verification. Only this fixed
 debug profile dedicates PCRs 8 and 9 exclusively to the selected set.
+
+The envelope control keeps the ESP input intact and changes the same byte
+in both post-exit signature copies. The transport and PCR comparisons must
+pass, then final signature authorization must refuse. This control cannot be
+built into a transfer-enabled image.
 
 The gate's success marker is not a kernel-entry witness. A separately
 authorized debug transfer requires the kernel-only reverification marker
