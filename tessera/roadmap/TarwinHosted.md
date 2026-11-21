@@ -65,7 +65,7 @@ Task: one per Tessera process
 ### 5.1 Creation
 
 1. `Process.create` in `tarwind` spawns `tarwin-task` (a Mach-O in Tessera.app) with `posix_spawn`, its bootstrap special port set to a fresh receive right in `tarwind`, an empty environment and no inherited descriptors.
-2. The task host checks in on that port, sending a receive right for its command port and a send right for its gate port. `tarwind` records the pair against the Process object; the Process handle's signals follow the task's EVFILT_PROC events.
+2. The task host checks in on that port, keeping the receive right for its command port and sending `tarwind` a send right for it, plus the receive right for its gate port (the task keeps only send rights to the gate). `tarwind` records the pair against the Process object; the Process handle's signals follow the task's EVFILT_PROC events.
 3. The task host applies the sandbox profile (HS-008), then waits for commands.
 4. `tarwind` loads the process's images (section 5.3), creates the main thread with `Thread.start` and resumes it.
 
