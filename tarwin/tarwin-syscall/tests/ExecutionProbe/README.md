@@ -48,5 +48,8 @@ points, not changes to the guest CPU's clock.
 Success requires both the EFI console marker and QMP's guest shutdown event.
 The event-pair diagnostic signals the peer through the native binding, refuses
 a wait-only duplicate's signal, and checks peer death only after the last close.
+The guest arms an edge observer through the native ABI before signalling the
+peer. It checks the Signal packet's key, mask and MORE flag, then cancels
+the observer and consumes its terminal Cancelled packet.
 No user mode, hardware trap, context switch, interrupt or signed Tarwin image
 is involved. This does not boot a Tarwin kernel or measure performance.

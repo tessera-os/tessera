@@ -4,6 +4,7 @@ import TarwinABI
 import TarwinChannelCalls
 import TarwinIPC
 import TarwinIPCChannels
+import TarwinIPCObservers
 import TarwinObject
 import TarwinObjectCalls
 import TarwinSched
@@ -415,10 +416,11 @@ private func serviceRoundTrip(
     var seed = InlineArray<96, UInt8>(repeating: 0x5a)
     return withUnsafeMutableBytes(of: &seed) { input in
       let epoch = RandomEpoch.virtualMachine(low: 1, high: 2)
-      guard var random = KernelRandom(
-        policy: .debugQEMU, bootSeed: .init(rebasing: UnsafeRawBufferPointer(input)[..<64]),
-        hardware: .init(rebasing: UnsafeRawBufferPointer(input)[64...]), source: .emulatedTPM,
-        generation: epoch)
+      guard
+        var random = KernelRandom(
+          policy: .debugQEMU, bootSeed: .init(rebasing: UnsafeRawBufferPointer(input)[..<64]),
+          hardware: .init(rebasing: UnsafeRawBufferPointer(input)[64...]), source: .emulatedTPM,
+          generation: epoch)
       else { return nil }
       return ArmProcessKeys(
         child: &child, root: root, tree: tree, storage: bank, random: &random, generation: epoch)
@@ -502,9 +504,12 @@ private func jobQuota(_ arena: inout Arena, _ limit: UInt64) -> Bool {
           p.gate(id, tree: tree) == .dispatch
         else { return false }
         #if arch(arm64)
-          guard keys.withThreadKeys(child: p, thread: tp.pointee, root: root, tree: tree, {
-            $0.count == 10 && $0.baseAddress == UnsafePointer(bank.baseAddress)
-          }), keys.withImportIA(child: p, root: root, tree: tree, { _ in 1 }) == nil
+          guard
+            keys.withThreadKeys(
+              child: p, thread: tp.pointee, root: root, tree: tree,
+              {
+                $0.count == 10 && $0.baseAddress == UnsafePointer(bank.baseAddress)
+              }), keys.withImportIA(child: p, root: root, tree: tree, { _ in 1 }) == nil
           else { return false }
         #endif
         guard case let own = selfHandle(&p, tree: tree), own != 0,
@@ -549,6 +554,86 @@ private struct PrivateEvents: EventNamespace {
   }
 }
 
+private struct ProbePort: SignalPorts {
+  let id: UInt64
+  let port: UnsafeMutablePointer<CompletionPort>
+  var wakes = 0
+  mutating func withPort<R>(_ id: UInt64, _ body: (inout CompletionPort) -> R) -> R? {
+    id == self.id ? body(&port.pointee) : nil
+  }
+  mutating func wake(port: UInt64, count: Int) { if port == id { wakes += count } }
+}
+
+private struct ProbeObserverCaller: SignalCaller {
+  let table: UnsafeMutablePointer<HandleTable>
+  let list: UnsafeMutablePointer<SignalObservers>
+  var ports: ProbePort
+  mutating func withObservers(
+    source: UInt64,
+    _ body: (UInt64, borrowing HandleTable, inout SignalObservers, inout ProbePort, UInt64) ->
+      SignalArmResult
+  ) -> SignalArmResult {
+    body(10, table.pointee, &list.pointee, &ports, 17)
+  }
+}
+
+private func observePeer(
+  _ arena: inout Arena, ids: borrowing KoidSource, ends: inout EventEndpoints, source: UInt64,
+  peer: UInt64, header: UnsafePointer<ObjectHeader>, table: UnsafeMutablePointer<HandleTable>
+) -> Bool {
+  let slab = arena.take(PortSlot.self, count: 2)
+  let observers = arena.take(ObserverSlot.self, count: 1)
+  slab.initialize(repeating: PortSlot())
+  observers.initialize(repeating: ObserverSlot())
+  defer {
+    slab.deinitialize()
+    observers.deinitialize()
+  }
+  guard let ph = ObjectHeader(source: ids, ownerJob: 1, kind: TarwinKind.port, maximumRights: 0),
+    var port = CompletionPort(storage: slab)
+  else { return false }
+  var list = SignalObservers(object: header, storage: observers)
+  return withUnsafePointer(to: ph) { h in
+    guard case .installed(let name) = table.pointee.install(h, rights: 0) else { return false }
+    defer { _ = table.pointee.close(name, retire: { _ in preconditionFailure() }) }
+    return withUnsafeMutablePointer(to: &port) { p in
+      withUnsafeMutablePointer(to: &list) { l in
+        var gate = RegisterGate(
+          calls: WaitAsyncCalls(
+            context: ProbeObserverCaller(
+              table: table, list: l,
+              ports: ProbePort(id: h.pointee.koid, port: p))))
+        let bit: UInt32 = 1 << 31
+        guard
+          NativeObject.waitAsync(
+            peer, signals: bit, mode: .edge, port: name, key: 27,
+            gate: &gate
+          ).code == 0, p.pointee.available == 0
+        else { return false }
+        var ports = gate.calls.context.ports
+        return withUnsafeMutablePointer(to: &ports) { router in
+          func notify(_ target: UnsafePointer<ObjectHeader>) {
+            if target == header { l.pointee.changed(at: 21, ports: &router.pointee) }
+          }
+          guard
+            ends.signal(name: source, set: bit, clear: 0, in: table.pointee, notify: notify) == .ok,
+            let packet = p.pointee.take(), packet.kind == 1, packet.key == 27,
+            packet.flags == 1, packet.result0 == UInt64(bit), packet.timestamp == 21,
+            router.pointee.wakes == 1,
+            ends.signal(name: source, set: 0, clear: bit, in: table.pointee, notify: notify) == .ok
+          else { return false }
+          var cancelling: PortOperation?
+          guard p.pointee.cancel(key: 27, schedule: { cancelling = $0 }) == 1, let cancelling
+          else { return false }
+          l.pointee.cancelled(cancelling, port: h.pointee.koid, at: 22, ports: &router.pointee)
+          guard let final = p.pointee.take() else { return false }
+          return final.flags == 0 && final.error == 26 && final.key == 27 && l.pointee.count == 0
+        }
+      }
+    }
+  }
+}
+
 private func eventPair(_ arena: inout Arena) -> Bool {
   let cells = arena.take(HandleCell.self, count: 3)
   let heads = arena.take(ObjectHeader.self, count: 2)
@@ -574,6 +659,11 @@ private func eventPair(_ arena: inout Arena) -> Bool {
       guard pair.status == 0, heads[0].release() == .stillLive, heads[1].release() == .stillLive
       else { return false }
       defer { table.pointee.drain { h in record.pointee.destroy(h) { _ in } } }
+      guard
+        observePeer(
+          &arena, ids: ids, ends: &record.pointee, source: pair.first, peer: pair.second,
+          header: .init(heads.baseAddress! + 1), table: table)
+      else { return false }
       guard NativeEvents.signal(pair.first, set: 1 << 24, clear: 0, gate: &g).status == 0,
         g.calls.context.notified == 1 << 24, heads[0].signals == 0,
         case .installed(let copy) = table.pointee.derive(pair.first, rights: 128, duplicate: true),

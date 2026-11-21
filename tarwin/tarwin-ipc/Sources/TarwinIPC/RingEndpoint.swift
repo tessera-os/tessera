@@ -50,6 +50,21 @@ public struct RingEndpoint: ~Copyable {
   private var idle: Int { cursor + 32 }
   private var peerIdle: Int { peerCursor + 32 }
   var isPortCompletionProducer: Bool { completion && producer && geometry.stride == 64 }
+  var completionMapping: UInt { UInt(bitPattern: words.baseAddress) }
+  var publishedThrough: UInt32 { local }
+
+  /// Even after the last producer cursor was published, consumption may
+  /// advance up to it, but cannot move backwards or acknowledge future data.
+  mutating func consumedThrough() -> UInt32? {
+    guard isPortCompletionProducer, !failed else { return nil }
+    let seen = words[peerCursor].load(ordering: .sequentiallyConsistent)
+    guard ringConsumerValid(lastPeer, seen, local) else {
+      failed = true
+      return nil
+    }
+    lastPeer = seen
+    return seen
+  }
 
   private mutating func peerReady() -> RingStep? {
     if failed { return .invalidPeer }
