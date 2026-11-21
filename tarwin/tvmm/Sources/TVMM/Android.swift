@@ -45,13 +45,13 @@ public struct AndroidBridge {
 
   public mutating func bind(_ app: UInt64, _ window: UInt64, _ surface: UInt64) -> Bool {
     if windows.count >= windowLimit || window == 0 || surface == 0 { return false }
-    for w in windows { if w.window == window || w.surface == surface { return false } }
+    for w in windows { if (w.app == app && w.window == window) || w.surface == surface { return false } }
     windows.append(AppWindow(app: app, window: window, surface: surface, epoch: epoch))
     return true
   }
-  public mutating func closeWindow(_ window: UInt64) {
+  public mutating func closeWindow(app: UInt64, window: UInt64) {
     var live: [AppWindow] = []
-    for w in windows { if w.window != window { live.append(w) } }
+    for w in windows { if w.app != app || w.window != window { live.append(w) } }
     windows = live
   }
   public mutating func issue(_ grant: HostGrant) -> Bool {

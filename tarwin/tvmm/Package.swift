@@ -3,10 +3,17 @@ import PackageDescription
 
 let package = Package(
   name: "TVMM",
-  products: [.library(name: "TVMM", targets: ["TVMM"])],
+  products: [
+    .library(name: "TVMM", targets: ["TVMM"]),
+    .library(name: "AndroidAgent", targets: ["AndroidAgent"]),
+  ],
   dependencies: [],
   targets: [
-    .target(name: "TVMM", dependencies: []),
-    .testTarget(name: "TVMMTests", dependencies: ["TVMM"], path: "tests/TVMMTests"),
+    .target(name: "AndroidWire"),
+    .target(name: "AndroidAgent", dependencies: ["AndroidWire"]),
+    .target(name: "TVMM", dependencies: ["AndroidWire"]),
+    .testTarget(
+      name: "TVMMTests", dependencies: ["TVMM", "AndroidAgent", "AndroidWire"],
+      path: "tests/TVMMTests"),
   ]
 )
