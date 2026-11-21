@@ -3,9 +3,10 @@
 private struct ArmPrivateRoot: ~Copyable {
   private let words: UnsafeMutableBufferPointer<UInt64>
   let physicalRoot: UInt64
+  let layout: ArmPermissionLayout
   private(set) var usedPages: Int
 
-  @unsafe init?(backing: UnsafeMutableRawBufferPointer, physical: UInt64) {
+  @unsafe init?(backing: UnsafeMutableRawBufferPointer, physical: UInt64, layout: ArmPermissionLayout) {
     guard let ptr = backing.baseAddress, UInt(bitPattern: ptr) & 7 == 0,
       backing.count >= 16384, backing.count & 16383 == 0,
       physical != 0, physical & 16383 == 0, physical < 1 << 48,
@@ -15,6 +16,7 @@ private struct ArmPrivateRoot: ~Copyable {
     self.words = backing.bindMemory(to: UInt64.self)
     self.words.initialize(repeating: 0)
     self.physicalRoot = physical
+    self.layout = layout
     self.usedPages = 1
   }
 
@@ -89,6 +91,12 @@ private struct ArmPrivateRoot: ~Copyable {
     return words[cell] == physical | 0x703 | (1 << 53) | (1 << 54)
   }
 
+  func mapsControl(_ va: UInt64, _ pa: UInt64) -> Bool {
+    let leaf = layout.controlLeaf(pa)
+    guard leaf != 0, let cell = leafCell(va), cell >= 0 else { return false }
+    return words[cell] == leaf
+  }
+
   func canSeal(_ range: Range<UInt64>) -> Bool {
     let lo = range.lowerBound, hi = range.upperBound
     guard lo < hi, lo >= 1 << 32, hi <= 1 << 47, (lo | hi) & 16383 == 0,
@@ -104,8 +112,9 @@ private struct ArmPrivateRoot: ~Copyable {
   mutating func sealValidated(_ range: Range<UInt64>) {
     var va = range.lowerBound
     while va < range.upperBound {
-      // The root is exclusively held; only the AP[2] bit of leaves changes.
-      words[mutableUserDataCell(va)!] |= 1 << 7
+      // PIE ignores AP[2] for base permission; select EL0 index 15 (RO)
+      // rather than leaving a nominally sealed page at index 13 (RW).
+      words[mutableUserDataCell(va)!] |= (1 << 7) | (layout == .guarded ? 1 << 51 : 0)
       va += 16384
     }
   }
@@ -117,27 +126,40 @@ public struct ArmUserTranslation: ~Copyable {
   private var root: ArmPrivateRoot
   public var physicalRoot: UInt64 { root.physicalRoot }
   public var usedPages: Int { root.usedPages }
+  public var layout: ArmPermissionLayout { root.layout }
 
   /// Consume the writer before exposing this root to a hardware walker.
   /// Borrowers must keep its pinned frames immutable until every CPU retires it.
   public consuming func finish() -> ArmFinishedUserRoot? {
     guard usedPages > 1 else { return nil }
-    return ArmFinishedUserRoot(physical: physicalRoot)
+    return ArmFinishedUserRoot(physical: physicalRoot, layout: layout)
   }
 
-  @unsafe public init?(backing: UnsafeMutableRawBufferPointer, physical: UInt64) {
-    guard let root = ArmPrivateRoot(backing: backing, physical: physical) else { return nil }
+  @unsafe public init?(backing: UnsafeMutableRawBufferPointer, physical: UInt64,
+    layout: ArmPermissionLayout = .direct) {
+    guard let root = ArmPrivateRoot(backing: backing, physical: physical, layout: layout) else { return nil }
     self.root = root
   }
 
   public mutating func insert(virtual: UInt64, physical: UInt64, write: Bool, execute: Bool) -> Bool
   {
     guard virtual < 1 << 47, virtual >= 1 << 32 else { return false }
-    let leaf = armUserPage(physical, write: write, execute: execute, lpa2: false)
+    let leaf = layout.userLeaf(physical, write: write, execute: execute)
     guard leaf != 0 else { return false }
     return root.insert(
       virtual: virtual, physical: physical,
       leaf: leaf | (execute ? (UInt64(1) << 50) : 0))
+  }
+
+  /// Dedicated fresh, pinned normal RAM in a private GCS reservation. No
+  /// other writable mapping (ordinary, GCS or DMA) may alias this frame.
+  public mutating func insertControlPage(virtual: UInt64, physical: UInt64) -> Bool {
+    guard virtual >= 1 << 43, virtual < 1 << 46 else { return false }
+    return root.insert(virtual: virtual, physical: physical, leaf: layout.controlLeaf(physical))
+  }
+
+  public func mapsControlPage(_ va: UInt64, physical: UInt64) -> Bool {
+    va >= 1 << 43 && va < 1 << 46 && va & 16383 == 0 && root.mapsControl(va, physical)
   }
 
   /// Seal complete RELRO pages in an exclusively held, never-active root.
@@ -189,6 +211,7 @@ public struct ArmKernelTranslation: ~Copyable {
   private var root: ArmPrivateRoot
   public var physicalRoot: UInt64 { root.physicalRoot }
   public var usedPages: Int { root.usedPages }
+  public var layout: ArmPermissionLayout { root.layout }
 
   public func mapsPrivateDataPage(_ va: UInt64, physical: UInt64) -> Bool {
     va >= 0xffff_8000_0000_0000 && physical > 0 && physical < 1 << 48
@@ -201,18 +224,19 @@ public struct ArmKernelTranslation: ~Copyable {
 
   public consuming func finish() -> ArmFinishedKernelRoot? {
     guard usedPages > 1 else { return nil }
-    return ArmFinishedKernelRoot(physical: physicalRoot)
+    return ArmFinishedKernelRoot(physical: physicalRoot, layout: layout)
   }
 
-  @unsafe public init?(backing: UnsafeMutableRawBufferPointer, physical: UInt64) {
-    guard let root = ArmPrivateRoot(backing: backing, physical: physical) else { return nil }
+  @unsafe public init?(backing: UnsafeMutableRawBufferPointer, physical: UInt64,
+    layout: ArmPermissionLayout = .direct) {
+    guard let root = ArmPrivateRoot(backing: backing, physical: physical, layout: layout) else { return nil }
     self.root = root
   }
 
   public mutating func insert(virtual: UInt64, physical: UInt64, write: Bool, execute: Bool) -> Bool
   {
     guard virtual >= 0xffff_8000_0000_0000, physical & 16383 == 0, physical < 1 << 48,
-      !(write && execute)
+      !(write && execute), layout == .direct || write || execute
     else { return false }
     let ap: UInt64 = write ? 0 : 0x80
     let fetch = UInt64(1) << (execute ? 50 : 53)  // guarded code or PXN
@@ -224,10 +248,16 @@ public struct ArmKernelTranslation: ~Copyable {
 /// Finished descriptors, not a runnable process or an ASID allocation.
 public struct ArmFinishedUserRoot: ~Copyable {
   public let physical: UInt64
-  fileprivate init(physical: UInt64) { self.physical = physical }
+  public let layout: ArmPermissionLayout
+  fileprivate init(physical: UInt64, layout: ArmPermissionLayout) {
+    self.physical = physical; self.layout = layout
+  }
 }
 
 public struct ArmFinishedKernelRoot: ~Copyable {
   public let physical: UInt64
-  fileprivate init(physical: UInt64) { self.physical = physical }
+  public let layout: ArmPermissionLayout
+  fileprivate init(physical: UInt64, layout: ArmPermissionLayout) {
+    self.physical = physical; self.layout = layout
+  }
 }

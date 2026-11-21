@@ -32,12 +32,18 @@ Only the caller's verified target and storage modifier belong here; no
 process key is generated and the probe never branches to the target.
 
 The probe prints the CPU's GCS, S1PIE and TCRX feature nibbles. With
-all three at version 1, a second guest enables permission indirection
-before enabling its MMU. It checks that the host refuses a direct-permission
-root without changing TTBR0. On a private test page with EL0 GCS permission,
-the CPU completes a GCSSTTR, rejects an ordinary STTR, and reads back the
-first word unchanged. Both instructions run at EL2 with EL0 access checks;
-no EL0 instructions run, and no thread's guarded stack is installed.
+all three at version 1, a second guest enables the W1 permission banks
+before enabling its MMU. It rejects a direct user root, then installs a
+private root built for those banks. On a GCS page between two unmapped
+guards it completes a GCSSTTR, rejects an ordinary STTR and reads the
+original word. A sealed RELRO page is readable but not writable, while
+an adjacent data page still accepts stores. A third guest with a
+different PIRE0 refuses the same root without changing TTBR0.
+
+Only the indirect layout maps the staged user's shadow pages as GCS.
+The upper layout supports kernel RX and RW, and rejects ordinary kernel
+RO rather than treating it as RW. No thread's GCSPR or GCSCR is
+installed; all these accesses execute at EL2, not EL0.
 
 The baseline guest then feeds the vector's post-dispatch continuation a
 stop action on a synthetic private frame. The checked upper root maps two

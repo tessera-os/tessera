@@ -66,12 +66,14 @@ _start:
   and x4, x3, #15
   cmp x4, #1
   b.ne failed
-  // Diagnostic layout only. EL2 indices 8=RX and 12=RW cover the
-  // privileged boot text and data. No EL2 access to user frames.
-  // The only user leaf permission is index 14=GCS. All others deny.
+  // The boot identity aliases only contain kernel RX and RW pages.
   ldr x0, =0x000c000a00000000
   msr S3_4_C10_C2_3, x0
-  mov x0, #0x0900000000000000
+  #ifdef TEST_WRONG_BANK
+  mov x0, #0x0900000000000000 // deny more than the root expects
+  #else
+  ldr x0, =0x89c0000000a00000
+  #endif
   msr S3_4_C10_C2_2, x0
   mov x0, #2
   msr S3_4_C2_C0_3, x0
@@ -119,8 +121,28 @@ _start:
   ldr x10, =root
   cmp x9, x10
   b.ne failed
-  mov x21, #0x100000000
-  add x21, x21, #16, lsl #12
+  mov x0, x19
+  mov w1, #0
+  bl tarwin_vhe_switch // direct user root under guarded host
+  cbnz w0, failed
+  mov x0, x19
+  mov w1, #1
+  bl tarwin_vhe_switch
+  #ifdef TEST_WRONG_BANK
+  cbnz w0, failed
+  mrs x9, ttbr0_el2
+  ldr x10, =root
+  cmp x9, x10
+  b.ne failed
+  adr x1, wrong_ok
+  mov x0, #4
+  hlt #0xf000
+  adr x1, exit_ok
+  b exit_host
+  #endif
+  cbz w0, failed
+  mov x21, #0x80000000000
+  add x21, x21, #4, lsl #12
   mov x22, #0xcb34
   gcssttr x22, [x21]
   gcsb dsync
@@ -135,15 +157,46 @@ _start:
   ldr x0, [x19]
   cmp x0, x22
   b.ne failed
+  // Both guards deny unprivileged reads, while the RW neighbor of
+  // the sealed private page is still writable under the same PIRE0.
+  sub x0, x21, #4, lsl #12
+  mov x1, x19
+  bl tarwin_w1_load_user_word
+  cbnz w0, failed
+  add x0, x21, #4, lsl #12
+  mov x1, x19
+  bl tarwin_w1_load_user_word
+  cbnz w0, failed
+  ldr x21, =0x100008000
+  mov x0, x21
+  mov x1, x19
+  bl tarwin_w1_load_user_word
+  cbz w0, failed
+  mov x0, x21
+  mov x1, #0x739
+  bl tarwin_w1_store_user_word
+  cbnz w0, failed
+  add x21, x21, #4, lsl #12
+  mov x0, x21
+  mov x1, #0x739
+  bl tarwin_w1_store_user_word
+  cbz w0, failed
+  mov x0, x21
+  mov x1, x19
+  bl tarwin_w1_load_user_word
+  cbz w0, failed
+  ldr x0, [x19]
+  cmp x0, #0x739
+  b.ne failed
   adr x1, gcs_ok
   mov x0, #4
   hlt #0xf000
   adr x1, exit_ok
   b exit_host
   #endif
-  ldr x0, =private_a
-  ldr x1, =host_root
-  bl tarwin_w1_switch_user_root
+  mov x0, x19
+  mov w1, #0
+  bl tarwin_vhe_switch
   cbz w0, failed
   // Refuse a different expected TTBR1; the next read must still use A.
   ldr x0, =private_b
@@ -158,9 +211,9 @@ _start:
   mov x1, #0x1234
   cmp x0, x1
   b.ne failed
-  ldr x0, =private_b
-  ldr x1, =host_root
-  bl tarwin_w1_switch_user_root
+  mov x0, x19
+  mov w1, #1
+  bl tarwin_vhe_switch
   cbz w0, failed
   mov x0, #0x100000000
   mov x1, x19
@@ -316,7 +369,8 @@ hex_digit:
   ret
 ok: .asciz "VHE-COPY-READ-WRITE-ABORT-DENY\\nVHE-HIGH-HOST-PRIVATE-ROOT-SWITCH\\n"
 bad: .asciz "VHE-COPY-FAILED\\n"
-gcs_ok: .asciz "VHE-GCS-STORE-ORDINARY-WRITE-DENIED\\n"
+gcs_ok: .asciz "VHE-GCS-STORE-ORDINARY-WRITE-DENIED\\nVHE-PRIVATE-PIE-RELRO-GUARD\\n"
+wrong_ok: .asciz "VHE-REFUSED-MISMATCHED-PIE-BANK\\n"
 pac_ok: .asciz "VHE-IMPORT-IA-HOST-KEY-RESTORED\\n"
 stopped: .asciz "VHE-STOP-ON-SEPARATE-SCHEDULER-STACK\\n"
 .p2align 3
@@ -348,14 +402,10 @@ for i in 34..<128 {
 print("""
 .p2align 14
 user: .quad 0x0060000040200fc3,0,0x0060000040204783,0x0060000040208f43
-  #ifdef TEST_GCS
-  // Index 14 (UXN|PXN|DBM) selects GCS only in this second guest.
-  .quad 0x006800004020cf03
-  #endif
 .p2align 14
 host_root: .space 65536
 private_a: .space 65536
-private_b: .space 65536
+private_b: .space 114688
 context: .space 16384
   .space 16384
 stack_base:
@@ -371,4 +421,5 @@ sample:
 .space 16384-24
 .quad 0xfeed
 .quad 0xcafe
+.space 5*16384-8
 """)

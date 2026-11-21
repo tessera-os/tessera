@@ -44,8 +44,9 @@ public struct W1ThreadPlacement: ~Copyable {
   }
 }
 
-/// The stack/TCB are mapped. Shadow frames are zeroed and reserved with
-/// no ordinary writable mapping; GCS permissions/GCSPR are a separate gate.
+/// The stack/TCB are mapped. Shadow frames are zeroed and reserved:
+/// unmapped under direct permissions, GCS pages under W1 indirection.
+/// This does not enable GCS or install a thread's GCSPR.
 public struct W1ThreadStorage {
   public let stack, shadow: Range<UInt64>
   public let tcb, stackPhysical, shadowPhysical: UInt64
@@ -79,6 +80,13 @@ extension W1FramePool {
     ptr.storeBytes(of: t.protector.littleEndian, toByteOffset: 8, as: UInt64.self)
     ptr.storeBytes(of: t.stack.lowerBound.littleEndian, toByteOffset: 16, as: UInt64.self)
     ptr.storeBytes(of: t.shadow.lowerBound.littleEndian, toByteOffset: 40, as: UInt64.self)
+    if tables.layout == .guarded {
+      for i in stride(from: 0, to: shadowBytes, by: page) {
+        guard tables.insertControlPage(
+          virtual: t.shadow.lowerBound + UInt64(i), physical: physical + UInt64(block + page + i))
+        else { return nil }
+      }
+    }
     used += bytes
     return W1ThreadStorage(
       stack: t.stack, shadow: t.shadow, tcb: t.tcb, stackPhysical: physical + UInt64(start),

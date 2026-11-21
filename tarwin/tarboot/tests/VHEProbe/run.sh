@@ -6,7 +6,8 @@ arch="$pkgs/tarwin/tarwin-arch-aarch64/Sources/TarwinArchAarch64"
 bin=$(dirname "${EMBEDDED_SWIFTC:?macOS Swift toolchain with Embedded modules required}")
 d=$(mktemp -d)
 trap 'rm -rf "$d"' EXIT
-swiftc "$arch/ArmTrapLayout.swift" "$pkgs/tessera/build/tarwin-stage0/ArmHostTrap.swift" -o "$d/emit"
+swiftc "$arch/ArmTrapLayout.swift" "$arch/StageOne.swift" "$arch/PermissionLayout.swift" \
+  "$pkgs/tessera/build/tarwin-stage0/ArmHostTrap.swift" -o "$d/emit"
 "$d/emit" > "$d/host.S"
 swift "$here/HostProbe.swift" > "$d/start.S"
 flags=(-target aarch64-none-none-elf -enable-experimental-feature Embedded -no-allocations
@@ -45,8 +46,15 @@ grep -Fx 'VHE-IMPORT-IA-HOST-KEY-RESTORED' "$d/log"
 grep -Fx 'VHE-STOP-ON-SEPARATE-SCHEDULER-STACK' "$d/log"
 grep -Ex 'VHE-CPU-GCS-S1PIE-TCRX=[0-9a-f]{3}' "$d/log"
 if grep -Fxq 'VHE-CPU-GCS-S1PIE-TCRX=111' "$d/log"; then
+  "$bin/swiftc" "${flags[@]}" -D TEST_GCS -emit-ir "$here/Probe.swift" "$here/../FirmwareProbe/Memory.swift" -o "$d/gcs.ll"
+  "$bin/clang" -target aarch64-none-none-elf -ffunction-sections -fdata-sections -Oz -c "$d/gcs.ll" -o "$d/gcs-probe.o"
   "$bin/clang" -target aarch64-none-none-elf -march=armv9.4-a+gcs -DTEST_GCS -c "$d/start.S" -o "$d/gcs.o"
-  "$bin/ld.lld" --gc-sections -T "$d/sections" "$d/gcs.o" "$d/host.o" "$d/probe.o" -o "$d/gcs.elf"
+  "$bin/ld.lld" --gc-sections -T "$d/sections" "$d/gcs.o" "$d/host.o" "$d/gcs-probe.o" -o "$d/gcs.elf"
   run_guest gcs
   grep -Fx 'VHE-GCS-STORE-ORDINARY-WRITE-DENIED' "$d/log"
+  grep -Fx 'VHE-PRIVATE-PIE-RELRO-GUARD' "$d/log"
+  "$bin/clang" -target aarch64-none-none-elf -march=armv9.4-a+gcs -DTEST_GCS -DTEST_WRONG_BANK -c "$d/start.S" -o "$d/wrong.o"
+  "$bin/ld.lld" --gc-sections -T "$d/sections" "$d/wrong.o" "$d/host.o" "$d/gcs-probe.o" -o "$d/wrong.elf"
+  run_guest wrong
+  grep -Fx 'VHE-REFUSED-MISMATCHED-PIE-BANK' "$d/log"
 fi

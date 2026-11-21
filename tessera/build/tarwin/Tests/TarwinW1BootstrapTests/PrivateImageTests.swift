@@ -114,7 +114,7 @@ private func stageImages(
     signSlot(plan.targetAddress, plan.storageModifier, root: base + 16384, child: child, tree: tree)
       == nil)
   #expect(signedCalls == 0)
-  func build(_ size: Int) -> W1PrivateImages? {
+  func build(_ size: Int, layout: ArmPermissionLayout = .direct) -> W1PrivateImages? {
     calls = 0
     let thread = W1ThreadPlacement(stackBytes: 81920, draw: { .max })
     return preparePrivateW1Images(
@@ -124,7 +124,7 @@ private func stageImages(
         calls += 1
         return clean
       },
-      child: child, tree: tree,
+      child: child, tree: tree, layout: layout,
       signImport: { target, modifier in
         signSlot(target, modifier, root: base, child: child, tree: tree)
       }, firstThread: consume thread)
@@ -142,6 +142,18 @@ private func stageImages(
   sign = true
   #expect(denied(tableBytes + page) && calls == 1)
   #expect(denied(tableBytes + 5 * page) && calls == 2)
+  func checkGuardedThread() {
+    guard let protected = build(ram.count, layout: .guarded), let t = protected.initialThread else {
+      Issue.record("guarded staging refused")
+      return
+    }
+    let isControl = protected.tables.mapsControlPage(t.shadow.lowerBound, physical: t.shadowPhysical)
+    let isData = protected.tables.mapsPrivateDataPage(t.shadow.lowerBound, physical: t.shadowPhysical)
+    #expect(isControl && !isData)
+    #expect(leaf(t.shadow.lowerBound - UInt64(page)) == 0 && leaf(t.shadow.upperBound) == 0)
+    #expect(leaf(plan.slotAddress) & (1 << 51) != 0)
+  }
+  checkGuardedThread()
   guard let images = build(ram.count) else {
     Issue.record("private image set rejected")
     return

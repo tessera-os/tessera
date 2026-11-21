@@ -42,7 +42,7 @@ func signProcessImport(
   return preparePrivateW1Images(
     set, plan: plan, archive: archive, storage: storage, physical: physical,
     tableBytes: tableBytes, nodes: nodes, witnesses: witnesses, cleanToPoU: cleanToPoU,
-    child: child, tree: tree,
+    child: child, tree: tree, layout: host.layout,
     signImport: { target, modifier in
       signProcessImport(
         target, modifier, plan: plan, root: physical, host: host.physical,

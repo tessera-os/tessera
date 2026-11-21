@@ -6,6 +6,11 @@ private func load(_ address: UInt64, _ word: UnsafeMutablePointer<UInt64>) -> UI
 @_extern(c, "tarwin_w1_store_user_word")
 private func store(_ address: UInt64, _ word: UInt64) -> UInt32
 
+private struct ProbeRoots: ~Copyable {
+  let host: ArmFinishedKernelRoot
+  let a, b: ArmFinishedUserRoot
+}
+
 // Before enabling the MMU the test CPU owns and can address all three
 // table arenas physically. None is mapped writable in either finished root.
 @_cdecl("tarwin_vhe_build_roots")
@@ -16,12 +21,17 @@ public func buildRoots(
   let high: UInt64 = 0xffff_8000_0000_0000
   let page: UInt64 = 16384
   let base: UInt64 = 1 << 32
-  func arena(_ p: UInt64) -> UnsafeMutableRawBufferPointer {
-    .init(start: UnsafeMutableRawPointer(bitPattern: UInt(p)), count: 4 * 16384)
+  func arena(_ p: UInt64, pages: Int = 4) -> UnsafeMutableRawBufferPointer {
+    .init(start: UnsafeMutableRawPointer(bitPattern: UInt(p)), count: pages * 16384)
   }
-  guard var k = ArmKernelTranslation(backing: arena(kernel), physical: kernel),
+  #if TEST_GCS
+    let layout = ArmPermissionLayout.guarded
+  #else
+    let layout = ArmPermissionLayout.direct
+  #endif
+  guard var k = ArmKernelTranslation(backing: arena(kernel), physical: kernel, layout: layout),
     var p = ArmUserTranslation(backing: arena(a), physical: a),
-    var q = ArmUserTranslation(backing: arena(b), physical: b)
+    var q = ArmUserTranslation(backing: arena(b, pages: 7), physical: b, layout: layout)
   else { return 1 }
   for i: UInt64 in 0..<2 {
     let pa = text + i * page
@@ -41,13 +51,33 @@ public func buildRoots(
     let storage = UnsafeMutablePointer<ArmStopStacks>(bitPattern: UInt(context + 64))
   else { return 3 }
   storage.initialize(to: stacks)
+  #if TEST_GCS
+    let shadow = (UInt64(1) << 43) + page
+    let ro = base + 2 * page
+    guard q.insertControlPage(virtual: shadow, physical: sample + 3 * page),
+      q.mapsControlPage(shadow, physical: sample + 3 * page),
+      q.insert(virtual: ro, physical: sample + 4 * page, write: true, execute: false),
+      q.sealReadOnly(ro..<ro + page),
+      q.insert(virtual: ro + page, physical: sample + 5 * page, write: true, execute: false)
+    else { return 5 }
+  #endif
   guard k.insert(virtual: high + context, physical: context, write: true, execute: false),
     p.insert(virtual: base, physical: sample, write: false, execute: false),
     q.insert(virtual: base, physical: sample + page, write: false, execute: false),
     let kr = k.finish(), let ar = p.finish(), let br = q.finish(),
-    kr.physical == kernel, ar.physical == a, br.physical == b
+    kr.physical == kernel, ar.physical == a, br.physical == b,
+    kr.layout == layout, ar.layout == .direct, br.layout == layout
   else { return 4 }
+  UnsafeMutablePointer<ProbeRoots>(bitPattern: UInt(context + 128))!.initialize(
+    to: ProbeRoots(host: kr, a: ar, b: br))
   return 0
+}
+
+@_cdecl("tarwin_vhe_switch")
+public func switchRoot(_ context: UInt64, _ second: UInt32) -> UInt32 {
+  let roots = UnsafePointer<ProbeRoots>(bitPattern: UInt(context + 128))!
+  if second == 0 { return switchArmUserRoot(roots.pointee.a, host: roots.pointee.host) ? 1 : 0 }
+  return switchArmUserRoot(roots.pointee.b, host: roots.pointee.host) ? 1 : 0
 }
 
 // This diagnostic captures no task. It exercises only the checked stack

@@ -172,6 +172,12 @@
     // private process context is installed. Never return through the old map.
     .global tarwin_w1_switch_user_root
     tarwin_w1_switch_user_root:
+    mov w4, #0
+    b .Lswitch_root
+    .global tarwin_w1_switch_guarded_root
+    tarwin_w1_switch_guarded_root:
+    mov w4, #1
+    .Lswitch_root:
     mrs x2, CurrentEL
     cmp x2, #8
     b.ne .Lbad_mode
@@ -180,6 +186,7 @@
     tbz x2, #27, .Lbad_mode
     mrs x2, sctlr_el2
     tbz x2, #0, .Lbad_mode
+    tbnz x2, #61, .Lbad_mode // DAIF alone does not mask superpriority IRQs
     mrs x2, spsel
     cbz x2, .Lbad_mode
     mrs x2, daif
@@ -204,16 +211,39 @@
     ldr x3, =0x57510b510
     cmp x2, x3
     b.ne .Lbad_mode
-    // These private roots use 64-bit direct-permission leaves. Do not
-    // reinterpret their AP/PXN/UXN bits as indices or enable overlays.
+    // Root switching does not change the global meaning of a PTE.
+    // The typed caller has finished both roots for the same encoding.
     mrs x2, S3_0_C0_C7_3 // ID_AA64MMFR3_EL1
-    and x2, x2, #15      // TCRX
-    cbz x2, .Ldirect
-    cmp x2, #1
+    and x3, x2, #15      // TCRX
+    cbnz w4, .Lguarded
+    cbz x3, .Lpermissions_ok
+    cmp x3, #1
     b.ne .Lbad_mode
     mrs x2, S3_4_C2_C0_3 // TCR2_EL2
     cbnz x2, .Lbad_mode
-    .Ldirect:
+    b .Lpermissions_ok
+    .Lguarded:
+    cmp x3, #1
+    b.ne .Lbad_mode
+    ubfx x2, x2, #8, #4 // S1PIE
+    cmp x2, #1
+    b.ne .Lbad_mode
+    mrs x2, id_aa64pfr1_el1
+    ubfx x2, x2, #44, #4
+    cmp x2, #1
+    b.ne .Lbad_mode
+    mrs x2, S3_4_C2_C0_3 // TCR2_EL2
+    cmp x2, #2
+    b.ne .Lbad_mode
+    mrs x2, S3_4_C10_C2_3 // PIR_EL2
+    ldr x3, =\(ArmPermissionLayout.pir)
+    cmp x2, x3
+    b.ne .Lbad_mode
+    mrs x2, S3_4_C10_C2_2 // PIRE0_EL2
+    ldr x3, =\(ArmPermissionLayout.pire0)
+    cmp x2, x3
+    b.ne .Lbad_mode
+    .Lpermissions_ok:
     mrs x2, mair_el2
     and x2, x2, #255
     cmp x2, #255

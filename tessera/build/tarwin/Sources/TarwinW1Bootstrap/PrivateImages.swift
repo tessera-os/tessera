@@ -103,7 +103,7 @@ struct W1FramePool {
   archive: UnsafeRawBufferPointer, storage: UnsafeMutableRawBufferPointer,
   physical: UInt64, tableBytes: Int, nodes: UnsafeMutableBufferPointer<BlakeCv>,
   witnesses: UnsafeMutableRawBufferPointer, cleanToPoU: (UnsafeRawBufferPointer) -> Bool,
-  child: borrowing ProcessExecution, tree: borrowing JobTree,
+  child: borrowing ProcessExecution, tree: borrowing JobTree, layout: ArmPermissionLayout = .direct,
   signImport: (UInt64, UInt64) -> UInt64?, firstThread: consuming W1ThreadPlacement? = nil
 ) -> W1PrivateImages? {
   let ram = UnsafeRawBufferPointer(storage)
@@ -120,7 +120,7 @@ struct W1FramePool {
     exactMember(set.process.bytes, in: archive, at: set.process.range, excluding: storage),
     exactMember(set.library.bytes, in: archive, at: set.library.range, excluding: storage),
     var tables = ArmUserTranslation(
-      backing: .init(rebasing: storage[..<tableBytes]), physical: physical)
+      backing: .init(rebasing: storage[..<tableBytes]), physical: physical, layout: layout)
   else { return nil }
   var finished = false
   defer { if !finished { storage.initializeMemory(as: UInt8.self, repeating: 0) } }
