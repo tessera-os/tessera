@@ -37,3 +37,4 @@ perl -e 'alarm 10; exec @ARGV' qemu-system-aarch64 -machine virt,virtualization=
   cat "$d/log" >&2; exit 1
 }
 grep -Fx 'VHE-COPY-READ-WRITE-ABORT-DENY' "$d/log"
+grep -Fx 'VHE-HIGH-HOST-PRIVATE-ROOT-SWITCH' "$d/log"

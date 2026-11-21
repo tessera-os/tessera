@@ -129,6 +129,71 @@
     6: ret
     .Lbad_mode: mov w0, #0
     ret
+
+    // Boot CPU only, ASID zero, immutable TTBR1. The caller owns both
+    // finished roots and the current CPU, with DAIF masked until its new
+    // private process context is installed. Never return through the old map.
+    .global tarwin_w1_switch_user_root
+    tarwin_w1_switch_user_root:
+    mrs x2, CurrentEL
+    cmp x2, #8
+    b.ne .Lbad_mode
+    mrs x2, hcr_el2
+    tbz x2, #34, .Lbad_mode
+    tbz x2, #27, .Lbad_mode
+    mrs x2, sctlr_el2
+    tbz x2, #0, .Lbad_mode
+    mrs x2, spsel
+    cbz x2, .Lbad_mode
+    mrs x2, daif
+    and x2, x2, #0x3c0
+    cmp x2, #0x3c0
+    b.ne .Lbad_mode
+    mrs x2, pan
+    cbz x2, .Lbad_mode
+    cbz x0, .Lbad_mode
+    cbz x1, .Lbad_mode
+    cmp x0, x1
+    b.eq .Lbad_mode
+    orr x2, x0, x1
+    tst x2, #0x3fff
+    b.ne .Lbad_mode
+    lsr x2, x2, #48
+    cbnz x2, .Lbad_mode
+    mrs x2, ttbr1_el2
+    cmp x2, x1
+    b.ne .Lbad_mode
+    mrs x2, tcr_el2
+    ldr x3, =0x57510b510
+    cmp x2, x3
+    b.ne .Lbad_mode
+    mrs x2, mair_el2
+    and x2, x2, #255
+    cmp x2, #255
+    b.ne .Lbad_mode
+    mov x3, #0xffff800000000000
+    adr x2, .
+    cmp x2, x3
+    b.lo .Lbad_mode
+    cmp x30, x3
+    b.lo .Lbad_mode
+    mov x2, sp
+    cmp x2, x3
+    b.lo .Lbad_mode
+    mrs x2, vbar_el2
+    cmp x2, x3
+    b.lo .Lbad_mode
+    mrs x2, tpidr_el2
+    cmp x2, x3
+    b.lo .Lbad_mode
+    dsb ishst
+    msr ttbr0_el2, x0
+    isb
+    tlbi alle2is
+    dsb ish
+    isb
+    mov w0, #1
+    ret
     """)
   }
 }

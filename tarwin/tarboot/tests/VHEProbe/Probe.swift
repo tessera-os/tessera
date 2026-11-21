@@ -6,6 +6,40 @@ private func load(_ address: UInt64, _ word: UnsafeMutablePointer<UInt64>) -> UI
 @_extern(c, "tarwin_w1_store_user_word")
 private func store(_ address: UInt64, _ word: UInt64) -> UInt32
 
+// Before enabling the MMU the test CPU owns and can address all three
+// table arenas physically. None is mapped writable in either finished root.
+@_cdecl("tarwin_vhe_build_roots")
+public func buildRoots(
+  _ kernel: UInt64, _ a: UInt64, _ b: UInt64, _ stack: UInt64,
+  _ context: UInt64, _ text: UInt64, _ sample: UInt64
+) -> UInt32 {
+  let high: UInt64 = 0xffff_8000_0000_0000
+  let page: UInt64 = 16384
+  let base: UInt64 = 1 << 32
+  func arena(_ p: UInt64) -> UnsafeMutableRawBufferPointer {
+    .init(start: UnsafeMutableRawPointer(bitPattern: UInt(p)), count: 4 * 16384)
+  }
+  guard var k = ArmKernelTranslation(backing: arena(kernel), physical: kernel),
+    var p = ArmUserTranslation(backing: arena(a), physical: a),
+    var q = ArmUserTranslation(backing: arena(b), physical: b)
+  else { return 1 }
+  for i: UInt64 in 0..<2 {
+    let pa = text + i * page
+    guard k.insert(virtual: high + pa, physical: pa, write: false, execute: true) else { return 2 }
+  }
+  for i: UInt64 in 0..<2 {
+    let pa = stack + i * page
+    guard k.insert(virtual: high + pa, physical: pa, write: true, execute: false) else { return 3 }
+  }
+  guard k.insert(virtual: high + context, physical: context, write: true, execute: false),
+    p.insert(virtual: base, physical: sample, write: false, execute: false),
+    q.insert(virtual: base, physical: sample + page, write: false, execute: false),
+    let kr = k.finish(), let ar = p.finish(), let br = q.finish(),
+    kr.physical == kernel, ar.physical == a, br.physical == b
+  else { return 4 }
+  return 0
+}
+
 // Called on a private host stack. The diagnostic never enters EL0.
 @_cdecl("tarwin_vhe_copy_probe")
 public func probe() -> Int32 {

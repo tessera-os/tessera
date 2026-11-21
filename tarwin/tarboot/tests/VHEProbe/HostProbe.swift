@@ -1,6 +1,6 @@
 // Standalone debug-QEMU boot CPU at EL2. Stage the VHE host MMU with RX
-// kernel text, NX private writable tables/stack, one user-readable page,
-// one missing page and one privileged-only page. No W1 archive or entry.
+// kernel text and private data in the temporary identity map. Relocate to
+// TTBR1 and switch between process roots without ever executing user code.
 print("""
 .section .text.boot,"ax"
 .globl _start
@@ -12,6 +12,15 @@ _start:
   msr spsel, #1
   ldr x0, =stack_top
   mov sp, x0
+  ldr x0, =host_root
+  ldr x1, =private_a
+  ldr x2, =private_b
+  ldr x3, =stack_base
+  ldr x4, =context
+  ldr x5, =_start
+  ldr x6, =sample
+  bl tarwin_vhe_build_roots
+  cbnz w0, failed
   mov x0, #1
   lsl x0, x0, #34
   orr x0, x0, #(1 << 31)
@@ -22,8 +31,9 @@ _start:
   msr vbar_el2, x0
   ldr x0, =root
   msr ttbr0_el2, x0
-  msr ttbr1_el2, xzr
-  ldr x0, =0x57590b510
+  ldr x0, =host_root
+  msr ttbr1_el2, x0
+  ldr x0, =0x57510b510
   msr tcr_el2, x0
   mov x0, #255
   msr mair_el2, x0
@@ -38,6 +48,77 @@ _start:
   isb
   bl tarwin_vhe_copy_probe
   cbnz w0, failed
+  // Switching away while running from the low identity map must refuse.
+  msr pan, #1
+  ldr x0, =private_a
+  ldr x1, =host_root
+  bl tarwin_w1_switch_user_root
+  cbnz w0, failed
+  mov x20, #0xffff800000000000
+  adr x0, .Lupper
+  add x0, x0, x20
+  br x0
+.Lupper:
+  bti j
+  add sp, sp, x20
+  ldr x0, =tarwin_w1_vectors
+  add x0, x0, x20
+  msr vbar_el2, x0
+  ldr x19, =context
+  add x19, x19, x20
+  msr tpidr_el2, x19
+  isb
+  ldr x0, =private_a
+  ldr x1, =host_root
+  bl tarwin_w1_switch_user_root
+  cbz w0, failed
+  // Refuse a different expected TTBR1; the next read must still use A.
+  ldr x0, =private_b
+  ldr x1, =private_a
+  bl tarwin_w1_switch_user_root
+  cbnz w0, failed
+  mov x0, #0x100000000
+  mov x1, x19
+  bl tarwin_w1_load_user_word
+  cbz w0, failed
+  ldr x0, [x19]
+  mov x1, #0x1234
+  cmp x0, x1
+  b.ne failed
+  ldr x0, =private_b
+  ldr x1, =host_root
+  bl tarwin_w1_switch_user_root
+  cbz w0, failed
+  mov x0, #0x100000000
+  mov x1, x19
+  bl tarwin_w1_load_user_word
+  cbz w0, failed
+  ldr x0, [x19]
+  mov x1, #0xcafe
+  cmp x0, x1
+  b.ne failed
+  // The obsolete low kernel mapping and the high stack guard are absent.
+  ldr x0, =_start
+  at s1e2r, x0
+  isb
+  mrs x0, par_el1
+  tbz x0, #0, failed
+  ldr x0, =stack_base
+  add x0, x0, x20
+  sub x0, x0, #8
+  at s1e2r, x0
+  isb
+  mrs x0, par_el1
+  tbz x0, #0, failed
+  // A real STTR fault must still recover on the high private stack/vector.
+  mov x0, #0x100000000
+  mov x1, #0xaaaa
+  bl tarwin_w1_store_user_word
+  cbnz w0, failed
+  at s1e0r, x19
+  isb
+  mrs x0, par_el1
+  tbz x0, #0, failed
   adr x1, ok
   mov x0, #4
   hlt #0xf000
@@ -54,7 +135,7 @@ exit_host:
   mov x0, #0x20
   hlt #0xf000
   b .
-ok: .asciz "VHE-COPY-READ-WRITE-ABORT-DENY\\n"
+ok: .asciz "VHE-COPY-READ-WRITE-ABORT-DENY\\nVHE-HIGH-HOST-PRIVATE-ROOT-SWITCH\\n"
 bad: .asciz "VHE-COPY-FAILED\\n"
 .p2align 3
 exit_ok: .quad 0x20026,0
@@ -84,9 +165,16 @@ print("""
 .p2align 14
 user: .quad 0x0060000040200fc3,0,0x0060000040204783,0x0060000040208f43
 .p2align 14
-  .space 65536
+host_root: .space 65536
+private_a: .space 65536
+private_b: .space 65536
+context: .space 16384
+  .space 16384
+stack_base:
+  .space 32768
 stack_top:
 .section .sample,"a"
+sample:
 .quad 0x1234,0x5678
 .space 16384-24
 .quad 0xfeed

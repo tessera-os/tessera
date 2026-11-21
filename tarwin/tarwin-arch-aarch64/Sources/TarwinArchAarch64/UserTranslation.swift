@@ -113,6 +113,13 @@ public struct ArmUserTranslation: ~Copyable {
   public var physicalRoot: UInt64 { root.physicalRoot }
   public var usedPages: Int { root.usedPages }
 
+  /// Consume the writer before exposing this root to a hardware walker.
+  /// Borrowers must keep its pinned frames immutable until every CPU retires it.
+  public consuming func finish() -> ArmFinishedUserRoot? {
+    guard usedPages > 1 else { return nil }
+    return ArmFinishedUserRoot(physical: physicalRoot)
+  }
+
   @unsafe public init?(backing: UnsafeMutableRawBufferPointer, physical: UInt64) {
     guard let root = ArmPrivateRoot(backing: backing, physical: physical) else { return nil }
     self.root = root
@@ -173,6 +180,11 @@ public struct ArmKernelTranslation: ~Copyable {
   public var physicalRoot: UInt64 { root.physicalRoot }
   public var usedPages: Int { root.usedPages }
 
+  public consuming func finish() -> ArmFinishedKernelRoot? {
+    guard usedPages > 1 else { return nil }
+    return ArmFinishedKernelRoot(physical: physicalRoot)
+  }
+
   @unsafe public init?(backing: UnsafeMutableRawBufferPointer, physical: UInt64) {
     guard let root = ArmPrivateRoot(backing: backing, physical: physical) else { return nil }
     self.root = root
@@ -188,4 +200,15 @@ public struct ArmKernelTranslation: ~Copyable {
     let leaf = physical | 0x703 | ap | fetch | (1 << 54)
     return root.insert(virtual: virtual, physical: physical, leaf: leaf)
   }
+}
+
+/// Finished descriptors, not a runnable process or an ASID allocation.
+public struct ArmFinishedUserRoot: ~Copyable {
+  public let physical: UInt64
+  fileprivate init(physical: UInt64) { self.physical = physical }
+}
+
+public struct ArmFinishedKernelRoot: ~Copyable {
+  public let physical: UInt64
+  fileprivate init(physical: UInt64) { self.physical = physical }
 }
