@@ -8,7 +8,7 @@ code, from an EFI application after `ExitBootServices`.
 EMBEDDED_SWIFTC=<swift.org 6.3 toolchain>/usr/bin/swiftc \
 QEMU_FIRMWARE=<dir with edk2-*-code.fd and edk2-*-vars.fd> \
 EDK_BASETOOLS=<edk2-stable202408>/BaseTools \
-./run.sh [aarch64] [x86_64] [riscv64]
+bash run.sh [aarch64] [x86_64] [riscv64]
 ```
 
 Requires QEMU with the `log` trace backend, a host `swiftc` (Foundation and
