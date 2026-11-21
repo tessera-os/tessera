@@ -8,12 +8,15 @@ import TarwinSync
 import TarwinSyncCalls
 import TarwinSyscall
 import TarwinTime
+import TRFSHosted
+import TarwinNetHosted
 
 final class KernelState: @unchecked Sendable {
   let lock = NSLock()
   let arena = Arena()
   let config: TarwindConfig
   let host: any TarwindHost
+  let devices: HostDeviceRegistry
   let clock = HostClock()
   let events: HostEventQueue
   let source = KoidSource()
@@ -42,13 +45,20 @@ final class KernelState: @unchecked Sendable {
   var usedSlots: Set<Int> = []
   var retired: [UnsafePointer<ObjectHeader>] = []
   var stopped = false
+  var dataVolume: HostedTrfsDisk?
+  var systemVolume: HostedTrfsDisk?
+  var sharedFolders: [String: SharedFolder] = [:]
+  let network = HostedNetwork(policy: NetPolicy(rules: [NetRule(.allow)]))
+  var sockets: [UInt64: TarwindSocket] = [:]
+  var socketEvents: [HostEventToken: (TarwindSocket, UInt32)] = [:]
   var nextProcess: UInt64 = 0
   var nextContinuation: UInt64 = 0
   let workerKey = DispatchKey(qos: SchedClass.normal, readySince: 0, virtualStart: 0,
     virtualDeadline: 0, classVirtualTime: 0, absoluteDeadline: 0, remainingBudget: 0, threadId: 1)
 
-  init(config: TarwindConfig, host: any TarwindHost) throws {
+  init(config: TarwindConfig, host: any TarwindHost, devices: HostDeviceRegistry) throws {
     self.config = config; self.host = host
+    self.devices = devices
     events = try HostEventQueue()
     host.bootStage("time")
     clocks = SystemClocks(frequency: 1_000_000_000, counter: clock.absoluteNanos())!
@@ -59,6 +69,10 @@ final class KernelState: @unchecked Sendable {
       identity: 1, domain: .monotonic, wakesSystem: false)!)
     host.bootStage("objects")
     host.bootStage("syscalls")
+    host.bootStage("storage")
+    dataVolume = try HostedTrfsDisk.openData(path: config.diskPath, blocks: 1 << 16)
+    systemVolume = try openSystemVolume(config: config, host: host)
+    host.bootStage("network")
   }
 
   func now() -> SystemTime { clocks.read(counter: clock.absoluteNanos())! }
@@ -84,7 +98,12 @@ final class KernelState: @unchecked Sendable {
     while !lock.withLock({ stopped }) {
       do {
         let delivered = try events.wait(timeoutNanos: 10_000_000)
-        if !delivered.isEmpty { lock.withLock { serviceTimers() } }
+        if !delivered.isEmpty {
+          lock.withLock {
+            for event in delivered { networkReady(event) }
+            serviceTimers()
+          }
+        }
       } catch {
         host.console("hosted event service failed: \(error)")
         lock.withLock { stopped = true }
@@ -163,6 +182,7 @@ final class KernelState: @unchecked Sendable {
         _ = queue(for: wait).pointee.finish(wait.ticket, reason: .cancelled, change: { changed($0) })
       }
       record.table.pointee.drain(retire: { retired.append($0) })
+      for socket in Array(sockets.values) where socket.process == process { closeSocket(socket) }
       exceptionPorts.removeValue(forKey: process)
       drainRetired()
       return exit.reason == .crashed
@@ -175,6 +195,10 @@ final class KernelState: @unchecked Sendable {
   func shutdown() {
     let thread: HostThread? = lock.withLock {
       stopped = true
+      for socket in Array(sockets.values) { closeSocket(socket) }
+      for folder in sharedFolders.values { folder.stop() }
+      sharedFolders.removeAll()
+      dataVolume = nil; systemVolume = nil
       for wait in Array(pending.values) {
         _ = queue(for: wait).pointee.finish(wait.ticket, reason: .cancelled, change: { changed($0) })
       }
@@ -194,9 +218,16 @@ final class KernelState: @unchecked Sendable {
 final class ExceptionSink: HostExceptionSink, @unchecked Sendable {
   weak var state: KernelState?
   let process: TarwindProcessID?
-  init(state: KernelState, process: TarwindProcessID?) { self.state = state; self.process = process }
+  let pager: (@Sendable (TarwindProcessID, HostException) throws -> HostExceptionDisposition?)?
+  init(state: KernelState, process: TarwindProcessID?,
+    pager: (@Sendable (TarwindProcessID, HostException) throws -> HostExceptionDisposition?)? = nil) {
+    self.state = state; self.process = process; self.pager = pager
+  }
   func handle(_ exception: HostException) -> HostExceptionDisposition {
     if let process {
+      if let disposition = try? pager?(process, exception), case .resume = disposition {
+        return disposition
+      }
       state?.fault(process: process, kind: exception.kind, code: exception.code,
         address: exception.faultAddress, pc: exception.pc)
     } else {

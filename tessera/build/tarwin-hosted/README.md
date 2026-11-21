@@ -4,10 +4,48 @@ Regular Swift 6 hosted composition, with a Swift tools 6.0 manifest. The
 deployment minimum is macOS 26 because the existing IPC/channel-call packages
 require it. No AArch64 platform package or privileged entry path is linked.
 
-`Tarwind.boot(_:host:)` reports time, objects, syscalls, scheduler and ready,
-then calls `ready()`. Configuration paths are retained for the later storage,
-image-loader and task-host stages; boot does not yet open those resources.
-The MM and loader libraries are linked but do not yet map task images.
+`Tarwind.boot(_:host:)` reports time, objects, syscalls, storage, network,
+scheduler and ready, then calls `ready()`. The disk path is opened and mounted;
+only a missing disk is created and formatted (256 MiB sparse bootstrap size).
+An existing damaged disk fails, never reformats. Shutdown unmounts by releasing
+the volume and its block device, even while the Tarwind object remains retained.
+The MM and loader libraries are linked but do not yet map task images; the panic
+record and task executable paths remain reserved.
+
+An existing system image requires the host to conform to the additive
+`TarwindSystemVolumeVerifier` protocol, supplying the trusted 32-byte boot-set
+root and measurement callback. `HostedTrfsDisk.openSystem` verifies and mounts
+read-only, with no fallback on verification failure. A missing image is optional.
+The frozen configuration and host protocol are unchanged; no trust root is
+inferred from the untrusted image. `withDataVolume` and `withSystemVolume` expose
+serialized TRFS operations; their callbacks must not reenter the kernel.
+
+`shareFolder` duplicates the caller's directory descriptor, transferring only
+the duplicate to HostFolderVolume. `makeFolderServer` supplies a HostFolderServer
+ring service. The caller owns the ring storage and shares until the server is
+stopped; callbacks must not reenter the kernel. Unshare stops all retained servers
+and releases the volume, and duplicate names throw. There is no generated
+filesystem/namespace CallProvider wired into this gate: TRFS has a lower-level
+MountedRead bridge requiring ProcessExecution, staged shares and IoPorts, not
+the existing kernel-process gate. Storage therefore stops at these tested APIs,
+without inventing a competing File.read syscall implementation.
+
+The default network policy explicitly allows all flows. Connect/listen/accept
+and datagram creation register their socket descriptors with the kernel event
+queue. Each returned TarwindSocket publishes a wait-only readiness handle:
+Object.wait masks 1/2/4 mean readable/writable/closed. Events complete the real
+object wait queue; nonblocking send/receive rearm readiness. Close, process fault
+and shutdown cancel registrations before closing descriptors. This is bootstrap
+policy, not per-application network isolation or a network syscall bank.
+
+`boot(_:host:devices:)` retains the app's HostDeviceRegistry; the original overload
+uses an empty one. H6's HID/audio/power providers expose Mach send rights to
+retained in-process TWHD driver inboxes. `openHostDevice(process:kind:slot:)`
+validates a live process and forwards provider.open, returning its owned HostPort
+unchanged for H6's HostedDriverEndpoint transport. They are not PCI/IOMMU DeviceKit
+slots, so no synthetic slot/config/DMA authority is minted. The registry exposes
+lookup, not enumeration; matching is by the provider's exact kind. H7 still owns
+driver instantiation, return channels and app feed serialization.
 
 `kernel.gate.call(process:registers:)` uses `TarwinABI.CallRegisters` and
 `CallResult` inside a call-number envelope. Completed results also update the
@@ -40,8 +78,13 @@ exist yet. The worker's initial class and bound host-thread class changes use
 tests exercise live background/default/interactive transitions and refusal
 of an invalid realtime budget.
 
-`installExceptionPort(process:task:)` installs a process-bound sink on a
-cooperating task host's borrowed port. It maps a fault to `TaskExit(.crashed)`,
+`installExceptionPort(process:task:pager:)` installs a process-bound sink on a
+cooperating task host's borrowed port; its optional pager defaults to nil.
+`makeExceptionSendRight(process:pager:)` retains the receive service and returns
+an owned send right for H2's spawner. The synchronous pager receives the original
+HostException outside the kernel lock. A resume disposition replies without
+recording a crash; nil, throw or terminate falls through to fatal handling.
+The pager must not wait for the faulting thread. Fatal handling maps to `TaskExit(.crashed)`,
 cancels that process's waits, drains its handles, removes its registry entry,
 and reports through `console`, never `panic`. A kernel process has no task
 port; `injectException` exercises that same registry transition in tests.

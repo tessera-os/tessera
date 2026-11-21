@@ -73,7 +73,10 @@ public final class Tarwind: @unchecked Sendable {
   public let gate: KernelGate
   private init(state: KernelState) { self.state = state; gate = KernelGate(state: state) }
   public static func boot(_ config: TarwindConfig, host: any TarwindHost) throws -> Tarwind {
-    let state = try KernelState(config: config, host: host)
+    try boot(config, host: host, devices: HostDeviceRegistry())
+  }
+  public static func boot(_ config: TarwindConfig, host: any TarwindHost, devices: HostDeviceRegistry) throws -> Tarwind {
+    let state = try KernelState(config: config, host: host, devices: devices)
     let kernel = Tarwind(state: state)
     do { try state.start() } catch { state.shutdown(); throw error }
     return kernel
@@ -94,13 +97,24 @@ public final class Tarwind: @unchecked Sendable {
     }
   }
   /// Bind a cooperating task host's borrowed task port to its registered process.
-  public func installExceptionPort(process: TarwindProcessID, task: UInt32) throws {
+  public func installExceptionPort(process: TarwindProcessID, task: UInt32,
+    pager: (@Sendable (TarwindProcessID, HostException) throws -> HostExceptionDisposition?)? = nil) throws {
     try state.lock.withLock {
       guard state.processes[process] != nil else { throw TarwindError.invalidProcess }
-      let port = try HostExceptionPort(sink: ExceptionSink(state: state, process: process))
+      let port = try HostExceptionPort(sink: ExceptionSink(state: state, process: process, pager: pager))
       try port.install(task: task)
       state.exceptionPorts[process] = port
     }
+  }
+  /// Retains the receive service while handing a send right to the task spawner.
+  public func makeExceptionSendRight(process: TarwindProcessID,
+    pager: (@Sendable (TarwindProcessID, HostException) throws -> HostExceptionDisposition?)? = nil) throws -> HostPort {
+    state.lock.lock(); defer { state.lock.unlock() }
+    guard !state.stopped, state.processes[process] != nil else { throw TarwindError.invalidProcess }
+    let port = try HostExceptionPort(sink: ExceptionSink(state: state, process: process, pager: pager))
+    let send = try port.makeSend()
+    state.exceptionPorts[process] = port
+    return send
   }
   /// Exercise the same crash/registry transition without faulting the test runner.
   public func injectException(process: TarwindProcessID, kind: HostException.Kind,
