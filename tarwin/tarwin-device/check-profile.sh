@@ -11,7 +11,7 @@ for target in aarch64-none-none-elf x86_64-unknown-none-elf riscv64-none-none-ea
     tarwin-device) deps="kcore:KCore tarwin-boot:TarwinBoot tarwin-ipc:TarwinIPC tarwin-device:TarwinIoCompletion tarwin-object:TarwinObject tarwin-syscall:TarwinABI tarwin-syscall:TarwinSyscall" ;;
     tarwin-block) deps="tarwin-ipc:TarwinIPC tarwin-device:TarwinIoCompletion tarwin-block:TarwinBlockWire" ;;
     tarwin-net) deps="tarwin-ipc:TarwinIPC tarwin-net:TarwinNetWire" ;;
-    trfs) deps="kcore:KCore tarwin-mm:TarwinMM" ;;
+    trfs) deps="kcore:KCore tarwin-mm:TarwinMM tarwin-ipc:TarwinIPC trfs:TarwinFsWire" ;;
     *) deps="" ;;
   esac
   for dep in $deps; do
@@ -25,6 +25,8 @@ for target in aarch64-none-none-elf x86_64-unknown-none-elf riscv64-none-none-ea
     set -- "$package"/Sources/TarwinBlock/*.swift
   elif [ "$(basename "$package")" = tarwin-net ]; then
     set -- "$package"/Sources/TarwinNet/*.swift
+  elif [ "$(basename "$package")" = trfs ]; then
+    set -- "$package"/Sources/TRFS/*.swift
   else
     set -- "$package"/Sources/*/*.swift
   fi
