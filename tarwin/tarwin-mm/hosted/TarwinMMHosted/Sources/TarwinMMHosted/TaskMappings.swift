@@ -1,25 +1,47 @@
 import Darwin
+import Foundation
 import TarwinTaskProtocol
 import TarwinTaskTransport
 
-public struct HostedTaskCommandMappings: HostedTaskMappings {
+public struct HostedTaskCommandMappings: HostedTaskMappings, HostedLiveMemoryAccess {
   public typealias Exchange = (TaskCommand, mach_port_t?) throws -> TaskCommandReply
 
   private let exchange: Exchange
+  private let liveRead: ((UInt64, UnsafeMutableRawBufferPointer) throws -> Void)?
+  private let liveWrite: ((UInt64, UnsafeRawBufferPointer) throws -> Void)?
 
-  public init(exchange: @escaping Exchange) { self.exchange = exchange }
+  public init(exchange: @escaping Exchange) {
+    self.exchange = exchange
+    liveRead = nil
+    liveWrite = nil
+  }
 
   public init(
     task: SpawnedTask, timeout: mach_msg_timeout_t = 5_000,
     onTransportFailure: @escaping (TaskTransportError) -> Void
   ) {
-    self.init { command, entry in
+    exchange = { command, entry in
       switch task.command(command, memoryEntry: entry ?? 0, timeout: timeout) {
       case .success(let reply): return reply
       case .failure(let error):
         onTransportFailure(error)
         throw error
       }
+    }
+    func accept(_ result: Result<Void, TaskTransportError>) throws {
+      if case .failure(let error) = result {
+        if case .mach(let status) = error, status >= 0 && status < KERN_RETURN_MAX {
+          throw HostedMemoryError.mach(status)
+        }
+        onTransportFailure(error)
+        throw error
+      }
+    }
+    liveRead = { address, buffer in
+      try accept(task.readMemory(address: address, into: buffer, timeout: timeout))
+    }
+    liveWrite = { address, bytes in
+      try accept(task.writeMemory(address: address, data: bytes, timeout: timeout))
     }
   }
 
@@ -48,5 +70,36 @@ public struct HostedTaskCommandMappings: HostedTaskMappings {
     try checkMach(reply.status)
     guard let port = reply.memoryEntry, port != 0 else { throw HostedMemoryError.snapshotUnavailable }
     return .adoptSnapshot(port: port, size: size)
+  }
+
+  func readMemory(address: UInt64, size: Int) throws -> Data {
+    guard let liveRead else { throw HostedMemoryError.liveMemoryUnavailable }
+    var data = Data(count: size)
+    try data.withUnsafeMutableBytes { bytes in
+      try transferRanges(size) { range in
+        try liveRead(address + UInt64(range.lowerBound),
+          UnsafeMutableRawBufferPointer(rebasing: bytes[range]))
+      }
+    }
+    return data
+  }
+
+  func writeMemory(address: UInt64, data: Data) throws {
+    guard let liveWrite else { throw HostedMemoryError.liveMemoryUnavailable }
+    try data.withUnsafeBytes { bytes in
+      try transferRanges(bytes.count) { range in
+        try liveWrite(address + UInt64(range.lowerBound),
+          UnsafeRawBufferPointer(rebasing: bytes[range]))
+      }
+    }
+  }
+
+  private func transferRanges(_ size: Int, _ body: (Range<Int>) throws -> Void) rethrows {
+    var offset = 0
+    while offset < size {
+      let end = offset + min(size - offset, Int(TaskMemoryTransfer.maximumSize))
+      try body(offset..<end)
+      offset = end
+    }
   }
 }

@@ -40,6 +40,11 @@ extension HostedTaskMappings {
   }
 }
 
+protocol HostedLiveMemoryAccess {
+  func readMemory(address: UInt64, size: Int) throws -> Data
+  func writeMemory(address: UInt64, data: Data) throws
+}
+
 public enum HostedFaultResult: Equatable {
   case unmapped, protection, notPresentOnHost, mapped
 }
@@ -117,6 +122,7 @@ public final class HostedAddressSpace {
   private let lock = NSLock()
   private var files: [UInt64: FileRegion] = [:]
   private var mappings: [UInt64: Mapping] = [:]
+  private var pins: [UInt64: Int] = [:]
 
   public init(window: Range<UInt64>, task: any HostedTaskMappings) throws {
     guard !window.isEmpty, window.lowerBound % hostedPageSize == 0,
@@ -145,7 +151,7 @@ public final class HostedAddressSpace {
   public func map(_ command: HostedMapCommand, charged: Bool = true) throws {
     try lock.withLock {
       _ = try checkFree(address: command.address, size: command.size)
-      try install(command, charged: charged)
+      try install(Mapping(command: command, charged: charged, cleanSince: nil, privateFilePage: false))
     }
   }
 
@@ -201,37 +207,131 @@ public final class HostedAddressSpace {
   public func fault(address: UInt64, access: HostedProtection) throws -> HostedFaultResult {
     try lock.withLock {
       guard access == .read || access == .write || access == .execute else { return .protection }
-      if let mapped = mappings.values.first(where: {
-        let mapped = $0.command
-        return address >= mapped.address && address - mapped.address < mapped.size
-      }) {
+      if let mapped = mapping(containing: address) {
         return mapped.command.protection.contains(access) ? .notPresentOnHost : .protection
       }
       guard let file = files.values.first(where: { $0.range.contains(address) }) else {
         return .unmapped
       }
       guard file.protection.contains(access) else { return .protection }
-      let pageAddress = address & ~(hostedPageSize - 1)
-      let offset = file.offset + (pageAddress - file.range.lowerBound)
-      let entry = try file.backing.page(at: offset, writable: file.protection.contains(.write))
-      let map = try HostedMapCommand(
-        address: pageAddress, size: hostedPageSize, entry: entry, protection: file.protection)
-      try install(map, charged: true,
-        cleanSince: file.protection == .read ? DispatchTime.now().uptimeNanoseconds : nil,
-        privateFilePage: file.protection.contains(.write))
+      _ = try pageIn(address, from: file)
       return .mapped
     }
+  }
+
+  public func copyIn(at guestVA: UInt64, count: Int) throws -> Data {
+    try withMemoryPin(at: guestVA, count: count, access: .read) { memory in
+      try readPinnedData(memory, at: guestVA, count: count)
+    }
+  }
+
+  public func withPinned<R>(
+    at guestVA: UInt64, count: Int, _ body: (UnsafeRawBufferPointer) throws -> R
+  ) throws -> R {
+    try withMemoryPin(at: guestVA, count: count, access: .read) { memory in
+      let bytes = try readPinnedData(memory, at: guestVA, count: count)
+      return try bytes.withUnsafeBytes(body)
+    }
+  }
+
+  public func copyOut(_ data: Data, to guestVA: UInt64) throws {
+    try withMemoryPin(at: guestVA, count: data.count, access: .write) {
+      try $0?.writeMemory(address: guestVA, data: data)
+    }
+  }
+
+  private func readPinnedData(
+    _ memory: (any HostedLiveMemoryAccess)?, at address: UInt64, count: Int
+  ) throws -> Data {
+    let bytes = try memory?.readMemory(address: address, size: count) ?? Data()
+    guard bytes.count == count else { throw HostedFaultError.incompleteRead }
+    return bytes
+  }
+
+  private func withMemoryPin<R>(
+    at address: UInt64, count: Int, access: HostedProtection,
+    _ body: ((any HostedLiveMemoryAccess)?) throws -> R
+  ) throws -> R {
+    guard count >= 0, address >= window.lowerBound, address <= window.upperBound,
+      UInt64(count) <= window.upperBound - address
+    else { throw HostedMemoryError.invalidRange }
+    guard count > 0 else { return try body(nil) }
+    guard let memory = task as? any HostedLiveMemoryAccess else {
+      throw HostedMemoryError.liveMemoryUnavailable
+    }
+    var addresses: [UInt64] = []
+    var objects: [ObjectIdentifier: HostedPurgeableState] = [:]
+    defer {
+      lock.withLock {
+        for object in objects.values { object.unpin() }
+        for base in addresses {
+          if pins[base] == 1 { pins.removeValue(forKey: base) }
+          else { pins[base, default: 0] -= 1 }
+        }
+      }
+    }
+    try lock.withLock {
+      let end = address + UInt64(count)
+      var cursor = address
+      while cursor < end {
+        let mapped: Mapping
+        if let resident = mapping(containing: cursor) {
+          guard resident.command.protection.contains(access) else {
+            throw HostedMemoryError.invalidProtection
+          }
+          mapped = resident
+        } else {
+          guard let file = files.values.first(where: { $0.range.contains(cursor) }) else {
+            throw HostedMemoryError.invalidRange
+          }
+          guard file.protection.contains(access) else { throw HostedMemoryError.invalidProtection }
+          mapped = try pageIn(cursor, from: file)
+        }
+        let command = mapped.command
+        if !command.copy, let object = command.entry.purgeable, objects[command.entry.objectID] == nil {
+          try object.pin(writing: access == .write)
+          objects[command.entry.objectID] = object
+        }
+        pins[command.address, default: 0] += 1
+        addresses.append(command.address)
+        cursor = command.address + command.size
+      }
+    }
+    return try body(memory)
+  }
+
+  private func mapping(containing address: UInt64) -> Mapping? {
+    if let page = mappings[address & ~(hostedPageSize - 1)] { return page }
+    return mappings.values.first {
+      let map = $0.command
+      return address >= map.address && address - map.address < map.size
+    }
+  }
+
+  private func pageIn(_ address: UInt64, from file: FileRegion) throws -> Mapping {
+    let pageAddress = address & ~(hostedPageSize - 1)
+    let offset = file.offset + (pageAddress - file.range.lowerBound)
+    let writable = file.protection.contains(.write)
+    let entry = try file.backing.page(at: offset, writable: writable)
+    let command = try HostedMapCommand(
+      address: pageAddress, size: hostedPageSize, entry: entry, protection: file.protection)
+    let mapping = Mapping(command: command, charged: true,
+      cleanSince: writable ? nil : DispatchTime.now().uptimeNanoseconds, privateFilePage: writable)
+    try install(mapping)
+    return mapping
   }
 
   public func unmap(address: UInt64, size: UInt64) throws {
     try lock.withLock {
       if let file = files[address], UInt64(file.range.count) == size {
+        guard !pins.keys.contains(where: file.range.contains) else { throw HostedMemoryError.pinned }
         try task.unmap(address: address, size: size)
         mappings = mappings.filter { !file.range.contains($0.key) }
         files.removeValue(forKey: address)
       } else if let map = mappings[address], map.command.size == size,
         !files.values.contains(where: { $0.range.contains(address) })
       {
+        guard pins[address] == nil else { throw HostedMemoryError.pinned }
         try task.unmap(address: address, size: size)
         mappings.removeValue(forKey: address)
       } else {
@@ -281,11 +381,12 @@ public final class HostedAddressSpace {
       var candidates: [HostedReclaimCandidate] = []
       var purgeableObjects: Set<ObjectIdentifier> = []
       for (address, mapping) in mappings.sorted(by: { $0.key < $1.key }) {
+        guard pins[address] == nil else { continue }
         if let since = mapping.cleanSince {
           candidates.append(HostedReclaimCandidate(since: since) { [weak self, weak mapping] in
             guard let self, let mapping else { return false }
             return try self.lock.withLock {
-              guard self.mappings[address] === mapping else { return false }
+              guard self.mappings[address] === mapping, self.pins[address] == nil else { return false }
               try self.task.unmap(address: address, size: mapping.command.size)
               self.mappings.removeValue(forKey: address)
               return true
@@ -308,14 +409,6 @@ public final class HostedAddressSpace {
         $0.command.address..<($0.command.address + $0.command.size)
       }
     }
-  }
-
-  private func install(
-    _ command: HostedMapCommand, charged: Bool, cleanSince: UInt64? = nil,
-    privateFilePage: Bool = false
-  ) throws {
-    try install(Mapping(command: command, charged: charged,
-      cleanSince: cleanSince, privateFilePage: privateFilePage))
   }
 
   private func install(_ mapping: Mapping) throws {

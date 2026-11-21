@@ -239,3 +239,30 @@ private final class ProbeBundleAnchor {}
   let originalBytes = try #require(UnsafeRawPointer(bitPattern: UInt(original.address)))
   #expect(originalBytes.load(as: UInt64.self) == 0)
 }
+
+@Test func pinnedCopiesReachTheLivePrivateMappingThroughH2() throws {
+  let testBundle = Bundle(for: ProbeBundleAnchor.self).bundleURL
+  let executable = testBundle.deletingLastPathComponent().appendingPathComponent("tarwin-task")
+  let task = try TaskSpawner.spawn(executable: executable.path)
+  defer { kill(task.pid, SIGKILL); waitpid(task.pid, nil, 0) }
+  let page = hostedPageSize
+  let size = TaskMemoryTransfer.maximumSize + page
+  let address = TaskWindow.base
+  let entry = try HostedMemoryEntry.anonymous(size: size)
+  let seed = try entry.mapLocally(protection: .read)
+  let mappings = HostedTaskCommandMappings(task: task) { failure in
+    Issue.record("unexpected live-memory transport failure: \(failure)")
+  }
+  let space = try HostedAddressSpace(window: address..<(address + size + page), task: mappings)
+  try space.map(.init(address: address, size: size, entry: entry,
+    protection: [.read, .write], copy: true))
+  try space.copyOut(Data([17]), to: address)
+  #expect(try space.copyIn(at: address, count: 1) == Data([17]))
+  let payload = Data(repeating: 42, count: Int(size))
+  try space.copyOut(payload, to: address)
+  #expect(try space.copyIn(at: address, count: payload.count) == payload)
+  try space.withPinned(at: address + size - 1, count: 1) { #expect(Array($0) == [42]) }
+  let original = try #require(UnsafeRawPointer(bitPattern: UInt(seed.address)))
+  #expect(original.load(as: UInt8.self) == 0)
+  #expect(original.load(fromByteOffset: Int(size - 1), as: UInt8.self) == 0)
+}

@@ -24,6 +24,8 @@ public enum HostedMemoryError: Error, Equatable {
   case invalidProtection
   case rollbackFailed
   case snapshotUnavailable
+  case liveMemoryUnavailable
+  case pinned
   case notPurgeable
   case posix(Int32)
   case mach(kern_return_t)
@@ -225,6 +227,8 @@ final class HostedPurgeableState {
   private let mapping: HostedLocalMapping
   private let lock = NSLock()
   private var volatileSince: UInt64?
+  private var pinCount = 0
+  private var restoreAfterPin: HostedPurgeState?
 
   init(mapping: HostedLocalMapping) { self.mapping = mapping }
 
@@ -234,6 +238,7 @@ final class HostedPurgeableState {
 
   func makeVolatile() throws -> HostedPurgeState {
     try lock.withLock {
+      guard pinCount == 0 else { throw HostedMemoryError.pinned }
       let previous = try control(VM_PURGABLE_SET_STATE, state: VM_PURGABLE_VOLATILE)
       if previous == .nonvolatile { volatileSince = DispatchTime.now().uptimeNanoseconds }
       return previous
@@ -242,6 +247,12 @@ final class HostedPurgeableState {
 
   func makeNonvolatile() throws -> Bool {
     try lock.withLock {
+      if pinCount > 0 {
+        let kept = restoreAfterPin != .empty
+        restoreAfterPin = nil
+        volatileSince = nil
+        return kept
+      }
       let kept = try control(VM_PURGABLE_SET_STATE, state: VM_PURGABLE_NONVOLATILE) != .empty
       volatileSince = nil
       return kept
@@ -250,7 +261,7 @@ final class HostedPurgeableState {
 
   func candidate() throws -> HostedReclaimCandidate? {
     try lock.withLock {
-      guard let since = volatileSince,
+      guard pinCount == 0, let since = volatileSince,
         try control(VM_PURGABLE_GET_STATE, state: 0) == .volatile else { return nil }
       return HostedReclaimCandidate(since: since) { [weak self] in
         try self?.discardIfVolatile(since: since) ?? false
@@ -260,11 +271,39 @@ final class HostedPurgeableState {
 
   func discardIfVolatile(since: UInt64? = nil) throws -> Bool {
     try lock.withLock {
+      guard pinCount == 0 else { return false }
       if let since, since != volatileSince { return false }
       guard try control(VM_PURGABLE_GET_STATE, state: 0) == .volatile else { return false }
       let discarded = try control(VM_PURGABLE_SET_STATE, state: VM_PURGABLE_EMPTY) != .empty
       volatileSince = nil
       return discarded
+    }
+  }
+
+  func pin(writing: Bool) throws {
+    try lock.withLock {
+      if pinCount == 0 {
+        restoreAfterPin = try control(VM_PURGABLE_SET_STATE, state: VM_PURGABLE_NONVOLATILE)
+      }
+      if writing, restoreAfterPin == .empty { restoreAfterPin = .volatile }
+      pinCount += 1
+    }
+  }
+
+  func unpin() {
+    lock.withLock {
+      pinCount -= 1
+      guard pinCount == 0 else { return }
+      defer { restoreAfterPin = nil }
+      if restoreAfterPin == .volatile {
+        if (try? control(VM_PURGABLE_SET_STATE, state: VM_PURGABLE_VOLATILE)) != nil,
+          volatileSince == nil
+        {
+          volatileSince = DispatchTime.now().uptimeNanoseconds
+        }
+      } else if restoreAfterPin == .empty {
+        _ = try? control(VM_PURGABLE_SET_STATE, state: VM_PURGABLE_EMPTY)
+      }
     }
   }
 

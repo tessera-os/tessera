@@ -17,6 +17,14 @@ objects and dropped pages stop contributing to mapped footprint. Only
 unresolved critical pressure can trigger jetsam, using the remaining
 footprint to select the victim.
 
+Providers use `copyIn(at:count:)`, `withPinned(at:count:_:)`, and
+`copyOut(_:to:)` on the task's address space. These calls validate the
+whole guest span and page in file-backed mappings before using H2's
+live-memory transfers. `withPinned` borrows a host copy of the bytes for
+the closure; it does not expose a guest pointer. Pins prevent H3
+unmapping, pressure eviction, and purge during the operation. Private
+writes are made in the owning task so XNU preserves copy-on-write.
+
 `HostedAddressSpace.fork(into:)` clones memory into a fresh checked-in
 task, not a guest `fork` syscall. Keep the parent's guest threads stopped
 until cloning completes; the child must have no guest mappings or
