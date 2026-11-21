@@ -1,6 +1,7 @@
 import Foundation
 import TarwinABI
 import TarwinIPCChannels
+import TarwinNetHosted
 import TarwinObject
 import TarwinSync
 import TarwinTime
@@ -34,6 +35,15 @@ final class Arena {
 }
 
 final class KernelProcess {
+  let networkIdentity = UUID().uuidString
+  var verifiedAppID: String?
+  var networkEntitlements = NetEntitlements()
+  var networkAppID: String { verifiedAppID ?? networkIdentity }
+  var network = HostedNetwork(policy: NetPolicy(rules: [NetRule(.deny)]))
+  var hasNetworkGrant = false
+  var deviceGrants: Set<String> = []
+  var namespaces: [UInt64: NamespaceGrant] = [:]
+  var networkDecisions: [TarwindNetDecision] = []
   let name: String
   let table: UnsafeMutablePointer<HandleTable>
   var buffers: [TarwindKernelBuffer] = []

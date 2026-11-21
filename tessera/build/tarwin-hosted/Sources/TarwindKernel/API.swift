@@ -76,7 +76,11 @@ public final class Tarwind: @unchecked Sendable {
     try boot(config, host: host, devices: HostDeviceRegistry())
   }
   public static func boot(_ config: TarwindConfig, host: any TarwindHost, devices: HostDeviceRegistry) throws -> Tarwind {
-    let state = try KernelState(config: config, host: host, devices: devices)
+    try boot(config, host: host, devices: devices, hooks: nil)
+  }
+  public static func boot(_ config: TarwindConfig, host: any TarwindHost,
+    devices: HostDeviceRegistry, hooks: TarwindLaunchHooks?) throws -> Tarwind {
+    let state = try KernelState(config: config, host: host, devices: devices, hooks: hooks)
     let kernel = Tarwind(state: state)
     do { try state.start() } catch { state.shutdown(); throw error }
     return kernel

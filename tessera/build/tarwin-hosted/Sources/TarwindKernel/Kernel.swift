@@ -45,10 +45,10 @@ final class KernelState: @unchecked Sendable {
   var usedSlots: Set<Int> = []
   var retired: [UnsafePointer<ObjectHeader>] = []
   var stopped = false
+  let hooks: TarwindLaunchHooks?
   var dataVolume: HostedTrfsDisk?
   var systemVolume: HostedTrfsDisk?
   var sharedFolders: [String: SharedFolder] = [:]
-  let network = HostedNetwork(policy: NetPolicy(rules: [NetRule(.allow)]))
   var sockets: [UInt64: TarwindSocket] = [:]
   var socketEvents: [HostEventToken: (TarwindSocket, UInt32)] = [:]
   var nextProcess: UInt64 = 0
@@ -56,7 +56,9 @@ final class KernelState: @unchecked Sendable {
   let workerKey = DispatchKey(qos: SchedClass.normal, readySince: 0, virtualStart: 0,
     virtualDeadline: 0, classVirtualTime: 0, absoluteDeadline: 0, remainingBudget: 0, threadId: 1)
 
-  init(config: TarwindConfig, host: any TarwindHost, devices: HostDeviceRegistry) throws {
+  init(config: TarwindConfig, host: any TarwindHost, devices: HostDeviceRegistry,
+    hooks: TarwindLaunchHooks? = nil) throws {
+    self.hooks = hooks
     self.config = config; self.host = host
     self.devices = devices
     events = try HostEventQueue()
@@ -70,7 +72,7 @@ final class KernelState: @unchecked Sendable {
     host.bootStage("objects")
     host.bootStage("syscalls")
     host.bootStage("storage")
-    dataVolume = try HostedTrfsDisk.openData(path: config.diskPath, blocks: 1 << 16)
+    dataVolume = try openDataVolume(path: config.diskPath)
     systemVolume = try openSystemVolume(config: config, host: host)
     host.bootStage("network")
   }
@@ -176,6 +178,8 @@ final class KernelState: @unchecked Sendable {
   func fault(process: TarwindProcessID, kind: HostException.Kind, code: UInt64, address: UInt64, pc: UInt64) {
     let removed = lock.withLock { () -> Bool in
       guard let record = processes.removeValue(forKey: process) else { return false }
+      record.network.policy.removeApp(record.networkAppID)
+      record.networkDecisions.removeAll()
       let exit = TaskExit(.crashed, code: Int64(bitPattern: code))
       let waitsForProcess = pending.values.filter { $0.process == process }
       for wait in waitsForProcess {
@@ -198,14 +202,19 @@ final class KernelState: @unchecked Sendable {
       for socket in Array(sockets.values) { closeSocket(socket) }
       for folder in sharedFolders.values { folder.stop() }
       sharedFolders.removeAll()
-      dataVolume = nil; systemVolume = nil
       for wait in Array(pending.values) {
         _ = queue(for: wait).pointee.finish(wait.ticket, reason: .cancelled, change: { changed($0) })
       }
-      for process in processes.values { process.table.pointee.drain(retire: { retired.append($0) }) }
+      for process in processes.values {
+        process.network.policy.removeApp(process.networkAppID)
+        process.networkDecisions.removeAll()
+        process.table.pointee.drain(retire: { retired.append($0) })
+      }
       processes.removeAll()
       drainRetired()
       exceptionPorts.removeAll(); exceptionService = nil
+      _ = dataVolume?.device.flush()
+      dataVolume = nil; systemVolume = nil
       if let tick { try? events.cancel(tick); self.tick = nil }
       let thread = worker; worker = nil
       return thread

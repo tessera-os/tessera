@@ -3,6 +3,47 @@ import TarwinArchHosted
 import TarwinNetHosted
 import TarwinObject
 
+/// One policy decision; kernel processes have no verified app ID.
+public struct TarwindNetDecision: Sendable {
+  public let appID: String?
+  public let `protocol`: NetProtocol
+  public let endpoint: NetAddress
+  public let verdict: NetVerdict
+  public let reason: String
+  public let socketCreated: Bool
+}
+
+extension KernelProcess {
+  func recordNetwork(proto: NetProtocol, endpoint: NetAddress, verdict: NetVerdict,
+    reason: String, socketCreated: Bool) {
+    if networkDecisions.count == 64 { networkDecisions.removeFirst() }
+    networkDecisions.append(TarwindNetDecision(appID: verifiedAppID, protocol: proto,
+      endpoint: endpoint, verdict: verdict, reason: reason, socketCreated: socketCreated))
+  }
+
+  func networkSocket(proto: NetProtocol, direction: NetDirection, endpoint: NetAddress,
+    create: () throws -> HostedSocketEndpoint) throws -> HostedSocketEndpoint {
+    let flow = NetFlow(app: networkAppID, proto: proto, direction: direction, address: endpoint)
+    let verdict = network.policy.check(flow)
+    if case .deny(let reason) = verdict {
+      recordNetwork(proto: proto, endpoint: endpoint, verdict: verdict, reason: reason, socketCreated: false)
+      throw NetError.denied(reason)
+    }
+    do {
+      let socket = try create()
+      recordNetwork(proto: proto, endpoint: endpoint, verdict: .allow, reason: "policy", socketCreated: true)
+      return socket
+    } catch {
+      if case NetError.denied(let reason) = error {
+        recordNetwork(proto: proto, endpoint: endpoint, verdict: .deny(reason), reason: reason, socketCreated: false)
+      } else {
+        recordNetwork(proto: proto, endpoint: endpoint, verdict: .allow, reason: "host failure", socketCreated: false)
+      }
+      throw error
+    }
+  }
+}
+
 /// Wait on readinessHandle with Object.wait: readable=1, writable=2, closed=4.
 public final class TarwindSocket: @unchecked Sendable {
   public let readinessHandle: UInt64
@@ -35,6 +76,24 @@ public final class TarwindSocket: @unchecked Sendable {
     return try state.lock.withLock {
       guard !endpoint.isClosed else { throw NetError.closed }
       let result = endpoint.receive(into: bytes)
+      try state.armSocket(self, bit: 1)
+      return result
+    }
+  }
+  public func sendDatagram(_ bytes: UnsafeRawBufferPointer, to peer: NetAddress) throws -> NetIO {
+    guard let state else { throw NetError.closed }
+    return try state.lock.withLock {
+      guard !endpoint.isClosed else { throw NetError.closed }
+      let result = try endpoint.sendDatagram(bytes, to: peer)
+      try state.armSocket(self, bit: 2)
+      return result
+    }
+  }
+  public func receiveDatagram(into bytes: UnsafeMutableRawBufferPointer) throws -> (Int, NetAddress)? {
+    guard let state else { throw NetError.closed }
+    return try state.lock.withLock {
+      guard !endpoint.isClosed else { throw NetError.closed }
+      let result = try endpoint.receiveDatagram(into: bytes)
       try state.armSocket(self, bit: 1)
       return result
     }
@@ -97,16 +156,25 @@ extension KernelState {
 }
 
 extension Tarwind {
+  public func networkDecisions(process: TarwindProcessID) -> [TarwindNetDecision] {
+    state.lock.withLock { state.processes[process]?.networkDecisions ?? [] }
+  }
   public func connectNetwork(process: TarwindProcessID, to peer: NetAddress) throws -> TarwindSocket {
     try state.lock.withLock {
-      guard !state.stopped, state.processes[process] != nil else { throw TarwindError.invalidProcess }
-      return try state.registerSocket(state.network.connect(app: String(process.value), to: peer), process: process)
+      guard !state.stopped, let record = state.processes[process] else { throw TarwindError.invalidProcess }
+      let endpoint = try record.networkSocket(proto: .tcp, direction: .outbound, endpoint: peer) {
+        try record.network.connect(app: record.networkAppID, to: peer)
+      }
+      return try state.registerSocket(endpoint, process: process)
     }
   }
   public func listenNetwork(process: TarwindProcessID, on local: NetAddress) throws -> TarwindSocket {
     try state.lock.withLock {
-      guard !state.stopped, state.processes[process] != nil else { throw TarwindError.invalidProcess }
-      return try state.registerSocket(state.network.listen(app: String(process.value), on: local), process: process)
+      guard !state.stopped, let record = state.processes[process] else { throw TarwindError.invalidProcess }
+      let endpoint = try record.networkSocket(proto: .tcp, direction: .listen, endpoint: local) {
+        try record.network.listen(app: record.networkAppID, on: local)
+      }
+      return try state.registerSocket(endpoint, process: process)
     }
   }
   public func acceptNetwork(_ listener: TarwindSocket) throws -> TarwindSocket {
@@ -118,8 +186,11 @@ extension Tarwind {
   }
   public func datagramNetwork(process: TarwindProcessID, on local: NetAddress) throws -> TarwindSocket {
     try state.lock.withLock {
-      guard !state.stopped, state.processes[process] != nil else { throw TarwindError.invalidProcess }
-      return try state.registerSocket(state.network.datagram(app: String(process.value), on: local), process: process)
+      guard !state.stopped, let record = state.processes[process] else { throw TarwindError.invalidProcess }
+      let endpoint = try record.networkSocket(proto: .udp, direction: .listen, endpoint: local) {
+        try record.network.datagram(app: record.networkAppID, on: local)
+      }
+      return try state.registerSocket(endpoint, process: process)
     }
   }
 }

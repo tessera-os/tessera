@@ -5,6 +5,7 @@ import TRFSHosted
 import TarwinHostFolder
 import TarwinIPC
 import TarwinReadOnlyFS
+import TarwinBlockHosted
 
 /// Supplies the verified boot-set root and commits the system-volume measurement.
 public protocol TarwindSystemVolumeVerifier: TarwindHost {
@@ -15,6 +16,17 @@ public protocol TarwindSystemVolumeVerifier: TarwindHost {
 public enum TarwindResourceError: Error {
   case stopped, duplicateShare, invalidDirectory, unknownShare, invalidName, invalidRing
   case systemVerificationRequired, invalidSystemRoot, missingVolume
+}
+
+public struct TarwindInvalidDisk: Error, CustomStringConvertible {
+  public let path: String
+  public var description: String { "disk at \(path) is not a TRFS volume" }
+}
+
+func openDataVolume(path: String) throws -> HostedTrfsDisk {
+  do { return try HostedTrfsDisk.openData(path: path, blocks: 1 << 16) }
+  catch HostedTrfsError.mount { throw TarwindInvalidDisk(path: path) }
+  catch HostedTrfsError.disk(.badGeometry) { throw TarwindInvalidDisk(path: path) }
 }
 
 func openSystemVolume(config: TarwindConfig, host: any TarwindHost) throws -> HostedTrfsDisk? {

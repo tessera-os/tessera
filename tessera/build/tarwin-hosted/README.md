@@ -63,13 +63,40 @@ MountedRead bridge requiring ProcessExecution, staged shares and IoPorts, not
 the existing kernel-process gate. Storage therefore stops at these tested APIs,
 without inventing a competing File.read syscall implementation.
 
-The default network policy explicitly allows all flows. Connect/listen/accept
+The default network policy denies all flows, including for kernel processes.
+Only an explicit internal `grant(process: .network(policy))` enables networking.
+Policy lives on the process record, with a unique nonnumeric kernel identity or
+its verified app ID and signed entitlements. Grant installs those entitlements
+with setEntitlements; exit removes them. `networkDecisions(process:)` returns
+the last 64 socket-creation decisions, including verified app ID (nil for kernel
+processes), protocol, endpoint, verdict, reason and whether a socket was created.
+Denied connects record false before calling the host. Exit clears the ring.
+Connect/listen/accept
 and datagram creation register their socket descriptors with the kernel event
 queue. Each returned TarwindSocket publishes a wait-only readiness handle:
 Object.wait masks 1/2/4 mean readable/writable/closed. Events complete the real
 object wait queue; nonblocking send/receive rearm readiness. Close, process fault
-and shutdown cancel registrations before closing descriptors. This is bootstrap
-policy, not per-application network isolation or a network syscall bank.
+and shutdown cancel registrations before closing descriptors. Datagram wrappers
+use the same readiness mechanism and HostedSocketEndpoint's per-peer policy.
+The network syscall bank and asynchronous Net completions are not installed yet.
+Their denial status is `syscallStatus(4, 6)` (AccessDenied = 4, Network = 6), with
+completion kind Net = 7 and the caller-supplied key, not a synchronous error.
+
+`TarwindGrant.namespace` creates a Node authority with exactly the supplied
+TarwindRights bits. They map one-to-one to Tarwin Rights: duplicate=0,
+transfer=1, read=2, write=3, map=4, execute=5, signal=6, wait=7, inspect=8,
+manage=9, setProperty=10, enumerate=11, create=12, delete=13, traverse=14,
+grant=15 (each value is a bit position). Write never implies Create. System
+grants reject all mutation rights; shared-folder mutation, including explicit
+Create, additionally requires the folder to have been shared read-write.
+Device opens require an explicit `.device(kind:)` grant.
+
+`boot(_:host:devices:hooks:)` optionally retains H2's TarwindLaunchHooks. Its
+rewrite receives the verified image, segment code, RVA, image base and absolute
+veneer address; authorization is separate from enrollment of committed siteMap
+and kernel-thread-ID to Tarwin-thread-ID mappings. No default rewriter or trap
+authorization is supplied. Actual launch/resume remains pending H2's additive
+thread identity query and guest memory transport. No task is resumed by this API.
 
 `boot(_:host:devices:)` retains the app's HostDeviceRegistry; the original overload
 uses an empty one. H6's HID/audio/power providers expose Mach send rights to
