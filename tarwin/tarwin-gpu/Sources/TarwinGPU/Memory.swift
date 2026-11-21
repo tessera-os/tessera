@@ -1,60 +1,77 @@
-// One ledger per client Process. The driver charges a mapping once, not on
-// every CPU or GPU view. Memory handles/allocations are resolved before use.
-public enum GpuBacking: Equatable {
-  case system
-  case deviceLocal
-}
-public struct GpuCharge: Equatable {
-  public let id: UInt64
-  public let bytes: UInt64
-  public let backing: GpuBacking
+import TarwinObject
 
-  public init(id: UInt64, bytes: UInt64, backing: GpuBacking) {
+public enum GpuBacking { case system, deviceLocal }
+
+/// Unique kernel payload for the allocation. CPU and GPU views share this
+/// record; neither the allocation size nor its owner is supplied by a client.
+public struct GpuAllocation: ~Copyable {
+  public let id: UInt64, bytes: UInt64, backing: GpuBacking
+  fileprivate enum State: Equatable {
+    case fresh
+    case charged(ProcessKey)
+    case retired
+  }
+  fileprivate var state: State = .fresh
+  public init?(id: UInt64, bytes: UInt64, backing: GpuBacking) {
+    guard id != 0, bytes != 0 else { return nil }
     self.id = id
     self.bytes = bytes
     self.backing = backing
   }
 }
-public struct GpuFootprint: Equatable {
-  public let process: UInt64
-  public let limit: UInt64
-  public let objectLimit: Int
-  public internal(set) var used: UInt64 = 0
-  public internal(set) var count: Int = 0
-  public internal(set) var entries: [GpuCharge] = []
 
-  public mutating func charge(_ client: UInt64, _ allocation: GpuCharge) -> Bool {
-    if process == 0 || client != process || allocation.id == 0 || allocation.bytes == 0
-      || count >= objectLimit || used > limit || allocation.bytes > limit - used
-    {
-      return false
-    }
-    for i in 0..<count { if entries[i].id == allocation.id { return false } }
-    if count < entries.count { entries[count] = allocation } else { entries.append(allocation) }
+/// Embed one ledger in each process payload. Serialize updates with the
+/// job tree and the VM footprint writer. nonGpu is their current synchronized
+/// resident-private + compressed-stored + charged-kernel total for this process,
+/// excluding GPU-backed pages. Never use a user-provided accounting snapshot.
+public struct GpuFootprint: ~Copyable {
+  public let member: ProcessKey, limit: UInt64, objectLimit: UInt32
+  public private(set) var used: UInt64 = 0, count: UInt32 = 0
+
+  public init(member: ProcessKey, limit: UInt64, objectLimit: UInt32) {
+    self.member = member
+    self.limit = limit
+    self.objectLimit = objectLimit
+  }
+
+  /// Called before publishing the memory or mapping. The device manager
+  /// has authenticated the driver and slot; hold the driver's handle read epoch.
+  public mutating func charge(
+    _ allocation: inout GpuAllocation, client: borrowing ProcessExecution, name: UInt64,
+    driver: HandleReadView, nonGpu: UInt64, tree: borrowing JobTree,
+    retire: (UnsafePointer<ObjectHeader>) -> Void
+  ) -> Bool {
+    guard allocation.state == .fresh, count < objectLimit, allocation.bytes <= limit - used,
+      client.member == member, client.exit == nil, tree.returnGate(member) != .terminate,
+      case .found(let grant) = driver.pinWithinEpoch(name, kind: TarwinKind.process, need: 1 << 9)
+    else { return false }
+    let matches = grant.header == client.header
+    grant.drop(retire: retire)
+    let next = used + allocation.bytes
+    let (total, overflow) = nonGpu.addingReportingOverflow(next)
+    guard matches, !overflow, tree.resizeFootprint(member, to: total) else { return false }
+    allocation.state = .charged(member)
+    used = next
     count += 1
-    used += allocation.bytes
     return true
   }
 
-  // Release only after the memory manager has drained DMA and mappings.
-  public mutating func release(_ client: UInt64, _ id: UInt64, _ retired: (UInt64) -> Bool) -> Bool
-  {
-    if client != process { return false }
-    for i in 0..<count {
-      if entries[i].id == id {
-        if !retired(id) { return false }
-        used -= entries[i].bytes
-        count -= 1
-        entries[i] = entries[count]
-        return true
-      }
-    }
-    return false
-  }
-
-  public init(process: UInt64, limit: UInt64, objectLimit: Int) {
-    self.process = process
-    self.limit = limit
-    self.objectLimit = objectLimit
+  /// Closing a handle does not retire memory. The final owner checks that
+  /// *all* mappings and DMA have drained outside these locks; isRetired only
+  /// observes that terminal state. Drain all charges before detaching the job member.
+  public mutating func release(
+    _ allocation: inout GpuAllocation, nonGpu: UInt64, tree: borrowing JobTree,
+    isRetired: (UInt64) -> Bool
+  ) -> Bool {
+    guard allocation.state == .charged(member), count != 0, used >= allocation.bytes,
+      isRetired(allocation.id)
+    else { return false }
+    let next = used - allocation.bytes
+    let (total, overflow) = nonGpu.addingReportingOverflow(next)
+    guard !overflow, tree.resizeFootprint(member, to: total) else { return false }
+    allocation.state = .retired
+    used = next
+    count -= 1
+    return true
   }
 }
