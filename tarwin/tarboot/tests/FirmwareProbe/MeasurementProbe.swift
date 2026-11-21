@@ -2,6 +2,7 @@
   import Tarboot
   import TarwinBoot
 
+  #if !TARBOOT_ENTER_W1_INTAKE
   func checkEventLog(_ bytes: UnsafeRawBufferPointer) -> Bool {
     guard let fmt = EventLogFormat(bytes) else { return false }
     var i = fmt.firstEvent
@@ -38,6 +39,7 @@
     }
     return stage == 3
   }
+  #endif
 
   private typealias Submit =
     @convention(c) (UnsafeRawPointer, UInt32, UnsafeRawPointer, UInt32, UnsafeMutableRawPointer) ->

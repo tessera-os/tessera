@@ -8,7 +8,9 @@ fw=${QEMU_FIRMWARE:?set QEMU_FIRMWARE to the QEMU firmware data directory}
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
 composition="$root/../tessera/build/tarwin"
-swiftc "$composition/Tests/TarbootPreflightTests/Fixture.swift" "$here/WriteFixture.swift" -o "$out/write-fixture"
+if [[ ${TARBOOT_ENTER_W1_INTAKE:-0} != 1 ]]; then
+    swiftc "$composition/Tests/TarbootPreflightTests/Fixture.swift" "$here/WriteFixture.swift" -o "$out/write-fixture"
+fi
 for isa in "${@:-all}"; do
     if [[ $isa == all ]]; then targets=(aarch64 x86_64 riscv64); else targets=("$isa"); fi
     for arch in "${targets[@]}"; do
@@ -25,6 +27,7 @@ for isa in "${@:-all}"; do
                -Xfrontend -disable-stack-protector -parse-as-library -I "$d")
         if [[ $arch == x86_64 ]]; then flags+=(-D TARBOOT_EFI_PE_COFF); fi
         extra=()
+        pe_flags=()
         if [[ ${TARBOOT_TEST_CPU:-0} != 0 ]]; then
             flags+=(-D TARBOOT_TEST_CPU -enable-experimental-feature Extern)
             if [[ ${TARBOOT_TEST_CPU:-0} == refusal ]]; then
@@ -147,6 +150,7 @@ for isa in "${@:-all}"; do
                ${TARBOOT_TEST_CPU:-0} == 1 && ${TARBOOT_TEST_EXTRA_PCI:-0} == 0 &&
                -f ${TARBOOT_W1_SIGNATURE:-} && -f ${TARBOOT_TEST_STAGE0_ARCHIVE:-} ]] || exit 2
             flags+=(-D TARBOOT_ENTER_W1_INTAKE)
+            pe_flags+=(/timestamp:0)
             entry_source+=("$composition/Sources/TarwinW1Bootstrap/ColdLog.swift")
             export TARBOOT_TEST_W1_GATE_ONLY=${TARBOOT_TEST_W1_GATE_ONLY:-1}
             case $TARBOOT_TEST_W1_GATE_ONLY in
@@ -163,7 +167,6 @@ for isa in "${@:-all}"; do
                 flags+=(-D TARBOOT_TEST_W1_CHANGED_ENVELOPE)
             fi
             entry_source+=("$composition-stage0/QEMUEntry.swift" "$composition-stage0/Kernel/W1Authority.swift" "$here/W1IntakeTransfer.swift")
-            cp "$TARBOOT_W1_SIGNATURE" "$d/esp/BOOT.SIG"
             swift "$composition-stage0/W1PublicInstallation.swift" "${TARBOOT_W1_INSTALL:?}" \
                 "${TARBOOT_W1_BOOT_SHA256:?}" "${TARBOOT_W1_SYSTEM_SHA256:?}" > "$d/install.ll"
             swift "$composition-stage0/ArmHandoffVariants.swift" > "$d/transfer.ll"
@@ -223,13 +226,16 @@ for isa in "${@:-all}"; do
         if [[ ${TARBOOT_TEST_DISPLAY:-0} == 1 ]]; then flags+=(-D TARBOOT_TEST_DISPLAY); fi
         if [[ ${TARBOOT_TEST_RNG:-0} == 1 ]]; then flags+=(-D TARBOOT_TEST_RNG); fi
         if [[ ${TARBOOT_TEST_SMP_TABLES:-0} == 1 ]]; then flags+=(-D TARBOOT_TEST_SMP_TABLES); fi
-        "$out/write-fixture" "$arch" "$d/esp/BOOT.TIR" "$d/FixtureHashes.swift"
+        if [[ ${TARBOOT_ENTER_W1_INTAKE:-0} != 1 ]]; then
+            "$out/write-fixture" "$arch" "$d/esp/BOOT.TIR" "$d/FixtureHashes.swift"
+            entry_source+=("$d/FixtureHashes.swift")
+        fi
         for src in "$root"/{kcore/Sources/KCore,tarwin-boot/Sources/TarwinBoot,tarboot/Sources/Tarboot,tarwin-mm/Sources/TarwinMM,tarwin-time/Sources/TarwinTime,tarwin-sched/Sources/TarwinSched,tarwin-loader/Sources/TarwinLoader} \
                    "$root"/tarwin-arch-{aarch64/Sources/TarwinArchAarch64,x64/Sources/TarwinArchX64} "$composition"/Sources/{TarbootPreflight,TarwinBootstrap} ${modules[@]+"${modules[@]}"}; do
                 mod=$(basename "$src")
                 "$bin/swiftc" "${flags[@]}" -module-name "$mod" -emit-module -emit-module-path "$d/$mod.swiftmodule" "$src"/*.swift
         done
-        "$bin/swiftc" "${flags[@]}" -module-name Probe -emit-ir -o "$d/probe.ll" "$here/Probe.swift" "$here/Memory.swift" "$here/BootFileProbe.swift" "$here/MeasurementProbe.swift" "$here/ProcessorProbe.swift" "$here/SignedArchive.swift" "$d/FixtureHashes.swift" ${entry_source[@]+"${entry_source[@]}"}
+        "$bin/swiftc" "${flags[@]}" -module-name Probe -emit-ir -o "$d/probe.ll" "$here/Probe.swift" "$here/Memory.swift" "$here/BootFileProbe.swift" "$here/MeasurementProbe.swift" "$here/ProcessorProbe.swift" "$here/SignedArchive.swift" ${entry_source[@]+"${entry_source[@]}"}
         if [[ $arch == riscv64 ]]; then
             edk=${EDK_BASETOOLS:?set EDK_BASETOOLS to built edk2 BaseTools for riscv64}
             "$bin/clang" -target "$triple" -mcmodel=medany -msmall-data-limit=0 -mno-relax -flto -O2 -c "$d/probe.ll" -o "$d/main.o"
@@ -241,7 +247,7 @@ for isa in "${@:-all}"; do
             # Use the PE target ABI for all foreign calls; the Swift frontend uses a
             # bare-metal triple because this distribution has no embedded UEFI stdlib.
             "$bin/clang" -target "$arch-unknown-windows-msvc" -mno-stack-arg-probe -flto -Wno-override-module -O2 -c "$d/probe.ll" -o "$d/main.obj"
-            "$bin/lld-link" /subsystem:efi_application /entry:efi_main /nodefaultlib /opt:ref "/out:$image" "$d/main.obj" ${extra[@]+"${extra[@]}"}
+            "$bin/lld-link" /subsystem:efi_application /entry:efi_main /nodefaultlib /opt:ref ${pe_flags[@]+"${pe_flags[@]}"} "/out:$image" "$d/main.obj" ${extra[@]+"${extra[@]}"}
             code=$arch
         fi
         if [[ ${TARBOOT_TEST_SECURE_FIRMWARE:-0} == 1 ]]; then
@@ -270,6 +276,10 @@ for isa in "${@:-all}"; do
         fi
         if [[ ${TARBOOT_ENTER_W1_INTAKE:-0} == 1 ]] && LC_ALL=C grep -aFq 'TARWIN-W1-KERNEL-REVERIFIED' "$image"; then
             echo 'kernel-only reverification marker found in EFI image' >&2; exit 1
+        fi
+        if [[ ${TARBOOT_ENTER_W1_INTAKE:-0} == 1 ]]; then
+            cp "$TARBOOT_TEST_STAGE0_ARCHIVE" "$d/esp/BOOT.TIR"
+            cp "$TARBOOT_W1_SIGNATURE" "$d/esp/BOOT.SIG"
         fi
         swift "$here/RunFirmware.swift" "$arch" "$d" "$fw/edk2-$code-code.fd"
     done

@@ -275,6 +275,12 @@ No passthrough, other submitters, snapshots, migration or hotplug. This does
 not protect an EFI image on attacker-controlled media or prove physical DMA
 isolation before exit. Do not transfer without an independent protected launcher.
 
+Unlike the unsigned diagnostic, W1 builds the verifier before copying either
+input onto the ESP. The EFI image contains no test-generated archive or
+configuration digests. Its replay requires the firmware exit-success event
+after the two measured records; the expected digests come from the retained
+bytes, never the host that supplied the archive.
+
 Set these in addition to the usual Embedded Swift and firmware paths:
 
 ```sh

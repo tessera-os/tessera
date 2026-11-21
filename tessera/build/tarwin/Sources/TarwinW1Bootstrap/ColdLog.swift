@@ -57,6 +57,7 @@ func replayColdFirmwarePCRs(_ bytes: UnsafeRawBufferPointer, archive: InlineArra
   var pcr8 = reset, pcr9 = reset
   var pos = fmt.firstEvent
   var nextPCR: UInt32 = 8
+  var exitConfirmed = false
   while pos < bytes.count {
     guard let event = fmt.event(bytes, at: pos), event.pcr != 10 else { return nil }
     func matches(_ label: StaticString) -> Bool {
@@ -67,6 +68,11 @@ func replayColdFirmwarePCRs(_ bytes: UnsafeRawBufferPointer, archive: InlineArra
     }
     let isArchive = matches("Tarwin boot set")
     let isConfiguration = matches("Tarwin boot configuration")
+    if dedicatedBanks && matches("Exit Boot Services Returned with Success") {
+      guard nextPCR == 10, !exitConfirmed, event.pcr == 5, event.type == 0x8000_0007
+      else { return nil }
+      exitConfirmed = true
+    }
     if isArchive || isConfiguration {
       guard event.type == 13, event.pcr == nextPCR, event.pcr == (isArchive ? 8 : 9)
       else { return nil }
@@ -85,7 +91,7 @@ func replayColdFirmwarePCRs(_ bytes: UnsafeRawBufferPointer, archive: InlineArra
     }
     pos = event.payload.upperBound
   }
-  guard pos == bytes.count && nextPCR == 10 else { return nil }
+  guard pos == bytes.count, nextPCR == 10, !dedicatedBanks || exitConfirmed else { return nil }
   return (pcr8, pcr9)
 }
 

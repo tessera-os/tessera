@@ -138,6 +138,7 @@
     }
   #endif
 
+  #if !TARBOOT_ENTER_W1_INTAKE
   func exerciseKernelFIFO(
     _ fixture: UnsafeRawBufferPointer, log: UnsafeMutableRawBufferPointer,
     used: Int
@@ -177,4 +178,5 @@
       return bytes.count
     }
   }
+  #endif
 #endif

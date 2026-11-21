@@ -87,11 +87,18 @@ import Testing
         && (0..<32).map { pair.configuration[$0] } == extend(zero, 2)
     }
   }
-  #expect(transfer(unrelated + archive + note + config))
-  #expect(!transfer(archive + config, 7))
-  #expect(!transfer(archive + config, 1, 7))
-  #expect(!transfer(event(8, "Tarwin boot set", 7) + config, 7))
-  #expect(!transfer(complete))
+  let label = "Exit Boot Services Returned with Success"
+  let exit = event(5, label, 3, type: 0x8000_0007)
+  #expect(transfer(unrelated + archive + note + config + exit))
+  #expect(!transfer(archive + config))
+  #expect(!transfer(archive + exit + config))
+  #expect(!transfer(archive + config + exit + exit))
+  #expect(!transfer(archive + config + event(4, label, 3, type: 0x8000_0007)))
+  #expect(!transfer(archive + config + event(5, label, 3)))
+  #expect(!transfer(archive + config + exit, 7))
+  #expect(!transfer(archive + config + exit, 1, 7))
+  #expect(!transfer(event(8, "Tarwin boot set", 7) + config + exit, 7))
+  #expect(!transfer(complete + exit))
   #expect(accepted(complete, live))
   #expect(!accepted(archive + config + later, live))
   #expect(!accepted(older + archive + config, live))

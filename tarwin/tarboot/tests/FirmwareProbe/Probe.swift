@@ -241,9 +241,12 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
         guard
           let firmwareLogSize = pending.finish(
             in: logPages, regions: UnsafeBufferPointer(rebasing: buffer[..<n])),
-          let logBase = UnsafeRawPointer(bitPattern: UInt(logPages.base)),
-          checkEventLog(UnsafeRawBufferPointer(start: logBase, count: firmwareLogSize))
+          let logBase = UnsafeRawPointer(bitPattern: UInt(logPages.base))
         else { return false }
+        #if !TARBOOT_ENTER_W1_INTAKE
+          guard checkEventLog(UnsafeRawBufferPointer(start: logBase, count: firmwareLogSize))
+          else { return false }
+        #endif
         #if TARBOOT_TEST_FIFO && !TARBOOT_ENTER_W1_INTAKE
           guard let logSize = exerciseKernelFIFO(UnsafeRawBufferPointer(start: archiveBase, count: size),
             log: UnsafeMutableRawBufferPointer(start: UnsafeMutableRawPointer(mutating: logBase),
