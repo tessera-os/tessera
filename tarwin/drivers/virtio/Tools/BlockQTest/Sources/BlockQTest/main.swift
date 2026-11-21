@@ -31,7 +31,7 @@ final class QTest {
   private(set) var mmio: [DeviceRange] = []
   private(set) var error: Error?
 
-  init(coldVirt binary: String, disk: URL, fwDma: Bool, platformRng: Bool) throws {
+  init(coldVirt binary: String, disk: URL, fwDma: Bool, platformRng: Bool, trace: URL? = nil) throws {
     process.executableURL = URL(fileURLWithPath: binary)
     process.arguments = [
       "-machine", "virt-11.1,virtualization=on,gic-version=3,iommu=smmuv3,default-bus-bypass-iommu=off,msi=off",
@@ -44,6 +44,9 @@ final class QTest {
       "-device", "virtio-rng-pci,addr=2,disable-legacy=on,iommu_platform=on",
     ]
     if platformRng { process.arguments! += ["-device", "virtio-rng-device"] }
+    if let trace {
+      process.arguments! += ["-D", trace.path, "-trace", "smmuv3_translate_*"]
+    }
     process.standardInput = input
     process.standardOutput = output
     try process.run()
@@ -555,7 +558,7 @@ do {
   try run()
   print(
     CommandLine.arguments.last == "--cold-virt-pci"
-      ? "PASS: Arm cold PCI abort acknowledged; fw_cfg DMA and an extra platform requester refused. No boot or W1 entry."
+      ? "PASS: Arm firmware-style queues reset; both PCI streams denied access to their former pages. No boot or W1 entry."
       : CommandLine.arguments.last == "--ufs-vtd"
       ? "PASS: q35 UFS translated command pages and directional scatter DMA; nine page drains, read remap, both backing files verified"
       : CommandLine.arguments.last == "--ufs"

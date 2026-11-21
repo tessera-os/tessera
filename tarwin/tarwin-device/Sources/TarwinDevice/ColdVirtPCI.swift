@@ -15,9 +15,9 @@ public enum ColdVirtPCIResult: Equatable {
 
 /// Only for the pinned, single-CPU TCG fixture, with hotplug and restore
 /// excluded externally. Never take over a running SMMU or disable translation.
-public func requestColdVirtPCIAbort<R: ColdVirtRegisters & ~Copyable>(
-  registers r: inout R
-) -> ColdVirtPCIResult {
+func coldVirtInventory<R: ColdVirtRegisters & ~Copyable>(
+  _ r: inout R, firmwareEndpoints: Bool
+) -> ColdVirtPCIResult? {
   // fw_cfg words here are decoded little endian from the four data bytes.
   guard r.fwConfigWord(0) == 0x554d_4551, r.fwConfigWord(1) == 1,
     let pid = r.read32(0x0800_ffe8), pid >> 4 & 15 == 3,
@@ -43,23 +43,37 @@ public func requestColdVirtPCIAbort<R: ColdVirtRegisters & ~Copyable>(
       default: .max
       }
     guard r.read32(base) == expected else { return .unexpectedPCI }
-    if expected != .max {
+    if expected != .max && (!firmwareEndpoints || fn == 0) {
       guard let cmd = r.read32(base + 4), cmd & 4 == 0 else { return .busMasterActive }
     }
   }
+  return nil
+}
+
+private func coldVirtSmmuIdle<R: ColdVirtRegisters & ~Copyable>(_ r: inout R) -> Bool {
+  let smmu: UInt64 = 0x0905_0000
+  return r.read32(smmu + 0x20) == 0 && r.read32(smmu + 0x24) == 0
+    && r.read32(smmu + 0x50) == 0 && r.read32(smmu + 0x54) == 0
+    && r.read32(smmu + 0x60) == 0 && r.read32(smmu + 0x64) == 0
+}
+
+func coldVirtSmmuCheck<R: ColdVirtRegisters & ~Copyable>(_ r: inout R) -> ColdVirtPCIResult? {
   let smmu: UInt64 = 0x0905_0000
   guard r.read32(smmu + 0xfe0) == 0x84, r.read32(smmu + 0xfe4) == 0xb4,
     r.read32(smmu + 0xff0) == 0x0d, r.read32(smmu + 0xff4) == 0xf0,
     r.read32(smmu + 0xff8) == 0x05, r.read32(smmu + 0xffc) == 0xb1
   else { return .unsupportedPlatform }
-  func idle(_ r: inout R) -> Bool {
-    r.read32(smmu + 0x20) == 0 && r.read32(smmu + 0x24) == 0
-      && r.read32(smmu + 0x50) == 0 && r.read32(smmu + 0x54) == 0
-      && r.read32(smmu + 0x60) == 0 && r.read32(smmu + 0x64) == 0
+  return coldVirtSmmuIdle(&r) ? nil : .smmuInUse
+}
+
+public func requestColdVirtPCIAbort<R: ColdVirtRegisters & ~Copyable>(
+  registers r: inout R
+) -> ColdVirtPCIResult {
+  if let error = coldVirtInventory(&r, firmwareEndpoints: false) ?? coldVirtSmmuCheck(&r) {
+    return error
   }
-  guard idle(&r) else { return .smmuInUse }
   // Keep the reset bypass attributes; request ABORT before any device start.
-  let gbpa = smmu + 0x44
+  let gbpa: UInt64 = 0x0905_0044
   guard let previous = r.read32(gbpa), previous == 0x1000 || previous == 0x10_1000 else {
     return .smmuInUse
   }
@@ -67,7 +81,7 @@ public func requestColdVirtPCIAbort<R: ColdVirtRegisters & ~Copyable>(
   for _ in 0..<256 {
     guard let value = r.read32(gbpa) else { return .updateFailed }
     if value & 0x8000_0000 == 0 {
-      guard value == 0x10_1000, idle(&r) else { return .updateFailed }
+      guard value == 0x10_1000, coldVirtSmmuIdle(&r) else { return .updateFailed }
       return .pciAbortAcknowledged
     }
   }

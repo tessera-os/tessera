@@ -36,6 +36,33 @@ The result is not a drain of previously submitted I/O or cached translations,
 a held exclusion through first entry, or evidence that a signed archive is
 safe to verify. Without live VM generation the RNG must not issue child keys.
 
+### Firmware virtio drain and SMMUv3 stream denial
+
+`denyVirtBootDMA` targets the same cold machine, but accepts firmware-enabled
+virtio-blk and virtio-rng functions. It requires disjoint, decoded BAR4s in
+the low PCI MMIO hole. It resets the devices through modern common_cfg, waits
+for zero device status, clears Bus Master Enable and reads the command back.
+On QEMU 11.1.3 the block reset drains the block backend before discarding its
+queue; the RNG callback checks DRIVER_OK and queue readiness before taking
+a guest buffer. The caller must have ended firmware submissions first.
+
+The operation then requests global abort, builds 64 abort-only stream entries,
+and installs a command queue. It synchronizes CFGI_ALL and TLBI_NSNH_ALL
+with CMD_SYNC before enabling translation. Out-of-table stream IDs fault.
+No page is allowed, including the two private 4 KiB work pages. They must be
+allocated from coherent guest RAM outside all protected extents; keep them
+pinned and inaccessible to untrusted code, including on failure. Do not
+roll back to bypass on timeout. The platform must serialize access to all
+device/SMMU controls and keep this configuration through entry.
+
+The cold QTest also starts both queues while the SMMU is still in bypass,
+drains and fences them, then reactivates the same queues in the harness.
+The QEMU translation trace must show the **same SID and IOVA** changing from
+bypass to abort for each device; both captured queue regions remain unchanged.
+This is model evidence, not EDK2 handoff, an overlapping outstanding block
+request test, restore support, or a booted Tarwin authorization. The earlier
+global-abort diagnostic alone does not supply this result.
+
 For a restorable machine, QEMU's VMGENID writes 16 bytes at a firmware-supplied
 physical address in post-load, outside the PCI SMMU. Its setup and ramfb use
 fw_cfg DMA. A safe design must bind the destination GUID slot to a dedicated

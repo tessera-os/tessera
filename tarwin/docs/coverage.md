@@ -22,6 +22,18 @@
 
 ### How to repeat host tests
 
+**I/O evidence and open gates.** The [device package](../tarwin-device/README.md)
+documents the cold Arm firmware-style queue reset and SMMUv3 all-abort stream
+table. Both QEMU PCI requesters are denied their former queue pages. No signed
+W1/EL0 entry: native EDK2 drain/ownership handoff, protected work-page lifetime,
+continuous exclusion across entry, and destination-controlled restore-time
+generation and exclusion are unverified. No hotplug, passthrough or physical
+DMA/ATC evidence. DeviceRoot manager acquisition, native syscall/VM pins,
+IRQ delivery, suspend/wake, hardware storage recovery, production TCP/IP,
+GPU driver/Ember/MosaicDisplay and same-hardware Linux budgets remain open.
+The [filesystem fixtures](../trfs/README.md) cover mounted reads and encrypted
+sector staging, **not** the missing normative TRFS format or durable recovery.
+
 From this directory's parent, run `swift test --package-path <package>` on each package: `tarwin-hv`, `tvmm`, `tarwin-probe`, `tarwin-probe/compiler`, `tarwin-trace`, `tarwin-trace/export`, `tarwin-trace/debug-image` and `conformance`. On the Mac, SwiftPM uses the shared generated TarwinSyscall library. With a Swift toolchain that includes Embedded standard libraries, run `SWIFTC=/path/to/swiftc sh conformance/check-embedded.sh`. This compiles the hypervisor, probe, trace and separate debug-image components to freestanding objects for all three ISAs with heap allocation disabled. It does not link, boot or certify the kernel, or replace the KLF Swift kernel profile. In the debug package, only checksummed stop-query, captured-register and detach replies are tested; no live connection or arbitrary memory access is implied.
 
 ### Required composition inputs

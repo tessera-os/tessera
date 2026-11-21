@@ -28,6 +28,97 @@ private struct Bus: ColdVirtRegisters {
 }
 
 final class ColdVirtPCITests: XCTestCase {
+  private struct Firmware: VirtBootFenceBus {
+    var model = Bus()
+    var wide: [UInt64: UInt64] = [:], stores: [UInt64] = []
+    var stuck: UInt64?, synced = true, published = false
+    init() {
+      model.words[0x0905_0000] = 0x10
+      model.words[0x0905_0004] = 16 | (3 << 21)
+      for (i, fn): (Int, UInt64) in [UInt64(0x40_1000_8000), 0x40_1001_0000].enumerated() {
+        let bar = UInt32(0x2000_0000 + 65536 * i)
+        model.words[fn + 4] = 0x10_0006
+        model.words[fn + 0x20] = bar | 12
+        model.words[fn + 0x34] = 0x70
+        model.words[fn + 0x70] = 0x0110_0009
+        model.words[fn + 0x74] = 4
+        model.words[fn + 0x7c] = 56
+        model.words[UInt64(bar) + 4] = 3
+        model.words[UInt64(bar) + 20] = 15
+      }
+    }
+    func fwConfigWord(_ selector: UInt16) -> UInt32? { model.fwConfigWord(selector) }
+    func read32(_ p: UInt64) -> UInt32? { model.read32(p) }
+    func read8(_ p: UInt64) -> UInt8? { read32(p).map { UInt8(truncatingIfNeeded: $0) } }
+    func read64(_ p: UInt64) -> UInt64? { wide[p] }
+    mutating func write8(_ p: UInt64, _ v: UInt8) -> Bool { write32(p, UInt32(v)) }
+    mutating func write16(_ p: UInt64, _ v: UInt16) -> Bool {
+      let old = model.words[p, default: 0]
+      return write32(p, old & 0xffff_0000 | UInt32(v))
+    }
+    mutating func write32(_ p: UInt64, _ v: UInt32) -> Bool {
+      stores.append(p)
+      if stuck == p { return true }
+      if p == 0x0905_0044 { return model.write32(p, v) }
+      if p == 0x0905_0020 { model.words[p + 4] = v }
+      if p == 0x0905_0098 && synced { model.words[p + 4] = v }
+      model.words[p] = v
+      return true
+    }
+    mutating func write64(_ p: UInt64, _ v: UInt64) -> Bool {
+      if p < 0x4000_0000 { XCTAssertTrue(published) }
+      stores.append(p)
+      if p != stuck { wide[p] = v }
+      return true
+    }
+    mutating func publishStores() { published = true }
+    mutating func fence(_ span: DeviceRange = DeviceRange(base: 0x4100_0000, length: 16384))
+      -> VirtBootFenceResult
+    {
+      [span].withUnsafeBufferPointer {
+        denyVirtBootDMA(table: 0x4200_0000, commands: 0x4200_1000, protected: $0, bus: &self)
+      }
+    }
+  }
+  func testDrainBeforePublishingDenyTableAndSync() {
+    var b = Firmware()
+    XCTAssertEqual(b.fence(), .streamsDenied)
+    XCTAssertEqual(b.read32(0x0905_0024), 9)
+    XCTAssertEqual(b.read32(0x0905_009c), 3)
+    XCTAssertLessThan(
+      b.stores.firstIndex(of: 0x40_1001_0004)!, b.stores.firstIndex(of: 0x4200_0000)!)
+    XCTAssertEqual(b.wide[0x4200_0000 + 16 * 64], 1)
+  }
+  func testRejectsAliasedRAMOrBARWithoutWrites() {
+    for r in [
+      DeviceRange(base: 0x41ff_ffff, length: 2), DeviceRange(base: 0x4200_1fff, length: 8),
+      DeviceRange(base: .max, length: 2), DeviceRange(base: 0, length: 0),
+    ] {
+      var b = Firmware()
+      XCTAssertEqual(b.fence(r), .badMemory)
+      XCTAssertTrue(b.stores.isEmpty)
+    }
+    var b = Firmware()
+    b.model.words[0x40_1001_0020] = 0x2000_000c
+    XCTAssertEqual(b.fence(), .unsupported)
+    XCTAssertTrue(b.stores.isEmpty)
+  }
+  func testNoDenyResultOnLostResetParkTableOrCommandAck() {
+    for (stuck, result): (UInt64, VirtBootFenceResult) in [
+      (0x2000_0014, .drainFailed), (0x40_1001_0004, .drainFailed),
+      (0x0905_0080, .tableFailed), (0x0905_0020, .syncFailed),
+    ] {
+      var b = Firmware()
+      b.stuck = stuck
+      XCTAssertEqual(b.fence(), result)
+      if result == .drainFailed { XCTAssertFalse(b.published) }
+    }
+    var b = Firmware()
+    b.synced = false
+    XCTAssertEqual(b.fence(), .syncFailed)
+    XCTAssertEqual(b.read32(0x0905_0024), 8)
+    XCTAssertEqual(b.read32(0x0905_0044), 0x10_1000)
+  }
   func testOnlyWritesGlobalAbortAndCanReadBackAgain() {
     var bus = Bus()
     XCTAssertEqual(requestColdVirtPCIAbort(registers: &bus), .pciAbortAcknowledged)
