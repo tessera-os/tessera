@@ -22,4 +22,4 @@ SWIFTC=/path/to/swift-6.3.3/usr/bin/swiftc ./check-profile.sh
 
 This emits freestanding ELF objects for arm64, x86-64, and riscv64. It neither links them into a kernel nor provides the allocator, stack guard, entropy, pinning, and device primitives needed at that boundary. Apple Xcode's compiler alone may not ship the Embedded standard library; the signed Swift.org macOS 6.3.3 release does.
 
-The generated native dispatcher must map its call index to `DeviceOperation` and pin a validated handle-table entry, checking the caller, name, generation and rights before supplying `PinnedIoHandle`. These Swift enum tags have no ABI ordinal.
+Native dispatch uses the generated TarwinSyscall call constants, not new ordinals. Under the caller's object-table read epoch, resolve its slot and call `withPinnedIoHandle` with the actual table salt/index and kernel pin/release functions. It checks the live name and kind, pins the object across the borrowing closure and releases it on return. Dispatch must still bind the actual device/domain and map remaining handles under their locks. A handle snapshot alone is not a lifetime guarantee.

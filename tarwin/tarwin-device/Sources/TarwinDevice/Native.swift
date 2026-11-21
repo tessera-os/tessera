@@ -9,12 +9,12 @@ public enum DeviceOperation {
 }
 public enum IoObjectKind { case deviceSlot, memory, iommuDomain, interrupt, mmioRange, fence }
 
-public struct PinnedIoHandle {
+public struct PinnedIoHandle: ~Copyable {
   public let koid: UInt64
   public let kind: IoObjectKind
   public let rights: UInt64
 
-  public init(koid: UInt64, kind: IoObjectKind, rights: UInt64) {
+  init(koid: UInt64, kind: IoObjectKind, rights: UInt64) {
     self.koid = koid
     self.kind = kind
     self.rights = rights
@@ -61,7 +61,7 @@ public struct ConfigPolicy: Equatable {
 // success, on a device which disappeared.
 public func slotConfigCall(
   _ op: DeviceOperation, _ caller: UInt64, _ epoch: UInt64, _ resolvedKoid: UInt64,
-  _ grant: PinnedIoHandle, _ slot: DeviceSlotState, _ offset: UInt64, _ width: UInt64,
+  _ grant: borrowing PinnedIoHandle, _ slot: DeviceSlotState, _ offset: UInt64, _ width: UInt64,
   _ value: UInt64, _ policy: (UInt32, UInt32) -> ConfigPolicy,
   _ read: (UInt32, UInt32) -> ConfigReply, _ write: (UInt32, UInt32, UInt32) -> Bool
 ) -> ConfigReply {

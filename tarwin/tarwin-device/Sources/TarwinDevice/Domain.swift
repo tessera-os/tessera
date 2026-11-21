@@ -53,7 +53,8 @@ public struct SlotDomain: ~Copyable {
   private let entries: UnsafeMutableBufferPointer<DomainEntry>
 
   public mutating func create(
-    _ domain: PinnedIoHandle, _ memory: PinnedIoHandle, _ slot: DeviceSlotState, _ process: UInt64,
+    _ domain: borrowing PinnedIoHandle, _ memory: borrowing PinnedIoHandle, _ slot: DeviceSlotState,
+    _ process: UInt64,
     _ memorySize: UInt64, _ span: DmaSpan, _ randomWord: UInt64, _ pin: (UInt64, DmaSpan) -> UInt64,
     _ mapPinned: (UInt64, UInt64, UInt64, DmaSpan) -> Bool
   ) -> MapDma {

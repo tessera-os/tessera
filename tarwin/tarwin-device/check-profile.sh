@@ -7,15 +7,22 @@ compiler=${SWIFTC:-swiftc}
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
 for target in aarch64-none-none-elf x86_64-unknown-none-elf riscv64-none-none-eabi; do
-  "$compiler" -target "$target" -enable-experimental-feature Embedded -O -wmo -parse-as-library -emit-object \
+  if [ "$(basename "$package")" = tarwin-device ]; then
+    for dep in tarwin-object:TarwinObject tarwin-syscall:TarwinSyscall; do
+      name=${dep#*:}
+      "$compiler" -target "$target" -enable-experimental-feature Embedded -O -wmo -parse-as-library -emit-module \
+        -module-name "$name" "$here/../${dep%:*}/Sources/$name"/*.swift -emit-module-path "$out/$name.swiftmodule"
+    done
+  fi
+  "$compiler" -I "$out" -target "$target" -enable-experimental-feature Embedded -O -wmo -parse-as-library -emit-object \
     -module-name TarwinIO "$package"/Sources/*/*.swift -o "$out/$target.o"
   if [ "$(basename "$package")" = tarwin-device ]; then
     src="$package/Sources/TarwinDevice"
-    "$compiler" -target "$target" -enable-experimental-feature Embedded -O -wmo -parse-as-library -emit-object \
+    "$compiler" -I "$out" -target "$target" -enable-experimental-feature Embedded -O -wmo -parse-as-library -emit-object \
       -no-allocations -module-name TarwinCritical "$src/Interrupt.swift" "$src/Range.swift" "$src/Dma.swift" \
-      "$src/Domain.swift" "$src/Slot.swift" "$src/Pci.swift" "$src/Native.swift" -o "$out/$target-critical.o"
+      "$src/Binding.swift" "$src/Domain.swift" "$src/Slot.swift" "$src/Pci.swift" "$src/Native.swift" -o "$out/$target-critical.o"
   elif [ "$(basename "$package")" = tarwin-gpu ]; then
-    "$compiler" -target "$target" -enable-experimental-feature Embedded -O -wmo -parse-as-library -emit-object \
+    "$compiler" -I "$out" -target "$target" -enable-experimental-feature Embedded -O -wmo -parse-as-library -emit-object \
       -no-allocations -module-name TarwinFence "$package/Sources/TarwinGPU/Timeline.swift" -o "$out/$target-fence.o"
   fi
 done
