@@ -1,4 +1,6 @@
+import LibTesseraPortRings
 import LibTesseraTarwin
+import Synchronization
 import Tarboot
 import TarwinABI
 import TarwinChannelCalls
@@ -752,8 +754,64 @@ private func eventPair(_ arena: inout Arena) -> Bool {
   }
 }
 
+private struct ProbeRingReader: NativePortRingDirectory {
+  let reader: UnsafeMutablePointer<NativePortRing>
+  mutating func withReader(
+    named: UInt64, _ body: (UInt64, inout NativePortRing, () -> Void) -> CallResult?
+  )
+    -> CallResult?
+  {
+    guard named == 7 else { return CallResult(status: 2) }
+    return body(101, &reader.pointee, {})
+  }
+}
+
+private struct NoSleep: NativeGate {
+  var isa: CallISA { .aarch64 }
+  mutating func enter(number: UInt64, registers: CallRegisters) -> CallResult {
+    preconditionFailure("ready packet or poll must not enter the kernel")
+  }
+}
+
+private func waitOnMappedRing(_ arena: inout Arena, _ challenge: UInt64) -> Bool {
+  let cells = arena.take(Atomic<UInt32>.self, count: 3072)
+  for i in cells.indices { cells.initializeElement(at: i, to: Atomic(0)) }
+  defer { cells.deinitialize() }
+  cells[0].store(RingFormat.magic, ordering: .relaxed)
+  cells[1].store(1, ordering: .relaxed)
+  cells[2].store(64, ordering: .relaxed)
+  cells[3].store(64, ordering: .relaxed)
+  let view = UnsafeBufferPointer(cells)
+  guard var reader = NativePortRing(koid: 101, fresh: view),
+    var producer = RingEndpoint(fresh: view, completion: true, producer: true)
+  else { return false }
+  var slot = PortSlot()
+  return withUnsafeMutablePointer(to: &slot) { s in
+    guard var port = CompletionPort(storage: .init(start: s, count: 1)) else { return false }
+    var packet = PortPacket()
+    packet.key = challenge
+    packet.timestamp = 17
+    guard port.post(packet), port.publishNext(to: &producer) == .transferred(notifyPeer: false),
+      port.readable
+    else { return false }
+    var output = InlineArray<8, UInt64>(repeating: .max)
+    return withUnsafeMutableBytes(of: &output) { raw in
+      let out = raw.bindMemory(to: UInt64.self)
+      return withUnsafeMutablePointer(to: &reader) { r in
+        var dir = ProbeRingReader(reader: r)
+        var gate = NoSleep()
+        let got = NativePorts.wait(7, into: out, deadline: .max, directory: &dir, gate: &gate)
+        return got.status == 0 && got.first == 1 && out[0] == challenge && out[7] == 17
+          && NativePorts.wait(7, into: out, deadline: 0, directory: &dir, gate: &gate).code == 25
+          && port.acknowledgeConsumed(from: &producer) { _ in } == nil && !port.readable
+      }
+    }
+  }
+}
+
 private func exercise(_ bytes: UnsafeMutableRawBufferPointer, _ challenge: UInt64) -> Bool {
   var arena = Arena(remaining: bytes)
+  guard waitOnMappedRing(&arena, challenge) else { return false }
   guard eventPair(&arena) else { return false }
   guard intervalDemand(&arena, challenge) else { return false }
   guard jobQuota(&arena, challenge >> 1) else { return false }
@@ -905,9 +963,9 @@ private typealias Reset = @convention(c) (UInt32, UInt, UInt, UnsafeRawPointer?)
 @_cdecl("efi_main")
 public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> UInt {
   #if arch(arm64)
-    let count: UInt = 94
+    let count: UInt = 97
   #else
-    let count: UInt = 2
+    let count: UInt = 5
   #endif
   // Only firmware-owned tables in this disposable EFI guest.
   guard let image, let system, let boot = FirmwareBootServices(image: image, system: system),

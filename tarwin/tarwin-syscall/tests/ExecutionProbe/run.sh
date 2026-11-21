@@ -42,6 +42,7 @@ for arch in "$@"; do
     fi
     native="$r/../libtessera/app/Backend/Tarwin"
     module LibTesseraTarwin "$native"/CallNumbers.swift "$native"/Native*.swift
+    module LibTesseraPortRings "$native"/ring-backend/Sources/LibTesseraPortRings/*.swift
     "$bin/swiftc" "${flags[@]}" -module-name ExecutionProbe -emit-ir -o "$d/main.ll" "$here/Probe.swift" "$r/tarboot/tests/FirmwareProbe/Memory.swift"
     if [[ $arch == riscv64 ]]; then
         edk=${EDK_BASETOOLS:?set EDK_BASETOOLS to edk2-stable202408 BaseTools}

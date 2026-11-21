@@ -50,6 +50,7 @@ public struct RingEndpoint: ~Copyable {
   private var idle: Int { cursor + 32 }
   private var peerIdle: Int { peerCursor + 32 }
   var isPortCompletionProducer: Bool { completion && producer && geometry.stride == 64 }
+  public var isPortCompletionReader: Bool { completion && !producer && geometry.stride == 64 }
   var completionMapping: UInt { UInt(bitPattern: words.baseAddress) }
   var publishedThrough: UInt32 { local }
 
