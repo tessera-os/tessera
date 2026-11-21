@@ -90,6 +90,12 @@ public struct HandleTable: ~Copyable {
 
   public var reader: HandleReadView { HandleReadView(cells: UnsafeBufferPointer(cells)) }
 
+  /// Both table storages must remain pinned; this is not a lifetime check.
+  public func owns(_ view: HandleReadView) -> Bool {
+    UnsafeBufferPointer(cells).baseAddress == view.cells.baseAddress
+      && cells.count == view.cells.count
+  }
+
   func contains(_ name: UInt64) -> Bool { live(name) != nil }
 
   func soleHandle(_ name: UInt64, matches header: UnsafePointer<ObjectHeader>, rights: UInt64)

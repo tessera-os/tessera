@@ -21,6 +21,10 @@ waiter, wakes it and rejects its stale timeout.
 The guest preloads a child's sole bootstrap channel with a §11.4 Startup
 message and a job handle, verifies the child-local name, decodes the
 received grant, and rejects reuse of the handoff after the read.
+Before preload, a 64-byte synchronous call and reply moves a grant both
+ways between the two tables without using either channel FIFO. The local
+scheduler selects the waiting worker on the caller's scheduling context
+and selects the caller on reply; these are scheduler IDs, not register saves.
 On AArch64 it also constructs two equally mapped, never-installed roots,
 checks that only the child's root yields a frame, and compares x0 to the
 preloaded local name. The descriptor test does not initialize a real TCB,

@@ -27,7 +27,7 @@ for arch in "$@"; do
         shift
         "$bin/swiftc" "${flags[@]}" -module-name "$mod" -emit-module -emit-module-path "$d/$mod.swiftmodule" "$@"
     }
-    for src in "$r"/kcore/Sources/KCore "$r"/{tarwin-boot,tarboot,tarwin-object,tarwin-syscall,tarwin-sync,tarwin-ipc,tarwin-sched}/Sources/Tar* "$r"/tarwin-syscall/providers/Sources/TarwinObjectCalls; do
+    for src in "$r"/kcore/Sources/KCore "$r"/{tarwin-boot,tarboot,tarwin-object,tarwin-syscall,tarwin-sync,tarwin-sched,tarwin-ipc}/Sources/Tar* "$r"/tarwin-syscall/providers/Sources/TarwinObjectCalls; do
         module "$(basename "$src")" "$src"/*.swift
     done
     if [[ $arch == aarch64 ]]; then

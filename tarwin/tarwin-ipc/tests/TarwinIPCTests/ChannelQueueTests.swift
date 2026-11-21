@@ -1,6 +1,7 @@
 import TarwinIPC
 import TarwinIPCChannels
 import TarwinObject
+import TarwinSched
 import XCTest
 
 private final class Pair {
@@ -108,8 +109,7 @@ final class ChannelQueueTests: XCTestCase {
       XCTAssertEqual(invalidated, [duplicate])
     }
   }
-  func testPairPublishesReadinessOnTheCorrectEnd() {
-    let pair = Pair()
+  private func withPair(_ body: (inout ChannelPair, UnsafeMutablePointer<ObjectHeader>) -> Void) {
     let heads = UnsafeMutablePointer<ObjectHeader>.allocate(capacity: 2)
     let ids = KoidSource()
     for i in 0..<2 {
@@ -136,36 +136,164 @@ final class ChannelQueueTests: XCTestCase {
         grants: .init(start: grants.baseAddress! + i * 64, count: 64))!
     }
     var q = ChannelPair(a: heads, b: heads + 1, toA: queue(0), toB: queue(1))!
-    XCTAssertEqual(heads.pointee.signals, 2)
-    let a = pair.name(6)
-    XCTAssertEqual(
-      [a].withUnsafeBufferPointer { names in
-        [UInt8(21)].withUnsafeBytes {
-          q.send(
-            from: .a, $0, names: names, table: &pair.src, invalidate: { XCTAssertEqual($0, a) }
-          ) { _ in XCTFail() }
-        }
-      }, .ok)
-    XCTAssertEqual(heads.pointee.signals, 0)
-    XCTAssertEqual((heads + 1).pointee.signals, 3)
-    XCTAssertEqual(q.peek(at: .b)?.bytes, 1)
-    XCTAssertNil(q.peek(at: .a))
+    body(&q, heads)
     q.close(.a) { _ in XCTFail() }
-    XCTAssertEqual((heads + 1).pointee.signals, 5)
-    var size = ChannelSize()
-    var name: UInt64 = 0
-    var result: UInt8 = 0
-    let status = withUnsafeMutableBytes(of: &result) { data in
-      withUnsafeMutablePointer(to: &name) {
-        q.receive(
-          at: .b, into: data, names: .init(start: $0, count: 1), table: &pair.dst, size: &size)
+    q.close(.b) { _ in XCTFail() }
+  }
+  func testPairPublishesReadinessOnTheCorrectEnd() {
+    let pair = Pair()
+    withPair { q, heads in
+      XCTAssertEqual(heads.pointee.signals, 2)
+      let a = pair.name(6)
+      XCTAssertEqual(
+        [a].withUnsafeBufferPointer { names in
+          [UInt8(21)].withUnsafeBytes {
+            q.send(
+              from: .a, $0, names: names, table: &pair.src, invalidate: { XCTAssertEqual($0, a) }
+            ) { _ in XCTFail() }
+          }
+        }, .ok)
+      XCTAssertEqual(heads.pointee.signals, 0)
+      XCTAssertEqual((heads + 1).pointee.signals, 3)
+      XCTAssertEqual(q.peek(at: .b)?.bytes, 1)
+      XCTAssertNil(q.peek(at: .a))
+      q.close(.a) { _ in XCTFail() }
+      XCTAssertEqual((heads + 1).pointee.signals, 5)
+      var size = ChannelSize()
+      var name: UInt64 = 0
+      var result: UInt8 = 0
+      let status = withUnsafeMutableBytes(of: &result) { data in
+        withUnsafeMutablePointer(to: &name) {
+          q.receive(
+            at: .b, into: data, names: .init(start: $0, count: 1), table: &pair.dst, size: &size)
+        }
+      }
+      XCTAssertEqual(status, .ok)
+      XCTAssertEqual(result, 21)
+      XCTAssertEqual((heads + 1).pointee.signals, 4)
+      XCTAssertTrue(pair.dst.close(name) { _ in XCTFail() })
+      q.close(.b) { _ in XCTFail() }
+    }
+  }
+
+  func testInlineRoundTripNeverQueuesAndHandsEachGrantToTheRightTable() {
+    let pair = Pair()
+    withPair { q, _ in
+      var cpu = BootstrapCPU(now: 0, identity: 1)
+      for (i, qos) in [(1, SchedClass.background), (2, SchedClass.interactive)] {
+        XCTAssertTrue(cpu.create(id: UInt64(i), qos: qos))
+      }
+      XCTAssertTrue(cpu.wake(1, now: 0))
+      XCTAssertEqual(cpu.select(now: 0), 1)
+      let bytes = UnsafeMutableRawBufferPointer.allocate(byteCount: 256, alignment: 8)
+      let names = UnsafeMutableBufferPointer<UInt64>.allocate(capacity: 8)
+      let size = UnsafeMutableBufferPointer<ChannelSize>.allocate(capacity: 2)
+      bytes.initializeMemory(as: UInt8.self, repeating: 0xcc)
+      names.initialize(repeating: 0)
+      size.initialize(repeating: ChannelSize())
+      defer {
+        bytes.deallocate()
+        names.deinitialize()
+        names.deallocate()
+        size.deinitialize()
+        size.deallocate()
+      }
+      func area(_ i: Int, _ table: borrowing HandleTable) -> ServiceArea {
+        ServiceArea(
+          bytes: .init(rebasing: bytes[i * 128..<(i + 1) * 128]),
+          names: .init(rebasing: names[i * 4..<(i + 1) * 4]), size: size.baseAddress! + i,
+          table: table)
+      }
+      let server = area(1, pair.dst)
+      let client = area(0, pair.src)
+      guard let wait = q.waitForRequest(at: .b, into: server, cpu: &cpu, now: 0)
+      else { return XCTFail() }
+      XCTAssertTrue(cpu.wake(2, now: 0))
+      XCTAssertEqual(cpu.select(now: 0), 2)
+      let source = pair.name()
+      let denied = pair.name(4)
+      func send(
+        _ names: [UInt64], _ count: Int, _ end: ChannelEnd = .a,
+        _ dst: ServiceArea? = nil
+      ) -> DirectServiceCall? {
+        var pending: DirectServiceCall?
+        names.withUnsafeBufferPointer { n in
+          [UInt8](repeating: 17, count: count).withUnsafeBytes { b in
+            pending = q.directCall(
+              from: end, waiting: wait, transaction: 9, deadline: 10, now: 2,
+              cpu: &cpu, message: .init(bytes: b, names: n), replyTo: dst ?? client,
+              sender: &pair.src, receiver: &pair.dst, invalidate: { XCTAssertEqual($0, source) })
+          }
+        }
+        return consume pending
+      }
+      for (n, count, end, area): ([UInt64], Int, ChannelEnd, ServiceArea?) in [
+        ([source, denied], 64, .a, nil), ([source, source], 64, .a, nil),
+        ([source], 129, .a, nil), ([source], 128, .b, nil), ([source], 64, .a, server),
+      ] {
+        XCTAssertTrue(send(n, count, end, area) == nil)
+        XCTAssertEqual(pair.src.count, 2)
+        XCTAssertEqual(pair.dst.count, 0)
+        XCTAssertEqual(size[1].bytes, 0)
+        XCTAssertEqual(bytes[128], 0xcc)
+        XCTAssertEqual(cpu.running, 2)
+      }
+      guard var call = send([source], 128) else { return XCTFail() }
+      XCTAssertEqual(size[1].bytes, 128)
+      XCTAssertEqual(size[1].handles, 1)
+      XCTAssertTrue(bytes[128...].allSatisfy { $0 == 17 })
+      XCTAssertNil(q.peek(at: .b))
+      XCTAssertFalse(pair.src.close(source) { _ in XCTFail() })
+      XCTAssertNotEqual(names[4], source)
+      XCTAssertEqual(cpu.running, 1)
+      XCTAssertEqual(cpu.charging, 2)
+      let reply = ServiceMessage(
+        bytes: .init(rebasing: UnsafeRawBufferPointer(bytes)[128...]),
+        names: .init(start: names.baseAddress! + 4, count: 1))
+      XCTAssertFalse(
+        call.reply(
+          transaction: 8, channel: q, now: 6, cpu: &cpu, message: reply,
+          sender: &pair.dst, receiver: &pair.src, invalidate: { _ in XCTFail() }))
+      XCTAssertEqual(bytes[0], 0xcc)
+      XCTAssertTrue(
+        call.reply(
+          transaction: 9, channel: q, now: 7, cpu: &cpu, message: reply,
+          sender: &pair.dst, receiver: &pair.src, invalidate: { XCTAssertEqual($0, names[4]) }))
+      XCTAssertEqual(call.state, .replied)
+      XCTAssertEqual(size[0].bytes, 128)
+      XCTAssertEqual(size[0].handles, 1)
+      XCTAssertEqual(bytes[127], 17)
+      XCTAssertTrue(pair.src.close(names[0]) { _ in XCTFail() })
+      XCTAssertNil(q.peek(at: .a))
+      XCTAssertEqual(cpu.running, 2)
+      XCTAssertFalse(call.cancel(peerClosed: true, now: 10, cpu: &cpu))
+      let empty = ServiceMessage(
+        bytes: .init(start: nil, count: 0), names: .init(start: nil, count: 0))
+      for (n, terminal) in [ServiceState.timedOut, .cancelled, .peerClosed].enumerated() {
+        let now = UInt64(20 + 4 * n)
+        XCTAssertTrue(cpu.sleepRunning(now: now))
+        XCTAssertEqual(cpu.select(now: now), 1)
+        guard let next = q.waitForRequest(at: .b, into: server, cpu: &cpu, now: now),
+          cpu.wake(2, now: now), cpu.select(now: now) == 2,
+          var pending = q.directCall(
+            from: .a, waiting: next, transaction: 5, deadline: now + 2,
+            now: now, cpu: &cpu, message: empty, replyTo: client, sender: &pair.src,
+            receiver: &pair.dst, invalidate: { _ in XCTFail() })
+        else { return XCTFail() }
+        if terminal == .peerClosed { q.close(.b) { _ in XCTFail() } }
+        if terminal == .cancelled {
+          XCTAssertTrue(pending.cancel(peerClosed: false, now: now + 1, cpu: &cpu))
+        }
+        XCTAssertFalse(
+          pending.reply(
+            transaction: 5, channel: q,
+            now: terminal == .timedOut ? now + 2 : now + 1, cpu: &cpu, message: empty,
+            sender: &pair.dst, receiver: &pair.src, invalidate: { _ in XCTFail() }))
+        XCTAssertEqual(pending.state, terminal)
+        XCTAssertEqual(size[0].bytes, 128, "late reply must not publish to the caller")
+        XCTAssertEqual(cpu.running, 2)
       }
     }
-    XCTAssertEqual(status, .ok)
-    XCTAssertEqual(result, 21)
-    XCTAssertEqual((heads + 1).pointee.signals, 4)
-    XCTAssertTrue(pair.dst.close(name) { _ in XCTFail() })
-    q.close(.b) { _ in XCTFail() }
   }
   func testFifoWrapBackpressureAndPeerDeath() {
     let p = Pair()

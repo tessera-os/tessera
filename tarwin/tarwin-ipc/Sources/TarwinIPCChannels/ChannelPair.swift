@@ -1,5 +1,6 @@
 import TarwinABI
 import TarwinObject
+import TarwinSched
 
 public enum ChannelEnd { case a, b }
 
@@ -26,6 +27,53 @@ public struct ChannelPair: ~Copyable {
 
   public func peek(at end: ChannelEnd) -> ChannelSize? {
     end == .a ? toA.nextSize : toB.nextSize
+  }
+
+  private func waitingEndpoint(at end: ChannelEnd) -> UInt64? {
+    switch end {
+    case .a: return toA.count == 0 && toA.writable ? a.pointee.koid : nil
+    case .b: return toB.count == 0 && toB.writable ? b.pointee.koid : nil
+    }
+  }
+
+  func serviceOpen(_ id: UInt64) -> Bool? {
+    guard id == a.pointee.koid || id == b.pointee.koid else { return nil }
+    return !toA.senderClosed && !toA.receiverClosed && !toB.senderClosed && !toB.receiverClosed
+  }
+
+  /// The service owner holds the channel lock across parking the receiver
+  /// and publishing its pinned per-thread message area.
+  public func waitForRequest(
+    at end: ChannelEnd, into area: ServiceArea, cpu: inout BootstrapCPU, now: UInt64
+  )
+    -> WaitingService?
+  {
+    guard let endpoint = waitingEndpoint(at: end), let wait = cpu.waitForService(endpoint, now: now)
+    else { return nil }
+    return WaitingService(wait: wait, area: area)
+  }
+
+  /// An older queued message always wins. On nil nothing was sent: continue
+  /// through the ordinary channel path, including its handle error semantics.
+  public func directCall(
+    from end: ChannelEnd, waiting: WaitingService,
+    transaction: UInt64, deadline: UInt64, now: UInt64, cpu: inout BootstrapCPU,
+    message: ServiceMessage, replyTo area: ServiceArea, sender: inout HandleTable,
+    receiver: inout HandleTable, invalidate: (UInt64) -> Void
+  ) -> DirectServiceCall? {
+    guard transaction != 0, deadline == .max || now < deadline, sender.owns(area.table),
+      !receiver.owns(area.table),
+      let endpoint = waitingEndpoint(at: end == .a ? .b : .a),
+      let loan = cpu.call(
+        endpoint, waiting: waiting.wait, now: now,
+        deliver: {
+          message.deliver(
+            to: waiting.area, sender: &sender, receiver: &receiver, invalidate: invalidate)
+        })
+    else { return nil }
+    return DirectServiceCall(
+      loan: loan, transaction: transaction, deadline: deadline,
+      replyArea: area, serverTable: waiting.area.table)
   }
 
   /// Exclusively owned, unpublished pair. The caller holds the child task,

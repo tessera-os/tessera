@@ -10,6 +10,10 @@ public struct ChannelSize: Equatable {
   public fileprivate(set) var bytes = 0
   public fileprivate(set) var handles = 0
   public init() {}
+  init(bytes: Int, handles: Int) {
+    self.bytes = bytes
+    self.handles = handles
+  }
 }
 
 /// One FIFO for each direction of a channel pair. Hold the pair lock and

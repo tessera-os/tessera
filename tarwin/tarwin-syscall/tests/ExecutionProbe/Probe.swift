@@ -130,6 +130,13 @@ private func bootstrapChannel(
       toA: queue(0), toB: queue(1)),
     case .installed(var jobName) = staging.install(job, rights: 258)
   else { return false }
+  guard
+    process.withHandles(
+      tree: tree,
+      { table in
+        serviceRoundTrip(pair, client: &staging, worker: &table, name: &jobName, arena: &arena)
+      }) == true
+  else { return false }
   var tag: UInt32 = 13
   var invalidated: UInt64 = 0
   let token = withUnsafePointer(to: &tag) { tp in
@@ -184,6 +191,60 @@ private func bootstrapChannel(
   pair.close(.b, retire: { _ in })
   return heads.baseAddress!.pointee.release() == .destroy
     && (heads.baseAddress! + 1).pointee.release() == .destroy
+}
+
+// Single boot CPU; do not put a run queue on the firmware entry stack.
+nonisolated(unsafe) private var cpu = BootstrapCPU(now: 0, identity: 1)
+
+/// Run before the startup preload, with the child/staging tables still
+/// private. Return the moved grant under its new name for the startup send.
+private func serviceRoundTrip(
+  _ pair: borrowing ChannelPair, client: inout HandleTable,
+  worker: inout HandleTable, name: inout UInt64, arena: inout Arena
+) -> Bool {
+  let memory = arena.take(UInt8.self, count: 192)
+  let cells = arena.take(UInt64.self, count: 3)
+  let sizes = arena.take(ChannelSize.self, count: 2)
+  cells.initialize(repeating: 0)
+  sizes.initialize(repeating: ChannelSize())
+  defer {
+    cells.deinitialize()
+    sizes.deinitialize()
+  }
+  func segment(_ i: Int) -> UnsafeMutableRawBufferPointer {
+    .init(start: memory.baseAddress! + i * 64, count: 64)
+  }
+  func names(_ i: Int) -> UnsafeMutableBufferPointer<UInt64> {
+    .init(start: cells.baseAddress! + i, count: 1)
+  }
+  func area(_ i: Int, _ table: borrowing HandleTable) -> ServiceArea {
+    ServiceArea(bytes: segment(i), names: names(i), size: sizes.baseAddress! + i, table: table)
+  }
+  func message(_ i: Int) -> ServiceMessage {
+    .init(bytes: .init(segment(i)), names: .init(names(i)))
+  }
+  cells[2] = name
+  for i in 0..<64 { segment(2)[i] = UInt8(i) }
+  guard cpu.create(id: 1, qos: SchedClass.background),
+    cpu.create(id: 2, qos: SchedClass.interactive),
+    cpu.wake(1, now: 0), cpu.select(now: 0) == 1,
+    let wait = pair.waitForRequest(at: .b, into: area(1, worker), cpu: &cpu, now: 1),
+    cpu.wake(2, now: 1), cpu.select(now: 1) == 2,
+    var call = pair.directCall(
+      from: .a, waiting: wait, transaction: 3, deadline: 10,
+      now: 2, cpu: &cpu, message: message(2), replyTo: area(0, client),
+      sender: &client, receiver: &worker, invalidate: { _ in }),
+    cpu.running == 1, cpu.charging == 2, sizes[1].handles == 1, sizes[1].bytes == 64,
+    client.count == 0, worker.count == 1, pair.peek(at: .b) == nil,
+    call.reply(
+      transaction: 3, channel: pair, now: 3, cpu: &cpu, message: message(1), sender: &worker,
+      receiver: &client, invalidate: { _ in }),
+    cpu.running == 2, cpu.charging == 2, sizes[0].handles == 1, sizes[0].bytes == 64,
+    worker.count == 0, client.count == 1, cells[0] != name, pair.peek(at: .a) == nil
+  else { return false }
+  for i in 0..<64 where segment(0)[i] != UInt8(i) { return false }
+  name = cells[0]
+  return true
 }
 
 #if arch(arm64)

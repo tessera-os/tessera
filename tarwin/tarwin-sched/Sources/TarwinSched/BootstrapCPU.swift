@@ -2,7 +2,7 @@
 /// online. The boot CPU owns all mutations with interrupts masked. Returns
 /// a thread ID for the architecture switch; zero selects the idle context.
 public struct BootstrapCPU: ~Copyable {
-  private enum State { case free, suspended, ready, running, sleeping }
+  private enum State { case free, suspended, ready, running, sleeping, receiving, serving }
   private struct Slot {
     var id: UInt64 = 0
     var state: State = .free
@@ -13,6 +13,8 @@ public struct BootstrapCPU: ~Copyable {
     var readyAt: UInt64 = 0
     var virtualStart: UInt64 = 0
     var virtualDeadline: UInt64 = 0
+    var receiveEpoch: UInt64 = 0
+    var executor: UInt8 = .max
   }
   private var slots = InlineArray<64, Slot>(repeating: Slot())
   private var clocks = InlineArray<6, UInt64>(repeating: 0)
@@ -20,10 +22,23 @@ public struct BootstrapCPU: ~Copyable {
   private var active: Int? = nil
   private var starvationQuantum = false
   private var last: UInt64
+  private let identity: UInt64
+  private var receiveEpoch: UInt64 = 0
 
-  public init(now: UInt64) { last = now }
+  /// Supply the stable, unique nonzero CPU identity for direct service calls.
+  public init(now: UInt64, identity: UInt64 = 0) {
+    self.identity = identity
+    last = now
+  }
   // Mutating reads let Embedded Swift borrow individual inline slots in place.
   public var running: UInt64 {
+    mutating get {
+      guard let i = active else { return 0 }
+      let executor = slots[i].executor
+      return slots[executor == .max ? i : Int(executor)].id
+    }
+  }
+  public var charging: UInt64 {
     mutating get {
       if let i = active { return slots[i].id }
       return 0
@@ -36,7 +51,7 @@ public struct BootstrapCPU: ~Copyable {
     return nil
   }
 
-  /// Deadline admission and donation are not available before SMP startup.
+  /// Deadline admission is not available before SMP startup.
   public mutating func create(id: UInt64, qos: UInt8, priority: Int = 0, slice: UInt64 = 3_000_000)
     -> Bool
   {
@@ -84,12 +99,16 @@ public struct BootstrapCPU: ~Copyable {
     guard let i = find(id), slots[i].state == .suspended || slots[i].state == .sleeping,
       account(now)
     else { return false }
+    makeReady(i, now: now)
+    return true
+  }
+
+  private mutating func makeReady(_ i: Int, now: UInt64) {
     let q = Int(slots[i].qos)
     request(i, max(clocks[q], slots[i].virtualStart))
     slots[i].state = .ready
     slots[i].readyAt = now
     weights[q] += slots[i].weight
-    return true
   }
 
   private mutating func deschedule(_ i: Int, now: UInt64) {
@@ -101,7 +120,7 @@ public struct BootstrapCPU: ~Copyable {
   }
 
   public mutating func sleepRunning(now: UInt64) -> Bool {
-    guard let i = active, account(now) else { return false }
+    guard let i = active, slots[i].executor == .max, account(now) else { return false }
     weights[Int(slots[i].qos)] -= slots[i].weight
     deschedule(i, now: now)
     slots[i].state = .sleeping
@@ -109,7 +128,8 @@ public struct BootstrapCPU: ~Copyable {
   }
 
   public mutating func remove(_ id: UInt64, now: UInt64) -> Bool {
-    guard let i = find(id), account(now) else { return false }
+    guard let i = find(id), slots[i].executor == .max, slots[i].state != .serving, account(now)
+    else { return false }
     if slots[i].state == .ready || slots[i].state == .running {
       weights[Int(slots[i].qos)] -= slots[i].weight
     }
@@ -137,7 +157,7 @@ public struct BootstrapCPU: ~Copyable {
       if yield || slots[i].served >= slots[i].slice {
         deschedule(i, now: now)
       } else {
-        if starvationQuantum { return slots[i].id }
+        if starvationQuantum { return running }
         slots[i].readyAt = now
       }
       slots[i].state = .ready
@@ -153,7 +173,7 @@ public struct BootstrapCPU: ~Copyable {
     let q = Int(slots[i].qos)
     clocks[q] = max(clocks[q], slots[i].virtualStart)
     slots[i].state = .running
-    return slots[i].id
+    return running
   }
 
   /// A lone runnable thread is tickless. Additional wakes trigger select.
@@ -165,5 +185,83 @@ public struct BootstrapCPU: ~Copyable {
       return Self.sum(now, slots[i].slice - min(slots[i].slice, served))
     }
     return nil
+  }
+}
+
+extension BootstrapCPU {
+  /// Opaque single-receive token. Service and thread KOIDs are kernel-owned.
+  public struct Receiver {
+    public let service, thread: UInt64
+    fileprivate let cpu, epoch: UInt64
+    fileprivate let slot: Int
+  }
+
+  public struct Donation {
+    public let receiver: Receiver
+    public let caller: UInt64
+    fileprivate let source: Int
+  }
+
+  public mutating func waitForService(_ service: UInt64, now: UInt64) -> Receiver? {
+    guard identity != 0, service != 0, receiveEpoch != .max, let i = active,
+      sleepRunning(now: now)
+    else { return nil }
+    receiveEpoch += 1
+    slots[i].receiveEpoch = receiveEpoch
+    slots[i].state = .receiving
+    return Receiver(
+      service: service, thread: slots[i].id, cpu: identity,
+      epoch: receiveEpoch, slot: i)
+  }
+
+  private mutating func matches(_ wait: Receiver, _ state: State) -> Bool {
+    wait.cpu == identity && slots[wait.slot].id == wait.thread
+      && slots[wait.slot].state == state && slots[wait.slot].receiveEpoch == wait.epoch
+  }
+
+  public mutating func withdraw(_ wait: Receiver, now: UInt64) -> Bool {
+    guard matches(wait, .receiving), account(now) else { return false }
+    makeReady(wait.slot, now: now)
+    return true
+  }
+
+  /// The IPC owner holds the service and task locks and masks local interrupts
+  /// through the switch. Deliver only to the preflighted, pinned receiver.
+  /// On false, delivery must have published nothing. No run queue scan or
+  /// reweighting: the caller's existing scheduling slot now executes the server.
+  public mutating func call(
+    _ service: UInt64, waiting: Receiver, now: UInt64,
+    deliver: () -> Bool
+  ) -> Donation? {
+    guard let i = active, slots[i].executor == .max, service == waiting.service,
+      matches(waiting, .receiving), account(now), deliver()
+    else { return nil }
+    slots[i].executor = UInt8(waiting.slot)
+    slots[waiting.slot].state = .serving
+    return Donation(receiver: waiting, caller: slots[i].id, source: i)
+  }
+
+  private mutating func outstanding(_ loan: Donation) -> Bool {
+    matches(loan.receiver, .serving) && slots[loan.source].id == loan.caller
+      && slots[loan.source].executor == UInt8(loan.receiver.slot)
+  }
+
+  private mutating func restore(_ loan: Donation, now: UInt64) {
+    slots[loan.source].executor = .max
+    makeReady(loan.receiver.slot, now: now)
+  }
+
+  public mutating func reply(_ loan: Donation, now: UInt64, deliver: () -> Bool) -> Bool {
+    guard active == loan.source, outstanding(loan), account(now), deliver() else { return false }
+    restore(loan, now: now)
+    return true
+  }
+
+  /// Return the loan even if preempted. If active, switch from the worker to
+  /// the caller before unmasking interrupts; a late reply cannot deliver data.
+  public mutating func revoke(_ loan: Donation, now: UInt64) -> Bool {
+    guard outstanding(loan), account(now) else { return false }
+    restore(loan, now: now)
+    return true
   }
 }
