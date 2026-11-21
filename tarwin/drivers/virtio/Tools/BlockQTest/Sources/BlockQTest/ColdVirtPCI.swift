@@ -59,19 +59,35 @@ func testColdVirtPCI(binary: String, disk: URL) throws {
         "Unexpected cold PCI state (fw_cfg DMA: \(fwDma); platform RNG: \(platformRng))")
     }
   }
-  let trace = disk.deletingPathExtension().appendingPathExtension("trace")
+  for layout: VirtBootPCILayout in [.lowOnly, .virt11High512GiB] {
+    try checkFirmwareLayout(binary: binary, disk: disk, layout: layout)
+  }
+}
+
+private func checkFirmwareLayout(binary: String, disk: URL, layout: VirtBootPCILayout) throws {
+  let high = layout == .virt11High512GiB
+  let trace = disk.deletingPathExtension().appendingPathExtension(high ? "high.trace" : "low.trace")
   defer { try? FileManager.default.removeItem(at: trace) }
   do {
-    let q = try QTest(coldVirt: binary, disk: disk, fwDma: false, platformRng: false, trace: trace)
+    let q = try QTest(
+      coldVirt: binary, disk: disk, fwDma: false, platformRng: false, highMMIO: high, trace: trace)
     defer { q.close() }
     var registers = Registers(q: q)
     let disk: UInt64 = 0x40_1000_8000
     let rng: UInt64 = 0x40_1001_0000
+    func common(_ i: Int) -> UInt64 {
+      (high ? 0x80_0000_0000 : 0x2000_0000) + UInt64(i) * 16384
+    }
+    for i in 0..<2 {
+      let fn = i == 0 ? disk : rng
+      q.write("l", fn + 0x14, i == 0 ? UInt32(0x1000_1000) : 0x1000_0000)
+      q.write("l", fn + 0x20, UInt32(truncatingIfNeeded: common(i)))
+      q.write("l", fn + 0x24, UInt32(common(i) >> 32))
+    }
     func activate(_ i: Int) throws {
       let fn = i == 0 ? disk : rng
-      let bar = 0x2000_0000 + UInt64(i) * 65536
+      let bar = common(i)
       let base = 0x4100_0000 + UInt64(i) * 0x40_0000
-      q.write("l", fn + 0x20, UInt32(bar))
       q.write("w", fn + 4, 6)
       func width(_ w: UInt32) -> String { w == 4 ? "l" : w == 2 ? "w" : "b" }
       func rd(_ off: UInt32, _ w: UInt32) -> UInt32 { UInt32(q.read(width(w), bar + UInt64(off))) }
@@ -96,8 +112,18 @@ func testColdVirtPCI(binary: String, disk: URL) throws {
       DeviceRange(base: 0x4140_0000, length: 12288),
     ]
     let snapshots = ranges.map { q.send("read \($0.base) 12288") }
+    if high {
+      let low = ranges.withUnsafeBufferPointer {
+        denyVirtBootDMA(table: 0x4200_0000, commands: 0x4200_1000, protected: $0, bus: &registers)
+      }
+      try q.require(
+        low == .unsupported && q.read("l", 0x0905_0044) == 0x1000
+          && q.read("w", disk + 4) & 4 != 0 && q.read("w", rng + 4) & 4 != 0,
+        "High BAR was accepted or changed under low-only policy")
+    }
     let result = ranges.withUnsafeBufferPointer {
-      denyVirtBootDMA(table: 0x4200_0000, commands: 0x4200_1000, protected: $0, bus: &registers)
+      denyVirtBootDMA(
+        table: 0x4200_0000, commands: 0x4200_1000, protected: $0, layout: layout, bus: &registers)
     }
     try q.require(result == .streamsDenied, "Boot PCI fence: \(result)")
     try q.require(

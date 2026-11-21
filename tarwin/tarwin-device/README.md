@@ -39,8 +39,18 @@ safe to verify. Without live VM generation the RNG must not issue child keys.
 ### Firmware virtio drain and SMMUv3 stream denial
 
 `denyVirtBootDMA` targets the same cold machine, but accepts firmware-enabled
-virtio-blk and virtio-rng functions. It requires disjoint, decoded BAR4s in
-the low PCI MMIO hole. It resets the devices through modern common_cfg, waits
+virtio-blk and virtio-rng functions. The default `.lowOnly` layout accepts
+only the low PCI MMIO window; use it with `highmem-mmio=off` (high ECAM
+unchanged). For the pinned `virt-11.1`, `-cpu max -m 512 -smp 1` profile
+with `highmem-mmio=on,highmem-mmio-size=512G`, the trusted caller may instead
+pass `layout: .virt11High512GiB`. Its accessors must map the assigned BARs as
+device memory. Neither a BAR value nor untrusted firmware metadata selects
+the layout. Check the launcher's generated DT: the PCI host's `ranges`
+must identity-map low [0x10000000,0x3eff0000) and, for the high profile,
+high [0x8000000000,0x10000000000); ECAM at 0x4010000000 is neither.
+Both complete 16 KiB BAR4s must fit and both 4 KiB MSI-X BAR1s must fit in
+the low window. All four decoders must be disjoint. The fence reads but never
+resizes or reassigns a BAR. It resets the devices through modern common_cfg, waits
 for zero device status, clears Bus Master Enable and reads the command back.
 On QEMU 11.1.3 the block reset drains the block backend before discarding its
 queue; the RNG callback checks DRIVER_OK and queue readiness before taking
@@ -55,7 +65,9 @@ pinned and inaccessible to untrusted code, including on failure. Do not
 roll back to bypass on timeout. The platform must serialize access to all
 device/SMMU controls and keep this configuration through entry.
 
-The cold QTest also starts both queues while the SMMU is still in bypass,
+The cold QTest runs both layouts. For high MMIO it assigns the observed
+EDK2 BAR4s (0x8000000000 and 0x8000004000) and checks that low-only policy
+refuses before either requester is stopped. On each layout it starts both queues while the SMMU is still in bypass,
 drains and fences them, then reactivates the same queues in the harness.
 The QEMU translation trace must show the **same SID and IOVA** changing from
 bypass to abort for each device; both captured queue regions remain unchanged.

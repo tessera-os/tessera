@@ -38,6 +38,7 @@ final class ColdVirtPCITests: XCTestCase {
       for (i, fn): (Int, UInt64) in [UInt64(0x40_1000_8000), 0x40_1001_0000].enumerated() {
         let bar = UInt32(0x2000_0000 + 65536 * i)
         model.words[fn + 4] = 0x10_0006
+        model.words[fn + 0x14] = i == 0 ? 0x1000_1000 : 0x1000_0000
         model.words[fn + 0x20] = bar | 12
         model.words[fn + 0x34] = 0x70
         model.words[fn + 0x70] = 0x0110_0009
@@ -72,11 +73,15 @@ final class ColdVirtPCITests: XCTestCase {
       return true
     }
     mutating func publishStores() { published = true }
-    mutating func fence(_ span: DeviceRange = DeviceRange(base: 0x4100_0000, length: 16384))
+    mutating func fence(
+      _ span: DeviceRange = DeviceRange(base: 0x4100_0000, length: 16384),
+      layout: VirtBootPCILayout = .lowOnly
+    )
       -> VirtBootFenceResult
     {
       [span].withUnsafeBufferPointer {
-        denyVirtBootDMA(table: 0x4200_0000, commands: 0x4200_1000, protected: $0, bus: &self)
+        denyVirtBootDMA(
+          table: 0x4200_0000, commands: 0x4200_1000, protected: $0, layout: layout, bus: &self)
       }
     }
   }
@@ -102,6 +107,35 @@ final class ColdVirtPCITests: XCTestCase {
     b.model.words[0x40_1001_0020] = 0x2000_000c
     XCTAssertEqual(b.fence(), .unsupported)
     XCTAssertTrue(b.stores.isEmpty)
+  }
+  func testHighBARsRequirePinnedWindowAndRetainAllAddressBits() {
+    var b = Firmware()
+    for (fn, base): (UInt64, UInt64) in [
+      (0x40_1000_8000, 0x80_0000_0000), (0x40_1001_0000, 0x80_0000_4000),
+    ] {
+      b.model.words[fn + 0x20] = UInt32(truncatingIfNeeded: base) | 12
+      b.model.words[fn + 0x24] = UInt32(base >> 32)
+      b.model.words[base + 4] = 3
+      b.model.words[base + 20] = 15
+    }
+    XCTAssertEqual(b.fence(), .unsupported)
+    XCTAssertTrue(b.stores.isEmpty)
+    XCTAssertEqual(b.fence(layout: .virt11High512GiB), .streamsDenied)
+    XCTAssertTrue(b.stores.contains(0x80_0000_0014))
+    XCTAssertTrue(b.stores.contains(0x80_0000_4014))
+  }
+  func testInvalidDecodersRefuseBeforeAnyWrite() {
+    let disk: UInt64 = 0x40_1000_8000
+    for (offset, value): (UInt64, UInt32) in [
+      (0x24, 0x100), (0x24, 0x40), (0x24, .max), (0x20, 0x4000_000c),
+      (0x20, 0x3eff_000c), (0x20, 0x2000_100c), (0x20, 0x2000_0004),
+      (0x14, 0x4000_0000), (0x14, 0x2001_0000), (0x14, 0x1000_0000),
+    ] {
+      var b = Firmware()
+      b.model.words[disk + offset] = value
+      XCTAssertEqual(b.fence(layout: .virt11High512GiB), .unsupported)
+      XCTAssertTrue(b.stores.isEmpty)
+    }
   }
   func testNoDenyResultOnLostResetParkTableOrCommandAck() {
     for (stuck, result): (UInt64, VirtBootFenceResult) in [

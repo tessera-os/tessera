@@ -31,10 +31,11 @@ final class QTest {
   private(set) var mmio: [DeviceRange] = []
   private(set) var error: Error?
 
-  init(coldVirt binary: String, disk: URL, fwDma: Bool, platformRng: Bool, trace: URL? = nil) throws {
+  init(coldVirt binary: String, disk: URL, fwDma: Bool, platformRng: Bool,
+       highMMIO: Bool = false, trace: URL? = nil) throws {
     process.executableURL = URL(fileURLWithPath: binary)
     process.arguments = [
-      "-machine", "virt-11.1,virtualization=on,gic-version=3,iommu=smmuv3,default-bus-bypass-iommu=off,msi=off",
+      "-machine", "virt-11.1,virtualization=on,gic-version=3,iommu=smmuv3,default-bus-bypass-iommu=off,msi=off,highmem-mmio-size=512G,highmem-mmio=" + (highMMIO ? "on" : "off"),
       "-accel", "tcg", "-S", "-cpu", "max", "-smp", "1", "-m", "512",
       "-nodefaults", "-no-user-config", "-display", "none", "-monitor", "none",
       "-serial", "none", "-nic", "none", "-qtest", "stdio", "-qtest-log", "/dev/null",

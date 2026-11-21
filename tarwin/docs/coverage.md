@@ -24,8 +24,11 @@
 
 The [device package](../tarwin-device/README.md)
 documents the cold Arm firmware-style queue reset and SMMUv3 all-abort stream
-table. Both QEMU PCI requesters are denied their former queue pages. No signed
-W1/EL0 entry: native EDK2 drain/ownership handoff, protected work-page lifetime,
+table. Both QEMU PCI requesters are denied their former queue pages with
+either low MMIO or the pinned 512 GiB high MMIO window. The platform owner
+also observed the low-MMIO fence return after actual EDK2 ExitBootServices;
+this hosted high-BAR test does not execute EFI. No signed W1/EL0 entry:
+integration of that handoff with the signed launcher, protected work-page lifetime,
 continuous exclusion across entry, and re-establishing DMA protection before
 resuming restored devices are unverified. The platform's separate read-only
 VMGENID aperture test exercises generation rotation, not restored DMA exclusion.

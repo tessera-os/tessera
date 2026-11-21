@@ -16,11 +16,16 @@ public enum VirtBootFenceResult: Equatable {
   case badMemory, unsupported, drainFailed, abortFailed, tableFailed, syncFailed, streamsDenied
 }
 
-// Use only the pinned model's modern common registers in assigned low PCI
-// memory. Reject overlapping decoders before attempting either MMIO reset.
+/// Selected by the trusted machine launcher, never inferred from the BAR.
+/// The optional virt-11.1 high aperture is identity mapped, 512 GiB at 512 GiB.
+public enum VirtBootPCILayout { case lowOnly, virt11High512GiB }
+
+// Validate all decoders before attempting either MMIO reset.
 private struct ResetWindow {
   let function: UInt64, common: DeviceRange, msix: DeviceRange
-  init?<B: VirtBootFenceBus & ~Copyable>(_ function: UInt64, _ b: inout B) {
+  init?<B: VirtBootFenceBus & ~Copyable>(
+    _ function: UInt64, _ layout: VirtBootPCILayout, _ b: inout B
+  ) {
     guard let command = b.read32(function + 4), command & 0x10_0002 == 0x10_0002,
       let first = b.read8(function + 0x34)
     else { return nil }
@@ -49,12 +54,15 @@ private struct ResetWindow {
     }
     guard found, b.read32(function + 0x10) == 0, let m = b.read32(function + 0x14),
       m & 0xfff == 0, b.read32(function + 0x18) == 0, b.read32(function + 0x1c) == 0,
-      let low = b.read32(function + 0x20), low & 0x3fff == 12, b.read32(function + 0x24) == 0
+      let low = b.read32(function + 0x20), low & 0x3fff == 12, let high = b.read32(function + 0x24)
     else { return nil }
-    let hole = DeviceRange(base: 0x1000_0000, length: 0x2eff_0000)
-    common = DeviceRange(base: UInt64(low & ~15), length: 16384)
+    let lowHole = DeviceRange(base: 0x1000_0000, length: 0x2eff_0000)
+    let highHole = DeviceRange(base: 0x80_0000_0000, length: 0x80_0000_0000)
+    common = DeviceRange(base: UInt64(high) << 32 | UInt64(low & ~15), length: 16384)
     msix = DeviceRange(base: UInt64(m), length: 4096)
-    guard hole.contains(common), !msix.overlaps(common) else { return nil }
+    guard lowHole.contains(common) || (layout == .virt11High512GiB && highHole.contains(common)),
+      lowHole.contains(msix), !msix.overlaps(common)
+    else { return nil }
     self.function = function
   }
 
@@ -84,7 +92,8 @@ private struct ResetWindow {
 /// overwriting the caller's archive, verification scratch or staged images.
 /// This is not a VM generation check, a snapshot restore gate or an EL0 permit.
 public func denyVirtBootDMA<B: VirtBootFenceBus & ~Copyable>(
-  table: UInt64, commands: UInt64, protected: UnsafeBufferPointer<DeviceRange>, bus b: inout B
+  table: UInt64, commands: UInt64, protected: UnsafeBufferPointer<DeviceRange>,
+  layout: VirtBootPCILayout = .lowOnly, bus b: inout B
 ) -> VirtBootFenceResult {
   let ram = DeviceRange(base: 0x4000_0000, length: 512 << 20)
   let t = DeviceRange(base: table, length: 4096)
@@ -100,9 +109,10 @@ public func denyVirtBootDMA<B: VirtBootFenceBus & ~Copyable>(
     let id0 = b.read32(s), id0 & 0x10 != 0, id0 & (1 << 10) == 0,
     let id1 = b.read32(s + 4), id1 & 63 >= 6, (id1 >> 21) & 31 >= 3,
     id1 & 0xe000_0000 == 0, b.read32(s + 0x98) == 0, b.read32(s + 0x9c) == 0,
-    let disk = ResetWindow(0x40_1000_8000, &b), let rng = ResetWindow(0x40_1001_0000, &b),
+    let disk = ResetWindow(0x40_1000_8000, layout, &b),
+    let rng = ResetWindow(0x40_1001_0000, layout, &b),
     !disk.common.overlaps(rng.common), !disk.msix.overlaps(rng.common),
-    !rng.msix.overlaps(disk.common)
+    !rng.msix.overlaps(disk.common), !disk.msix.overlaps(rng.msix)
   else { return .unsupported }
   guard disk.drain(&b), rng.drain(&b) else { return .drainFailed }
   guard requestColdVirtPCIAbort(registers: &b) == .pciAbortAcknowledged else { return .abortFailed }
