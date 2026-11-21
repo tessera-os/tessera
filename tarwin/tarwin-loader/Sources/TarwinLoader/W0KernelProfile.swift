@@ -1,6 +1,29 @@
 // TVISA §17.2 tag of TIR's canonical "fn(ptr) -> never abi(c)".
 let w0SinglePointerTag: UInt32 = 0xd441_5060
 
+extension ELFReader {
+  func validW0Entry(_ entry: UInt64, machine: UInt16, programs: Range<Int>) -> Bool {
+    var header: Int?
+    guard machine == ElfMachine.aarch64 || machine == ElfMachine.x64,
+      validLocalEntry(
+        entry, tag: w0SinglePointerTag, machine: machine, programs: programs, hint: &header),
+      let h = header
+    else { return false }
+    guard machine == ElfMachine.aarch64 else { return true }
+    // The stage-0 AArch64 wrapper tail-branches into the compiled body.
+    let start = u64(h + 16)
+    let size = u64(h + 32)
+    let offset = entry - start
+    guard imageContains(size, offset, 8) else { return false }
+    let instruction = u32(Int(u64(h + 8) + offset) + 4)
+    guard instruction >> 26 == 0b000101 else { return false }
+    let displacement = Int64(Int32(bitPattern: instruction << 6) >> 4)
+    let (body, overflow) = Int64(offset + 4).addingReportingOverflow(displacement)
+    guard !overflow, body >= 0, imageContains(size, UInt64(body), 4) else { return false }
+    return UInt64(body) + 4 <= offset - 4 || UInt64(body) >= offset + 8
+  }
+}
+
 /// Shared structural policy for the QEMU W0 signer and verifier. This does
 /// not establish trust in either signature or authorize a physical branch.
 public func inspectW0SigningCandidate(
@@ -19,7 +42,6 @@ public func inspectW0SigningCandidate(
   func version(_ at: Int, _ v: (UInt8, UInt8, UInt8)) -> Bool {
     b[at] == v.0 && b[at + 1] == v.1 && b[at + 2] == v.2
   }
-  var hint: Int?
   guard let role = n.profile, r.u16(role.lowerBound) == 0x0403,
     let grants = n.entitlements, r.nameEquals(grants, "[]"),
     let window = n.train, version(window.lowerBound, train), version(window.lowerBound + 3, tir),
@@ -29,9 +51,7 @@ public func inspectW0SigningCandidate(
     d[.runtime].count == 0,
     d[.dispatch].count == 0, d[.tls].count == 0, d[.features].count == 0,
     r.u32(section.lowerBound + d[.gpu].bytes.lowerBound) == 0,
-    r.validLocalEntry(
-      image.entry, tag: w0SinglePointerTag, machine: machine, programs: image.programHeaders,
-      hint: &hint)
+    r.validW0Entry(image.entry, machine: machine, programs: image.programHeaders)
   else { return nil }
   var note = false
   for p in stride(

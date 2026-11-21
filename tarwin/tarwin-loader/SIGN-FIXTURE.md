@@ -19,7 +19,8 @@ The signer creates a disposable two-day CA (its private key is discarded) and tw
 
 For the AArch64/x64 single-pointer handoff, require a 16-byte-aligned
 ELF entry and the full TVISA §17.2 tagged landing pad in the same RX
-PT_LOAD. The canonical TIR §7.9 string `fn(ptr) -> never abi(c)` gives
+PT_LOAD. The AArch64 W0 veneer tail-branches directly into a file-backed
+body outside the veneer in the same RX segment. The canonical TIR §7.9 string `fn(ptr) -> never abi(c)` gives
 tag `0xd4415060` (no forbidden-value adjustment). The RV64 two-argument
 handoff has no confirmed tagged native image yet and is not enabled.
 
