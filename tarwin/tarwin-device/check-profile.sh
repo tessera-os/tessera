@@ -10,6 +10,7 @@ for target in aarch64-none-none-elf x86_64-unknown-none-elf riscv64-none-none-ea
   case "$(basename "$package")" in
     tarwin-device) deps="kcore:KCore tarwin-boot:TarwinBoot tarwin-ipc:TarwinIPC tarwin-device:TarwinIoCompletion tarwin-object:TarwinObject tarwin-syscall:TarwinABI tarwin-syscall:TarwinSyscall" ;;
     tarwin-block) deps="tarwin-ipc:TarwinIPC tarwin-device:TarwinIoCompletion tarwin-block:TarwinBlockWire" ;;
+    tarwin-gpu) deps="tarwin-object:TarwinObject tarwin-syscall:TarwinABI tarwin-syscall:TarwinSyscall" ;;
     tarwin-net) deps="tarwin-ipc:TarwinIPC tarwin-net:TarwinNetWire" ;;
     trfs) deps="kcore:KCore tarwin-mm:TarwinMM tarwin-ipc:TarwinIPC trfs:TarwinFsWire" ;;
     *) deps="" ;;
@@ -42,6 +43,6 @@ for target in aarch64-none-none-elf x86_64-unknown-none-elf riscv64-none-none-ea
       -no-allocations -module-name TrfsSector "$package/Sources/TRFS/Pager.swift" "$package/Sources/TRFS/XtsSector.swift" -o "$out/$target-xts.o"
   elif [ "$(basename "$package")" = tarwin-gpu ]; then
     "$compiler" -I "$out" -target "$target" -enable-experimental-feature Embedded -O -wmo -parse-as-library -emit-object \
-      -no-allocations -module-name TarwinFence "$package/Sources/TarwinGPU/Timeline.swift" -o "$out/$target-fence.o"
+      -no-allocations -module-name TarwinFence "$package/Sources/TarwinGPU/Timeline.swift" "$package/Sources/TarwinGPU/FenceObject.swift" -o "$out/$target-fence.o"
   fi
 done

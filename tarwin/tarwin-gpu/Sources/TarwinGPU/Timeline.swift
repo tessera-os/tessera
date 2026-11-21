@@ -80,6 +80,11 @@ public struct GpuTimeline: ~Copyable {
     return true
   }
 
+  mutating func drain(_ wake: (UInt64) -> Void) {
+    for i in 0..<count { wake(waiters[i].key) }
+    count = 0
+  }
+
   /// Exclusive, initialized storage must outlive the fence, including the
   /// final interrupt and wake. Signalling never allocates or copies a buffer.
   public init(storage: UnsafeMutableBufferPointer<FenceWait>) {
