@@ -66,6 +66,7 @@ This document is the single normative specification of Tarwin, Tessera's kernel.
 | `TRFS.md` | The file system, which runs in the kernel (section 20) |
 | `Ember.md` | The GPU API, whose driver contract relies on section 22 |
 | `MosaicDisplay.md` | The compositor, which owns display configuration |
+| `TarwinHosted.md` | Tarwin as a macOS process: the hosted platform layer, the task host and gate that translate Tarwin to libSystem and XNU, and Tessera.app |
 
 ### 1.3 Scope
 
@@ -1426,7 +1427,7 @@ Tarwin is one Swift package tree, layered so that no package depends on a higher
 | 3 | `tarwin-ipc`, `tarwin-syscall`, `tarwin-loader`, `tarwin-security` |
 | 4 | `tarwin-device`, `tarwin-block`, `tarwin-net`, `tarwin-gpu`, `tarwin-power` |
 | 5 | `trfs` (TRFS.md), `tarwin-hv`, `tarwin-probe`, `tarwin-trace` |
-| Separate | `tarboot`, `tvmm`, LibTessera's native backend |
+| Separate | `tarboot`, `tvmm`, LibTessera's native backend, `tarwin-arch-hosted` and `tarwin-task` (TarwinHosted.md) |
 
 ### 36.2 Milestones
 
