@@ -603,7 +603,7 @@ func check() throws {
     return
   }
   print(
-    "\(a): ESP file read, TIRA member and ELF preflight, EFI exit, compressed-page restore, page retirement, boot queue and shutdown passed"
+    "\(a): ESP file read, TIRA member and ELF preflight, EFI exit, CPU-only frame pins, compressed-page restore, page retirement, boot queue and shutdown passed"
   )
 }
 

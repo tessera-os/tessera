@@ -14,6 +14,13 @@ public struct MonitoredPageArena: ~Copyable {
   private let counts: UnsafeMutableBufferPointer<UInt32>
   private let threshold: UInt32
   private var poisoned: UInt64 = 0
+  public var base: UInt64 { arena.base }
+  public var pageSize: UInt64 { arena.pageSize }
+  var hasAllocations: Bool { arena.occupied != 0 }
+  func hasSeparateCounters(from bytes: UnsafeMutableRawBufferPointer) -> Bool {
+    let a = UInt(bitPattern: counts.baseAddress), b = UInt(bitPattern: bytes.baseAddress)
+    return a <= b ? UInt(counts.count * MemoryLayout<UInt32>.stride) <= b - a : UInt(bytes.count) <= a - b
+  }
 
   public init?(fresh arena: consuming PageArena, counts: UnsafeMutableBufferPointer<UInt32>,
     threshold: UInt32) {

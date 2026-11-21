@@ -412,13 +412,44 @@ private func checkPage(base: UInt64, length: UInt64, pageSize: UInt64) -> Bool {
   }
   var counters = InlineArray<64, UInt32>(repeating: 0)
   return withUnsafeMutableBytes(of: &counters) {
-    guard var pages = MonitoredPageArena(fresh: arena, counts: $0.bindMemory(to: UInt32.self),
-      threshold: 1) else { return false }
+    guard let fresh = MonitoredPageArena(fresh: arena, counts: $0.bindMemory(to: UInt32.self),
+      threshold: 1), var pages = checkReadPins(consume fresh) else { return false }
     #if TARBOOT_TEST_MCA
       guard checkMCA(&pages) else { return false }
     #endif
     return checkCompression(&pages, pageSize: pageSize) && checkOwnedPage(&pages, pageSize: pageSize)
   }
+}
+
+// No requester is enabled. Use the CPU's identity mapping of the verified
+// loader allocation, then return the same monitored leaf to the other checks.
+private func checkReadPins(_ pages: consuming MonitoredPageArena) -> MonitoredPageArena? {
+  let base = pages.base, size = Int(pages.pageSize)
+  guard let p = UnsafeMutableRawPointer(bitPattern: UInt(base)) else { return nil }
+  let ram = UnsafeMutableRawBufferPointer(start: p, count: 64 * size)
+  ram[..<(3 * size)].initializeMemory(as: UInt8.self, repeating: 0xa5)
+  guard var pool = ReadQueuePinPool(pages: consume pages, mapped: ram, group: 1, epoch: 1, limitPages: 2),
+    var submission = pool.take(order: 0, use: .submission),
+    var destination = pool.take(order: 0, use: .destination),
+    submission.physical == base, destination.physical == base + UInt64(size),
+    pool.chargedPages == 2, pool.take(order: 0, use: .completion) == nil,
+    pinBytesEqual(.init(rebasing: ram[..<(2 * size)]), 0)
+  else { return nil }
+  ram[..<(2 * size)].initializeMemory(as: UInt8.self, repeating: 0x55)
+  pool.beginRetirement()
+  guard pool.releaseRetired(&destination), !pool.releaseRetired(&destination),
+    pool.take(order: 0, use: .completion) == nil, pool.chargedPages == 1,
+    pinBytesEqual(.init(rebasing: ram[..<size]), 0x55),
+    pool.releaseRetired(&submission), pinBytesEqual(.init(rebasing: ram[..<(2 * size)]), 0),
+    pinBytesEqual(.init(rebasing: ram[2 * size..<3 * size]), 0xa5)
+  else { return nil }
+  return pool.reclaim()
+}
+
+@inline(never)
+private func pinBytesEqual(_ bytes: UnsafeMutableRawBufferPointer, _ expected: UInt8) -> Bool {
+  for byte in bytes where byte != expected { return false }
+  return true
 }
 
 private func checkOwnedPage(_ pages: inout MonitoredPageArena, pageSize: UInt64) -> Bool {

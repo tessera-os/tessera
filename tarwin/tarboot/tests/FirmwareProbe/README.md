@@ -4,6 +4,12 @@ Before firmware exit, the diagnostic opens a raw TIRA test archive on its own EF
 
 Build a disposable PE32+ diagnostic and start it from the removable-media path in QEMU's EDK II firmware. It validates table CRCs, reserves loader pages, and exits boot services with the key for the final validated map. After exit it checks the reservation against that map, allocates a Tarwin physical page inside it, writes and reads back the whole page, releases it and rejects a second free.
 
+The unsigned diagnostic also pins two allocator pages for a synthetic slot
+generation. It checks zeroing, charge limits, refusal of new pins during
+retirement, and scrubbing before reuse without touching the adjacent page.
+The CPU alone accesses this RAM. No device, translation or queue is enabled;
+this is not a native storage read or evidence of hardware DMA isolation.
+
 Two synthetic corrected-error reports on that page cross a test threshold;
 the next allocation must use a different frame. For an x64 bank-level test,
 run `TARBOOT_TEST_MCA=1 bash run.sh x86_64`. On the pinned one-CPU Intel
