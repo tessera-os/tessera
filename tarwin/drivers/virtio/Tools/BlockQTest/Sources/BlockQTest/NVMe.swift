@@ -24,7 +24,8 @@ func testNVMe(binary: String, disk: URL) throws {
   let pattern = (0..<4096).map { UInt8(truncatingIfNeeded: ($0 &* 37) ^ ($0 >> 8)) }
   do {
     let q = try QTest(
-      binary: binary, machine: .x64, disk: disk, translated: false, neighbors: false, nvme: true)
+      binary: binary, machine: .x64, disk: disk, translated: false, neighbors: false, storage: .nvme
+    )
     defer { q.close() }
     guard let node = q.pciNodes.first(where: { $0.device.deviceClass == 0x010802 }),
       case .pci(0, let bdf) = node.device.location

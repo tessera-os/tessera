@@ -22,6 +22,7 @@ private struct DeviceTreeBlob: ByteSource {
   func byteAt(_ offset: UInt64) -> UInt8 { bytes[Int(offset)] }
 }
 
+enum TestDisk { case virtio, nvme, ufs }
 final class QTest {
   private let process = Process(), input = Pipe(), output = Pipe()
   private var buffered = Data()
@@ -33,7 +34,7 @@ final class QTest {
   init(
     binary: String, machine: Machine, disk: URL, translated: Bool, neighbors: Bool,
     extraDevices: [String] = [], tcpFixture: Bool = false, listenerSocket: String? = nil,
-    nvme: Bool = false
+    storage: TestDisk = .virtio
   ) throws {
     process.executableURL = URL(fileURLWithPath: binary)
     process.arguments = [
@@ -42,12 +43,19 @@ final class QTest {
       "-qtest", "stdio", "-qtest-log", "/dev/null",
       "-drive", "if=none,id=scratch,format=raw,file=" + disk.path,
       "-device",
-      nvme
-        ? "nvme,serial=tarwin-test,drive=scratch"
-        : machine == .x64
-          ? "virtio-blk-pci,disable-legacy=on,addr=04.0,drive=scratch,iommu_platform=on"
-          : "virtio-blk-device,drive=scratch,iommu_platform=on",
     ]
+    switch storage {
+    case .nvme: process.arguments!.append("nvme,serial=tarwin-test,drive=scratch")
+    case .ufs:
+      process.arguments! += [
+        "ufs,id=ufs0,mcq=off", "-device", "ufs-lu,bus=ufs0,lun=2,drive=scratch",
+      ]
+    case .virtio:
+      process.arguments!.append(
+        machine == .x64
+          ? "virtio-blk-pci,disable-legacy=on,addr=04.0,drive=scratch,iommu_platform=on"
+          : "virtio-blk-device,drive=scratch,iommu_platform=on")
+    }
     process.arguments! += extraDevices
     if translated {
       process.arguments! += [
@@ -425,9 +433,10 @@ func run() throws {
   let listen = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--tcp-listen"
   let intx = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--intx"
   let nvme = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--nvme"
+  let ufs = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--ufs"
   guard
     CommandLine.arguments.count == 2 || translated || neighbors || streams || tcp || listen || intx
-      || nvme,
+      || nvme || ufs,
     let machine = Machine(
       rawValue: URL(fileURLWithPath: CommandLine.arguments[1]).lastPathComponent)
   else {
@@ -436,10 +445,15 @@ func run() throws {
   guard !translated || machine == .x64 else { throw Failure("--vtd requires q35") }
   guard !intx || machine == .x64 else { throw Failure("--intx requires q35") }
   guard !nvme || machine == .x64 else { throw Failure("--nvme requires q35") }
+  guard !ufs || machine == .x64 else { throw Failure("--ufs requires q35") }
   let disk = FileManager.default.temporaryDirectory.appendingPathComponent(
     UUID().uuidString + ".raw")
   try Data(repeating: 0x6c, count: 1 << 20).write(to: disk, options: .withoutOverwriting)
   defer { try? FileManager.default.removeItem(at: disk) }
+  if ufs {
+    try testUFS(binary: CommandLine.arguments[1], disk: disk)
+    return
+  }
   if nvme {
     try testNVMe(binary: CommandLine.arguments[1], disk: disk)
     return
@@ -513,23 +527,25 @@ func run() throws {
 do {
   try run()
   print(
-    CommandLine.arguments.last == "--nvme"
-      ? "PASS: discovered NVMe namespace, split-PRP FUA write, flush, readback, shutdown and backing-byte check on q35"
-      : CommandLine.arguments.last == "--intx"
-        ? "PASS: observed disk INTx, IOAPIC masking, Device notifications and handle-authorized rearm on q35"
-        : CommandLine.arguments.last == "--tcp-receive"
-          ? "PASS: TCP active open, bidirectional stream, lost-segment retransmit and acknowledged FIN against isolated libslirp"
-          : CommandLine.arguments.last == "--tcp-listen"
-            ? "PASS: passive TCP handshake and bidirectional stream against restricted libslirp via a private Unix socket"
-            : CommandLine.arguments.last == "--byte-streams"
-              ? "PASS: bidirectional single-port virtio-console and short uncredited virtio-rng input"
-              : CommandLine.arguments.last == "--vtd-xts"
-                ? "PASS: AES-256-XTS known-answer sector over q35 VT-d, retired before decryption"
-                : CommandLine.arguments.last == "--vtd"
-                  ? "PASS: q35 VT-d translated disk DMA, IOTLB drain and same-IOVA remap"
-                  : CommandLine.arguments.last == "--neighbors"
-                    ? "PASS: router advertisement, SLAAC/DAD, ARP and IPv6 neighbor discovery against restricted libslirp"
-                    : "PASS: QEMU virtio-blk scatter/gather write/flush/readback, zero/discard extents and paced UDP delivery across isolated NICs"
+    CommandLine.arguments.last == "--ufs"
+      ? "PASS: UFS 4.x link, unit descriptor, split DMA, write/flush/read, clean stop and backing-byte verification on q35"
+      : CommandLine.arguments.last == "--nvme"
+        ? "PASS: discovered NVMe namespace, split-PRP FUA write, flush, readback, shutdown and backing-byte check on q35"
+        : CommandLine.arguments.last == "--intx"
+          ? "PASS: observed disk INTx, IOAPIC masking, Device notifications and handle-authorized rearm on q35"
+          : CommandLine.arguments.last == "--tcp-receive"
+            ? "PASS: TCP active open, bidirectional stream, lost-segment retransmit and acknowledged FIN against isolated libslirp"
+            : CommandLine.arguments.last == "--tcp-listen"
+              ? "PASS: passive TCP handshake and bidirectional stream against restricted libslirp via a private Unix socket"
+              : CommandLine.arguments.last == "--byte-streams"
+                ? "PASS: bidirectional single-port virtio-console and short uncredited virtio-rng input"
+                : CommandLine.arguments.last == "--vtd-xts"
+                  ? "PASS: AES-256-XTS known-answer sector over q35 VT-d, retired before decryption"
+                  : CommandLine.arguments.last == "--vtd"
+                    ? "PASS: q35 VT-d translated disk DMA, IOTLB drain and same-IOVA remap"
+                    : CommandLine.arguments.last == "--neighbors"
+                      ? "PASS: router advertisement, SLAAC/DAD, ARP and IPv6 neighbor discovery against restricted libslirp"
+                      : "PASS: QEMU virtio-blk scatter/gather write/flush/readback, zero/discard extents and paced UDP delivery across isolated NICs"
   )
 } catch {
   FileHandle.standardError.write(Data("\(error)\n".utf8))

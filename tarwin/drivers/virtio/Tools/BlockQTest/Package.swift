@@ -5,6 +5,7 @@ let package = Package(
   name: "BlockQTest", platforms: [.macOS(.v26)],
   dependencies: [
     .package(path: "../../../nvme"),
+    .package(path: "../../../ufs"),
     .package(path: "../../../../trfs"), .package(path: "../../../../tarwin-net"),
     .package(path: "../../../../kcore"),
     .package(path: "../.."),
@@ -17,6 +18,7 @@ let package = Package(
       name: "BlockQTest",
       dependencies: [
         .product(name: "NVMeDriver", package: "nvme"),
+        .product(name: "UFSDriver", package: "ufs"),
         .product(name: "TRFS", package: "trfs"),
         .product(name: "VirtioNetService", package: "virtio"),
         .product(name: "TarwinNet", package: "tarwin-net"),
