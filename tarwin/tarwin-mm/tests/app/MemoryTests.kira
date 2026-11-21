@@ -2,6 +2,9 @@ import TarwinMM
 
 @Main
 function main() -> I32 {
+    if !pageRoundTrip() { return 12 }
+    if !faultTests() { return 13 }
+    if !pressureTests() { return 14 }
     var order: U8 = 0
     while order <= 6 {
         var arena = makeArena(0x100000, 4096, 0xffffffffffffffff)

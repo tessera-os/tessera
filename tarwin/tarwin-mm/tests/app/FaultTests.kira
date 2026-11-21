@@ -1,0 +1,36 @@
+import TarwinMM
+
+struct CacheProbe: FilePager {
+    var pins: U64
+    var released: U64
+    var address: U64
+    function pinFilePage(borrow mut self, object: U64, offset: U64, validBytes: U64, pageSize: U64, write: Bool) -> FilePageLease {
+        if object != 7 || offset != 4096 || validBytes != 17 || pageSize != 4096 || !write { runtimeTrap() }
+        self.pins += 1
+        return FilePageLease { token: 9, physical: self.address }
+    }
+    function unpinFilePage(borrow mut self, token: U64, dirty: Bool) {
+        if token != 9 || dirty { runtimeTrap() }
+        self.released += 1
+    }
+}
+
+function faultTests() -> Bool {
+    var cache = CacheProbe { pins: 0, released: 0, address: 8192 }
+    let lease = faultFilePage(cache, 7, 4113, 4096, 4096, true)
+    var ok = lease.token == 9 && lease.physical == 8192 && cache.released == 0
+    cache.address += 1
+    if faultFilePage(cache, 7, 4113, 4096, 4096, true).token != 0 || cache.released != 1 { ok = false }
+    if faultFilePage(cache, 7, 4113, 4095, 4096, true).token != 0 || faultFilePage(cache, 7, 4096, 4096, 4096, true).token != 0 || cache.pins != 2 { ok = false }
+
+    var src = buffer(4224)
+    var dst = buffer(4224)
+    src.putByte(3, 93)
+    src.putByte(4223, 47)
+    if !privateCopy(src, dst, 4096, true) || dst.byteAt(3) != 93 || dst.byteAt(4223) != 47 { ok = false }
+    if demandZero(dst, 4096, false) || dst.byteAt(3) != 93 { ok = false }
+    if !demandZero(dst, 4096, true) || dst.byteAt(3) != 0 || dst.byteAt(4223) != 0 || src.byteAt(3) != 93 { ok = false }
+    heapFreeRaw(src.data)
+    heapFreeRaw(dst.data)
+    return ok
+}

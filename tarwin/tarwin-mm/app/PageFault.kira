@@ -1,0 +1,62 @@
+import KCore
+
+// A pinned frame view consists of one base page followed by the packed
+// allocation tags (one four-bit tag per 16 bytes) on a tagged mapping.
+public function frameBytes(pageSize: U64, tagged: Bool) -> U64 {
+    if pageSize != 4096 && pageSize != 16384 { return 0 }
+    if tagged { return pageSize + pageSize / 32 }
+    return pageSize
+}
+
+public function demandZero<D: ByteBuffer>(frame: borrow mut D, pageSize: U64, tagged: Bool) -> Bool {
+    let n = frameBytes(pageSize, tagged)
+    if n == 0 || n != frame.byteCount() { return false }
+    var i: U64 = 0
+    while i < n {
+        frame.putByte(i, 0)
+        i += 1
+    }
+    return true
+}
+
+// Caller holds the source read-only and the destination exclusively until
+// successful publication under its object lock. No aliasing or PTE writes.
+public function privateCopy<S: ByteSource, D: ByteBuffer>(source: borrow S, frame: borrow mut D, pageSize: U64, tagged: Bool) -> Bool {
+    let n = frameBytes(pageSize, tagged)
+    if n == 0 || n != source.byteCount() || n != frame.byteCount() { return false }
+    var i: U64 = 0
+    while i < n {
+        frame.putByte(i, source.byteAt(i))
+        i += 1
+    }
+    return true
+}
+
+// A backing object is bound to one immutable snapshot/version for its
+// lifetime. pinFilePage returns a lease on the file-cache frame itself.
+// The provider zeroes the final-page tail and never reuses a leased frame.
+// A writer must obtain a writable lease before installing a writable PTE;
+// release follows unmapping and the last TLB invalidation, never precedes it.
+public struct FilePageLease {
+    var token: U64
+    var physical: U64
+}
+
+public trait FilePager {
+    function pinFilePage(borrow mut self, object: U64, offset: U64, validBytes: U64, pageSize: U64, write: Bool) -> FilePageLease
+    function unpinFilePage(borrow mut self, token: U64, dirty: Bool)
+}
+
+public function faultFilePage<P: FilePager>(pager: borrow mut P, object: U64, size: U64, offset: U64, pageSize: U64, write: Bool) -> FilePageLease {
+    let none = FilePageLease { token: 0, physical: 0 }
+    if object == 0 || frameBytes(pageSize, false) == 0 || !alignedTo(offset, pageSize) || offset >= size { return none }
+    let left = size - offset
+    let count = left < pageSize ? left : pageSize
+    let page = pager.pinFilePage(object, offset, count, pageSize, write)
+    if page.token == 0 { return none }
+    if !alignedTo(page.physical, pageSize) || !validExtent(page.physical, pageSize) {
+        pager.unpinFilePage(page.token, false)
+        return none
+    }
+    return page
+}
