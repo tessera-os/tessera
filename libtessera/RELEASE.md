@@ -56,8 +56,8 @@ Expanded Linux system interfaces for partitions, remote processors, kernel loggi
   `endProcessNow`; it never returns, and RIDL writes that as `Void`).
   `abi/LibTessera.ridlmeta` lists all four records.
   The `UNumber` layout, the `Void` result for `processExit` and the integer
-  `code`/`subsystem` are provisional defaults pending a spec ruling
-  (klf-swift `docs/decisions/ridl.md` R-10); a ruling may supersede them.
+  `code`/`subsystem` are final decisions for gaps the specs leave open
+  (klf-swift `docs/decisions/ridl.md` R-10).
 
 ## Changed
 
