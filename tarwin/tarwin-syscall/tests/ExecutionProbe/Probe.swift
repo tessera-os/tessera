@@ -1,6 +1,7 @@
 import LibTesseraTarwin
 import Tarboot
 import TarwinABI
+import TarwinChannelCalls
 import TarwinIPC
 import TarwinIPCChannels
 import TarwinObject
@@ -65,7 +66,7 @@ private struct RegisterGate<P: CallProvider>: NativeGate {
   }
   // Feed a saved PC to the dispatcher, not a privilege transition.
   mutating func enter(number: UInt64, registers: CallRegisters) -> CallResult {
-    var scratch = (UInt64(0), UInt64(0))
+    var scratch = InlineArray<5, UInt64>(repeating: 0)
     let arch = isa
     let d = withUnsafeMutableBytes(of: &scratch) {
       dispatchCall(
@@ -93,6 +94,31 @@ private func selfHandle(_ process: inout ProcessExecution, tree: borrowing JobTr
       let a = NativeProcess.current(gate: &gate)
       return a == NativeProcess.current(gate: &gate) ? a : 0
     }
+  }
+}
+
+private struct PrivatePair: ChannelNamespace {
+  let pair: UnsafeMutablePointer<ChannelPair>, table: UnsafeMutablePointer<HandleTable>
+  mutating func withPair(
+    named: UInt64, _ body: (inout ChannelPair, inout HandleTable) -> CallResult
+  ) -> CallResult {
+    body(&pair.pointee, &table.pointee)
+  }
+}
+
+// Only the two preallocated diagnostic buffers, never user memory.
+private struct PrivateOutput: ChannelUserOutput {
+  let b: UnsafeMutableRawBufferPointer, h: UnsafeMutableBufferPointer<UInt64>
+  var userRange: Range<UInt64> { 1..<UInt64.max }
+  mutating func withWritable(
+    bytes: Range<UInt64>, names: Range<UInt64>,
+    _ body: (UnsafeMutableRawBufferPointer, UnsafeMutableBufferPointer<UInt64>) -> CallResult
+  ) -> CallResult? {
+    guard bytes.lowerBound == UInt64(UInt(bitPattern: b.baseAddress)),
+      bytes.count == b.count, names.lowerBound == UInt64(UInt(bitPattern: h.baseAddress)),
+      names.count == h.count * 8
+    else { return nil }
+    return body(b, h)
   }
 }
 
@@ -159,15 +185,24 @@ private func bootstrapChannel(
     guard checkFrames(roots, process: process, tree: tree, pair: pair, token: token, name: name)
     else { return false }
   #endif
-  var size = ChannelSize()
   var received: UInt64 = 0
   let ok = process.withHandles(tree: tree) { table in
     withUnsafeMutablePointer(to: &received) { hp in
-      pair.receive(
-        at: .b, into: .init(scratch), names: .init(start: hp, count: 1), table: &table, size: &size)
-    } == .ok
+      withUnsafeMutablePointer(to: &table) { tp in
+        withUnsafeMutablePointer(to: &pair) { qp in
+          let memory = PrivateOutput(b: .init(scratch), h: .init(start: hp, count: 1))
+          var gate = RegisterGate(
+            calls: ChannelReceiveCalls(space: PrivatePair(pair: qp, table: tp), memory: memory))
+          let peek = NativeChannels.peek(name, gate: &gate)
+          let read = NativeChannels.read(name, into: memory.b, names: memory.h, gate: &gate)
+          return peek.status == 0 && peek.first == 56 && peek.second == 1
+            && read.status == 0 && read.first == peek.first && read.second == peek.second
+            && NativeChannels.peek(name, gate: &gate).code == 27
+        }
+      }
+    }
   }
-  guard ok == true, size.bytes == 56, size.handles == 1, received != 0, received != jobName,
+  guard ok == true, received != 0, received != jobName,
     pair.entryName(token, child: process, tree: tree, initialMap: process.initialMap) == nil,
     case .found(let pin) = process.handleReader.pinWithinEpoch(
       received, kind: TarwinKind.job, need: 256)

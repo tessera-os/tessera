@@ -29,6 +29,23 @@ public struct ChannelPair: ~Copyable {
     end == .a ? toA.nextSize : toB.nextSize
   }
 
+  /// Match the caller's pinned channel grant, not an integer endpoint selector.
+  public func end(of header: UnsafePointer<ObjectHeader>) -> ChannelEnd? {
+    if header == a { return .a }
+    if header == b { return .b }
+    return nil
+  }
+
+  public func peek(at end: ChannelEnd, size: inout ChannelSize) -> ChannelStatus {
+    if let next = peek(at: end) {
+      size = next
+      return .ok
+    }
+    let closed =
+      end == .a ? toA.senderClosed || toA.receiverClosed : toB.senderClosed || toB.receiverClosed
+    return closed ? .peerClosed : .shouldWait
+  }
+
   private func waitingEndpoint(at end: ChannelEnd) -> UInt64? {
     switch end {
     case .a: return toA.count == 0 && toA.writable ? a.pointee.koid : nil

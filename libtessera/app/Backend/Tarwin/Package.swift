@@ -18,7 +18,7 @@ let package = Package(
       path: ".", exclude: ["tests", "variants", "random-backend"],
       sources: [
         "CallNumbers.swift", "NativeEntry.swift", "NativeHandles.swift", "NativeSync.swift",
-        "NativeHardwareGate.swift", "NativeProcess.swift",
+        "NativeHardwareGate.swift", "NativeProcess.swift", "NativeChannels.swift",
       ]),
     .testTarget(
       name: "NativeEntryTests",

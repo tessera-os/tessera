@@ -30,6 +30,7 @@ for arch in "$@"; do
     for src in "$r"/kcore/Sources/KCore "$r"/{tarwin-boot,tarboot,tarwin-object,tarwin-syscall,tarwin-sync,tarwin-sched,tarwin-ipc}/Sources/Tar* "$r"/tarwin-syscall/providers/Sources/TarwinObjectCalls; do
         module "$(basename "$src")" "$src"/*.swift
     done
+    module TarwinChannelCalls "$r/tarwin-syscall/channel-calls/Sources/TarwinChannelCalls"/*.swift
     if [[ $arch == aarch64 ]]; then
         module TarwinArchAarch64 "$r/tarwin-arch-aarch64/Sources/TarwinArchAarch64"/*.swift
         module TarwinArmBootstrap "$r/tarwin-syscall/first-entry/Sources/TarwinArmBootstrap"/*.swift
