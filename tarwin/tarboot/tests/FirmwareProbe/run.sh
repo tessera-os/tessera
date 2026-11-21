@@ -42,6 +42,13 @@ for isa in "${@:-all}"; do
         fi
         modules=()
         entry_source=()
+        if [[ ${TARBOOT_TEST_PSCI:-0} == 1 ]]; then
+            [[ $arch == aarch64 && ${TARBOOT_TEST_CPU:-0} == 1 && ${TARBOOT_TEST_SMP_TABLES:-0} == 1 ]] || exit 2
+            flags+=(-D TARBOOT_TEST_PSCI)
+            swift "$composition-stage0/ArmAffinityProbe.swift" > "$d/affinity.ll"
+            "$bin/clang" -target aarch64-unknown-windows-msvc -Wno-override-module -c "$d/affinity.ll" -o "$d/affinity.obj"
+            extra+=("$d/affinity.obj")
+        fi
         if [[ ${TARBOOT_TEST_TRANSLATION:-0} == 1 ]]; then
             [[ $arch == aarch64 && ${TARBOOT_TEST_CPU:-0} == 1 && ${TARBOOT_TEST_SMP_TABLES:-0} == 0 && -z ${TARBOOT_TEST_SIGNATURE:-} ]] || exit 2
             flags+=(-D TARBOOT_TEST_TRANSLATION)

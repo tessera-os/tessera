@@ -1,5 +1,27 @@
 #if TARBOOT_TEST_CPU
   import Tarboot
+  #if TARBOOT_TEST_PSCI
+    import TarwinBoot
+    @_extern(c, "tarboot_psci_version") private func version() -> UInt64
+    @_extern(c, "tarboot_psci_affinity") private func affinity(_ id: UInt64) -> UInt64
+    @_extern(c, "tarboot_affinity_id") private func mpidr() -> UInt64
+
+    func bootCPUOnly(_ ids: UnsafeBufferPointer<FirmwareProcessor>) -> Bool {
+      let v = UInt32(truncatingIfNeeded: version())
+      guard v >= 0x10000, v & 0x80000000 == 0 else { return false }
+      let bootID = mpidr() & 0xff00_ffffff
+      var sawBoot = false
+      for cpu in ids {
+        let current = cpu.hardwareID == bootID
+        guard affinity(cpu.hardwareID) == (current ? 0 : 1) else { return false }
+        if current {
+          guard !sawBoot else { return false }
+          sawBoot = true
+        }
+      }
+      return sawBoot
+    }
+  #endif
   #if arch(arm64)
     import TarwinArchAarch64
   #elseif arch(x86_64)

@@ -94,23 +94,49 @@ private func rootDirectory(_ rsdp: UInt64, in map: UnsafeBufferPointer<FirmwareR
     guard let tree = view(locations.deviceTree, acpi: false, in: map) else { return nil }
     return treeProcessors(tree, family: family, into: scratch)
   }
-  guard let root = rootDirectory(locations.rsdp, in: map) else { return nil }
+  guard let madt = childTable(locations.rsdp, signature: 0x4349_5041, in: map) else { return nil }
+  return madtProcessors(madt, family: family, into: scratch)
+}
+
+private func childTable(_ rsdp: UInt64, signature: UInt64, in map: UnsafeBufferPointer<FirmwareRegion>)
+  -> TableBytes? {
+  guard let root = rootDirectory(rsdp, in: map) else { return nil }
   let n = little(root, at: 4, bytes: 4)
   guard (n - 36) / 8 <= 4096 else { return nil }
-  var madt: TableBytes?
+  var result: TableBytes?
   var p: UInt64 = 36
   while p < n {
     guard let child = view(little(root, at: p, bytes: 8), acpi: true, in: map),
       child.length >= 36
     else { return nil }
-    if little(child, at: 0, bytes: 4) == 0x4349_5041 {
-      guard madt == nil else { return nil }
-      madt = child
+    if little(child, at: 0, bytes: 4) == signature {
+      guard result == nil else { return nil }
+      result = child
     }
     p += 8
   }
-  guard let madt else { return nil }
-  return madtProcessors(madt, family: family, into: scratch)
+  return result
+}
+
+public enum PSCIConduit: UInt8 { case smc, hvc }
+
+func fadtPSCI<S: ByteSource>(_ s: S) -> PSCIConduit? {
+  guard s.byteCount() >= 132, little(s, at: 0, bytes: 4) == 0x5043_4146 else { return nil }
+  let n = little(s, at: 4, bytes: 4)
+  guard n >= 268, n <= s.byteCount(), s.byteAt(8) > 5 || (s.byteAt(8) == 5 && s.byteAt(131) >= 1),
+    checksum(s, count: n) else { return nil }
+  switch little(s, at: 129, bytes: 2) {
+  case 1: return .smc
+  case 3: return .hvc
+  default: return nil
+  }
+}
+
+/// ACPI systems only. Never guess the PSCI conduit, or call HVC from EL2.
+@unsafe public func armPSCIConduit(_ locations: FirmwareTableLocations,
+  in map: UnsafeBufferPointer<FirmwareRegion>) -> PSCIConduit? {
+  guard let fadt = childTable(locations.rsdp, signature: 0x5043_4146, in: map) else { return nil }
+  return fadtPSCI(fadt)
 }
 
 /// Call before reclaiming any pages. Only firmware data in a single validated,

@@ -183,3 +183,12 @@ and a guard page, checks the physical frame addresses and architectural
 fault status from PAR_EL1, then restores the inactive EL1/0 regime. It
 never executes an EL0 instruction, activates a process or tests VHE host
 context switching. It does not consume a signed W0 archive.
+
+### AArch64 secondary state before CPU bring-up
+
+Add `TARBOOT_TEST_PSCI=1 TARBOOT_TEST_SMP_TABLES=1 TARBOOT_TEST_CPU=1`
+to the AArch64 diagnostic. On the four-vCPU QEMU virt machine it requires
+a checksum-valid ACPI FADT advertising PSCI over SMC, matches MPIDR_EL1
+with a MADT GICC, and queries PSCI_VERSION and AFFINITY_INFO64 at level
+zero. The boot CPU must be ON and the other three OFF. This does not
+start a secondary CPU or test IPI delivery or scheduling.

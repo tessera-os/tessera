@@ -255,6 +255,9 @@ func check() throws {
     else { throw Failure("\(a): missing guest-initiated shutdown event") }
   if rngEnabled { print("\(a): physical TBIB, EFI RNG seed, randomized reservation and typed archive/map extents passed readback") }
   if multiple { print("\(a): enumerated four distinct enabled CPU hardware IDs from firmware; boot CPU only") }
+  if ProcessInfo.processInfo.environment["TARBOOT_TEST_PSCI"] == "1" {
+    print("\(a): PSCI AFFINITY_INFO reports the MPIDR-matched boot CPU ON and three secondaries OFF")
+  }
   if ProcessInfo.processInfo.environment["TARBOOT_TEST_TRANSLATION"] == "1" {
     print("\(a): EL0 hardware translation resolved two frames, rejected write to RX and read from guard page")
   }

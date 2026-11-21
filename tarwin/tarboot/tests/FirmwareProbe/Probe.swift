@@ -178,6 +178,11 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
                 into: bytes.bindMemory(to: FirmwareProcessor.self)) == 4
             })
         else { return false }
+        #if TARBOOT_TEST_PSCI
+          guard armPSCIConduit(tables, in: UnsafeBufferPointer(rebasing: buffer[..<n])) == .smc,
+            withUnsafeBytes(of: &ids, { bootCPUOnly($0.bindMemory(to: FirmwareProcessor.self)) })
+          else { return false }
+        #endif
       #endif
       #if TARBOOT_TEST_TPM
         guard

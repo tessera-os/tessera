@@ -3,6 +3,28 @@ import Testing
 
 @testable import Tarboot
 
+@Test func armPSCIRequiresValidFADTAndUnambiguousBootFlags() {
+  var s = Bytes(data: Array(repeating: 0, count: 268))
+  s.data.replaceSubrange(0..<4, with: "FACP".utf8)
+  s.data[4] = 12
+  s.data[5] = 1
+  s.data[8] = 5
+  s.data[131] = 1
+  for (flag, expected): (UInt8, PSCIConduit?) in [(1,.smc),(3,.hvc),(0,nil),(2,nil),(5,nil)] {
+    s.data[129] = flag
+    s.seal(at: 9, through: 268)
+    #expect(fadtPSCI(s) == expected)
+  }
+  s.data[129] = 1
+  s.data[131] = 0
+  s.seal(at: 9, through: 268)
+  #expect(fadtPSCI(s) == nil)
+  s.data[131] = 1 // checksum now stale
+  #expect(fadtPSCI(s) == nil)
+  s.data.removeLast()
+  #expect(fadtPSCI(s) == nil)
+}
+
 private struct Bytes: ByteSource {
   var data: [UInt8]
   func byteCount() -> UInt64 { UInt64(data.count) }
