@@ -104,6 +104,22 @@ private struct Flight {
   var sequence: UInt32, data: [UInt8], flags: UInt8, deadline: UInt64, first: UInt64,
     retries: Int = 0
   var lastSent: UInt64, stamp: UInt32?
+  var probed = false
+}
+private enum DeferredSend {
+  case byte(UInt8)
+  case fin
+  var flags: UInt8 {
+    if case .fin = self { return 17 }
+    return 0x18
+  }
+  var data: [UInt8] {
+    if case .byte(let b) = self { return [b] }
+    return []
+  }
+}
+private struct PersistTimer {
+  var deadline: UInt64, interval: UInt64, unanswered = 0
 }
 /// Conservative active opener: one unacknowledged segment. Serialize on
 /// one lock; callbacks never reenter. The caller authorizes the interface
@@ -118,6 +134,7 @@ public struct TcpConnection: ~Copyable {
   private var rx: TcpReceiveWindow, flight: Flight?, ackPending = false, clock: UInt64 = 0,
     expires: UInt64 = 0
   private var rto: UInt64 = 1_000_000_000, srtt: UInt64?, rttvar: UInt64 = 0
+  private var deferred: DeferredSend?, persist: PersistTimer?
   private let timestampOffset: UInt32?, offeredShift: UInt8
   private var recent: UInt32?, recentAt: UInt64 = 0, lastAckSent: UInt32 = 0
   private var sendShift: UInt8 = 0, receiveShift: UInt8 = 0, maxPeerWindow = 0
@@ -178,6 +195,8 @@ public struct TcpConnection: ~Copyable {
   /// Policy revocation or interface removal cancels the connection locally.
   public mutating func abort() {
     flight = nil
+    deferred = nil
+    persist = nil
     ackPending = false
     una = next
     state = .reset
@@ -230,15 +249,27 @@ public struct TcpConnection: ~Copyable {
   public mutating func write(_ bytes: ArraySlice<UInt8>, at now: UInt64, emit: ([UInt8]) -> Bool)
     -> Int
   {
-    guard state == .established || state == .closeWait, flight == nil, stamp(now) else { return 0 }
-    let n = min(peerWindow, min(peerMss, path.mss) - (recent == nil ? 0 : 12), bytes.count)
+    guard state == .established || state == .closeWait, flight == nil, deferred == nil, stamp(now)
+    else { return 0 }
+    let payload = min(peerMss, path.mss) - (recent == nil ? 0 : 12)
+    if peerWindow == 0, payload > 0, let byte = bytes.first {
+      deferred = .byte(byte)
+      updatePersist(now)
+      return 1
+    }
+    let n = min(peerWindow, payload, bytes.count)
     guard n > 0, start(0x18, Array(bytes.prefix(n)), now, emit) else { return 0 }
     return n
   }
   public mutating func finish(at now: UInt64, emit: ([UInt8]) -> Bool) -> Bool {
-    guard state == .established || state == .closeWait, peerWindow > 0, stamp(now),
-      start(17, [], now, emit)
+    guard state == .established || state == .closeWait, flight == nil, deferred == nil, stamp(now)
     else { return false }
+    if peerWindow == 0 {
+      deferred = .fin
+      updatePersist(now)
+    } else if !start(17, [], now, emit) {
+      return false
+    }
     state = state == .established ? .finWait1 : .lastAck
     return true
   }
@@ -264,6 +295,7 @@ public struct TcpConnection: ~Copyable {
     expires = tcpLater(now, 120_000_000_000)
   }
   private mutating func acknowledged(_ f: Flight, _ echo: UInt32?, _ now: UInt64) {
+    guard !f.probed else { return }
     if recent != nil {
       if let stamp = f.stamp, echo == stamp, now - f.first < 2_073_600_000_000_000 {
         sample(now - f.lastSent)
@@ -359,6 +391,7 @@ public struct TcpConnection: ~Copyable {
     }
     if advance >= 0, delta(p.sequence, wl1) > 0 || (p.sequence == wl1 && delta(p.ack, wl2) >= 0) {
       peerWindow = Int(p.window) << sendShift
+      persist?.unanswered = 0
       maxPeerWindow = max(maxPeerWindow, peerWindow)
       wl1 = p.sequence
       wl2 = p.ack
@@ -379,6 +412,7 @@ public struct TcpConnection: ~Copyable {
             timeWait(now)
           } else if state == .lastAck {
             state = .closed
+            persist = nil
             ackPending = false
             return true
           }
@@ -390,6 +424,7 @@ public struct TcpConnection: ~Copyable {
         flight = f
       }
     }
+    updatePersist(now)
     if len > 0 {
       _ = rx.receive(p) { _ in true }
       ackPending = true
@@ -405,6 +440,24 @@ public struct TcpConnection: ~Copyable {
     }
     return true
   }
+  // Keep the timer independent of loss recovery. A responsive receiver may
+  // keep its window closed indefinitely. Its replies do not restart the clock.
+  private mutating func updatePersist(_ now: UInt64) {
+    if peerWindow == 0 && (flight != nil || deferred != nil) {
+      if persist == nil { persist = PersistTimer(deadline: tcpLater(now, rto), interval: rto) }
+    } else {
+      if persist != nil, peerWindow > 0, flight?.probed == true {
+        flight?.deadline = now
+        flight?.retries = 0
+      }
+      persist = nil
+    }
+  }
+  private mutating func sendDeferred(_ now: UInt64, _ emit: ([UInt8]) -> Bool) -> Bool {
+    guard let d = deferred, start(d.flags, d.data, now, emit) else { return false }
+    deferred = nil
+    return true
+  }
   /// Called at incoming events, writable-device notifications and timer expiry.
   /// Egress policy, pacing and challenge-ACK rate limiting precede publication.
   @discardableResult public mutating func pump(at now: UInt64, emit: ([UInt8]) -> Bool) -> Bool {
@@ -413,7 +466,28 @@ public struct TcpConnection: ~Copyable {
       state = .closed
       ackPending = false
     }
-    if var f = flight, now >= f.deadline {
+    if var timer = persist, now >= timer.deadline {
+      if timer.unanswered >= retryLimit {
+        abort()
+        state = .timedOut
+        return false
+      }
+      if let f = flight {
+        // Never resend an entire old flight through a newly closed window.
+        guard publish(f.sequence, f.flags, Array(f.data.prefix(1)), emit) else { return false }
+      } else if !sendDeferred(now, emit) {
+        return false
+      }
+      flight?.probed = true
+      ackPending = false
+      timer.interval = min(60_000_000_000, timer.interval * 2)
+      timer.deadline = tcpLater(now, timer.interval)
+      timer.unanswered += 1
+      persist = timer
+      return true
+    }
+    if peerWindow > 0, deferred != nil { return sendDeferred(now, emit) }
+    if persist == nil, var f = flight, now >= f.deadline {
       if f.retries >= retryLimit {
         abort()
         state = .timedOut

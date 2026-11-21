@@ -103,7 +103,7 @@ final class TcpConnectionTests: XCTestCase {
     XCTAssertTrue(c.connect(at: 0) { _ in true })
     input(88, 5, 18, 0)
     XCTAssertEqual(
-      c.write([1][...], at: 2) { _ in
+      c.write([][...], at: 2) { _ in
         XCTFail()
         return true
       }, 0)
