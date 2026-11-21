@@ -20,6 +20,9 @@ let package = Package(
     .package(path: "../../../tarwin/tarwin-arch-aarch64"),
     .package(path: "../../../tarwin/tarwin-syscall"),
     .package(path: "../../../tarwin/tarwin-security/random"),
+    .package(path: "../../../tarwin/tarwin-syscall/first-entry"),
+    .package(path: "../../../tarwin/tarwin-object"),
+    .package(path: "../../../tarwin/tarwin-ipc"),
   ],
   targets: [
     .target(
@@ -39,6 +42,9 @@ let package = Package(
     .testTarget(name: "TarbootPreflightTests", dependencies: ["TarbootPreflight"]),
     .target(
       name: "TarwinW1Bootstrap", dependencies: [
+        .product(name: "TarwinArmBootstrap", package: "first-entry"),
+        .product(name: "TarwinObject", package: "tarwin-object"),
+        .product(name: "TarwinIPCChannels", package: "tarwin-ipc"),
         .product(name: "TarwinKernelRandom", package: "random"),
         .product(name: "TarwinRandomCore", package: "random"),
         .product(name: "TarwinArchAarch64", package: "tarwin-arch-aarch64"),
@@ -49,6 +55,8 @@ let package = Package(
         .product(name: "TarwinMM", package: "tarwin-mm"),
       ]),
     .testTarget(name: "TarwinW1BootstrapTests", dependencies: [
+      .product(name: "TarwinIPCChannels", package: "tarwin-ipc"),
+      .product(name: "TarwinObject", package: "tarwin-object"),
       .product(name: "TarwinW0Verify", package: "w0"),
       "TarwinW1Bootstrap", .product(name: "TarwinLoader", package: "tarwin-loader"),
       .product(name: "TarwinArchAarch64", package: "tarwin-arch-aarch64"),

@@ -133,4 +133,6 @@ import Testing
   #expect(leaf(thread.shadow.lowerBound) == 0)
   #expect(
     leaf(thread.tcb) == armUserPage(base + UInt64(tcb), write: true, execute: false, lpa2: false))
+  try checkStartupFrame(images, root: base + 16384, accepted: false)
+  try checkStartupFrame(images, root: base, accepted: true)
 }

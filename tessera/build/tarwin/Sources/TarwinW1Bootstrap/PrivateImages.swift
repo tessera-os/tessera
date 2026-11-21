@@ -5,7 +5,7 @@ import TarwinW0Verify
 /// Only an unpublished address space. Keep the backing pinned and private;
 /// PCR/log publication, thread creation, GCS and activation are separate.
 public struct W1PrivateImages: ~Copyable {
-  public var tables: ArmUserTranslation
+  public private(set) var tables: ArmUserTranslation
   public let processCode, libraryCode: Range<UInt64>
   public let processEntry: UInt64
   public let initialThread: W1ThreadStorage?
