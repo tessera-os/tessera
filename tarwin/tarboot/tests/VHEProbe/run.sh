@@ -34,7 +34,7 @@ LD
 run_guest() {
   # Bound a guest whose unhandled exception correctly stops the boot CPU.
   local board=virt extra=()
-  if [[ $1 == genid ]]; then
+  if [[ $1 == genid* ]]; then
     board=virt-11.1
     extra=(-global fw_cfg_mem.dma_enabled=off -device tarwin-virt-vmgenid-ro)
   fi
@@ -86,9 +86,18 @@ if grep -Fxq 'VHE-CPU-GCS-S1PIE-TCRX=111' "$d/log"; then
   "$bin/swiftc" "${flags[@]}" -emit-ir "$pkgs/tessera/build/tarwin/Sources/TarwinW1Bootstrap/TrapDispatch.swift" \
     "$here/TrapProbe.swift" -o "$d/dispatch.ll"
   "$bin/clang" -target aarch64-none-none-elf -ffunction-sections -fdata-sections -Oz -c "$d/dispatch.ll" -o "$d/dispatch.o"
-  "$bin/clang" -target aarch64-none-none-elf -march=armv9.4-a+gcs -DTEST_GCS -DTEST_SLICE -I "$d" -c "$d/start.S" -o "$d/slice.o"
-  "$bin/ld.lld" --gc-sections -T "$d/sections" "$d/slice.o" "$d/host.o" "$d/gcs-probe.o" "$d/dispatch.o" -o "$d/slice.elf"
-  run_guest slice
+  slice=slice
+  slice_flags=()
+  slice_objects=("$d/gcs-probe.o")
+  if [[ ${TARBOOT_TEST_RO_GENID:-0} == 1 ]]; then
+    slice=genid-slice
+    slice_flags=(-DTEST_HIGH_GENID)
+    slice_objects=("$d/genid-probe.o" "$d/device.o")
+  fi
+  "$bin/clang" -target aarch64-none-none-elf -march=armv9.4-a+gcs -DTEST_GCS -DTEST_SLICE \
+    ${slice_flags[@]+"${slice_flags[@]}"} -I "$d" -c "$d/start.S" -o "$d/slice.o"
+  "$bin/ld.lld" --gc-sections -T "$d/sections" "$d/slice.o" "$d/host.o" "${slice_objects[@]}" "$d/dispatch.o" -o "$d/$slice.elf"
+  run_guest "$slice"
   grep -Fx 'Exception return from AArch64 EL2 to AArch64 EL0 PC 0x100010000' "$d/exceptions"
   [[ $(grep -Fc 'Exception return from AArch64 EL2 to AArch64 EL0 PC ' "$d/exceptions") == 2 &&
      $(grep -Fc '...from EL0 to EL2' "$d/exceptions") == 2 &&

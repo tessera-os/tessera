@@ -86,5 +86,7 @@ only the 16 KiB register aperture at its high address as Device-nGnRnE.
 The reader refuses an inactive root, unaligned offsets and addresses
 outside the four defined registers. The hardware walk permits EL2 reads,
 rejects EL2 writes and EL0 reads, and no longer resolves the old low address.
-The guest compares a fresh versioned sample, never logs the ID, and does
-not use this test as a restore fence or signed process authorization.
+The guarded-interval guest also checks a fresh versioned sample before
+each diagnostic EL0 entry. The measured import and entry APIs accept the
+kernel mapping, not a caller-supplied word reader. Neither test logs the
+ID or serves as a restore fence or signed process authorization.

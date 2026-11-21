@@ -33,5 +33,6 @@ public func sampleGeneration(_ context: UInt64) -> UInt32 {
   let mapped = witness.mapping, pa = W1GenerationSource.registerBase
   guard mapped.readWord(pa + 1) == nil, mapped.readWord(pa + 32) == nil,
     mapped.readWord(pa) == 0x3144_4947_4d56_5754 else { return 0 }
-  return mapped.source.current(readWord: { mapped.readWord($0) }) == witness.initial ? 1 : 0
+  let roots = UnsafePointer<ProbeRoots>(bitPattern: UInt(context + 128))!
+  return mapped.current(in: roots.pointee.host) == witness.initial ? 1 : 0
 }

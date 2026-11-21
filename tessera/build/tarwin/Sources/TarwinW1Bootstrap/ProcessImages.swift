@@ -4,7 +4,6 @@ import TarwinObject
 import TarwinProcessKeys
 import TarwinRandomCore
 import TarwinW0Verify
-import TarwinW1Generation
 
 #if hasFeature(Embedded) && arch(arm64) && os(none)
   @_extern(c, "tarwin_w1_sign_private_import")
@@ -40,7 +39,7 @@ func signProcessImport(
   physical: UInt64, tableBytes: Int, nodes: UnsafeMutableBufferPointer<BlakeCv>,
   witnesses: UnsafeMutableRawBufferPointer, cleanToPoU: (UnsafeRawBufferPointer) -> Bool,
   child: borrowing ProcessExecution, tree: borrowing JobTree, keys: borrowing ArmProcessKeys,
-  generation: W1GenerationSource, readWord: (UInt64) -> UInt64?,
+  generation: W1KernelGeneration,
   host: borrowing ArmFinishedKernelRoot, firstThread: consuming W1ThreadPlacement
 ) -> W1PrivateImages? {
   guard host.physical != physical else { return nil }
@@ -51,7 +50,7 @@ func signProcessImport(
     signImport: { target, modifier in
       signProcessImport(
         target, modifier, plan: plan, root: physical, host: host.physical,
-        child: child, tree: tree, keys: keys, current: { generation.current(readWord: readWord) }
+        child: child, tree: tree, keys: keys, current: { generation.current(in: host) }
       ) { address, slot, pair, ttbr1 in
         #if hasFeature(Embedded) && arch(arm64) && os(none)
           signIA(address, slot, pair, ttbr1)

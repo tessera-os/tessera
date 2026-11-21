@@ -6,7 +6,7 @@ private func load(_ address: UInt64, _ word: UnsafeMutablePointer<UInt64>) -> UI
 @_extern(c, "tarwin_w1_store_user_word")
 private func store(_ address: UInt64, _ word: UInt64) -> UInt32
 
-private struct ProbeRoots: ~Copyable {
+struct ProbeRoots: ~Copyable {
   let host: ArmFinishedKernelRoot
   let a, b: ArmFinishedUserRoot
 }

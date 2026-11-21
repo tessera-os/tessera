@@ -1,4 +1,5 @@
 import TarwinArchAarch64
+import TarwinRandomCore
 import TarwinW1Generation
 
 #if hasFeature(Embedded) && hasFeature(Extern) && arch(arm64) && os(none)
@@ -11,7 +12,7 @@ import TarwinW1Generation
 /// epoch. Keep the host root pinned and immutable, including its frame
 /// ownership and aliases. Serialize sampling and key use against restore.
 public struct W1KernelGeneration {
-  public let source: W1GenerationSource
+  private let source: W1GenerationSource
   private let root, base: UInt64
 
   public init?(_ source: W1GenerationSource, at virtual: UInt64, in host: inout ArmKernelTranslation) {
@@ -22,9 +23,14 @@ public struct W1KernelGeneration {
     base = virtual
   }
 
-  /// Use as the live word reader for import signing and guarded entry.
-  /// An inactive root or an unexpected mapping has no current generation.
-  public func readWord(_ physical: UInt64) -> UInt64? {
+  /// No caller-supplied word reader on the key-use path. Refuse if the
+  /// expected host root differs from the one that owns this aperture.
+  public func current(in host: borrowing ArmFinishedKernelRoot) -> RandomEpoch? {
+    guard host.layout == .guarded, host.physical == root else { return nil }
+    return source.current(readWord: { readWord($0) })
+  }
+
+  func readWord(_ physical: UInt64) -> UInt64? {
     let page = W1GenerationSource.registerBase
     guard physical >= page, physical - page < 32, physical & 7 == 0 else { return nil }
     #if hasFeature(Embedded) && hasFeature(Extern) && arch(arm64) && os(none)

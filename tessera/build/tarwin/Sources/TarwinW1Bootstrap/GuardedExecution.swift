@@ -5,7 +5,6 @@ import TarwinObject
 import TarwinProcessKeys
 import TarwinRandomCore
 import TarwinSyscall
-import TarwinW1Generation
 
 #if hasFeature(Embedded) && arch(arm64) && os(none)
   @_extern(c, "tarwin_w1_guarded_slice")
@@ -40,7 +39,7 @@ public struct W1GuardedExecution: ~Copyable {
   @unsafe public mutating func enter(
     child: borrowing ProcessExecution, selected: borrowing ThreadExecution,
     tree: borrowing JobTree, keys: borrowing ArmProcessKeys,
-    generation: W1GenerationSource, readWord: (UInt64) -> UInt64?,
+    generation: W1KernelGeneration,
     host: borrowing ArmFinishedKernelRoot, stacks: ArmStopStacks
   ) -> Bool {
     guard phase == .ready, child.header == task, selected.header == thread,
@@ -50,7 +49,7 @@ public struct W1GuardedExecution: ~Copyable {
     let root = user.physical
     let upper = host.physical
     let ran = keys.withThreadKeys(child: child, thread: selected, root: root, tree: tree,
-      current: { generation.current(readWord: readWord) }) { words in
+      current: { generation.current(in: host) }) { words in
       guard words.count == 10, let bank = words.baseAddress else { return false }
       #if hasFeature(Embedded) && arch(arm64) && os(none)
         return runSlice(

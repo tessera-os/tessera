@@ -96,6 +96,11 @@ print("""
   b.lo .Lrefusals
   mov x26, #0
   .Ltest_slice:
+  #ifdef TEST_HIGH_GENID
+  mov x0, x19
+  bl tarwin_vhe_sample_generation
+  cbz w0, failed
+  #endif
   ldr x0, =private_b
   ldr x1, =host_root
   mov x2, x23
