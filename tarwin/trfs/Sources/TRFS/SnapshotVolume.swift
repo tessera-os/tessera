@@ -241,15 +241,12 @@ public struct TrfsVolume<M: TrfsMedia>: ~Copyable {
     }
     return !dotsOnly
   }
-  private static func validName(_ name: [UInt8]) -> Bool {
-    name.withUnsafeBytes { validName($0) }
-  }
 
   // nil = media/integrity failure, false = absent. Strictly decreasing
   // backward references bound the walk without consuming kernel stack.
   private func seek(
     _ root: TrfsSnapshot, _ tag: UInt8, _ id: UInt64,
-    _ index: UInt64 = 0, _ name: [UInt8] = []
+    _ index: UInt64 = 0, _ name: UnsafeRawBufferPointer = .init(start: nil, count: 0)
   ) -> Bool? {
     var r = root
     while r != .empty {
@@ -258,9 +255,10 @@ public struct TrfsVolume<M: TrfsMedia>: ~Copyable {
         return false
       }
       if page[112] == tag && p.word(8) == id && p.word(16) == index && name.count == Int(page[114])
-        && name.indices.allSatisfy({ name[$0] == page[128 + $0] })
       {
-        return true
+        var matches = true
+        for i in 0..<name.count where name[i] != page[128 + i] { matches = false; break }
+        if matches { return true }
       }
       r = .init(p, 32)
     }
@@ -276,6 +274,10 @@ public struct TrfsVolume<M: TrfsMedia>: ~Copyable {
     return (k, p.word(24))
   }
   public func lookup(_ parent: UInt64, name: [UInt8], in root: TrfsSnapshot) -> TrfsLookup {
+    name.withUnsafeBytes { lookup(parent, nameBytes: $0, in: root) }
+  }
+  /// Borrow a name outside the volume's scratch page for the duration of the walk.
+  public func lookup(_ parent: UInt64, nameBytes name: UnsafeRawBufferPointer, in root: TrfsSnapshot) -> TrfsLookup {
     guard Self.validName(name), inode(parent, root)?.0 == .directory,
       let found = seek(root, 1, parent, 0, name)
     else { return .damaged }
