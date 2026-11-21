@@ -57,6 +57,12 @@ must queue the private mapping for recovery. On final buffer release, retain
 the original domain and payload until `retireBuffer` has detached the mapping,
 completed IOTLB and device ATC invalidation, and released the pin. Coordinate
 this with slot-wide teardown; a handle close by itself is not a DMA drain.
+During teardown, `SlotDomain.revokeAll` seals the original group and epoch.
+No mapping is detached before the requesters stop and drain. The sweep owns
+all remaining entries, including failed installations with no user handle.
+It reports each mapping and optional buffer KOID only after unpin, so the
+object registry can finish a racing last-close without a second drain.
+A timeout prevents reset and reassignment; retry resumes the stopped phase.
 The device suite exercises the register dispatcher, process table and registry
 with host pin/map callbacks, not a native VM, trap or physical device.
 

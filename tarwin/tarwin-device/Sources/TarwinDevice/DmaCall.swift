@@ -40,7 +40,7 @@ public struct DmaCreateQuery {
         // Both table entries stay live under the process writer lock.
         d.drop { _ in preconditionFailure("domain lost its handle") }
         return withDomain(header) { binding, backing in
-          guard binding.domain == header, backing.koid == header.pointee.koid,
+          guard !backing.revoking, binding.domain == header, backing.koid == header.pointee.koid,
             backing.group == binding.lease.group, backing.epoch == binding.lease.epoch
           else { return dmaError(70) }
           guard binding.lease.process == owner else { return dmaError(4) }

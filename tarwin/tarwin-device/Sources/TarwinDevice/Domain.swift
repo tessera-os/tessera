@@ -58,6 +58,7 @@ public struct SlotDomain: ~Copyable {
   public let page: UInt64
   public internal(set) var serial: UInt64 = 0
   public internal(set) var count: Int = 0
+  public private(set) var revoking = false
   private let entries: UnsafeMutableBufferPointer<DomainEntry>
 
   var hasCapacity: Bool { count < entries.count && serial < .max }
@@ -81,7 +82,8 @@ public struct SlotDomain: ~Copyable {
     _ memorySize: UInt64, _ span: DmaSpan, _ randomWord: UInt64, _ pin: (UInt64, DmaSpan) -> UInt64,
     _ mapPinned: (UInt64, UInt64, UInt64, DmaSpan) -> Bool
   ) -> MapDma {
-    if !domain.permits(.dmaBufferCreate, koid) || slot.group != group || !slot.owns(process, epoch)
+    if revoking || !domain.permits(.dmaBufferCreate, koid) || slot.group != group
+      || !slot.owns(process, epoch)
       || !hasCapacity
       || !deviceAligned(span.offset, page)
       || span.bytes == 0 || !deviceAligned(span.bytes, page) || span.offset >= memorySize
@@ -120,16 +122,46 @@ public struct SlotDomain: ~Copyable {
     _ invalidate: (UInt64, UInt64, UInt64) -> Bool, _ drainAtcs: (UInt64, UInt64, UInt64) -> Bool,
     _ unpin: (UInt64) -> Void
   ) -> Bool {
+    guard !revoking else { return false }
     for i in 0..<count {
       if entries[i].id == id {
-        if !entries[i].retirement.retire(detach, invalidate, drainAtcs, unpin) { return false }
-        count -= 1
-        entries[i] = entries[count]
-        entries[count] = .vacant
-        return true
+        return retireEntry(i, detach, invalidate, drainAtcs, unpin)
       }
     }
     return false
+  }
+
+  private mutating func retireEntry(
+    _ i: Int, _ detach: (UInt64, UInt64, UInt64) -> Bool,
+    _ invalidate: (UInt64, UInt64, UInt64) -> Bool, _ drainAtcs: (UInt64, UInt64, UInt64) -> Bool,
+    _ unpin: (UInt64) -> Void
+  ) -> Bool {
+    guard entries[i].retirement.retire(detach, invalidate, drainAtcs, unpin) else { return false }
+    count -= 1
+    entries[i] = entries[count]
+    entries[count] = .vacant
+    return true
+  }
+
+  /// Under the original domain lock during group teardown. Seal admission
+  /// before testing quiescence. Successful entries never reappear on retry.
+  public mutating func revokeAll(
+    group: UInt64, epoch: UInt64, requestersStoppedAndDrained: Bool,
+    detach: (UInt64, UInt64, UInt64) -> Bool, invalidate: (UInt64, UInt64, UInt64) -> Bool,
+    drainAtcs: (UInt64, UInt64, UInt64) -> Bool, unpin: (UInt64) -> Void,
+    retired: (UInt64, UInt64?) -> Void
+  ) -> Bool {
+    guard self.group == group, self.epoch == epoch else { return false }
+    revoking = true
+    guard requestersStoppedAndDrained else { return false }
+    while count > 0 {
+      let i = count - 1
+      let id = entries[i].id
+      let buffer = entries[i].buffer
+      guard retireEntry(i, detach, invalidate, drainAtcs, unpin) else { return false }
+      retired(id, buffer == 0 ? nil : buffer)
+    }
+    return true
   }
 
   /// The registry supplies exclusively owned, initialized slab storage that
