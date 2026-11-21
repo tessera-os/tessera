@@ -45,6 +45,8 @@ Arm a masked vector through `PortInterrupt` using the validated slot epoch, inte
 
 The kernel's `IoPorts` implementation must retain the actual port object, serialize access under its lock and wake the number of waiters returned by `TarwinIPC.CompletionPort`. Enqueue cancellation work under the port lock and execute it outside that lock, never recursively acquire the device lock. Release a retained port after recording its last buffer access and notifying waiters.
 
+`InterruptCompleteCall` consumes the generated single-register Interrupt.complete selector. The calling process must hold Signal on the retained Interrupt and still own its IOMMU group at the original epoch. A delivered interrupt can rearm only its bound port, key and vector. If the notification port has no credit, the call returns ShouldWait without unmasking. Duplicate completion and rearm during drain are refused. The native registry owns the underlying port binding through revoke and supplies locking, trap entry and controller operations.
+
 ## Firmware MMIO discovery
 
 `firmwareVirtioMmio` walks TarwinBoot's FDT cursor over a pinned immutable boot tree. It stages only enabled `virtio,mmio` nodes in root physical space or bounded simple-bus translations. Child and parent address cells are independent; a missing bus mapping, overlapping device windows, truncated property or ambiguous translation rejects the snapshot before probing. Per-node interrupt fields are offsets in that tree, not grants. The interrupt-controller and IOMMU owners must resolve the actual route and isolation group before slot assignment. This is not an ACPI namespace interpreter.

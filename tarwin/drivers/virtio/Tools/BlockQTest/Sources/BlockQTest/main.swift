@@ -25,6 +25,7 @@ private struct DeviceTreeBlob: ByteSource {
 final class QTest {
   private let process = Process(), input = Pipe(), output = Pipe()
   private var buffered = Data()
+  private(set) var pciInterrupts: Set<UInt32> = []
   private(set) var pciNodes: [RegistryNode] = []
   private(set) var mmio: [DeviceRange] = []
   private(set) var error: Error?
@@ -114,7 +115,16 @@ final class QTest {
         buffered.removeSubrange(...end)
         if line == "OK" { return "" }
         if line.hasPrefix("OK ") { return String(line.dropFirst(3)) }
-        if line.hasPrefix("IRQ ") { continue }
+        if line.hasPrefix("IRQ ") {
+          let parts = line.split(separator: " ")
+          guard parts.count == 3, let irq = UInt32(parts[2]),
+            parts[1] == "raise" || parts[1] == "lower"
+          else { throw Failure("Invalid IRQ notification") }
+          if (16...23).contains(irq) {
+            if parts[1] == "raise" { pciInterrupts.insert(irq) } else { pciInterrupts.remove(irq) }
+          }
+          continue
+        }
         throw Failure("QTest rejected \(command): \(line)")
       }
       var descriptor = pollfd(
@@ -219,7 +229,9 @@ struct TestClient: IoPorts, ~Copyable {
   mutating func wakePort(_ id: UInt64, count: Int) { notifications += count }
 }
 
-func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?, encrypted: Bool) throws {
+func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?, encrypted: Bool, intx: Bool)
+  throws
+{
   let bias = dma?.bias ?? 0
   let mem = QueueMemory(
     count: 8, descriptors: machine.ram + 0x100000, available: machine.ram + 0x101000,
@@ -282,6 +294,11 @@ func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?, encrypted
   q.write("l", list + 8, firstBytes)
   q.write("l", list + 12, 0)
   var ops: [TarwinBlockWire.BlockOp] = [.write, .flush, .read]
+  var irq: Q35DiskInterrupt?
+  if intx {
+    _ = q.send("irq_intercept_in ioapic")
+    try q.require(q.pciInterrupts.isEmpty, "Unexpected initial disk interrupt")
+  }
   if dma == nil { ops += [.zero, .discard, .flush] }
   for operation in ops {
     let flush = operation == .flush
@@ -362,6 +379,13 @@ func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?, encrypted
     try q.require(submitted, "Request \(cookie) submission failed")
     transport.notify(0)
     let deadline = ContinuousClock.now + .seconds(3)
+    if intx {
+      while q.pciInterrupts.isEmpty && q.error == nil && .now < deadline { _ = q.send("inb 0x80") }
+      guard q.pciInterrupts.count == 1, let pin = q.pciInterrupts.first else {
+        throw q.error ?? Failure("Expected one asserted PCI INTx input")
+      }
+      if let irq { try irq.deliver(pin) } else { irq = Q35DiskInterrupt(q, pin: pin) }
+    }
     while q.read("w", mem.used + 2) == UInt64(queue.consumed) && q.error == nil && .now < deadline {
       usleep(200)
     }
@@ -409,7 +433,9 @@ func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?, encrypted
       }
     }
     transport.acknowledge()
+    try irq?.afterDeviceAck()
   }
+  if let irq { try irq.finish(expected: ops.count - 1) }
   if let dma {
     try q.require(
       dma.retired == 2 && q.read("l", 0xfed9_0034) == 0,
@@ -426,13 +452,16 @@ func run() throws {
   let streams = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--byte-streams"
   let tcp = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--tcp-receive"
   let listen = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--tcp-listen"
-  guard CommandLine.arguments.count == 2 || translated || neighbors || streams || tcp || listen,
+  let intx = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--intx"
+  guard
+    CommandLine.arguments.count == 2 || translated || neighbors || streams || tcp || listen || intx,
     let machine = Machine(
       rawValue: URL(fileURLWithPath: CommandLine.arguments[1]).lastPathComponent)
   else {
     throw Failure("Usage: BlockQTest /path/to/qemu-system-{aarch64,x86_64,riscv64}")
   }
   guard !translated || machine == .x64 else { throw Failure("--vtd requires q35") }
+  guard !intx || machine == .x64 else { throw Failure("--intx requires q35") }
   let disk = FileManager.default.temporaryDirectory.appendingPathComponent(
     UUID().uuidString + ".raw")
   try Data(repeating: 0x6c, count: 1 << 20).write(to: disk, options: .withoutOverwriting)
@@ -476,9 +505,9 @@ func run() throws {
       return
     }
     let dma = translated ? try TranslatedDisk(q) : nil
-    try testBlock(q, machine, dma, encrypted: encrypted)
+    try testBlock(q, machine, dma, encrypted: encrypted, intx: intx)
     try dma?.close(q)
-    if !translated { try testNetwork(q, machine) }
+    if !translated && !intx { try testNetwork(q, machine) }
   }
   let contents = try Data(contentsOf: disk)
   let sector = 7 * 512
@@ -506,19 +535,21 @@ func run() throws {
 do {
   try run()
   print(
-    CommandLine.arguments.last == "--tcp-receive"
-      ? "PASS: TCP active open, bidirectional stream, lost-segment retransmit and acknowledged FIN against isolated libslirp"
-      : CommandLine.arguments.last == "--tcp-listen"
-        ? "PASS: passive TCP handshake and bidirectional stream against restricted libslirp via a private Unix socket"
-        : CommandLine.arguments.last == "--byte-streams"
-          ? "PASS: bidirectional single-port virtio-console and short uncredited virtio-rng input"
-          : CommandLine.arguments.last == "--vtd-xts"
-            ? "PASS: AES-256-XTS known-answer sector over q35 VT-d, retired before decryption"
-            : CommandLine.arguments.last == "--vtd"
-              ? "PASS: q35 VT-d translated disk DMA, IOTLB drain and same-IOVA remap"
-              : CommandLine.arguments.last == "--neighbors"
-                ? "PASS: router advertisement, SLAAC/DAD, ARP and IPv6 neighbor discovery against restricted libslirp"
-                : "PASS: QEMU virtio-blk scatter/gather write/flush/readback, zero/discard extents and paced UDP delivery across isolated NICs"
+    CommandLine.arguments.last == "--intx"
+      ? "PASS: observed disk INTx, IOAPIC masking, Device notifications and handle-authorized rearm on q35"
+      : CommandLine.arguments.last == "--tcp-receive"
+        ? "PASS: TCP active open, bidirectional stream, lost-segment retransmit and acknowledged FIN against isolated libslirp"
+        : CommandLine.arguments.last == "--tcp-listen"
+          ? "PASS: passive TCP handshake and bidirectional stream against restricted libslirp via a private Unix socket"
+          : CommandLine.arguments.last == "--byte-streams"
+            ? "PASS: bidirectional single-port virtio-console and short uncredited virtio-rng input"
+            : CommandLine.arguments.last == "--vtd-xts"
+              ? "PASS: AES-256-XTS known-answer sector over q35 VT-d, retired before decryption"
+              : CommandLine.arguments.last == "--vtd"
+                ? "PASS: q35 VT-d translated disk DMA, IOTLB drain and same-IOVA remap"
+                : CommandLine.arguments.last == "--neighbors"
+                  ? "PASS: router advertisement, SLAAC/DAD, ARP and IPv6 neighbor discovery against restricted libslirp"
+                  : "PASS: QEMU virtio-blk scatter/gather write/flush/readback, zero/discard extents and paced UDP delivery across isolated NICs"
   )
 } catch {
   FileHandle.standardError.write(Data("\(error)\n".utf8))

@@ -3,7 +3,7 @@ import TarwinIPC
 import TarwinIoCompletion
 import XCTest
 
-private struct Ports: IoPorts, ~Copyable {
+struct IrqTestPorts: IoPorts, ~Copyable {
   var p: CompletionPort, refs = 0, woken = 0
   mutating func retainPort(_ n: UInt64) -> Bool {
     guard n == 19 else { return false }
@@ -21,7 +21,7 @@ final class PortInterruptTests: XCTestCase {
   func testReserveBeforeUnmaskAndRetainCancelledVectorUntilDrained() {
     var slab = [PortSlot()]
     slab.withUnsafeMutableBufferPointer { storage in
-      var ports = Ports(p: CompletionPort(storage: storage)!)
+      var ports = IrqTestPorts(p: CompletionPort(storage: storage)!)
       var irq = PortInterrupt(object: 33, epoch: 2, vector: 7)
       XCTAssertTrue(ports.p.post(PortPacket()))
       XCTAssertFalse(irq.arm(epoch: 2, port: 19, key: 8, ports: &ports) { XCTFail() })

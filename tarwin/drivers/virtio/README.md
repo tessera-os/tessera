@@ -18,6 +18,8 @@ The service snapshots each vector record once under a pinned read-only list gran
 
 The hosted block QTest also checks each operation's terminal LibTessera I/O packet (kind, key, status and byte count), its waiter notification and the release of its port reference. It does not emulate CPU interrupt entry or IOMMU invalidation.
 
+On q35, add `--intx` to test the interrupt path. The first disk completion identifies its asserted IOAPIC input in an otherwise idle fixture. Subsequent requests wait for that input rather than polling the disk first. The host checks remote IRR, masks the line, writes the IOAPIC v0x20 directed EOI and receives a Device notification. After the virtio ISR read lowers the input, Interrupt.complete rearms it using the driver's Signal handle. This checks device/controller registers and port backpressure, not LAPIC interrupt entry, MSI remapping, physical latency or a Tarwin boot.
+
 On the Arm and RISC-V models the harness reads QEMU's generated DTB for the configured device topology, enumerates enabled virtio MMIO transports and probes those windows only; there is no board-specific scan address or stride fallback. On q35 the hosted PCI setup still stands in for firmware.
 
 ### q35 VT-d disk remap

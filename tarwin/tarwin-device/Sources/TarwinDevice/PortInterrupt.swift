@@ -7,7 +7,8 @@ import TarwinIoCompletion
 public struct PortInterrupt: ~Copyable {
   public private(set) var line: DriverInterrupt
   private let object: UInt64, vector: UInt32
-  private var pending: IoReservation?, revoking = false
+  private var pending: IoReservation?
+  private(set) var revoking = false
   public init(object: UInt64, epoch: UInt64, vector: UInt32) {
     line = DriverInterrupt(slotEpoch: epoch, state: .armed)
     self.object = object
