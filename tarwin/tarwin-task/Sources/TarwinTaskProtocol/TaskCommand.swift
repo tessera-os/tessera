@@ -9,6 +9,7 @@ public enum TaskCommand: Sendable {
   case resumeThread(id: UInt64)
   case terminate
   case snapshot(address: UInt64, size: UInt64)
+  case threadIdentity(id: UInt64)
 
   public enum Opcode: UInt32, Sendable {
     case map = 1
@@ -20,6 +21,7 @@ public enum TaskCommand: Sendable {
     case resumeThread = 7
     case terminate = 8
     case snapshot = 9
+    case threadIdentity = 10
 
     public var byteCount: Int {
       switch self {
@@ -28,7 +30,7 @@ public enum TaskCommand: Sendable {
       case .unmap, .snapshot: 24
       case .createThread: 48
       case .setThreadState: 288
-      case .suspendThread, .resumeThread: 16
+      case .suspendThread, .resumeThread, .threadIdentity: 16
       case .terminate: 8
       }
     }
@@ -51,6 +53,7 @@ public enum TaskCommand: Sendable {
     case .resumeThread: .resumeThread
     case .terminate: .terminate
     case .snapshot: .snapshot
+    case .threadIdentity: .threadIdentity
     }
   }
 
@@ -92,6 +95,8 @@ public enum TaskCommand: Sendable {
       self = .terminate
     case .snapshot:
       self = .snapshot(address: read64(bytes, 8), size: read64(bytes, 16))
+    case .threadIdentity:
+      self = .threadIdentity(id: read64(bytes, 8))
     }
   }
 
@@ -130,7 +135,7 @@ public enum TaskCommand: Sendable {
       write(state.pc, bytes, 272)
       write(state.cpsr, bytes, 280)
       write(UInt32(0), bytes, 284)
-    case .suspendThread(let id), .resumeThread(let id):
+    case .suspendThread(let id), .resumeThread(let id), .threadIdentity(let id):
       write(id, bytes, 8)
     case .terminate:
       break
@@ -169,24 +174,35 @@ public struct TaskThreadState: Sendable {
 public struct TaskCommandReply: Sendable {
   public static let messageID: Int32 = 0x5457_0102
   public static let byteCount = 8
+  public static let threadIdentityByteCount = 16
   public let status: Int32
   /// An owned send right on a successful snapshot reply. The caller deallocates it.
   public let memoryEntry: UInt32?
+  public let kernelThreadID: UInt64?
+  public var payloadByteCount: Int { kernelThreadID == nil ? Self.byteCount : Self.threadIdentityByteCount }
 
-  public init(status: Int32, memoryEntry: UInt32? = nil) {
+  public init(status: Int32, memoryEntry: UInt32? = nil, kernelThreadID: UInt64? = nil) {
     self.status = status
     self.memoryEntry = memoryEntry
+    self.kernelThreadID = kernelThreadID
   }
 
   public init?(decoding bytes: UnsafeRawBufferPointer) {
-    guard bytes.count == Self.byteCount, read32(bytes, 0) == TaskCommand.version else { return nil }
-    self.init(status: Int32(bitPattern: read32(bytes, 4)))
+    guard bytes.count == Self.byteCount || bytes.count == Self.threadIdentityByteCount,
+      read32(bytes, 0) == TaskCommand.version else { return nil }
+    let status = Int32(bitPattern: read32(bytes, 4))
+    let thread = bytes.count == Self.threadIdentityByteCount ? read64(bytes, 8) : nil
+    guard thread == nil || (status == 0 && thread != 0) else { return nil }
+    self.init(status: status, kernelThreadID: thread)
   }
 
   public func encode(into bytes: UnsafeMutableRawBufferPointer) -> Bool {
-    guard bytes.count == Self.byteCount else { return false }
+    guard bytes.count == payloadByteCount,
+      kernelThreadID == nil || (status == 0 && kernelThreadID != 0 && memoryEntry == nil)
+    else { return false }
     write(TaskCommand.version, bytes, 0)
     write(UInt32(bitPattern: status), bytes, 4)
+    if let kernelThreadID { write(kernelThreadID, bytes, 8) }
     return true
   }
 }

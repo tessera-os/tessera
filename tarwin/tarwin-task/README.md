@@ -23,6 +23,7 @@ Tarwin thread IDs and register values are u64 unless otherwise noted.
 | 7 | Resume thread | thread ID |
 | 8 | Terminate | none |
 | 9 | Snapshot | address, size |
+| 10 | Thread identity | thread ID |
 
 The TLS field is a Tarwin virtual address, not a host register selector.
 On macOS 26.6.2, the task-side probe could write `TPIDR_EL0` but did not
@@ -33,7 +34,7 @@ The hosted kernel maintains the authoritative address map and thread state;
 successful status from the task is not security evidence.
 
 Every request has one reply (`TaskCommandReply.messageID`), sent with
-`MOVE_SEND_ONCE` and no further reply right. Its eight payload bytes are
+`MOVE_SEND_ONCE` and no further reply right. Its first eight payload bytes are
 version (u32) followed by the Mach return status (i32; zero means success).
 Only a successful `snapshot` has a complex reply: one port descriptor carries
 the copy-on-write memory-entry send right. Pass `reply.memoryEntry` to
@@ -41,6 +42,10 @@ the copy-on-write memory-entry send right. Pass `reply.memoryEntry` to
 Snapshot ranges must be nonempty page-aligned readable guest mappings and
 cannot include the gate page. Suspend guest writers before snapshotting
 multiple ranges when they must describe the same point in time.
+A successful `threadIdentity` appends the kernel's `THREAD_IDENTIFIER_INFO`
+thread ID (u64); failures have only the status payload. Pass the logical
+Tarwin thread ID to `SpawnedTask.threadIdentity(id:)` after creating the
+thread and before its first resume.
 `terminate` acknowledges before exiting; process exit is observed separately.
 
 The Swift codecs take exact payload slices and do not allocate or require

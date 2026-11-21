@@ -240,6 +240,25 @@ import Testing
   try waitForReport(3, value: 0x1234)
 }
 
+@Test func queriesDistinctStableKernelIdentitiesBeforeResumingThreads() throws {
+  let task = try TaskSpawner.spawn(executable: builtExecutable("tarwin-task"))
+  defer { terminateAndReap(task) }
+  let start = TaskWindow.base
+  let stack = start + TaskWindow.pageSize - 16
+  #expect(throws: TaskTransportError.mach(KERN_INVALID_ARGUMENT)) {
+    try task.threadIdentity(id: 1).get()
+  }
+  for id: UInt64 in [1, 2] {
+    try #require(try task.command(
+      .createThread(id: id, entry: start, argument: 0, stack: stack, tls: 0)).get().status == KERN_SUCCESS)
+  }
+  let first = try task.threadIdentity(id: 1).get()
+  let second = try task.threadIdentity(id: 2).get()
+  #expect(first != 0 && second != 0 && first != second)
+  #expect(try task.threadIdentity(id: 1).get() == first)
+  #expect(try task.threadIdentity(id: 2).get() == second)
+}
+
 private func terminateAndReap(_ task: SpawnedTask) {
   if (try? task.command(.terminate, timeout: 1_000).get().status) != KERN_SUCCESS {
     kill(task.pid, SIGKILL)

@@ -18,6 +18,9 @@ while true {
     if case .snapshot(let address, let size) = command {
       return TaskRuntime.snapshot(address: address, size: size)
     }
+    if case .threadIdentity(let id) = command {
+      return runtime.threadIdentity(id: id)
+    }
     return TaskCommandReply(status: runtime.handle(command, memoryEntry: entry))
   }
   switch result {

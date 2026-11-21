@@ -26,6 +26,7 @@ private final class FixtureTrapSink: HostExceptionSink {
   let fatalSite: UInt64
   let stopped = DispatchSemaphore(value: 0)
   let dispatcher = Mutex<KernelGateDispatch?>(nil)
+  let faultThread = Mutex<UInt64?>(nil)
 
   init(gates: [UInt64: UInt64], fatalSite: UInt64) {
     self.gates = gates
@@ -34,6 +35,7 @@ private final class FixtureTrapSink: HostExceptionSink {
 
   func handle(_ fault: HostException) -> HostExceptionDisposition {
     if fault.kind == .breakpoint, gates[fault.pc] != nil {
+      faultThread.withLock { $0 = fault.thread.threadID }
       let x = fault.x
       let request = GateRequest(threadID: 1, number: x[16],
         arguments: CallRegisters(x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]))
@@ -123,6 +125,7 @@ private final class FixtureTrapSink: HostExceptionSink {
     address: data, length: dataSize, offset: 0, protection: UInt32(rw), copy: false)), entry: dataEntry)
   let report = try #require(UnsafePointer<UInt64>(bitPattern: UInt(local)))
   try command(.createThread(id: 1, entry: text, argument: 0, stack: stack, tls: tcb))
+  let kernelThreadID = try task.threadIdentity(id: 1).get()
   var registers = InlineArray<31, UInt64>(repeating: 0)
   registers[0] = event.first
   registers[1] = 8
@@ -135,6 +138,7 @@ private final class FixtureTrapSink: HostExceptionSink {
   try command(.resumeThread(id: 1))
 
   let call = try ports.receive(timeout: 2_000).get()
+  #expect(sink.faultThread.withLock { $0 } == kernelThreadID)
   #expect(call.senderPID == task.pid)
   #expect(report[0] == tcb)
   try #require(dispatcher.dispatch(call) == .blocked)

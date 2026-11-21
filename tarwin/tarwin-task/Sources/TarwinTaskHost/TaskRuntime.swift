@@ -23,6 +23,21 @@ struct TaskRuntime {
     return TaskCommandReply(status: KERN_SUCCESS, memoryEntry: entry)
   }
 
+  func threadIdentity(id: UInt64) -> TaskCommandReply {
+    guard let index = threadIndex(id) else { return TaskCommandReply(status: KERN_INVALID_ARGUMENT) }
+    var info = thread_identifier_info_data_t()
+    let words = MemoryLayout<thread_identifier_info_data_t>.size / MemoryLayout<integer_t>.size
+    var count = mach_msg_type_number_t(words)
+    let status = withUnsafeMutablePointer(to: &info) {
+      $0.withMemoryRebound(to: integer_t.self, capacity: words) {
+        thread_info(threads[index].port, thread_flavor_t(THREAD_IDENTIFIER_INFO), $0, &count)
+      }
+    }
+    guard status == KERN_SUCCESS else { return TaskCommandReply(status: status) }
+    guard count == words, info.thread_id != 0 else { return TaskCommandReply(status: KERN_FAILURE) }
+    return TaskCommandReply(status: KERN_SUCCESS, kernelThreadID: info.thread_id)
+  }
+
   private var threads = InlineArray<256, ThreadSlot>(repeating: ThreadSlot())
   private let gate: TaskGateRuntime
 
@@ -113,7 +128,7 @@ struct TaskRuntime {
       return thread_resume(threads[index].port)
     case .terminate:
       return KERN_SUCCESS
-    case .snapshot:
+    case .snapshot, .threadIdentity:
       return KERN_NOT_SUPPORTED
     }
   }

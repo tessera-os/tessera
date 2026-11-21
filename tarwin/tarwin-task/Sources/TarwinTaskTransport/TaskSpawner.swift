@@ -23,6 +23,16 @@ public final class SpawnedTask: Sendable {
   ) -> Result<TaskCommandReply, TaskTransportError> {
     TaskCommandTransport.call(command, on: commandSend, memoryEntry: memoryEntry, timeout: timeout)
   }
+
+  public func threadIdentity(
+    id: UInt64, timeout: mach_msg_timeout_t = 5_000
+  ) -> Result<UInt64, TaskTransportError> {
+    command(.threadIdentity(id: id), timeout: timeout).flatMap { response in
+      guard response.status == KERN_SUCCESS else { return .failure(.mach(response.status)) }
+      guard let threadID = response.kernelThreadID else { return .failure(.invalidMessage) }
+      return .success(threadID)
+    }
+  }
 }
 
 public enum TaskSpawner {

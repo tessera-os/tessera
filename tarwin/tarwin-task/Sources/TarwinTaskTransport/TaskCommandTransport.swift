@@ -31,7 +31,8 @@ public enum TaskCommandTransport {
       guard let bytes = TaskMachMessage.receivedPayload(
         packet, id: TaskCommandReply.messageID, descriptors: descriptors),
         let reply = TaskCommandReply(decoding: bytes),
-        (command.opcode == .snapshot && reply.status == KERN_SUCCESS) == (descriptors == 1)
+        (command.opcode == .snapshot && reply.status == KERN_SUCCESS) == (descriptors == 1),
+        (command.opcode == .threadIdentity && reply.status == KERN_SUCCESS) == (reply.kernelThreadID != nil)
       else {
         mach_msg_destroy(head)
         return .failure(.invalidMessage)
@@ -80,20 +81,22 @@ public enum TaskCommandTransport {
       var result = handle(command, entry)
       if entry != 0 { TaskMachMessage.releaseSend(entry) }
       let expectedEntry = command.opcode == .snapshot && result.status == KERN_SUCCESS
-      if expectedEntry != (result.memoryEntry != nil) {
+      let expectedThreadID = command.opcode == .threadIdentity && result.status == KERN_SUCCESS
+      if expectedEntry != (result.memoryEntry != nil)
+        || expectedThreadID != (result.kernelThreadID != nil) || result.kernelThreadID == 0 {
         if let unexpected = result.memoryEntry { TaskMachMessage.releaseSend(unexpected) }
         result = TaskCommandReply(status: KERN_FAILURE)
       }
       let descriptors = result.memoryEntry == nil ? 0 : 1
       TaskMachMessage.prepare(
-        packet, id: TaskCommandReply.messageID, payloadBytes: TaskCommandReply.byteCount,
+        packet, id: TaskCommandReply.messageID, payloadBytes: result.payloadByteCount,
         descriptors: descriptors, destination: reply, disposition: MACH_MSG_TYPE_MOVE_SEND_ONCE)
       if let output = result.memoryEntry {
         TaskMachMessage.putPort(packet, 0, output, MACH_MSG_TYPE_COPY_SEND)
       }
       let offset = TaskMachMessage.payloadOffset(descriptors: descriptors)
       _ = result.encode(into: UnsafeMutableRawBufferPointer(
-        rebasing: packet[offset..<(offset + TaskCommandReply.byteCount)]))
+        rebasing: packet[offset..<(offset + result.payloadByteCount)]))
       if TaskMachMessage.send(packet, timeout: timeout ?? 5_000) != KERN_SUCCESS {
         TaskMachMessage.releaseSend(reply)
       }

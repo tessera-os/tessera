@@ -17,6 +17,7 @@ import Testing
     (.resumeThread(id: 18), header(7) + word(18)),
     (.terminate, header(8)),
     (.snapshot(address: 19, size: 20), header(9) + word(19) + word(20)),
+    (.threadIdentity(id: 21), header(10) + word(21)),
   ]
   for (command, expected) in cases {
     var bytes = [UInt8](repeating: 0xff, count: expected.count + 1)
@@ -51,6 +52,17 @@ import Testing
   #expect(bytes.withUnsafeBytes { TaskCommandReply(decoding: $0)?.status } == -2)
   bytes[0] = 2
   #expect(bytes.withUnsafeBytes { TaskCommandReply(decoding: $0) } == nil)
+}
+
+@Test func threadIdentityReplyWireBytes() {
+  let identity: UInt64 = 0x0102_0304_0506_0708
+  let reply = TaskCommandReply(status: 0, kernelThreadID: identity)
+  var bytes = [UInt8](repeating: 0, count: reply.payloadByteCount)
+  #expect(bytes.withUnsafeMutableBytes { reply.encode(into: $0) })
+  #expect(bytes == header(0) + word(identity))
+  #expect(bytes.withUnsafeBytes { TaskCommandReply(decoding: $0)?.kernelThreadID } == identity)
+  #expect((header(0) + word(0)).withUnsafeBytes { TaskCommandReply(decoding: $0) } == nil)
+  #expect((header(1) + word(identity)).withUnsafeBytes { TaskCommandReply(decoding: $0) } == nil)
 }
 
 private func tryDecode(_ bytes: [UInt8]) -> TaskCommand? {
