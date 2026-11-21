@@ -9,7 +9,7 @@ Set `SWTPM_REPLAY=1` (requires swtpm) and `QEMU_TREES=1` (requires QEMU aarch64/
 | Package | Portable code exercised by the host programs | Not implied |
 | --- | --- | --- |
 | kcore | Checked unsigned intervals and alignment | Kernel standard library or verified context/stack discipline |
-| tarboot | Slot choice, counter transition calculation, version floor, TIRA table and member validation | Writing firmware variables, verifying member hashes or release signatures, recovery entry |
+| tarboot | Slot choice, counter transition calculation, version floor, TIRA members, UEFI table CRCs, descriptor ordering, exit retry semantics | Writing firmware variables, verifying member hashes or release signatures, recovery entry |
 | tarwin-boot | Little-endian TBIB revision 1 encoder, streaming decoder, sorted memory map validation, SHA-256 TPM extend and TCG Event2 bytes, flattened device tree RAM and static reservations | Physical address ownership, train history validation, live CRB/TIS or DICE, CPU entry |
 | arch packages | Stage-one user leaf descriptors and walk indices for the ordinary page granule on each ISA | Live page tables, TLB maintenance, trap/interrupt handling or an instruction executed on that ISA |
 | tarwin-mm | Physical page arenas, mapping restrictions, A.2 regions, zero/copy/tag restoration, LZ4 blocks, file-cache leases, footprint, purge and jetsam selection | Live page faults, a running reclamation thread, TRFS backing, swap, zstd compaction or a kernel heap |
@@ -23,8 +23,10 @@ Set `SWTPM_REPLAY=1` (requires swtpm) and `QEMU_TREES=1` (requires QEMU aarch64/
 4. Descriptors have no privileged side effect. Only the authorized writer may install them and must perform architecture-specific synchronization and invalidation. Unsupported translation formats fail closed.
 5. TRFS implements the `FilePager` lease on its unified file-cache frame. Pin through installation; release only after teardown and invalidation. These leases do not authorize executable mappings. Anonymous reclaim stores raw LZ4 blocks including packed allocation tags; do not evict on failure or unless storing the block saves memory. Restore into an unpublished frame and discard partial output on any error.
 
+### Firmware and TPM interop
+
+The TPM test sends a Swift-encoded PCR_Extend command to a fresh software TPM and checks PCR 8 against SHA-256 replay of its Event2 digest. The device-tree tests consume QEMU-generated trees. A separate [firmware probe](../tarboot/tests/FirmwareProbe/README.md) executes the Swift UEFI memory-map and exit code on all three QEMU targets and shuts down the guest via runtime services. The probe is not a signed Tarwin boot set or a kernel.
+
 ### Pending gates
 
-The TPM test sends a Swift-encoded PCR_Extend command to a fresh software TPM and checks PCR 8 against SHA-256 replay of its Event2 digest. The firmware tests consume QEMU-generated device trees, not a running kernel.
-
-Compiler object checks do not verify generic specializations for unknown future callers, kernel-profile TIR, interrupt/stack discipline or a linked kernel. W0 entry, firmware authentication, live page faults, three-ISA execution, reference hardware, canonical TRFS and same-device performance comparisons remain unverified.
+Compiler object checks do not verify generic specializations for unknown future callers, kernel-profile TIR, interrupt/stack discipline or a linked kernel. W0 entry, firmware authentication, live page faults, three-ISA kernel execution, reference hardware, canonical TRFS and same-device performance comparisons remain unverified.
