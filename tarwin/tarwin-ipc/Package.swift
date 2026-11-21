@@ -7,12 +7,15 @@ let package = Package(
     .library(name: "TarwinIPC", targets: ["TarwinIPC"]),
     .library(name: "TarwinIPCChannels", targets: ["TarwinIPCChannels"]),
   ],
-  dependencies: [.package(path: "../tarwin-object")],
+  dependencies: [.package(path: "../tarwin-object"), .package(path: "../tarwin-syscall")],
   targets: [
     .target(name: "TarwinIPC"),
     .target(
       name: "TarwinIPCChannels",
-      dependencies: ["TarwinIPC", .product(name: "TarwinObject", package: "tarwin-object")]),
+      dependencies: [
+        "TarwinIPC", .product(name: "TarwinObject", package: "tarwin-object"),
+        .product(name: "TarwinABI", package: "tarwin-syscall"),
+      ]),
     .testTarget(
       name: "TarwinIPCTests",
       dependencies: [

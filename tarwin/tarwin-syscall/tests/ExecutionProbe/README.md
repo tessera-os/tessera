@@ -18,7 +18,10 @@ and finishes an epoch grace period.
 It also resolves a borrowed self-process handle through the native register
 interface, and rejects that call after process exit. It requeues an address
 waiter, wakes it and rejects its stale timeout.
-The guest checks a descendant's footprint against the root's budget, then
+The guest preloads a child's sole bootstrap channel with a §11.4 Startup
+message and a job handle, verifies the child-local name, decodes the
+received grant, and rejects reuse of the handoff after the read.
+It checks a descendant's footprint against the root's budget, then
 marks its thread runnable, freezes and kills it, drains the
 process handle table and checks its termination signal and the root's budget.
 The guest also accounts a periodic work group's first interval, rejects its

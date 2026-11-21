@@ -92,6 +92,14 @@ public struct HandleTable: ~Copyable {
 
   func contains(_ name: UInt64) -> Bool { live(name) != nil }
 
+  func soleHandle(_ name: UInt64, matches header: UnsafePointer<ObjectHeader>, rights: UInt64)
+    -> Bool
+  {
+    guard count == 1, let cell = live(name) else { return false }
+    let held = snapshot(cell)
+    return held.header == header && held.rights == rights
+  }
+
   private func live(_ name: UInt64) -> UnsafeMutablePointer<HandleCell>? {
     let i = Int(handleIndex(name))
     guard name != 0, i < cells.count, let base = cells.baseAddress else { return nil }

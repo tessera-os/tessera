@@ -106,6 +106,11 @@ public struct ProcessExecution: ~Copyable {
     return body(&handles)
   }
   public var handleReader: HandleReadView { handles.reader }
+  /// Requires the table writer lock.
+  public func soleStartupHandle(_ name: UInt64, channel: UnsafePointer<ObjectHeader>) -> Bool {
+    phase == .created && channel.pointee.kind == TarwinKind.channel
+      && handles.soleHandle(name, matches: channel, rights: 1 << 2)
+  }
   /// Process.current borrows a name, not a KOID. Hold the job, process and
   /// table writer locks just as for withHandles. Never reuse a closed name.
   public mutating func currentHandle(tree: borrowing JobTree) -> HandleMutation {

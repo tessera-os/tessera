@@ -91,6 +91,91 @@ private func selfHandle(_ process: inout ProcessExecution, tree: borrowing JobTr
   }
 }
 
+private func bootstrapChannel(
+  _ arena: inout Arena, process: inout ProcessExecution, tree: borrowing JobTree,
+  ids: borrowing KoidSource, job: UnsafePointer<ObjectHeader>
+) -> Bool {
+  let heads = arena.take(ObjectHeader.self, count: 2)
+  for i in heads.indices {
+    (heads.baseAddress! + i).initialize(
+      to: ObjectHeader(
+        source: ids, ownerJob: process.job.id, kind: TarwinKind.channel, maximumRights: 4)!)
+  }
+  let sizes = arena.take(ChannelSize.self, count: 2)
+  let grants = arena.take(ObjectGrant.self, count: 128)
+  let payload = arena.take(UInt8.self, count: 112)
+  let scratch = arena.take(UInt8.self, count: 56)
+  let cells = arena.take(HandleCell.self, count: 1)
+  sizes.initialize(repeating: ChannelSize())
+  var staging = HandleTable(storage: cells, salt: 8)!
+  defer {
+    cells.deinitialize()
+    sizes.deinitialize()
+    heads.deinitialize()
+  }
+  func queue(_ i: Int) -> ChannelQueue {
+    ChannelQueue(
+      lengths: .init(rebasing: sizes[i...i]),
+      bytes: .init(UnsafeMutableBufferPointer(rebasing: payload[(i * 56)..<(i * 56 + 56)])),
+      grants: .init(start: grants.baseAddress! + i * 64, count: 64))!
+  }
+  guard
+    var pair = ChannelPair(
+      a: .init(heads.baseAddress!), b: .init(heads.baseAddress! + 1),
+      toA: queue(0), toB: queue(1)),
+    case .installed(var jobName) = staging.install(job, rights: 258)
+  else { return false }
+  var tag: UInt32 = 13
+  var invalidated: UInt64 = 0
+  let token = withUnsafePointer(to: &tag) { tp in
+    withUnsafePointer(to: &jobName) { np in
+      pair.preloadStartup(
+        child: &process, tree: tree, app: 123, flags: 2,
+        tags: .init(start: tp, count: 1), names: .init(start: np, count: 1),
+        staging: &staging, scratch: .init(scratch), invalidate: { invalidated = $0 },
+        retire: { _ in })
+    }
+  }
+  guard let token, invalidated == jobName, staging.count == 0,
+    let name = pair.entryName(token, child: process, tree: tree),
+    tree.setFrozen(true, job: tree.root), pair.entryName(token, child: process, tree: tree) == nil,
+    tree.setFrozen(false, job: tree.root),
+    pair.entryName(token, child: process, tree: tree) == name
+  else { return false }
+  var size = ChannelSize()
+  var received: UInt64 = 0
+  let ok = process.withHandles(tree: tree) { table in
+    withUnsafeMutablePointer(to: &received) { hp in
+      pair.receive(
+        at: .b, into: .init(scratch), names: .init(start: hp, count: 1), table: &table, size: &size)
+    } == .ok
+  }
+  guard ok == true, size.bytes == 56, size.handles == 1, received != 0, received != jobName,
+    pair.entryName(token, child: process, tree: tree) == nil,
+    case .found(let pin) = process.handleReader.pinWithinEpoch(
+      received, kind: TarwinKind.job, need: 256)
+  else { return false }
+  let correctJob = pin.header == job && pin.rights == 258
+  pin.drop { _ in }
+  var entry = StartupEntry()
+  let identity = withUnsafeMutablePointer(to: &entry) { ep in
+    withUnsafePointer(to: &received) { hp in
+      StartupIdentity.decode(
+        .init(scratch), received: .init(start: hp, count: 1), into: .init(start: ep, count: 1))
+    }
+  }
+  guard correctJob, identity?.process == process.member.id, identity?.job == process.job.id,
+    entry.tag == 13, entry.name == received,
+    process.withHandles(
+      tree: tree, { $0.close(received, retire: { _ in }) && $0.close(name, retire: { _ in }) })
+      == true,
+    pair.entryName(token, child: process, tree: tree) == nil
+  else { return false }
+  pair.close(.b, retire: { _ in })
+  return heads.baseAddress!.pointee.release() == .destroy
+    && (heads.baseAddress! + 1).pointee.release() == .destroy
+}
+
 private func jobQuota(_ arena: inout Arena, _ limit: UInt64) -> Bool {
   let jobs = arena.take(JobNode.self, count: 2)
   let members = arena.take(JobMember.self, count: 1)
@@ -108,7 +193,7 @@ private func jobQuota(_ arena: inout Arena, _ limit: UInt64) -> Bool {
   guard let root = ObjectHeader(source: ids, ownerJob: 0, kind: TarwinKind.job, maximumRights: 0),
     let tree = JobTree(jobs: jobs, members: members, root: root, limits: policy),
     let child = ObjectHeader(
-      source: ids, ownerJob: root.koid, kind: TarwinKind.job, maximumRights: 0),
+      source: ids, ownerJob: root.koid, kind: TarwinKind.job, maximumRights: 258),
     let branch = tree.create(child, under: tree.root, policy: policy),
     let process = ObjectHeader(
       source: ids, ownerJob: child.koid, kind: TarwinKind.process, maximumRights: 0x500),
@@ -125,6 +210,10 @@ private func jobQuota(_ arena: inout Arena, _ limit: UInt64) -> Bool {
         header: ph, job: branch, tree: tree, slots: slots, cells: cells, salt: 3)
     else { return false }
     defer { cells.deinitialize() }
+    guard
+      withUnsafePointer(
+        to: child, { bootstrapChannel(&arena, process: &p, tree: tree, ids: ids, job: $0) })
+    else { return false }
     return withUnsafePointer(to: thread) { th in
       guard var t = ThreadExecution(header: th, process: p.member, job: branch) else {
         return false
