@@ -127,12 +127,12 @@ public struct TarwindSigningImage {
       guard rounded <= old.upperBound - cursor - 20, descriptors[kind] == nil else { throw TarwindSigningError.malformedImage }
       descriptors[kind] = Data(file[cursor + 20..<cursor + 20 + size]); cursor += 20 + rounded
     }
+    guard descriptors[7] == Data([0, 0]) else { throw TarwindSigningError.profile }
     descriptors[2] = envelope
     guard descriptors[6]?.count == 64 else {
       throw TarwindSigningError.invalidELF("input must already be compiler-finalized (note 6)")
     }
     descriptors[3] = try canonicalJSON(Array(Set(entitlements)).sorted())
-    descriptors[7] = Data([1, 0])
     var stream = Data()
     for kind in descriptors.keys.sorted() {
       let value = descriptors[kind]!

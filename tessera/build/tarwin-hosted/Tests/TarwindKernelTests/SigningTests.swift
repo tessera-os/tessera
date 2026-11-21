@@ -20,6 +20,13 @@ final class SigningTests: XCTestCase {
     let noteOffset = Int(word(image, noteHeader + 8, UInt64.self))
     let noteSize = Int(word(image, noteHeader + 32, UInt64.self))
     var notes = Data(image[noteOffset..<noteOffset + noteSize])
+    var cursor = 0
+    while cursor < notes.count {
+      if word(notes, cursor + 8, UInt32.self) == 7 {
+        notes[cursor + 20] = 0; notes[cursor + 21] = 0
+      }
+      cursor += 20 + ((Int(word(notes, cursor + 4, UInt32.self)) + 3) & ~3)
+    }
     for value: UInt32 in [8, 64, 6] {
       withUnsafeBytes(of: value.littleEndian) { notes.append(contentsOf: $0) }
     }
@@ -79,5 +86,31 @@ final class SigningTests: XCTestCase {
       _ = try TarwindAppTrust.authorize($0, layout: $1)
     })
     XCTAssertThrowsError(try TarwindAppTrust.admit(Data()))
+    let rejected = directory.appendingPathComponent("must-not-exist.elf")
+    let negative = Process()
+    negative.executableURL = process.executableURL
+    negative.arguments = ["--app-id", "org.tessera.conformance.system-negative", fixture.path, rejected.path]
+    let rejection = Pipe(); negative.standardOutput = rejection; negative.standardError = rejection
+    try negative.run(); negative.waitUntilExit()
+    let failure = String(decoding: rejection.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    XCTAssertNotEqual(negative.terminationStatus, 0)
+    XCTAssertTrue(failure.contains("profile"), failure)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: rejected.path))
+    var system = signed
+    let layout = try XCTUnwrap(system.withUnsafeBytes { inspectELF($0, target: ElfMachine.aarch64,
+      addressLimit: 64 << 30, finalized: true, requiresEntry: true) })
+    system[try XCTUnwrap(layout.notes.profile).lowerBound] = 1
+    var hashes = [BlakeCv](repeating: .init(w0: 0, w1: 0, w2: 0, w3: 0, w4: 0, w5: 0, w6: 0, w7: 0), count: 54)
+    let digest = try XCTUnwrap(system.withUnsafeBytes { file in hashes.withUnsafeMutableBufferPointer {
+      nativeSigningID(file, image: layout, scratch: $0)
+    } })
+    var idBytes = Data()
+    for value in [digest.w0, digest.w1, digest.w2, digest.w3, digest.w4, digest.w5, digest.w6, digest.w7] {
+      withUnsafeBytes(of: value.littleEndian) { idBytes.append(contentsOf: $0) }
+    }
+    system.replaceSubrange(try XCTUnwrap(layout.notes.buildID), with: idBytes)
+    XCTAssertThrowsError(try TarwindAppTrust.admit(system)) {
+      guard case TarwindSigningError.profile = $0 else { return XCTFail("\($0)") }
+    }
   }
 }

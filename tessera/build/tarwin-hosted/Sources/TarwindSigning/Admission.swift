@@ -62,7 +62,7 @@ public enum TarwindAppTrust {
       }
       return Data(file[range])
     }
-    guard try bytes(layout.notes.profile) == Data([1, 0]) else { throw TarwindSigningError.profile }
+    guard try bytes(layout.notes.profile) == Data([0, 0]) else { throw TarwindSigningError.profile }
     let train = try bytes(layout.notes.train)
     guard train.count == 9, train.prefix(6) == Data([26, 11, 1, 26, 11, 2]),
       !train.suffix(3).lexicographicallyPrecedes([26, 11, 1]) else { throw TarwindSigningError.train }
