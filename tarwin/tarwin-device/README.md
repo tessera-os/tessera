@@ -10,7 +10,7 @@ Integration contract:
 - Slot operations resolve their handle, rights and epoch before entry. Invoke the interrupt methods under the binding lock. Revocation must complete before a replacement receives an interrupt or MMIO grant.
 - Configuration access policy comes from trusted enumeration, never a driver bitmap. Unknown/side-effect registers are not raw-writable. The version predicate covers released Driver API months only, starting 26.11.
 
-No architecture interrupt, IOMMU, MMU, registry service or capability table is supplied by this package yet. Neither DMA isolation on physical hardware nor restart timing has been measured.
+A legacy Intel VT-d backend is described below; architecture interrupt entry, the MMU, registry service and capability table are not supplied here. Neither DMA isolation on physical hardware nor restart timing has been measured.
 
 ## Swift profiles
 
@@ -37,3 +37,11 @@ The kernel's `IoPorts` implementation must retain the actual port object, serial
 ## Firmware MMIO discovery
 
 `firmwareVirtioMmio` walks TarwinBoot's FDT cursor over a pinned immutable boot tree. It stages only enabled `virtio,mmio` nodes in root physical space or bounded simple-bus translations. Child and parent address cells are independent; a missing bus mapping, overlapping device windows, truncated property or ambiguous translation rejects the snapshot before probing. Per-node interrupt fields are offsets in that tree, not grants. The interrupt-controller and IOMMU owners must resolve the actual route and isolation group before slot assignment. This is not an ACPI namespace interpreter.
+
+## Intel VT-d: legacy second-level translation
+
+The kernel-only backend binds an isolated PCI requester to a nonzero domain with 39-bit IOVAs and 4 KiB leaves. Table memory must be exclusively owned, pinned and walker-visible; never hand those frames to a driver. Installation requires stopped requesters, ATS disabled, a supported unit and a fresh root. Bind all requester aliases under the unit lock, flush their contexts and IOTLB, verify translation is active, and only then enable DMA. There is no pass-through fallback.
+
+Leaf permissions follow the pin's DMA direction. Clearing a leaf's permissions leaves its IOVA occupied until synchronous global IOTLB invalidation (including drain reads/writes) acknowledges. A failed invalidate quarantines it for retry. Context teardown similarly prevents requester reassignment until both caches acknowledge. The caller retains all frames, tables, domain IDs and group ownership until teardown succeeds. This profile has no device ATCs, queued invalidation, PASIDs, interrupt remapping, reserved-region/ACPI discovery, or device assignment to guests. It does not admit an ATS-capable attachment unless ATS remains disabled at the requester.
+
+See the optional virtio QTest for a device-model readback with a fresh IOVA and a same-IOVA remap. Real platform route/group discovery, cache management, pinning, physical DMA and restart-time budgets remain unverified.

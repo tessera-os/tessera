@@ -17,3 +17,9 @@ The check creates its own 1 MiB scratch disk, discovers modern virtio-blk over M
 The hosted block QTest also checks each operation's terminal LibTessera I/O packet (kind, key, status and byte count), its waiter notification and the release of its port reference. It does not emulate CPU interrupt entry or IOMMU invalidation.
 
 On the Arm and RISC-V models the harness reads QEMU's generated DTB for the configured device topology, enumerates enabled virtio MMIO transports and probes those windows only; there is no board-specific scan address or stride fallback. On q35 the hosted PCI setup still stands in for firmware.
+
+### q35 VT-d disk remap
+
+    swift run -c release --package-path Tools/BlockQTest BlockQTest "$(command -v qemu-system-x86_64)" --vtd
+
+A separate q35 run adds the Intel IOMMU model (legacy translation, no ATS). The hosted Swift backend installs a requester context for the disk only, with a random non-identity IOVA interval. The controller reads a pinned data page for the write. Before completing the client request the backend detaches that page and waits for hardware-model IOTLB invalidation with read/write draining. The disk read maps a different page at the same IOVA with device-write permission. The test checks the readback, every byte of the retired page's sentinel, the fault status, and context/IOTLB teardown before releasing the requester. This is QTest against an independent IOMMU and virtio model, **not** physical VT-d or a Tarwin guest boot.

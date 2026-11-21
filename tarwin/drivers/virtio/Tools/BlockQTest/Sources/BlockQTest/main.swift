@@ -28,7 +28,7 @@ final class QTest {
   private(set) var mmio: [DeviceRange] = []
   private(set) var error: Error?
 
-  init(binary: String, machine: Machine, disk: URL) throws {
+  init(binary: String, machine: Machine, disk: URL, translated: Bool) throws {
     process.executableURL = URL(fileURLWithPath: binary)
     process.arguments = [
       "-machine", machine == .x64 ? "q35" : "virt", "-accel", "qtest", "-m", "64M",
@@ -40,6 +40,11 @@ final class QTest {
         ? "virtio-blk-pci,disable-legacy=on,addr=04.0,drive=scratch,iommu_platform=on"
         : "virtio-blk-device,drive=scratch,iommu_platform=on",
     ]
+    if translated {
+      process.arguments! += [
+        "-device", "intel-iommu,device-iotlb=off,caching-mode=off,intremap=off",
+      ]
+    }
     for i in 0..<2 {
       let device =
         machine == .x64 ? "virtio-net-pci,disable-legacy=on,addr=0\(5+i).0" : "virtio-net-device"
@@ -189,11 +194,18 @@ private struct TestClient: IoPorts, ~Copyable {
   mutating func wakePort(_ id: UInt64, count: Int) { notifications += count }
 }
 
-func testBlock(_ q: QTest, _ machine: Machine) throws {
+func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?) throws {
+  let bias = dma?.bias ?? 0
   let mem = QueueMemory(
     count: 8, descriptors: machine.ram + 0x100000, available: machine.ram + 0x101000,
     used: machine.ram + 0x102000)
-  let transport = try transport(q, machine, type: 2, supported: 0x2220, queues: [mem])
+  let transport = try transport(
+    q, machine, type: 2, supported: 0x2220,
+    queues: [
+      QueueMemory(
+        count: mem.count, descriptors: mem.descriptors + bias, available: mem.available + bias,
+        used: mem.used + bias)
+    ])
   let capacity = (0..<8).reduce(UInt64(0)) { $0 | UInt64(transport.config($1)) << (8 * $1) }
   let features = transport.features
   var queue = SplitQueue()
@@ -224,17 +236,21 @@ func testBlock(_ q: QTest, _ machine: Machine) throws {
   var scheduler = PortBlockQueue(
     capacity: capacity, blockBytes: 512, queueCount: 1, depth: 1, slots: bindings)!
   let list = machine.ram + 0x113000
-  q.write("q", list, data)
+  q.write("q", list, data + bias)
   q.write("l", list + 8, 512)
   q.write("l", list + 12, 0)
   for operation in [TarwinBlockWire.BlockOp.write, .flush, .read] {
     let flush = operation == .flush
+    let physicalData = dma != nil && operation == .read ? 0x180000 : data
+    if let dma, !flush {
+      try dma.mapData(frame: physicalData, access: operation == .read ? .deviceWrite : .deviceRead)
+    }
     let key = UInt64(operation.rawValue)
     let cookie = scheduler.submit(
       BlockCommand(
         op: operation, lba: flush ? 0 : 7, blocks: flush ? 0 : 1, qos: .interactive, queue: 0),
       object: 2, key: key, port: 1, ports: &user)
-    let payload = flush ? BlockPayload() : BlockPayload(list: list, vectors: 1)
+    let payload = flush ? BlockPayload() : BlockPayload(list: list + bias, vectors: 1)
     guard cookie != 0,
       case .ring(.transferred) = scheduler.publish(
         queue: 0, payload: { _, _ in payload }, ring: &requests)
@@ -243,12 +259,13 @@ func testBlock(_ q: QTest, _ machine: Machine) throws {
     guard case .transferred = service.pop(into: &record),
       case .ready(let pending) = prepareBlockIo(
         record, epoch: scheduler.epoch, queue: 0,
-        capacitySectors: capacity, features: features, header: header, status: status,
+        capacitySectors: capacity, features: features, header: header + bias, status: status + bias,
         allows: { addr, n, writable in
-          (addr == list && n == 16 && !writable)
-            || (addr == data && n == 512 && writable == (operation == .read))
+          (addr == list + bias && n == 16 && !writable)
+            || (addr == data + bias && n == 512 && writable == (operation == .read))
         },
-        readVector: { addr in
+        readVector: { iova in
+          let addr = iova - bias
           guard q.read("l", addr + 12) == 0 else { return nil }
           return BlockDmaVector(address: q.read("q", addr), bytes: UInt32(q.read("l", addr + 8)))
         })
@@ -256,15 +273,19 @@ func testBlock(_ q: QTest, _ machine: Machine) throws {
     let p = pending.packet
     let op = p.op
     if op == .write { _ = q.send("write \(data) 512 0x\(pattern)") }
-    if op == .read { _ = q.send("memset \(data) 512 0") }
+    if op == .read {
+      _ = q.send("memset \(physicalData) 512 0")
+      if dma != nil { _ = q.send("memset \(data) 512 0x5a") }
+    }
     let submitted = submitBlock(
       &queue, cookie, p, capacity, features,
-      { addr, kind, sector in
+      { iova, kind, sector in
+        let addr = iova - bias
         q.write("l", addr, kind)
         q.write("l", addr + 4, 0)
         q.write("q", addr + 8, sector)
       },
-      { addr, value in q.write("b", addr, value) },
+      { addr, value in q.write("b", addr - bias, value) },
       { index, address, length, flags, next in
         let slot = mem.descriptors + UInt64(index) * 16
         q.write("q", slot, address)
@@ -293,34 +314,54 @@ func testBlock(_ q: QTest, _ machine: Machine) throws {
       case .transferred = replies.push(done.record()), case .transferred = client.pop(into: &record)
     else { throw q.error ?? Failure("Malformed driver completion") }
     guard scheduler.receive(queue: 0, record: record) == cookie,
-      scheduler.release(id: cookie, at: 77, ports: &user, retireBuffers: { $0 == buffer.cookie }),
+      scheduler.release(
+        id: cookie, at: 77, ports: &user,
+        retireBuffers: {
+          $0 == buffer.cookie && (flush || dma?.retireData(frame: physicalData) != false)
+        }),
       let packet = user.port.take(), packet.kind == 3, packet.key == key,
       packet.error == 0, packet.result0 == (flush ? 0 : 512), user.references == 0
     else { throw Failure("Block completion did not reach the client port") }
     if op == .read {
-      try q.require(q.send("read \(data) 512") == "0x" + pattern, "512-byte disk readback mismatch")
+      if dma != nil {
+        try q.require(
+          q.send("read \(data) 512") == "0x" + String(repeating: "5a", count: 512),
+          "Retired frame was modified")
+      }
+      try q.require(
+        q.send("read \(physicalData) 512") == "0x" + pattern, "512-byte disk readback mismatch")
     }
     transport.acknowledge()
+  }
+  if let dma {
+    try q.require(
+      dma.retired == 2 && q.read("l", 0xfed9_0034) == 0,
+      "Unexpected remapping fault or missing drain")
   }
   try q.require(user.notifications == 3, "Expected one wake per terminal packet")
 }
 
 func run() throws {
-  guard CommandLine.arguments.count == 2,
+  let translated = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--vtd"
+  guard CommandLine.arguments.count == 2 || translated,
     let machine = Machine(
       rawValue: URL(fileURLWithPath: CommandLine.arguments[1]).lastPathComponent)
   else {
     throw Failure("Usage: BlockQTest /path/to/qemu-system-{aarch64,x86_64,riscv64}")
   }
+  guard !translated || machine == .x64 else { throw Failure("--vtd requires q35") }
   let disk = FileManager.default.temporaryDirectory.appendingPathComponent(
     UUID().uuidString + ".raw")
   try Data(repeating: 0, count: 1 << 20).write(to: disk, options: .withoutOverwriting)
   defer { try? FileManager.default.removeItem(at: disk) }
-  let q = try QTest(binary: CommandLine.arguments[1], machine: machine, disk: disk)
+  let q = try QTest(
+    binary: CommandLine.arguments[1], machine: machine, disk: disk, translated: translated)
   do {
     defer { q.close() }
-    try testBlock(q, machine)
-    try testNetwork(q, machine)
+    let dma = translated ? try TranslatedDisk(q) : nil
+    try testBlock(q, machine, dma)
+    try dma?.close(q)
+    if !translated { try testNetwork(q, machine) }
   }
   let contents = try Data(contentsOf: disk)
   let sector = 7 * 512
@@ -331,7 +372,10 @@ func run() throws {
 }
 do {
   try run()
-  print("PASS: QEMU virtio-blk write/flush/readback and isolated virtio-net TX/RX")
+  print(
+    CommandLine.arguments.last == "--vtd"
+      ? "PASS: q35 VT-d translated disk DMA, IOTLB drain and same-IOVA remap"
+      : "PASS: QEMU virtio-blk write/flush/readback and isolated virtio-net TX/RX")
 } catch {
   FileHandle.standardError.write(Data("\(error)\n".utf8))
   exit(1)
