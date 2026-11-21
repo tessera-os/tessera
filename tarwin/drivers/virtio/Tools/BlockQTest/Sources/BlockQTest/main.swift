@@ -443,7 +443,7 @@ do {
       : CommandLine.arguments.last == "--vtd"
         ? "PASS: q35 VT-d translated disk DMA, IOTLB drain and same-IOVA remap"
         : CommandLine.arguments.last == "--neighbors"
-          ? "PASS: ARP and IPv6 neighbor discovery via virtio-net against restricted libslirp"
+          ? "PASS: router advertisement, SLAAC/DAD, ARP and IPv6 neighbor discovery against restricted libslirp"
           : "PASS: QEMU virtio-blk write/flush/readback, zero/discard extents and paced UDP delivery across isolated NICs"
   )
 } catch {

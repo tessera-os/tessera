@@ -81,28 +81,28 @@ public struct NeighborInterface: Equatable {
   }
 }
 private let broadcast: [UInt8] = [255, 255, 255, 255, 255, 255]
-private func unicastMac(_ m: [UInt8]) -> Bool {
+func unicastMac(_ m: [UInt8]) -> Bool {
   m.count == 6 && m[0] & 1 == 0 && m.contains(where: { $0 != 0 })
 }
-private func validNextHop(_ ip: [UInt8]) -> Bool {
+func validNextHop(_ ip: [UInt8]) -> Bool {
   if ip.count == 4 { return ip[0] != 0 && ip[0] != 127 && ip[0] < 224 }
   return ip.count == 16 && ip[0] != 255 && ip.contains(where: { $0 != 0 })
     && !(ip.prefix(15).allSatisfy { $0 == 0 } && ip[15] == 1)
 }
-private func solicited(_ target: [UInt8]) -> [UInt8] {
+func solicited(_ target: [UInt8]) -> [UInt8] {
   [0xff, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0xff] + target.suffix(3)
 }
-private func multicastMac(_ ip: [UInt8]) -> [UInt8] { [0x33, 0x33] + ip.suffix(4) }
+func multicastMac(_ ip: [UInt8]) -> [UInt8] { [0x33, 0x33] + ip.suffix(4) }
 private func goodArp(_ b: [UInt8], op: UInt8) -> Bool {
   b.count >= 42 && b[12..<22].elementsEqual([8, 6, 0, 1, 8, 0, 6, 4, 0, op])
     && b[6..<12].elementsEqual(b[22..<28])
 }
-private func ndSum(_ b: [UInt8], _ n: Int) -> UInt32 {
+func ndSum(_ b: [UInt8], _ n: Int) -> UInt32 {
   let sum = sumBytes(b, 22, 32, UInt32(n) + 58)
   return sumBytes(b, 54, n, sum)
 }
-private struct NdOptions { let link: [UInt8]? }
-private func ndOptions(_ b: [UInt8], type: UInt8) -> NdOptions? {
+struct NdOptions { let link: [UInt8]? }
+func ndOptions(_ b: [UInt8], type: UInt8) -> NdOptions? {
   guard b.count >= 78, word(b, 12) == 0x86dd, b[14] >> 4 == 6, b[20] == 58, b[21] == 255,
     b[54] == type, b[55] == 0
   else { return nil }
