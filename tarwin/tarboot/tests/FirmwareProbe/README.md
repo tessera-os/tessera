@@ -192,3 +192,15 @@ a checksum-valid ACPI FADT advertising PSCI over SMC, matches MPIDR_EL1
 with a MADT GICC, and queries PSCI_VERSION and AFFINITY_INFO64 at level
 zero. The boot CPU must be ON and the other three OFF. This does not
 start a secondary CPU or test IPI delivery or scheduling.
+
+### AArch64 post-exit PCR transport
+
+`TARBOOT_TEST_TPM=1 TARBOOT_TEST_FIFO=1 bash run.sh aarch64` binds a single
+QEMU virt platform-bus TIS device to disposable swtpm. After ExitBootServices,
+TarwinBoot requests locality zero, reads PCR 10, extends a diagnostic digest
+once, records a private SHA-256 event, and reads the register back using the
+MMIO FIFO only. The starting value must be zero and the result must equal
+the host's SHA-256 replay. A short, malformed or timed-out transaction is
+terminal, including when the device may already have executed the command.
+This is not an init image measurement, production TPM discovery or a
+multi-bank extension of the firmware log. No W1 image is launched.

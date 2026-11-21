@@ -29,6 +29,13 @@ enum WriteFixture {
     let fixtureArchiveHash: StaticString = "\(hex(fixture))"
     let fixtureConfigHash: StaticString = "\(hex(config))"
     """
+    if ProcessInfo.processInfo.environment["TARBOOT_TEST_FIFO"] == "1" {
+      let digest = Data(SHA256.hash(data: Data("Tarwin post-exit FIFO fixture".utf8)))
+      let after = SHA256.hash(data: Data(repeating: 0, count: 32) + digest)
+      for (name, bytes) in [("fifoProbeDigest", digest), ("fifoProbePCR", Data(after))] {
+        source += "\nlet \(name): InlineArray<32,UInt8> = [" + bytes.map(String.init).joined(separator: ",") + "]\n"
+      }
+    }
     if let file = ProcessInfo.processInfo.environment["TARBOOT_QEMU_ENROLLMENT"] {
       let bytes = try Data(contentsOf: URL(fileURLWithPath: file))
       guard bytes.count == 2036, bytes.prefix(4).elementsEqual("TQE1".utf8) else { throw CocoaError(.fileReadCorruptFile) }

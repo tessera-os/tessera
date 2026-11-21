@@ -303,6 +303,9 @@ func check() throws {
     }
     print("\(a): firmware TCG2 PCR 8 and PCR 9 match independent host replay")
     print("\(a): captured log contains both expected SHA-256 measurements and the final firmware exit event")
+    if ProcessInfo.processInfo.environment["TARBOOT_TEST_FIFO"] == "1" {
+      print("\(a): post-exit TIS FIFO read, extended and read back PCR 10 against the host SHA-256 replay")
+    }
   }
   if bootKernel {
     print("\(a): signed W0 kernel wrote TARWIN W0 PASS to hardware scanout; stopped via QMP, not EFI shutdown")

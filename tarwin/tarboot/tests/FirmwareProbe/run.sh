@@ -42,6 +42,14 @@ for isa in "${@:-all}"; do
         fi
         modules=()
         entry_source=()
+        if [[ ${TARBOOT_TEST_FIFO:-0} == 1 ]]; then
+            [[ $arch == aarch64 && ${TARBOOT_TEST_TPM:-0} == 1 && ${TARBOOT_TEST_SMP_TABLES:-0} == 0 && -z ${TARBOOT_TEST_SIGNATURE:-} ]] || exit 2
+            flags+=(-D TARBOOT_TEST_FIFO -enable-experimental-feature Extern)
+            entry_source+=("$here/FIFOProbe.swift")
+            swift "$composition-stage0/ArmFIFOAccess.swift" > "$d/fifo.ll"
+            "$bin/clang" -target aarch64-unknown-windows-msvc -O2 -Wno-override-module -c "$d/fifo.ll" -o "$d/fifo.obj"
+            extra+=("$d/fifo.obj")
+        fi
         if [[ ${TARBOOT_TEST_PSCI:-0} == 1 ]]; then
             [[ $arch == aarch64 && ${TARBOOT_TEST_CPU:-0} == 1 && ${TARBOOT_TEST_SMP_TABLES:-0} == 1 ]] || exit 2
             flags+=(-D TARBOOT_TEST_PSCI)

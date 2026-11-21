@@ -160,6 +160,9 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
         }
       #endif
       guard case .exited(let n) = boot.finish(map: raw, into: &buffer) else { return false }
+      #if TARBOOT_TEST_FIFO
+        guard exerciseKernelFIFO() else { return false }
+      #endif
       #if TARBOOT_TEST_SMP_TABLES
         #if arch(arm64)
           let family = ProcessorFamily.arm64
