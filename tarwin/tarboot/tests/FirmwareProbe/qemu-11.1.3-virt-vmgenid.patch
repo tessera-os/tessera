@@ -103,6 +103,120 @@
  };
  
  static void vmgenid_device_class_init(ObjectClass *klass, const void *data)
+@@ -236,11 +298,113 @@
+     .parent        = TYPE_DEVICE,
+     .instance_size = sizeof(VmGenIdState),
+     .class_init    = vmgenid_device_class_init,
++};
++
++/* Test-only virt-11.1 machine aperture; no RAM backing, DMA or IRQ. */
++#define RO_GENID_BASE 0x090d0000ULL
++#define RO_GENID_SIZE 0x4000
++typedef struct {
++    VmGenIdState parent;
++    MemoryRegion mmio;
++    uint64_t serial;
++} RoGenId;
++
++static bool ro_accepts(void *opaque, hwaddr off, unsigned size, bool write,
++                       MemTxAttrs attrs)
++{
++    return !write && size == 8 && !(off & 7) && off < 32;
++}
++
++static uint64_t ro_read(void *opaque, hwaddr off, unsigned size)
++{
++    RoGenId *s = opaque;
++    QemuUUID le = qemu_uuid_bswap(s->parent.guid);
++    switch (off) {
++    case 0:  return 0x314449474d565754ULL; /* TWVMGID1 */
++    case 8:  return s->serial;
++    case 16: return ldq_le_p(le.data);
++    case 24: return ldq_le_p(le.data + 8);
++    default: return 0;
++    }
++}
++
++static const MemoryRegionOps ro_ops = {
++    .endianness = DEVICE_LITTLE_ENDIAN, .read = ro_read,
++    .valid = { .min_access_size = 8, .max_access_size = 8, .accepts = ro_accepts },
++    .impl = { .min_access_size = 8, .max_access_size = 8 },
+ };
+ 
++static int ro_rotate(RoGenId *s, Error **errp)
++{
++    if (s->serial == UINT64_MAX) {
++        error_setg(errp, "generation version exhausted");
++        return -EOVERFLOW;
++    }
++    if (vmgenid_rotate(&s->parent, errp) < 0) {
++        return -EIO;
++    }
++    s->serial++;
++    return 0;
++}
++
++static void ro_reset(void *opaque)
++{
++    ro_rotate(opaque, &error_fatal);
++}
++
++static int ro_post_load(void *opaque, int version)
++{
++    return runstate_check(RUN_STATE_PAUSED) ? ro_rotate(opaque, NULL) : -EINVAL;
++}
++
++static const VMStateDescription ro_state = {
++    .name = TYPE_VMGENID_RO, .version_id = 1, .minimum_version_id = 1,
++    .post_load = ro_post_load,
++    .fields = (const VMStateField[]) { VMSTATE_END_OF_LIST() },
++};
++
++static void ro_realize(DeviceState *dev, Error **errp)
++{
++    RoGenId *s = (RoGenId *)dev;
++    MemoryRegion *sys = get_system_memory();
++    MemoryRegionSection region;
++    if (strcmp(object_get_typename(OBJECT(qdev_get_machine())), "virt-11.1-machine") ||
++        !fw_cfg_find() || fw_cfg_dma_enabled(fw_cfg_find()) ||
++        find_vmgenid_dev() != OBJECT(dev) || s->parent.pinned_page ||
++        s->parent.rotate_on_load) {
++        error_setg(errp, "read-only VMGenID requires virt-11.1, no fw_cfg DMA and no ACPI writer");
++        return;
++    }
++    region = memory_region_find(sys, RO_GENID_BASE, RO_GENID_SIZE);
++    if (region.mr) {
++        memory_region_unref(region.mr);
++        error_setg(errp, "VMGenID aperture overlaps another mapping");
++        return;
++    }
++    if (ro_rotate(s, errp) < 0) {
++        return;
++    }
++    memory_region_init_io(&s->mmio, OBJECT(dev), &ro_ops, s, TYPE_VMGENID_RO, RO_GENID_SIZE);
++    memory_region_add_subregion(sys, RO_GENID_BASE, &s->mmio);
++    qemu_register_reset(ro_reset, s);
++}
++
++static void ro_class_init(ObjectClass *klass, const void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    dc->realize = ro_realize;
++    dc->vmsd = &ro_state;
++}
++
++static const TypeInfo ro_info = {
++    .name = TYPE_VMGENID_RO, .parent = TYPE_VMGENID,
++    .instance_size = sizeof(RoGenId), .class_init = ro_class_init,
++};
++
+ static void vmgenid_register_types(void)
+ {
+     type_register_static(&vmgenid_device_info);
++    type_register_static(&ro_info);
+ }
+ 
+ type_init(vmgenid_register_types)
 --- a/hw/arm/virt-acpi-build.c
 +++ b/hw/arm/virt-acpi-build.c
 @@ -43,6 +43,7 @@
@@ -118,7 +232,7 @@
  
      /* XSDT is pointed to by RSDP */
 +    Object *genid = find_vmgenid_dev();
-+    if (genid) {
++    if (genid && !object_dynamic_cast(genid, TYPE_VMGENID_RO)) {
 +        acpi_add_table(table_offsets, tables_blob);
 +        vmgenid_build_acpi(VMGENID(genid), tables_blob, tables->vmgenid,
 +                           tables->linker, vms->oem_id);
@@ -131,7 +245,7 @@
      fw_cfg_add_file(vms->fw_cfg, ACPI_BUILD_TPMLOG_FILE, tables.tcpalog->data,
                      acpi_data_len(tables.tcpalog));
 +    Object *genid = find_vmgenid_dev();
-+    if (genid) {
++    if (genid && !object_dynamic_cast(genid, TYPE_VMGENID_RO)) {
 +        vmgenid_add_fw_cfg(VMGENID(genid), vms->fw_cfg, tables.vmgenid);
 +    }
  
@@ -139,7 +253,15 @@
          assert(vms->acpi_dev);
 --- a/include/hw/acpi/vmgenid.h
 +++ b/include/hw/acpi/vmgenid.h
-@@ -21,6 +21,8 @@
+@@ -7,6 +7,7 @@
+ #include "qom/object.h"
+ 
+ #define TYPE_VMGENID           "vmgenid"
++#define TYPE_VMGENID_RO        "tarwin-virt-vmgenid-ro"
+ #define VMGENID_GUID             "guid"
+ #define VMGENID_GUID_FW_CFG_FILE      "etc/vmgenid_guid"
+ #define VMGENID_ADDR_FW_CFG_FILE      "etc/vmgenid_addr"
+@@ -21,6 +22,8 @@
  struct VmGenIdState {
      DeviceState parent_obj;
      QemuUUID guid;                /* The 128-bit GUID seen by the guest */

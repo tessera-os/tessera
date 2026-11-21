@@ -269,6 +269,22 @@ postcopy, ACPI-interrupt or cross-host migration test. This fixture still
 needs fw_cfg DMA for firmware discovery. It does not drain other devices,
 prove that protected pages have no DMA aliases, or authorize W1 entry.
 
+For the separate no-fw_cfg-DMA fixture, add `TARBOOT_TEST_RO_GENID=1` to
+the restore run. The same QEMU patch supplies a non-hotpluggable VMGENID
+subclass on virt-11.1. It omits the ACPI table, fw_cfg blobs, IRQ and RAM
+update hook. Its sole guest interface is one read-only 16 KiB I/O region at
+0x090d0000, outside RAM and the platform bus. Aligned 64-bit reads at +0,
++8, +16 and +24 return the ABI magic, destination version and GUID words.
+Two matching nonzero versions bracket each sample. Neither the GUID nor
+the version is migrated. Reset and paused post-load rotate on the host;
+a running restore is not supported. The guest refuses other fw_cfg feature
+bits, the old ACPI inventory, a wrong magic, all-zero GUID or torn samples.
+
+This headless fixture uses SMMUv3 with default bus bypass off, no MSI, and
+modern-only ACCESS_PLATFORM disk and RNG endpoints. The guest and QMP both
+read the actual device's GUID across save/load. This tests generation, not
+DMA containment: a previously established cold fence cannot survive restore.
+
 `TARBOOT_TEST_TPM=1 TARBOOT_TEST_FIFO=1 bash run.sh aarch64` binds a single
 QEMU virt platform-bus TIS device to disposable swtpm. After ExitBootServices,
 TarwinBoot requests locality zero and streams the ESP fixture bytes through

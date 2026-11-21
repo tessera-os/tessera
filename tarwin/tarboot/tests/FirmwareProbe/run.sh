@@ -42,6 +42,10 @@ for isa in "${@:-all}"; do
         fi
         modules=()
         entry_source=()
+        if [[ ${TARBOOT_TEST_RO_GENID:-0} == 1 ]]; then
+            [[ $arch == aarch64 && ${TARBOOT_TEST_RESTORE:-0} == 1 && ${TARBOOT_TEST_GENERATION:-0} == 1 ]] || exit 2
+            flags+=(-D TARBOOT_TEST_RO_GENID)
+        fi
         if [[ ${TARBOOT_TEST_FIFO:-0} == 1 ]]; then
             [[ $arch == aarch64 && ${TARBOOT_TEST_TPM:-0} == 1 && ${TARBOOT_TEST_SMP_TABLES:-0} == 0 && -z ${TARBOOT_TEST_SIGNATURE:-} ]] || exit 2
             flags+=(-D TARBOOT_TEST_FIFO -enable-experimental-feature Extern)

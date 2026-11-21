@@ -66,6 +66,7 @@ let package = Package(
         .product(name: "TarwinMM", package: "tarwin-mm"),
       ]),
     .testTarget(name: "TarwinW1BootstrapTests", dependencies: [
+      "TarwinW1Generation", .product(name: "TarwinRandomCore", package: "random"),
       .product(name: "TarwinKernelRandom", package: "random"),
       .product(name: "TarwinProcessKeys", package: "random"),
       .product(name: "TarwinIPCChannels", package: "tarwin-ipc"),

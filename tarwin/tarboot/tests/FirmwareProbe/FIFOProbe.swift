@@ -42,7 +42,12 @@
       var cfg = QEMUVirtConfig(mapped: UnsafeRawPointer(bitPattern: 0x0902_0000)!)
       guard bootSeed.count == 64 else { return false }
       #if TARBOOT_TEST_RESTORE
-      guard let source = W1GenerationSource(policy: .rotatingDevice(pinnedPage: 0x5c74_0000), reader: &cfg,
+      #if TARBOOT_TEST_RO_GENID
+      let policy = QEMUGenerationPolicy.readOnlyVirt11
+      #else
+      let policy = QEMUGenerationPolicy.rotatingDevice(pinnedPage: 0x5c74_0000)
+      #endif
+      guard let source = W1GenerationSource(policy: policy, reader: &cfg,
         regions: regions, readWord: readWord),
         let first = source.current(readWord: readWord) else { return false }
       #else

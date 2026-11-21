@@ -69,8 +69,9 @@ func check() throws {
   defer { try? qmp.close() }
   let cpuCheck=ProcessInfo.processInfo.environment["TARBOOT_TEST_CPU"]
   let restore = ProcessInfo.processInfo.environment["TARBOOT_TEST_RESTORE"] == "1"
-  let board = restore ? "virt-11.1,accel=tcg" : "virt"
-  let armMachine = cpuCheck == "1" ? ["-machine",board + ",gic-version=3,virtualization=on","-cpu","max"]
+  let ro = ProcessInfo.processInfo.environment["TARBOOT_TEST_RO_GENID"] == "1"
+  let board = ro ? "virt-11.1,accel=tcg,iommu=smmuv3,default-bus-bypass-iommu=off,msi=off" : (restore ? "virt-11.1,accel=tcg" : "virt")
+  let armMachine = cpuCheck == "1" || ro ? ["-machine",board + ",gic-version=3,virtualization=on","-cpu","max"]
     : ["-machine",board + ",gic-version=3","-cpu","cortex-a72"]
   let machine =
     a == "x86_64"
@@ -82,7 +83,8 @@ func check() throws {
   let displayEnabled = ProcessInfo.processInfo.environment["TARBOOT_TEST_DISPLAY"] == "1"
   let displayArgs = !displayEnabled ? [] : (a == "x86_64" ? ["-vga", "std"] : ["-device", "ramfb"]) + ["-no-shutdown"]
   let rngEnabled = ProcessInfo.processInfo.environment["TARBOOT_TEST_RNG"] == "1"
-  let rngArgs = rngEnabled ? ["-object", "rng-random,filename=/dev/urandom,id=entropy", "-device", "virtio-rng-pci,rng=entropy"] : []
+  let endpoint = ro ? ",iommu_platform=on,disable-legacy=on" : ""
+  let rngArgs = rngEnabled ? ["-object", "rng-random,filename=/dev/urandom,id=entropy", "-device", "virtio-rng-pci,rng=entropy" + endpoint + (ro ? ",addr=2" : "")] : []
   let tpmEnabled = ProcessInfo.processInfo.environment["TARBOOT_TEST_TPM"] == "1"
   let state = URL(fileURLWithPath: "/tmp/tarwin-tpm-" + UUID().uuidString)
   let socket = state.appendingPathComponent("ctrl").path
@@ -127,11 +129,14 @@ func check() throws {
   }
   process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
   let wrongPage = ProcessInfo.processInfo.environment["TARBOOT_TEST_WRONG_PAGE"] == "1"
+  guard !ro || (restore && !wrongPage) else { throw Failure("invalid read-only restore profile") }
   guard (!wrongPage || restore) && (!restore || (a == "aarch64" && !multiple && !displayEnabled))
     else { throw Failure("restore diagnostic requires one headless ARM vCPU") }
   // Destination policy for this firmware/machine fixture, not from guest RAM or VMState.
   let page = wrongPage ? "0x5c741000" : "0x5c740000"
-  let generationArgs = restore ? ["-device", "vmgenid,x-rotate-on-load=on,x-pinned-page=" + page, "-blockdev",
+  let genDevice = ro ? "tarwin-virt-vmgenid-ro" : "vmgenid,x-rotate-on-load=on,x-pinned-page=" + page
+  let limits = ro ? ["-nodefaults", "-no-user-config", "-global", "fw_cfg_mem.dma_enabled=off"] : []
+  let generationArgs = restore ? limits + ["-device", genDevice, "-blockdev",
     "driver=file,filename=" + d + "/state.qcow2,node-name=statefile", "-blockdev",
     "driver=qcow2,file=statefile,node-name=state"] : []
   let evidence = ProcessInfo.processInfo.environment["TARBOOT_TEST_W1_EVIDENCE"] == "1"
@@ -143,7 +148,7 @@ func check() throws {
       "-drive", "if=pflash,format=raw,readonly=on,file=" + code, "-drive",
       "if=pflash,format=raw,file=" + d + "/vars.fd",
       "-drive", "if=none,id=esp,format=raw,readonly=on,file=fat:" + d + "/esp", "-device",
-      secure ? "virtio-blk-pci,drive=esp,addr=0x6,bootindex=1" : "virtio-blk-pci,drive=esp",
+      secure ? "virtio-blk-pci,drive=esp,addr=0x6,bootindex=1" : "virtio-blk-pci,drive=esp" + endpoint + (ro ? ",addr=1" : ""),
     ]
   process.standardInput = input
   process.standardOutput = qmp
@@ -203,7 +208,7 @@ func check() throws {
   }
   func checkPage(_ id: UUID) throws {
     let path = d + "/paused-guid.bin"
-    _ = try request("pmemsave", ["val": 0x5c740028, "size": 16, "filename": path])
+    _ = try request("pmemsave", ["val": ro ? 0x090d0010 : 0x5c740028, "size": 16, "filename": path])
     var uuid = id.uuid
     let raw = withUnsafeBytes(of: &uuid) { Array($0) }
     let wire = [3,2,1,0,5,4,7,6,8,9,10,11,12,13,14,15].map { raw[$0] }
