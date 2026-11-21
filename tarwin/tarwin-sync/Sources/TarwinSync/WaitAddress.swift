@@ -15,7 +15,11 @@ public struct WaitAddress {
   }
 
   public func bucketHash() -> UInt64 {
-    return frame ^ (frame >> 29) ^ (UInt64(offset) << 11) ^ (frame << 17)
+    // Mix the word offset into low bits even for a power-of-two bucket count.
+    var h = frame ^ (UInt64(offset) &* 0x9E37_79B9_7F4A_7C15)
+    h = (h ^ (h >> 30)) &* 0xBF58_476D_1CE4_E5B9
+    h = (h ^ (h >> 27)) &* 0x94D0_49BB_1331_11EB
+    return h ^ (h >> 31)
   }
 
   public init(frame: UInt64, offset: UInt32) {

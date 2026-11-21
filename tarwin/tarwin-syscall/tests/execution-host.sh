@@ -29,6 +29,9 @@ done
 if [ -n "${EMBEDDED_SWIFTC:-}" ]; then
     sh "$tarwin/tarwin-sched/tests/bootstrap-stack.sh"
     for target in aarch64-none-none-elf x86_64-unknown-none-elf riscv64-none-none-eabi; do
-        compile LibTesseraTarwin "$target" "$native"/CallNumbers.swift "$native"/NativeEntry.swift "$native"/NativeHandles.swift
+        for src in "$tarwin/tarwin-syscall"/providers/Sources/*; do
+            compile "$(basename "$src")" "$target" "$src"/*.swift
+        done
+        compile LibTesseraTarwin "$target" "$native"/CallNumbers.swift "$native"/Native*.swift
     done
 fi
