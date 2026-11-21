@@ -1,0 +1,38 @@
+import Foundation
+
+@Test
+function deviceRejectingFeaturesNeverGetsDriverOk() {
+    var status: U32 = 0
+    var high: U32 = 0
+    let read: (U32) -> U32 = { reg in
+        if reg == 0 { return 0x74726976 }
+        if reg == 4 || reg == 8 { return 2 }
+        if reg == 0x70 { return status }
+        if reg == 0x10 && high == 1 { return 3 }
+        return 0
+    }
+    let write: (U32,U32) -> Void = { reg,v in
+        if reg == 0x70 { status = v == 11 ? 3 : v }
+        if reg == 0x14 { high = v }
+    }
+    expect!((negotiateMmio(2,0,read,write,{ in return false }) == MmioFeatures.Unavailable))
+    expect!(!driverReady(read,write))
+    expect!((status == 0x83))
+}
+
+@Test
+function readRequestPublishesHeaderThenDeviceWritableDataAndStatus() {
+    var q = SplitQueue {}
+    expect!(q.initialize(4))
+    var packedFlags: U16 = 0
+    var header: U64 = 0
+    var pending: U8 = 0
+    let packet = BlockPacket { op: .Read, sector: 3, bytes: 512, header: 4096, data: 8192, status: 12288 }
+    expect!(submitBlock(q, 1, packet, 4, 0, { a,k,s in header = s },
+                        { a,v in pending = v }, { i,a,n,f,l in packedFlags = (packedFlags << 4) | f },
+                        { i,h in }, { idx in }))
+    expect!((blockCompletion(0, .Read, 512, 1) == GuestBlockResult.ProtocolError))
+    expect!((blockCompletion(0, .Read, 512, 513) == GuestBlockResult.Ok))
+    expect!((header == 3 && pending == 255 && packedFlags == 0x132))
+    expect!((blockCompletion(pending, .Read, 512, 513) == GuestBlockResult.ProtocolError))
+}

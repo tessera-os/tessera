@@ -1,0 +1,139 @@
+public enum BlockOp { Read Write Flush Fua Discard Zero Zone Atomic }
+public enum IoQos { Deadline Interactive Initiated Default Utility Background }
+public enum BlockState { Pending Issued }
+
+public struct BlockCommand {
+    let op: BlockOp
+    let lba: U64
+    let blocks: U64
+    let qos: IoQos
+    let queue: U32
+}
+
+public struct BlockTicket {
+    let command: BlockCommand
+    let id: U64
+    var state: BlockState
+    var replay: Bool
+}
+
+function priority(qos: IoQos) -> Int {
+    return match qos {
+        Deadline -> 5
+        Interactive -> 4
+        Initiated -> 3
+        Default -> 2
+        Utility -> 1
+        Background -> 0
+    }
+}
+
+function barrier(cmd: borrow BlockCommand) -> Bool {
+    return cmd.op == .Flush || cmd.op == .Zone
+}
+
+function conflicts(first: borrow BlockCommand, second: borrow BlockCommand) -> Bool {
+    if barrier(first) || barrier(second) { return true }
+    if first.op == .Read && second.op == .Read { return false }
+    if first.lba <= second.lba { return second.lba - first.lba < first.blocks }
+    return first.lba - second.lba < second.blocks
+}
+
+// One dispatch table per device, across all hardware queues. All operations
+// run under its lock. IDs are never recycled, including after a restart.
+public struct BlockQueue {
+    let capacity: U64
+    let queueCount: U32
+    let pendingLimit: Int
+    let depth: U32
+    var epoch: U64 = 1
+    var lastId: U64 = 0
+    var offline: Bool = false
+    var count: Int = 0
+    var entries: [BlockTicket] = []
+
+    function enqueue(borrow mut self, cmd: BlockCommand) -> U64 {
+        if offline || cmd.queue >= queueCount || depth == 0 || count >= pendingLimit ||
+            lastId == 0xffffffffffffffff { return 0 }
+        if cmd.op == .Flush {
+            if cmd.lba != 0 || cmd.blocks != 0 { return 0 }
+        } else {
+            if cmd.blocks == 0 || cmd.lba >= capacity || cmd.blocks > capacity - cmd.lba { return 0 }
+        }
+        lastId += 1
+        let ticket = BlockTicket { id: lastId, command: move cmd, state: .Pending, replay: false }
+        if count < entries.count { entries[count] = move ticket } else { entries.append(move ticket) }
+        count += 1
+        return lastId
+    }
+
+    function dispatch(borrow mut self, queue: U32) -> U64 {
+        if offline || queue >= queueCount { return 0 }
+        var active: U32 = 0
+        var lowInFlight = false
+        for index in 0..count {
+            let ticket = entries[index]
+            if ticket.command.queue == queue && ticket.state == .Issued {
+                active += 1
+                if priority(ticket.command.qos) <= 1 { lowInFlight = true }
+            }
+        }
+        if active >= depth { return 0 }
+        var best: Int = -1
+        var rank: Int = -1
+        for at in 0..count {
+            let t = entries[at]
+            if t.command.queue != queue || t.state != .Pending { continue }
+            let qos = priority(t.command.qos)
+            if qos <= 1 && lowInFlight { continue }
+            var blocked = false
+            for earlier in 0..at {
+                if conflicts(entries[earlier].command, t.command) ||
+                    (t.replay && entries[earlier].replay && entries[earlier].state == .Pending) {
+                    blocked = true
+                    break
+                }
+            }
+            if blocked { continue }
+            let score = t.replay ? 6 : qos
+            if score > rank {
+                best = Int(at)
+                rank = score
+            }
+        }
+        if best < 0 { return 0 }
+        entries[best].state = .Issued
+        return entries[best].id
+    }
+
+    function complete(borrow mut self, queue: U32, sourceEpoch: U64, id: U64) -> Bool {
+        if offline || sourceEpoch != epoch { return false }
+        for at in 0..count {
+            if entries[at].id == id && entries[at].command.queue == queue &&
+                entries[at].state == .Issued {
+                for src in (at + 1)..count { entries[src - 1] = entries[src] }
+                count -= 1
+                return true
+            }
+        }
+        return false
+    }
+
+    // Only called once old queues and DMA have been quiesced and reset.
+    function restart(borrow mut self) -> Bool {
+        if offline || epoch == 0xffffffffffffffff { return false }
+        epoch += 1
+        for at in 0..count {
+            entries[at].state = .Pending
+            entries[at].replay = true
+        }
+        return true
+    }
+
+    function removeDevice(borrow mut self, deviceRemoved: borrow (U64) -> Void) {
+        offline = true
+        for index in 0..count { deviceRemoved(entries[index].id) }
+        count = 0
+        entries = []
+    }
+}

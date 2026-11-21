@@ -1,0 +1,118 @@
+// Virtio 1.2 split rings. The transport provides little-endian accesses to
+// pinned DMA memory, including cache maintenance and acquire/release barriers.
+// The driver serializes submit and consume for each queue.
+public struct Segment { let iova: U64
+    let length: U32
+    let deviceWrites: Bool
+}
+struct DescriptorOwner { var used: Bool
+    var head: Int
+    var next: Int
+}
+struct Submission { var live: Bool
+    var cookie: U64
+    var writable: U32
+}
+public struct UsedBuffer { let cookie: U64
+    let written: U32
+}
+public enum UsedResult { Empty Broken Completed(UsedBuffer) }
+public struct SplitQueue {
+    var size: Int = 0
+    var published: U16 = 0
+    var consumed: U16 = 0
+    var outstanding: Int = 0
+    var broken: Bool = false
+    var owners: [DescriptorOwner] = []
+    var requests: [Submission] = []
+
+    function initialize(borrow mut self, count: Int) -> Bool {
+        if size != 0 || count < 1 || count > 32768 || (count & (count - 1)) != 0 { return false }
+        size = count
+        for i in 0..count {
+            owners.append(DescriptorOwner { used: false, head: -1, next: -1 })
+            requests.append(Submission { live: false, cookie: 0, writable: 0 })
+        }
+        return true
+    }
+
+    function submit(borrow mut self, cookie: U64, parts: borrow [Segment],
+                    descriptor: borrow (Int, U64, U32, U16, U16) -> Void,
+                    putAvailable: borrow (Int, U16) -> Void,
+                    releaseAvailable: borrow (U16) -> Void) -> Bool {
+        if broken || size == 0 || parts.count == 0 || parts.count > size { return false }
+        var writable: U32 = 0
+        var total: U64 = 0
+        var sawWrite = false
+        for part in parts {
+            if part.length == 0 || U64(part.length - 1) > 0xffffffffffffffff - part.iova { return false }
+            total += U64(part.length)
+            if total > 0xffffffff { return false }
+            if part.deviceWrites {
+                writable += part.length
+                sawWrite = true
+            } else if sawWrite { return false }
+        }
+        var slots: [Int] = []
+        for i in 0..size {
+            if !owners[i].used { slots.append(Int(i)) }
+            if slots.count == parts.count { break }
+        }
+        if slots.count != parts.count { return false }
+        let head = slots[0]
+        for i in 0..slots.count {
+            let slot = slots[i]
+            let part = parts[i]
+            var flags: U16 = part.deviceWrites ? 2 : 0
+            var next: Int = -1
+            if i + 1 < slots.count { next = slots[i + 1]
+                flags |= 1 }
+            owners[slot] = DescriptorOwner { used: true, head: head, next: next }
+            descriptor(slot, part.iova, part.length, flags, next < 0 ? U16(0) : U16(next))
+        }
+        requests[head] = Submission { live: true, cookie: cookie, writable: writable }
+        outstanding += 1
+        putAvailable(Int(published) % size, U16(head))
+        published = wrappingAdd(published, U16(1))
+        releaseAvailable(published)
+        return true
+    }
+
+    // Read used.idx with acquire before reading the corresponding used entry.
+    // Never trust the device's descriptor chain when recycling ownership.
+    function consume(borrow mut self, acquireUsed: borrow () -> U16,
+                     usedId: borrow (Int) -> U32, usedLength: borrow (Int) -> U32) -> UsedResult {
+        if broken || size == 0 { return .Broken }
+        let delta = wrappingSub(acquireUsed(), consumed)
+        if delta == 0 { return .Empty }
+        if Int(delta) > outstanding { broken = true
+            return .Broken }
+        let ringSlot = Int(consumed) % size
+        let id = usedId(ringSlot)
+        if id >= U32(size) { broken = true
+            return .Broken }
+        let head = Int(id)
+        let request = requests[head]
+        let written = usedLength(ringSlot)
+        if !request.live || written > request.writable {
+            broken = true
+            return .Broken
+        }
+        var slot = head
+        while slot >= 0 {
+            let next = owners[slot].next
+            owners[slot].used = false
+            slot = next
+        }
+        requests[head].live = false
+        consumed = wrappingAdd(consumed, U16(1))
+        outstanding -= 1
+        return .Completed(UsedBuffer { cookie: request.cookie, written: written })
+    }
+}
+
+public function isolatedSplitFeatures(offered: U64, supportedDeviceBits: U32) -> U64 {
+    let mandatory: U64 = 0x300000000
+    if (offered & mandatory) != mandatory { return 0 }
+    return mandatory | (offered & U64(supportedDeviceBits) & 0xffffff)
+}
