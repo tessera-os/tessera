@@ -1,14 +1,3 @@
-### x64 W0 target refusal
-
-Use the x64 signed archive and detached signature in place of the AArch64
-fixtures. Keep the separately provisioned enrollment, TPM and floor settings.
-Set `TARBOOT_TEST_CPU=x64-refusal`, leave `TARBOOT_ENTER_W0` unset, and run
-`bash run.sh x86_64`. This check expects an **incompatible** TCG `-cpu max`
-guest, not a portable assertion that all QEMU versions must fail. It obtains
-CPUID in the guest, measures the archive, supplies the failed target check to
-the verifier and requires refusal before installation. A matching CPUID alone
-would not prove §5.1 supervisor setup, virtualization or working CET.
-
 # UEFI firmware interop
 
 Before firmware exit, the diagnostic opens a raw TIRA test archive on its own EFI System Partition using the loaded-image and simple-file-system protocols. It rejects a too-small destination, reopens the file read-only, checks the member’s BLAKE3 digest, and inspects the ELF for the current architecture. This unsigned test fixture is never mapped or executed.
@@ -165,3 +154,32 @@ before stopping QEMU. Only the kernel draws that string; the EFI image is
 checked not to contain it. Set `TARBOOT_TEST_SCANOUT_DIR` to an existing
 empty directory to save the PPM. This is a stage-0 shell-free boot, not an
 OS install, SMP test, hardware timer interrupt or certified boot chain.
+
+The tagged 26.11.1 fixture (TIRA SHA-256
+`5d952273f606acd408df9dbc9281bb4142f20c4f61a802ed96697bb511cbbab0`)
+produced an 800×600 PPM with SHA-256
+`dd43b917e984984ed7cd95fc97774489ba1a591b30f43e45a9091dda6d30fbfa`
+on independent Mac runs. Both runs rejected a bit flip in the detached
+signature. Verification at another time requires a currently valid isolated
+enrollment; do not override the firmware clock to keep a fixture valid.
+
+### x64 W0 target refusal
+
+Use the x64 signed archive and detached signature in place of the AArch64
+fixtures. Keep the separately provisioned enrollment, TPM and floor settings.
+Set `TARBOOT_TEST_CPU=x64-refusal`, leave `TARBOOT_ENTER_W0` unset, and run
+`bash run.sh x86_64`. This check expects an **incompatible** TCG `-cpu max`
+guest, not a portable assertion that all QEMU versions must fail. It obtains
+CPUID in the guest, measures the archive, supplies the failed target check to
+the verifier and requires refusal before installation. A matching CPUID alone
+would not prove §5.1 supervisor setup, virtualization or working CET.
+
+### AArch64 user translation probe
+
+`TARBOOT_TEST_TRANSLATION=1 TARBOOT_TEST_CPU=1 bash run.sh aarch64` builds
+16 KiB stage-1 tables in a private post-exit reservation. On a single
+EL2 CPU the diagnostic issues AT S1E0R/W for two data access permissions
+and a guard page, checks the physical frame addresses and architectural
+fault status from PAR_EL1, then restores the inactive EL1/0 regime. It
+never executes an EL0 instruction, activates a process or tests VHE host
+context switching. It does not consume a signed W0 archive.

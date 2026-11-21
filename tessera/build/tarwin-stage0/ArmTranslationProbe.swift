@@ -1,0 +1,87 @@
+// Test-only EL2 observer. Install an inactive EL1/0 regime and use the
+// hardware page walker without executing or dereferencing any EL0 address.
+// Single CPU, after firmware exit; restore every changed system register.
+import Foundation
+
+let code = """
+mrs x3, CurrentEL
+cmp x3, #8
+b.ne 9f
+mrs x3, hcr_el2
+tbnz x3, #34, 9f
+tbnz x3, #12, 9f
+tbnz x3, #0, 9f
+mrs x4, daif
+msr daifset, #15
+bic x10, x3, #(1 << 27)
+orr x10, x10, #(1 << 31)
+msr hcr_el2, x10
+isb
+mrs x5, ttbr0_el1
+mrs x6, tcr_el1
+mrs x7, mair_el1
+mrs x8, sctlr_el1
+mrs x9, par_el1
+bic x10, x8, #1
+msr sctlr_el1, x10
+isb
+dsb sy
+tlbi vmalle1
+dsb sy
+isb
+msr ttbr0_el1, x0
+mov x10, #0xb510
+movk x10, #0x90, lsl #16
+movk x10, #5, lsl #32
+msr tcr_el1, x10
+mov x10, #255
+msr mair_el1, x10
+isb
+orr x10, x8, #1
+bic x10, x10, #(1 << 25)
+msr sctlr_el1, x10
+isb
+at s1e0r, x1
+isb
+mrs x10, par_el1
+str x10, [x2]
+at s1e0w, x1
+isb
+mrs x10, par_el1
+str x10, [x2, #8]
+add x1, x1, #4, lsl #12
+at s1e0w, x1
+isb
+mrs x10, par_el1
+str x10, [x2, #16]
+add x1, x1, #4, lsl #12
+at s1e0r, x1
+isb
+mrs x10, par_el1
+str x10, [x2, #24]
+bic x10, x8, #1
+msr sctlr_el1, x10
+isb
+tlbi vmalle1
+dsb sy
+isb
+msr ttbr0_el1, x5
+msr tcr_el1, x6
+msr mair_el1, x7
+isb
+msr sctlr_el1, x8
+msr par_el1, x9
+msr hcr_el2, x3
+isb
+msr daif, x4
+mov x0, #1
+ret
+9: mov x0, #0
+ret
+"""
+print("""
+define i64 @tarboot_test_translation(i64 %root, i64 %va, ptr %results) naked nounwind {
+  call void asm sideeffect "\(code.replacingOccurrences(of: "\n", with: "\\0A"))", "~{memory}"()
+  unreachable
+}
+""")

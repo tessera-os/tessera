@@ -277,6 +277,9 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
           && checkPage(base: owned.base, length: owned.length, pageSize: pageSize)
           && runBootCPU(UInt64(n))
       else { return false }
+      #if TARBOOT_TEST_TRANSLATION
+        guard checkUserTranslation(base: owned.base, length: owned.length) else { return false }
+      #endif
       #if TARBOOT_TEST_DISPLAY
         // Dedicated debug VM. Its GOP aperture remains identity mapped after
         // exit; no graphics driver or other CPU is using the framebuffer.

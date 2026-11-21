@@ -42,6 +42,14 @@ for isa in "${@:-all}"; do
         fi
         modules=()
         entry_source=()
+        if [[ ${TARBOOT_TEST_TRANSLATION:-0} == 1 ]]; then
+            [[ $arch == aarch64 && ${TARBOOT_TEST_CPU:-0} == 1 && ${TARBOOT_TEST_SMP_TABLES:-0} == 0 && -z ${TARBOOT_TEST_SIGNATURE:-} ]] || exit 2
+            flags+=(-D TARBOOT_TEST_TRANSLATION)
+            entry_source+=("$here/TranslationProbe.swift")
+            swift "$composition-stage0/ArmTranslationProbe.swift" > "$d/translation.ll"
+            "$bin/clang" -target aarch64-unknown-windows-msvc -Wno-override-module -c "$d/translation.ll" -o "$d/translation.obj"
+            extra+=("$d/translation.obj")
+        fi
         if [[ ${TARBOOT_ENTER_W0:-0} == 1 ]]; then
             [[ $arch == aarch64 && -n ${TARBOOT_TEST_SIGNATURE:-} && ${TARBOOT_TEST_RNG:-0} == 1 && ${TARBOOT_TEST_DISPLAY:-0} == 1 && ${TARBOOT_TEST_SMP_TABLES:-0} == 0 && ${TARBOOT_BAD_SIGNATURE:-0} == 0 ]] || exit 2
             flags+=(-D TARBOOT_ENTER_W0)
