@@ -35,6 +35,10 @@ with a RAW firmware seed, validated RSDP/XSDT or FDT, the randomized test
 reservation, and the ESP archive. Its map tags exactly the loader's archive
 and handoff reservations. Readback validates their extents, not kernel entry.
 
-The [KLF Swift preflight](../../tessera/build/tarwin-profile/README.md) compiles actual KCore input and fails on compiler diagnostics or a non-kernel profile. A standalone scalar function reaches app-profile emission; it is not relabeled as kernel.
+The [stage-0 W0 build](../../tessera/build/tarwin-stage0/README.md) uses Apple's
+Embedded Swift compiler on macOS and A12's native image writer. It produces
+a separate unsigned aarch64 kernel candidate for the signing pipeline.
+The [KLF Swift preflight](../../tessera/build/tarwin-profile/README.md) applies to
+the later self-hosted compiler transition and is not a stage-0 prerequisite.
 
 Compiler object checks do not verify generic specializations for unknown future callers, kernel-profile TIR, interrupt/stack discipline or a linked kernel. W0 entry, firmware authentication, live page faults, three-ISA kernel execution, reference hardware, canonical TRFS and same-device performance comparisons remain unverified.

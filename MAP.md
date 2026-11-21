@@ -12,6 +12,7 @@ services, drivers, tools and apps.
 | `tarwin/` | Native Swift Tarwin kernel and boot loader under development, separate from the Linux build. Platform packages: `kcore`, `tarboot`, `tarwin-boot`, `tarwin-mm`, `tarwin-time`, and `tarwin-arch-{aarch64,x64,rv64}` |
 | `tessera/build/tarwin/` | Tarwin bootstrap composition: binds the boot CPU run queue to counter samples and one-shot deadlines without a dependency from boot or time onto the scheduler |
 | `tessera/build/tarwin-profile/` | Hosted KLF Swift kernel-profile preflight; rejects app-profile output instead of relabeling it |
+| `tessera/build/tarwin-stage0/` | Non-allocating Embedded Swift W0 kernel and hosted A12 image packaging; unsigned signing input, not a release |
 | `system/` | The system volume's package: the init Tessera runs from its read-only system volume |
 | `init/` | Init |
 | `bootstrap/` | The service broker every named service checks in with |
