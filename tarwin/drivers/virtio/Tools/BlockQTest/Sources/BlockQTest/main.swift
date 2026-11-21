@@ -31,7 +31,7 @@ final class QTest {
 
   init(
     binary: String, machine: Machine, disk: URL, translated: Bool, neighbors: Bool,
-    extraDevices: [String] = []
+    extraDevices: [String] = [], tcpFixture: Bool = false
   ) throws {
     process.executableURL = URL(fileURLWithPath: binary)
     process.arguments = [
@@ -57,6 +57,7 @@ final class QTest {
         "-netdev",
         neighbors
           ? "user,id=nic0,restrict=on,net=10.0.2.0/24,host=10.0.2.2,ipv6-net=fd00:23::/64,ipv6-host=fd00:23::2"
+            + (tcpFixture ? ",guestfwd=tcp:10.0.2.100:4242-chardev:tcpfixture" : "")
           : "hubport,id=nic\(i),hubid=1",
         "-device", device + ",netdev=nic\(i),iommu_platform=on,mac=52:54:00:00:00:0\(i+1)",
       ]
@@ -392,7 +393,8 @@ func run() throws {
     encrypted || (CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--vtd")
   let neighbors = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--neighbors"
   let streams = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--byte-streams"
-  guard CommandLine.arguments.count == 2 || translated || neighbors || streams,
+  let tcp = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--tcp-receive"
+  guard CommandLine.arguments.count == 2 || translated || neighbors || streams || tcp,
     let machine = Machine(
       rawValue: URL(fileURLWithPath: CommandLine.arguments[1]).lastPathComponent)
   else {
@@ -403,6 +405,17 @@ func run() throws {
     UUID().uuidString + ".raw")
   try Data(repeating: 0x6c, count: 1 << 20).write(to: disk, options: .withoutOverwriting)
   defer { try? FileManager.default.removeItem(at: disk) }
+  if tcp {
+    try withPipePair { _, path, input, _ in
+      let q = try QTest(
+        binary: CommandLine.arguments[1], machine: machine, disk: disk, translated: false,
+        neighbors: true, extraDevices: ["-chardev", "pipe,id=tcpfixture,path=" + path],
+        tcpFixture: true)
+      defer { q.close() }
+      try testNeighbors(q, machine, tcpInput: input)
+    }
+    return
+  }
   if streams {
     try testByteStreams(binary: CommandLine.arguments[1], disk: disk, machine: machine)
     return
@@ -447,15 +460,17 @@ func run() throws {
 do {
   try run()
   print(
-    CommandLine.arguments.last == "--byte-streams"
-      ? "PASS: bidirectional single-port virtio-console and short uncredited virtio-rng input"
-      : CommandLine.arguments.last == "--vtd-xts"
-        ? "PASS: AES-256-XTS known-answer sector over q35 VT-d, retired before decryption"
-        : CommandLine.arguments.last == "--vtd"
-          ? "PASS: q35 VT-d translated disk DMA, IOTLB drain and same-IOVA remap"
-          : CommandLine.arguments.last == "--neighbors"
-            ? "PASS: router advertisement, SLAAC/DAD, ARP and IPv6 neighbor discovery against restricted libslirp"
-            : "PASS: QEMU virtio-blk write/flush/readback, zero/discard extents and paced UDP delivery across isolated NICs"
+    CommandLine.arguments.last == "--tcp-receive"
+      ? "PASS: TCP receive stream and cumulative ACKs against isolated libslirp"
+      : CommandLine.arguments.last == "--byte-streams"
+        ? "PASS: bidirectional single-port virtio-console and short uncredited virtio-rng input"
+        : CommandLine.arguments.last == "--vtd-xts"
+          ? "PASS: AES-256-XTS known-answer sector over q35 VT-d, retired before decryption"
+          : CommandLine.arguments.last == "--vtd"
+            ? "PASS: q35 VT-d translated disk DMA, IOTLB drain and same-IOVA remap"
+            : CommandLine.arguments.last == "--neighbors"
+              ? "PASS: router advertisement, SLAAC/DAD, ARP and IPv6 neighbor discovery against restricted libslirp"
+              : "PASS: QEMU virtio-blk write/flush/readback, zero/discard extents and paced UDP delivery across isolated NICs"
   )
 } catch {
   FileHandle.standardError.write(Data("\(error)\n".utf8))
