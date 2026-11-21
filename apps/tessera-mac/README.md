@@ -7,8 +7,11 @@ Test: `scripts/test.sh` (unit tests, signed bundle, headless XPC boot).
 For a separate disk: `build/Tessera.app/Contents/MacOS/Tessera --disk /path/to/directory`.
 The default sparse disk is 64 GiB logical under `~/Library/Application Support/Tessera/Disks/`.
 
-This is a stub kernel desktop, not a running Tessera userland or TRFS filesystem.
-It exercises XPC, disk block I/O, input and IOSurface/Metal presentation at 30 fps.
+TarwindKernel is the default kernel; --stub-kernel selects the original stub.
+The real kernel reports time, objects, syscalls, scheduler, ready and calls ready().
+The desktop is still our IOSurface/Metal preview, not running Tessera userland or
+a TRFS filesystem. It exercises XPC, disk block I/O and input at 30 fps.
+Boot errors fall back to StubKernel and remain visible on the console overlay.
 The system image remains a placeholder. The bundle script builds and signs H2's
 real sandboxed tarwin-task executable from ../../tarwin/tarwin-task. At ready the
 service launches it, validates check-in, sends a protect command and serves its
@@ -31,7 +34,13 @@ HostEvent path as well as reaching H6. No H5 graphics drivers are integrated yet
 The cross-process check-in/gate test uses H2's fix for unrelated bootstrap traffic.
 Its test child checks in before clearing and releasing the bootstrap port.
 
-Replace `KernelFactory.make(devices:)` with an adapter for `TarwindKernel.Tarwind.boot`.
+TarwindKernelAdapter maps lifecycle callbacks to the host on the main queue.
+H6 providers and the preview display provider are registered before boot.
+H1 retains the paths but does not load images yet; the service separately launches
+the sandboxed task host. Its gate handlers remain diagnostic stubs, not H1's
+KernelGate: task-side pinned memory and trap validation still need integration.
+There is no LibTessera app, H5 compositor or loaded guest image in this bundle.
+The bundle test requires real ready and all five stages; fallback is not a pass.
 KernelConfig carries diskPath, systemImagePath, panicRecordPath and taskExecutablePath;
 KernelHost has the same four callbacks as TarwindHost. Register HostDevices display/HID
 providers in TarwinArchHosted's HostDeviceRegistry before boot. No dependency on those

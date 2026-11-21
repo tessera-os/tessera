@@ -11,6 +11,7 @@ public struct DisplayOutput: Codable, Equatable {
 public struct KernelConfig: Codable, Equatable {
     public var diskPath, systemImagePath, panicRecordPath, taskExecutablePath: String
     public var outputs: [DisplayOutput]
+    public var stubKernel = false
     public init(diskPath: String, systemImagePath: String, panicRecordPath: String,
                 taskExecutablePath: String = "", outputs: [DisplayOutput] = [DisplayOutput()]) {
         self.diskPath = diskPath; self.systemImagePath = systemImagePath
@@ -47,7 +48,9 @@ public protocol HostedKernel: AnyObject {
     func shutdown()
 }
 public enum KernelFactory {
-    public static func make(devices: HostDevices) -> HostedKernel { StubKernel(devices: devices) }
+    public static func make(devices: HostDevices, stubKernel: Bool = false) -> HostedKernel {
+        stubKernel ? StubKernel(devices: devices) : TarwindKernelAdapter(devices: devices)
+    }
 }
 @objc public protocol TarwindControl {
     func start(_ config: Data)

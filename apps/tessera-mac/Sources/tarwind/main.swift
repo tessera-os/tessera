@@ -3,6 +3,8 @@ import Darwin
 import TesseraHostKit
 import IOSurface
 import TarwinArchHosted
+import TarwinHostedGate
+import TarwinABI
 
 private var panicFD: Int32 = -1
 private func crashHandler(_ signal: Int32) {
@@ -18,6 +20,7 @@ final class Service: NSObject, NSXPCListenerDelegate, TarwindControl, KernelHost
     var deviceDrivers: HostedServiceDevices?
     var inputTimer: DispatchSourceTimer?
     var launcher: TaskLauncher?
+    var displayProvider: DemoDeviceProvider?
     lazy var devices = HostDevices(display: self)
     var state = "stopped"
     var remote: TesseraHost? { connection?.remoteObjectProxyWithErrorHandler { NSLog("Host: %@", "\($0)") } as? TesseraHost }
@@ -36,6 +39,15 @@ final class Service: NSObject, NSXPCListenerDelegate, TarwindControl, KernelHost
                 self.deviceDrivers = try HostedServiceDevices(registry: self.registry) { [weak self] data in
                     self?.remote?.deviceFrame(["tw.frame": data])
                 }
+                let display = try DemoDeviceProvider(kind: "display") { [weak self] request in
+                    guard request.number == DemoCall.display,
+                          let scalar = UnicodeScalar(UInt32(truncatingIfNeeded: request.arguments[0])) else {
+                        return GateReply(result: CallResult(status: 1))
+                    }
+                    DispatchQueue.main.async { self?.devices.hid?.deliver(HostEvent(kind: "keyDown", text: String(scalar))) }
+                    return GateReply(result: CallResult())
+                }
+                self.displayProvider = display; self.registry.register(display)
                 let timer = DispatchSource.makeTimerSource(queue: .main)
                 timer.schedule(deadline: .now(), repeating: 1.0 / 60)
                 timer.setEventHandler { [weak self] in
@@ -47,12 +59,13 @@ final class Service: NSObject, NSXPCListenerDelegate, TarwindControl, KernelHost
                 }
                 self.inputTimer = timer; timer.resume()
                 panicFD = Darwin.open(config.panicRecordPath, O_WRONLY | O_CREAT | O_TRUNC, 0o600)
-                self.state = "booting"; self.kernel = KernelFactory.make(devices: self.devices)
+                self.state = "booting"; self.kernel = KernelFactory.make(devices: self.devices, stubKernel: config.stubKernel)
                 self.kernel?.start(config: config, host: self)
             } catch { self.panic(record: Array("Invalid config: \(error)".utf8)) }
         }
     }
     func shutdownKernel() {
+        displayProvider?.close(); displayProvider = nil
         launcher?.shutdown(); launcher = nil
         inputTimer?.cancel(); inputTimer = nil
         kernel?.shutdown(); kernel = nil; state = "stopped"
@@ -72,7 +85,11 @@ final class Service: NSObject, NSXPCListenerDelegate, TarwindControl, KernelHost
         DispatchQueue.main.async { if let event = try? JSONDecoder().decode(HostEvent.self, from: data) { self.devices.hid?.deliver(event) } }
     }
     func resize(_ data: Data) {
-        DispatchQueue.main.async { if let output = try? JSONDecoder().decode(DisplayOutput.self, from: data) { (self.kernel as? StubKernel)?.resize(output) } }
+        DispatchQueue.main.async {
+            guard let output = try? JSONDecoder().decode(DisplayOutput.self, from: data) else { return }
+            (self.kernel as? StubKernel)?.resize(output)
+            (self.kernel as? TarwindKernelAdapter)?.resize(output)
+        }
     }
     func status(_ reply: @escaping (String) -> Void) { DispatchQueue.main.async { reply(self.state) } }
     func bootStage(_ name: String) { remote?.bootStage(name) }

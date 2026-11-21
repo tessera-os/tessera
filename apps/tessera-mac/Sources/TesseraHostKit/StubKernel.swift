@@ -11,7 +11,11 @@ public final class StubKernel: HostedKernel, HIDProvider {
     private var frame: UInt64 = 0
     private var cursor = CGPoint(x: 500, y: 300)
     private var typed = ""
-    public init(devices: HostDevices) { self.devices = devices; devices.hid = self }
+    private let desktopOnly: Bool
+    public init(devices: HostDevices, desktopOnly: Bool = false) {
+        self.devices = devices; self.desktopOnly = desktopOnly; devices.hid = self
+        if desktopOnly { stages = [] }
+    }
     public func start(config: KernelConfig, host: KernelHost) {
         shutdown(); self.host = host; outputs = config.outputs; tick = 0; frame = 0
         do {
@@ -73,7 +77,7 @@ public final class StubKernel: HostedKernel, HIDProvider {
         text("Tessera", 24, CGFloat(h - 28), size: 18)
         text(DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .short), CGFloat(w - 110), CGFloat(h - 27))
         text("Your space, reassembled.", 64, CGFloat(h) * 0.61, size: 36)
-        text("Hosted Tarwin  •  Stub kernel preview", 66, CGFloat(h) * 0.61 - 35, size: 16)
+        text(desktopOnly ? "TarwindKernel  •  Preview display" : "Hosted Tarwin  •  Stub kernel preview", 66, CGFloat(h) * 0.61 - 35, size: 16)
         text(typed.isEmpty ? "Type anywhere to begin…" : typed, 66, CGFloat(h) * 0.61 - 85, size: 20)
         let dock = NSRect(x: CGFloat(w) / 2 - 172, y: 24, width: 344, height: 82)
         NSColor.white.withAlphaComponent(0.15).setFill(); NSBezierPath(roundedRect: dock, xRadius: 22, yRadius: 22).fill()

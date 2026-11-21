@@ -12,6 +12,7 @@ final class App: NSObject, NSApplicationDelegate, TesseraHost, NSWindowDelegate 
     var views: [Int: DisplayView] = [:]
     var didFrame = false, isReady = false, quitting = false
     var consoleLines: [String] = []
+    var bootFailed = false
     var remote: TarwindControl? { connection?.remoteObjectProxyWithErrorHandler { error in NSLog("XPC: %@", "\(error)") } as? TarwindControl }
     func applicationDidFinishLaunching(_ notification: Notification) {
         if !headless { NSApp.setActivationPolicy(.regular); makeMenu() }
@@ -25,6 +26,7 @@ final class App: NSObject, NSApplicationDelegate, TesseraHost, NSWindowDelegate 
             config = KernelConfig(diskPath: disk.path, systemImagePath: try SystemImage.locate().path,
                 panicRecordPath: disk.deletingLastPathComponent().appendingPathComponent("panic.txt").path,
                 taskExecutablePath: Bundle.main.bundleURL.appendingPathComponent("Contents/XPCServices/com.tessera.tarwind.xpc/Contents/MacOS/tarwin-task").path)
+            config.stubKernel = CommandLine.arguments.contains("--stub-kernel")
             connect()
         } catch { print("ERROR \(error)"); fflush(stdout); exit(1) }
     }
@@ -47,6 +49,7 @@ final class App: NSObject, NSApplicationDelegate, TesseraHost, NSWindowDelegate 
     @MainActor @objc func start() {
         deviceHosts?.close(); deviceHosts = nil
         didFrame = false; isReady = false
+        bootFailed = false
         views.values.forEach { $0.console.isHidden = false }
         if let data = try? JSONEncoder().encode(config) { remote?.start(data) }
     }
@@ -59,11 +62,12 @@ final class App: NSObject, NSApplicationDelegate, TesseraHost, NSWindowDelegate 
         self.deviceHosts = AppDevices { [weak self] data in self?.remote?.deviceFrame(["tw.frame": data]) }
         self.deviceHosts?.hid.setFocused(self.windows.values.contains { $0.isKeyWindow })
         self.isReady = true; print("TESSERA READY"); fflush(stdout)
-        self.views.values.forEach { $0.console.isHidden = true }; self.finishIfNeeded()
+        self.views.values.forEach { $0.console.isHidden = !self.bootFailed }; self.finishIfNeeded()
     } }
     func finishIfNeeded() { if headless && exitReady && didFrame && isReady { quitting = true; remote?.shutdown(); exit(0) } }
     func console(_ line: String) { DispatchQueue.main.async {
         print(line); fflush(stdout); self.consoleLines.append(line); self.consoleLines = Array(self.consoleLines.suffix(30))
+        if line.hasPrefix("Kernel boot failed:") { self.bootFailed = true }
         self.views.values.forEach { $0.console.stringValue = self.consoleLines.joined(separator: "\n") }
     } }
     func panic(_ record: Data) { console("PANIC: " + String(decoding: record, as: UTF8.self)) }

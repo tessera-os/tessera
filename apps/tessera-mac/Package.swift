@@ -6,6 +6,7 @@ let package = Package(name: "TesseraMac", platforms: [.macOS(.v26)], products: [
     .executable(name: "tarwind", targets: ["tarwind"]),
     .executable(name: "tessera-mac-test", targets: ["tessera-mac-test"])
 ], dependencies: [
+    .package(path: "../../tessera/build/tarwin-hosted"),
     .package(path: "../../tarwin/tarwin-task"),
     .package(path: "../../tarwin/tarwin-syscall"),
     .package(path: "../../tarwin/tarwin-syscall/hosted"),
@@ -15,6 +16,7 @@ let package = Package(name: "TesseraMac", platforms: [.macOS(.v26)], products: [
     .package(path: "../../tarwin/tarwin-arch-hosted")
 ], targets: [
     .target(name: "TesseraHostKit", dependencies: [
+        .product(name: "TarwindKernel", package: "tarwin-hosted"),
         .product(name: "TarwinTaskTransport", package: "tarwin-task"),
         .product(name: "TarwinTaskProtocol", package: "tarwin-task"),
         .product(name: "TarwinHostedGate", package: "hosted"),
