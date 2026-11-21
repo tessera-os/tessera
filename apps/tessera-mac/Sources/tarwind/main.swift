@@ -17,6 +17,7 @@ final class Service: NSObject, NSXPCListenerDelegate, TarwindControl, KernelHost
     let registry = HostDeviceRegistry()
     var deviceDrivers: HostedServiceDevices?
     var inputTimer: DispatchSourceTimer?
+    var launcher: TaskLauncher?
     lazy var devices = HostDevices(display: self)
     var state = "stopped"
     var remote: TesseraHost? { connection?.remoteObjectProxyWithErrorHandler { NSLog("Host: %@", "\($0)") } as? TesseraHost }
@@ -52,6 +53,7 @@ final class Service: NSObject, NSXPCListenerDelegate, TarwindControl, KernelHost
         }
     }
     func shutdownKernel() {
+        launcher?.shutdown(); launcher = nil
         inputTimer?.cancel(); inputTimer = nil
         kernel?.shutdown(); kernel = nil; state = "stopped"
         if panicFD >= 0 { close(panicFD); panicFD = -1 }
@@ -74,7 +76,15 @@ final class Service: NSObject, NSXPCListenerDelegate, TarwindControl, KernelHost
     }
     func status(_ reply: @escaping (String) -> Void) { DispatchQueue.main.async { reply(self.state) } }
     func bootStage(_ name: String) { remote?.bootStage(name) }
-    func ready() { state = "ready"; remote?.ready() }
+    func ready() {
+        do {
+            let launcher = TaskLauncher(registry: registry) { [weak self] in self?.console($0) }
+            self.launcher = launcher
+            try launcher.launch(executable: config!.taskExecutablePath)
+            console("TASK COMMAND protect: success")
+            state = "ready"; remote?.ready()
+        } catch { panic(record: Array("Task launch failed: \(error)".utf8)) }
+    }
     func console(_ line: String) { remote?.console(line) }
     func panic(record: [UInt8]) {
         if let config { try? Data(record).write(to: URL(fileURLWithPath: config.panicRecordPath)) }

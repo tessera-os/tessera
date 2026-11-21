@@ -21,9 +21,9 @@ do {
     try output.close()
     let text = try String(contentsOf: log, encoding: .utf8)
     print(text, terminator: "")
-    guard process.terminationStatus == 0, text.contains("TESSERA READY"), text.contains("FRAME ") else {
+    guard process.terminationStatus == 0, text.contains("TESSERA READY"), text.contains("FRAME "), text.contains("TASK CHECKED IN") else {
         throw DiskError.io("Boot or frame check failed (exit \(process.terminationStatus))")
     }
     _ = try DiskImage.open(at: directory.appendingPathComponent("system.trfsdisk"))
-    print("tessera-mac-test PASS: ready, IOSurface frame, valid sparse disk")
+    print("tessera-mac-test PASS: ready, IOSurface frame, valid sparse disk, task checked in")
 } catch { print("tessera-mac-test FAIL: \(error)"); exit(1) }
