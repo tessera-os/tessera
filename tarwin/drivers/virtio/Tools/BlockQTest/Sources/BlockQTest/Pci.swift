@@ -10,7 +10,8 @@ func pciTransport(
   queues: [QueueMemory]
 ) throws -> DeviceTransport {
   let bdf = try q.requester(type: type, instance: instance)
-  let barWindow = type == 2 ? 0 : 1 + instance
+  guard bdf < 256, bdf & 7 == 0 else { throw Failure("Unsupported synthetic BAR topology") }
+  let barWindow = Int(bdf >> 3)
   func select(_ offset: Int) {
     _ = q.send("outl 0xcf8 \(0x8000_0000 + Int(bdf) * 0x100 + (offset & ~3))")
   }
@@ -75,7 +76,7 @@ func pciTransport(
     for j in 0..<4 { config.append(UInt8(truncatingIfNeeded: value >> (j * 8))) }
   }
   guard case .found(let windows) = discoverVirtioPci(config, sizes, type),
-    windows.config.length >= (type == 2 ? 8 : 6)
+    windows.config.length >= (type == 2 ? 8 : type == 1 ? 6 : 0)
   else { throw Failure("Invalid modern PCI capability list or device config") }
   let common = bars[Int(windows.common.bar)] + windows.common.offset
   func width(_ bytes: UInt32) -> String { bytes == 4 ? "l" : bytes == 2 ? "w" : "b" }
