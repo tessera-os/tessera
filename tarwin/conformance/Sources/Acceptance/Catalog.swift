@@ -21,7 +21,7 @@ func cases() -> [String] {
     "net.filters", "net.vpn", "hv.guest-tessera", "hv.guest-linux", "hv.guest-android",
     "hv.guest-windows", "hv.architecture-suite", "hv.device-assignment", "hv.dirty-log",
     "tvmm.snapshot-restore", "tvmm.migration", "tvmm.hotplug", "tvmm.job-limits",
-    "tvmm.venus", "tvmm.tvgpu-ember", "android.per-window-surfaces", "android.grant-isolation",
+    "tvmm.venus", "tvmm.tvgpu-ember", "tvmm.console", "android.per-window-surfaces", "android.grant-isolation",
     "power.10000-cycles", "power.wake", "power.thermal", "boot.ab-fallback", "boot.rollback",
     "boot.recovery", "boot.soft-reboot", "boot.live-update", "probes.verifier-positive",
     "probes.verifier-negative", "probes.hooks", "trace.log-filter-ring", "trace.perfetto",

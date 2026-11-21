@@ -2,7 +2,8 @@
 // The acquire/publish callbacks operate on that queue's guest pages only. A
 // backend returns after I/O is complete; a failed operation with a virtio status
 // still returns its used length. A transport failure instead breaks the queue.
-public enum PumpResult { case drained, progress, reschedule, broken }
+public enum PumpResult { case drained, progress, reschedule, waiting, broken }
+public enum QueueTransfer: Equatable { case complete(UInt64), waitForHost, invalid }
 public struct QueuePump {
   public let slots: Int
   public internal(set) var nextAvail: UInt64 = 0
@@ -23,12 +24,12 @@ public struct QueuePump {
     let n = slots
     return serviceOne(
       acquireAvailable, readHead, { descriptorChain(snapshotTable(), n, $0, ram) },
-      execute, writeUsed, releaseUsed)
+      { .complete(execute($0)) }, writeUsed, releaseUsed)
   }
 
   mutating func serviceOne(
     _ acquireAvailable: () -> UInt64, _ readHead: (UInt64) -> UInt64,
-    _ decode: (Int) -> Result<[Segment], QueueError>, _ execute: ([Segment]) -> UInt64,
+    _ decode: (Int) -> Result<[Segment], QueueError>, _ execute: ([Segment]) -> QueueTransfer,
     _ writeUsed: (UInt64, UInt64, UInt64) -> Void, _ releaseUsed: (UInt64) -> Void
   ) -> PumpResult {
     if broken { return .broken }
@@ -57,7 +58,14 @@ public struct QueuePump {
     }
     var maxUsed: UInt64 = 0
     for s in segments { if s.writable { maxUsed += s.length } }
-    let used = execute(segments)
+    let used: UInt64
+    switch execute(segments) {
+    case .complete(let length): used = length
+    case .waitForHost: return .waiting
+    case .invalid:
+      broken = true
+      return .broken
+    }
     if used > maxUsed || used > 0xffff_ffff {
       broken = true
       return .broken

@@ -26,6 +26,10 @@ From this directory's parent, run `swift test --package-path <package>` on each 
 
 ### Required composition inputs
 
+The single-port virtio-console PCI model services both split queues. Its Mac tests submit RX and TX through the guest BAR, fill and release host-side buffers, and retry without a second guest kick. The on-target `tvmm.console` case requires actual bidirectional traffic between a booted guest and its grant-scoped host console under backpressure.
+
+Panic capture uses the physical CPU limit (4,096), not the guest vCPU limit. It preserves complete register banks and at least the top frame of each available stack before sharing the remaining space among deeper frames. If the mandatory data cannot fit in 1 MiB it leaves the last committed record intact. This was tested with frozen snapshots, not a physical warm reset.
+
 1. **Platform:** Freestanding kernel-profile compiler/linker, all-three-ISA privileged entry/exit with safe host-state restore, gated translation writers and acknowledged shootdowns, all-CPU rendezvous, per-CPU Monotonic/PMU providers. Ordinary hosted Swift code cannot install a guest translation or enter a vCPU.
 2. **Execution:** The generated numbers exist. Resolve typed handles and rights, copy arguments into private storage, pin objects across operations, and install domain providers at composition. Do not route register values directly to a host callback or add private call numbers.
 3. **Devices and storage:** A complete DeviceSlot group with nested IOMMU and interrupt remapping. Pin through invalidation; never emulate isolation by naming an address range. Need canonical TRFS, durable clones and authenticated migration ownership records.

@@ -10,6 +10,8 @@ Initial development train; not certified. See [coverage](docs/coverage.md).
 
 **Semantic changes:** None relative to a prior shipping Tarwin train.
 
+**Development updates:** The VMM exposes guest PCI configuration, BARs, interrupt delivery and single-port virtio-console queues. Panic records budget backtraces across physical CPUs. The acceptance runner now binds capture hashes to the original inventory and collection; host tests and freestanding object checks do not supply target results.
+
 **Encoding changes:** Initial TBIB rev. 1, private train-specific syscall index and panic-record rev. 1. No canonical TRFS disk encoding asserted here.
 
 **Producer notes:** Use train-matched LibTessera and generated call names. Use non-allocating Embedded Swift on pre-heap and interrupt paths, Embedded Swift for other kernel code, and regular Swift for hosted tools. Kernel artifacts still require the KLF Swift TIR kernel profile. Keep debug-only code and host tools out of release images.

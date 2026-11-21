@@ -2,7 +2,7 @@ import Testing
 
 @testable import TVMM
 
-private final class RAM: PinnedQueueMemory {
+class QueueTestRAM: PinnedQueueMemory {
   var bytes = Array(repeating: UInt8(0), count: 4096)
   var writes: [UInt64] = []
   func load16Acquire(_ g: UInt64) -> UInt16 { UInt16(vword(bytes, Int(g), 2)) }
@@ -28,7 +28,7 @@ private final class RAM: PinnedQueueMemory {
 
 @Test func pciKickCompletesBlockReadAndPublishesThenInterrupts() throws {
   let aperture = GuestAperture(base: 0, length: 4096)
-  let m = RAM()
+  let m = QueueTestRAM()
   var bus = try #require(PCICommon(features: 1 << 32, sizes: [8, 8], vectors: 3))
   var pins = 0
   func write(_ offset: Int, _ width: Int, _ val: UInt64) -> Bool {
@@ -122,7 +122,7 @@ private final class RAM: PinnedQueueMemory {
 
 @Test func eventIndexPublishesKickThresholdAndRechecksAfterArming() throws {
   let ram = GuestAperture(base: 0, length: 4096)
-  let m = RAM()
+  let m = QueueTestRAM()
   var bus = try #require(PCICommon(features: (1 << 32) | (1 << 29), sizes: [2], vectors: 0))
   func put(_ offset: Int, _ width: Int, _ value: UInt64) -> Bool {
     bus.write(

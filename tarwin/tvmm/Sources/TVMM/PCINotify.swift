@@ -18,6 +18,18 @@ extension QueuePump {
     memory: some PinnedQueueMemory, transfer: ([Segment]) -> UInt64?,
     interrupt: () -> Void
   ) -> PumpResult {
+    notify(
+      layout, in: ram, eventIndex: eventIndex, memory: memory,
+      attempt: { transfer($0).map(QueueTransfer.complete) ?? .invalid }, interrupt: interrupt)
+  }
+
+  // A waiting head stays owned by the device, with neither ring advanced.
+  // The caller rearms host readiness and retries; a second guest kick is not required.
+  public mutating func notify(
+    _ layout: SplitQueueLayout, in ram: GuestAperture, eventIndex: Bool,
+    memory: some PinnedQueueMemory, attempt: ([Segment]) -> QueueTransfer,
+    interrupt: () -> Void
+  ) -> PumpResult {
     guard layout.enabled, slots == Int(layout.size), layout.valid(in: ram, eventIndex: eventIndex)
     else { return .broken }
     let previous = nextUsed
@@ -32,15 +44,15 @@ extension QueuePump {
             memory.read(layout.descriptor + UInt64($0 * 16), count: 16)
           }
         },
-        { transfer($0) ?? .max },
+        attempt,
         { slot, head, used in
           let entry = layout.device + 4 + slot * 8
           memory.store32(entry, UInt32(head))
           memory.store32(entry + 4, UInt32(used))
         },
         { memory.store16Release(layout.device + 2, UInt16($0)) })
-      if result == .broken {
-        final = .broken
+      if result == .broken || result == .waiting {
+        final = result
         break
       }
       if result == .drained { break }
@@ -56,7 +68,7 @@ extension QueuePump {
         : memory.load16Acquire(layout.driver) & 1 == 0
       if notify { interrupt() }
     }
-    guard final != .broken else { return final }
+    guard final != .broken && final != .waiting else { return final }
     if eventIndex {
       memory.store16Release(layout.device + 4 + UInt64(layout.size) * 8, UInt16(nextAvail))
       memory.beforeNotificationCheck()
