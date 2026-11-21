@@ -64,6 +64,12 @@ for isa in "${@:-all}"; do
             modules+=("$root/tarwin-security/random/Sources/TarwinRandomCore"
                       "$root/tarwin-security/random/Sources/TarwinKernelRandom"
                       "$composition/Sources/TarwinW1Generation")
+            if [[ ${TARBOOT_TEST_RESTORE:-0} == 1 ]]; then
+                flags+=(-enable-experimental-feature Volatile)
+                modules+=("$root/tarwin-object/Sources/TarwinObject"
+                          "$root/tarwin-security/random/Sources/TarwinProcessKeys")
+                entry_source+=("$here/RestoredKeys.swift")
+            fi
         fi
         if [[ ${TARBOOT_TEST_W1_EVIDENCE:-0} == 1 ]]; then
             [[ ${TARBOOT_TEST_GENERATION:-0} == 1 && ${TARBOOT_ENTER_W0:-0} == 0 ]] || exit 2

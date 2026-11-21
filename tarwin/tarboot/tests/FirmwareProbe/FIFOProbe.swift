@@ -67,8 +67,12 @@
           rng.word(generation: source.current(readWord: readWord)) != nil
         else { return false }
         #if TARBOOT_TEST_RESTORE
-        guard emit("TARWIN-VMGEN-SNAPSHOT-READY\r\n") else { return false }
-        while source.current(readWord: readWord) == first {}
+        guard rejectsRestoredBank(random: &rng, first: first,
+          current: { source.current(readWord: readWord) }, restore: {
+            guard emit("TARWIN-VMGEN-SNAPSHOT-READY\r\n") else { return false }
+            while source.current(readWord: readWord) == first {}
+            return true
+          }), emit("TARWIN-VMGEN-RESTORED-PAC-BANK-RETIRED\r\n") else { return false }
         guard let next = source.current(readWord: readWord), next != first, rng.word(generation: next) == nil,
           rng.word(generation: first) == nil, readTPMEntropy32(&port, into: &sample),
           withUnsafeBytes(of: &sample, { rng.reseed(hardware: $0, source: .emulatedTPM, generation: next) }),

@@ -263,8 +263,11 @@ does it resume this diagnostic. Repeat with `TARBOOT_TEST_WRONG_PAGE=1`
 to use a different destination pin: the load must fail before rotation
 and the vCPU must remain stopped. After a checked initial draw the guest must
 see the live NVS GUID change, reject both the new epoch and the latched
-old one, then accept a fresh TPM reseed at the new epoch. No entropy or
-key material is printed. This is not a production launch or an SMP,
+old one, then accept a fresh TPM reseed at the new epoch. Before the snapshot,
+a disposable process borrows its IA pair, starts a thread and borrows all
+five pairs without installing them. After restore the otherwise runnable
+thread must be refused before the key callback, even when presented with
+the original epoch again. No entropy or key material is printed. This is not a production launch or an SMP,
 postcopy, ACPI-interrupt or cross-host migration test. This fixture still
 needs fw_cfg DMA for firmware discovery. It does not drain other devices,
 prove that protected pages have no DMA aliases, or authorize W1 entry.

@@ -434,9 +434,10 @@ func check() throws {
       if ProcessInfo.processInfo.environment["TARBOOT_TEST_GENERATION"] == "1" {
         if restore {
           guard loaded,
+            uart.range(of: Data("TARWIN-VMGEN-RESTORED-PAC-BANK-RETIRED".utf8)) != nil,
             uart.range(of: Data("TARWIN-VMGEN-RESTORED-REFUSED-RESEEDED".utf8)) != nil
           else { throw Failure("missing snapshot restore and checked reseed") }
-          print("\(a): restored guest rejected its previous RNG stream, then reseeded from swtpm")
+          print("\(a): restored guest retired the old PAC bank and rejected its previous RNG stream, then reseeded from swtpm")
         } else if !cold {
           guard uart.range(of: Data("TARWIN-NO-VMGEN-RNG-REFUSED".utf8)) != nil else {
             throw Failure("missing post-exit RNG refusal")
