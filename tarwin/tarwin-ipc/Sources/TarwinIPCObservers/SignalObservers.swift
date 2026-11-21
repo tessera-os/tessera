@@ -167,7 +167,7 @@ public struct SignalObservers: ~Copyable {
     return nil
   }
 
-  /// After consuming MORE (or publishing it to the completion ring), run
+  /// After dequeuing MORE or acknowledging it on the completion ring, run
   /// the scheduled callback outside the port lock, under the object lock.
   public mutating func consumed<P: SignalPorts>(
     _ op: PortOperation, port: UInt64, at now: UInt64, ports: inout P

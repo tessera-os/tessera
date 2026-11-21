@@ -32,6 +32,8 @@ let package = Package(
       name: "TarwinIPCTests",
       dependencies: [
         "TarwinIPC", "TarwinIPCChannels", "TarwinIPCObservers",
+        .product(name: "TarwinABI", package: "tarwin-syscall"),
+        .product(name: "TarwinSyscall", package: "tarwin-syscall"),
         .product(name: "TarwinObject", package: "tarwin-object"),
         .product(name: "TarwinSched", package: "tarwin-sched"),
       ], path: "tests/TarwinIPCTests"),

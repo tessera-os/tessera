@@ -19,6 +19,7 @@ let package = Package(
       sources: [
         "CallNumbers.swift", "NativeEntry.swift", "NativeHandles.swift", "NativeSync.swift",
         "NativeHardwareGate.swift", "NativeProcess.swift", "NativeChannels.swift", "NativeEvents.swift",
+        "NativePorts.swift",
       ]),
     .testTarget(
       name: "NativeEntryTests",

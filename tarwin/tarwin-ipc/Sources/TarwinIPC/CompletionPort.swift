@@ -206,6 +206,12 @@ public struct CompletionPort: ~Copyable {
   /// The callback schedules backend cancellation; it must not re-enter
   /// this port. Publish Cancelled only after the backend stops using buffers.
   public mutating func cancel(key: UInt64, schedule: (PortOperation) -> Void) -> Int {
+    cancelWithSource(key: key) { _, op in schedule(op) }
+  }
+
+  public mutating func cancelWithSource(
+    key: UInt64, schedule: (UInt64, PortOperation) -> Void
+  ) -> Int {
     cancel(where: { $0.packet.key == key }, schedule: schedule)
   }
 
@@ -232,19 +238,19 @@ public struct CompletionPort: ~Copyable {
   /// Closing, replacing or transferring one name does not cancel work
   /// submitted through a duplicate or through a different process's table.
   public mutating func cancel(owner: OperationHandle, schedule: (PortOperation) -> Void) -> Int {
-    cancel(where: { $0.owner == owner }, schedule: schedule)
+    cancel(where: { $0.owner == owner }) { _, op in schedule(op) }
   }
 
   private mutating func cancel(
     where matches: (PortSlot) -> Bool,
-    schedule: (PortOperation) -> Void
+    schedule: (UInt64, PortOperation) -> Void
   ) -> Int {
     guard !closed else { return 0 }
     var count = 0
     for i in slots.indices where slots[i].state == .pending && matches(slots[i]) {
       slots[i].state = .cancelling
       count += 1
-      schedule(PortOperation(index: i, serial: slots[i].serial))
+      schedule(slots[i].object, PortOperation(index: i, serial: slots[i].serial))
     }
     return count
   }

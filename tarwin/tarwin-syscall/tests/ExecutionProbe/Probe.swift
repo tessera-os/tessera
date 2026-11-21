@@ -556,12 +556,53 @@ private struct PrivateEvents: EventNamespace {
 
 private struct ProbePort: SignalPorts {
   let id: UInt64
-  let port: UnsafeMutablePointer<CompletionPort>
+  let entry: UnsafeMutablePointer<PortObject>
   var wakes = 0
   mutating func withPort<R>(_ id: UInt64, _ body: (inout CompletionPort) -> R) -> R? {
-    id == self.id ? body(&port.pointee) : nil
+    id == self.id ? body(&entry.pointee.queue) : nil
   }
   mutating func wake(port: UInt64, count: Int) { if port == id { wakes += count } }
+}
+
+private struct ProbePortWork: PortNotifications {
+  let id: UInt64
+  var wakes = 0
+  var cancel: PortOperation?
+  var source: UInt64 = 0
+  mutating func wakeOne(port: UInt64) { if port == id { wakes += 1 } }
+  mutating func scheduleCancel(port: UInt64, source: UInt64, operation: PortOperation) {
+    if port == id {
+      self.source = source
+      cancel = operation
+    }
+  }
+}
+
+private struct ProbePortSpace: PortNamespace {
+  let entry: UnsafeMutablePointer<PortObject>
+  let table: UnsafeMutablePointer<HandleTable>
+  let input: UnsafeBufferPointer<UInt64>
+  var work: ProbePortWork
+  var userRange: Range<UInt64> {
+    let base = UInt64(UInt(bitPattern: input.baseAddress))
+    return base..<base + UInt64(input.count * 8)
+  }
+  func readWords(from address: UInt64, into dst: UnsafeMutableBufferPointer<UInt64>) -> Bool {
+    guard dst.count == 8, input.count == 8, address == userRange.lowerBound else { return false }
+    for i in dst.indices { dst[i] = input[i] }
+    return true
+  }
+  func withNewPort(_ body: (inout PortObject, inout HandleTable) -> CallResult) -> CallResult {
+    body(&entry.pointee, &table.pointee)
+  }
+  mutating func withPort(
+    named: UInt64,
+    _ body: (
+      inout PortObject, borrowing HandleTable, inout ProbePortWork, UInt64
+    ) -> CallResult
+  ) -> CallResult {
+    body(&entry.pointee, table.pointee, &work, 16)
+  }
 }
 
 private struct ProbeObserverCaller: SignalCaller {
@@ -589,46 +630,71 @@ private func observePeer(
     slab.deinitialize()
     observers.deinitialize()
   }
-  guard let ph = ObjectHeader(source: ids, ownerJob: 1, kind: TarwinKind.port, maximumRights: 0),
-    var port = CompletionPort(storage: slab)
+  guard
+    let ph = ObjectHeader(
+      source: ids, ownerJob: 1, kind: TarwinKind.port,
+      maximumRights: PortObject.initialRights)
   else { return false }
   var list = SignalObservers(object: header, storage: observers)
   return withUnsafePointer(to: ph) { h in
-    guard case .installed(let name) = table.pointee.install(h, rights: 0) else { return false }
-    defer { _ = table.pointee.close(name, retire: { _ in preconditionFailure() }) }
-    return withUnsafeMutablePointer(to: &port) { p in
-      withUnsafeMutablePointer(to: &list) { l in
-        var gate = RegisterGate(
-          calls: WaitAsyncCalls(
-            context: ProbeObserverCaller(
-              table: table, list: l,
-              ports: ProbePort(id: h.pointee.koid, port: p))))
-        let bit: UInt32 = 1 << 31
-        guard
-          NativeObject.waitAsync(
-            peer, signals: bit, mode: .edge, port: name, key: 27,
-            gate: &gate
-          ).code == 0, p.pointee.available == 0
+    guard var entry = PortObject(header: h, storage: slab) else { return false }
+    return withUnsafeMutablePointer(to: &entry) { p in
+      var user = InlineArray<8, UInt64>(repeating: .max)
+      user[0] = 91
+      return withUnsafeBytes(of: &user) { bytes in
+        let input = bytes.bindMemory(to: UInt64.self)
+        var pg = RegisterGate(
+          calls: PortCalls(
+            context: ProbePortSpace(
+              entry: p, table: table,
+              input: input, work: ProbePortWork(id: h.pointee.koid))))
+        let created = NativePorts.create(gate: &pg)
+        guard created.code == 0 else { return false }
+        let name = created.first
+        defer { _ = table.pointee.close(name, retire: { _ in preconditionFailure() }) }
+        guard NativePorts.post(name, packet: input, gate: &pg).code == 0,
+          pg.calls.context.work.wakes == 1, let userPacket = p.pointee.queue.take(),
+          userPacket.key == 91, userPacket.kind == 0, userPacket.timestamp == 16
         else { return false }
-        var ports = gate.calls.context.ports
-        return withUnsafeMutablePointer(to: &ports) { router in
-          func notify(_ target: UnsafePointer<ObjectHeader>) {
-            if target == header { l.pointee.changed(at: 21, ports: &router.pointee) }
+        return
+          withUnsafeMutablePointer(to: &list) { l in
+            var gate = RegisterGate(
+              calls: WaitAsyncCalls(
+                context: ProbeObserverCaller(
+                  table: table, list: l,
+                  ports: ProbePort(id: h.pointee.koid, entry: p))))
+            let bit: UInt32 = 1 << 31
+            guard
+              NativeObject.waitAsync(
+                peer, signals: bit, mode: .edge, port: name, key: 27,
+                gate: &gate
+              ).code == 0, p.pointee.queue.available == 0
+            else { return false }
+            var ports = gate.calls.context.ports
+            return withUnsafeMutablePointer(to: &ports) { router in
+              func notify(_ target: UnsafePointer<ObjectHeader>) {
+                if target == header { l.pointee.changed(at: 21, ports: &router.pointee) }
+              }
+              guard
+                ends.signal(name: source, set: bit, clear: 0, in: table.pointee, notify: notify)
+                  == .ok,
+                let packet = p.pointee.queue.take(), packet.kind == 1, packet.key == 27,
+                packet.flags == 1, packet.result0 == UInt64(bit), packet.timestamp == 21,
+                router.pointee.wakes == 1,
+                ends.signal(name: source, set: 0, clear: bit, in: table.pointee, notify: notify)
+                  == .ok
+              else { return false }
+              let cancel = NativePorts.cancel(name, key: 27, gate: &pg)
+              guard cancel.code == 0, cancel.first == 1,
+                let cancelling = pg.calls.context.work.cancel,
+                pg.calls.context.work.source == header.pointee.koid
+              else { return false }
+              l.pointee.cancelled(cancelling, port: h.pointee.koid, at: 22, ports: &router.pointee)
+              guard let final = p.pointee.queue.take() else { return false }
+              return final.flags == 0 && final.error == 26 && final.key == 27
+                && l.pointee.count == 0
+            }
           }
-          guard
-            ends.signal(name: source, set: bit, clear: 0, in: table.pointee, notify: notify) == .ok,
-            let packet = p.pointee.take(), packet.kind == 1, packet.key == 27,
-            packet.flags == 1, packet.result0 == UInt64(bit), packet.timestamp == 21,
-            router.pointee.wakes == 1,
-            ends.signal(name: source, set: 0, clear: bit, in: table.pointee, notify: notify) == .ok
-          else { return false }
-          var cancelling: PortOperation?
-          guard p.pointee.cancel(key: 27, schedule: { cancelling = $0 }) == 1, let cancelling
-          else { return false }
-          l.pointee.cancelled(cancelling, port: h.pointee.koid, at: 22, ports: &router.pointee)
-          guard let final = p.pointee.take() else { return false }
-          return final.flags == 0 && final.error == 26 && final.key == 27 && l.pointee.count == 0
-        }
       }
     }
   }
