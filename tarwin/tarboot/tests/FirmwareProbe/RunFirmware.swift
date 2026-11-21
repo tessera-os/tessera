@@ -45,10 +45,13 @@ private func verifyScanout(_ bytes: Data) throws {
 }
 
 func check() throws {
-  guard CommandLine.arguments.count == 4 else {
+  let denied = CommandLine.arguments.count == 5 && CommandLine.arguments[4] == "unsigned-control"
+  guard CommandLine.arguments.count == 4 || denied else {
     throw Failure("expected architecture, work directory and CODE.fd")
   }
   let a = CommandLine.arguments[1]
+  let secure = ProcessInfo.processInfo.environment["TARBOOT_TEST_SECURE_FIRMWARE"] == "1"
+  guard (!denied || secure) && (!secure || a == "x86_64") else { throw Failure("invalid secure firmware target") }
   let d = CommandLine.arguments[2]
   let code = CommandLine.arguments[3]
   let serial = d + "/console.log"
@@ -60,7 +63,7 @@ func check() throws {
   defer { try? qmp.close() }
   let machine =
     a == "x86_64"
-    ? ["-machine", "q35"]
+    ? (secure ? ["-machine","q35,smm=on","-global","driver=cfi.pflash01,property=secure,value=on"] : ["-machine", "q35"])
     : (a == "aarch64"
       ? ["-machine", "virt,gic-version=3", "-cpu", "cortex-a72"] : ["-machine", "virt"])
   let process = Process()
@@ -111,7 +114,7 @@ func check() throws {
       "-drive", "if=pflash,format=raw,readonly=on,file=" + code, "-drive",
       "if=pflash,format=raw,file=" + d + "/vars.fd",
       "-drive", "if=none,id=esp,format=raw,readonly=on,file=fat:" + d + "/esp", "-device",
-      "virtio-blk-pci,drive=esp",
+      secure ? "virtio-blk-pci,drive=esp,addr=0x6,bootindex=1" : "virtio-blk-pci,drive=esp",
     ]
   process.standardInput = input
   process.standardOutput = qmp
@@ -125,6 +128,20 @@ func check() throws {
   let deadline = ContinuousClock.now.advanced(by: .seconds(60))
   var captured = false
   while process.isRunning && ContinuousClock.now < deadline {
+    if secure, let data = try? Data(contentsOf:URL(fileURLWithPath:serial)) {
+      let log = String(decoding:data,as:UTF8.self)
+      if log.contains("TARWIN-SECURE-MODE-FAILED") { throw Failure("SecureBoot and SetupMode do not confirm enforcement") }
+      if denied {
+        if log.contains("TARWIN-FIRMWARE-EXIT-TEST") { throw Failure("unsigned diagnostic executed") }
+        if log.split(separator:"\n").contains(where:{ line in
+          line.contains("BdsDxe: failed to load Boot") && line.contains("PciRoot(0x0)/Pci(0x6,0x0)")
+            && (line.contains("Access Denied") || line.contains("Security Violation"))
+        }) {
+          print("\(a): secure firmware explicitly refused the unsigned ESP image")
+          return
+        }
+      }
+    }
     if tpmEnabled, let log = try? Data(contentsOf:URL(fileURLWithPath:serial)),
       log.range(of:Data("TARWIN-LOG-CAPTURE-FAILED".utf8)) != nil {
       throw Failure("\(a): failed to capture primary firmware log")
@@ -156,6 +173,7 @@ func check() throws {
     throw Failure("\(a): guest did not shut down normally")
   }
   let uart = try Data(contentsOf: URL(fileURLWithPath: serial))
+  guard !denied else { throw Failure("no explicit unsigned boot rejection") }
   guard uart.range(of: Data("TARWIN-FIRMWARE-EXIT-TEST".utf8)) != nil else {
     throw Failure("\(a): probe did not run")
   }
@@ -163,6 +181,12 @@ func check() throws {
     else { throw Failure("\(a): missing guest-initiated shutdown event") }
   if rngEnabled { print("\(a): physical TBIB, EFI RNG seed, randomized reservation and typed archive/map extents passed readback") }
   if multiple { print("\(a): enumerated four distinct enabled CPU hardware IDs from firmware; boot CPU only") }
+  if secure {
+    print("\(a): signed diagnostic admitted by enrolled OVMF; SecureBoot=1, SetupMode=0")
+    if uart.range(of: Data("TARWIN-UEFI-BELOW-MINIMUM".utf8)) != nil {
+      print("\(a): firmware revision below Tarwin's UEFI 2.9 minimum")
+    }
+  }
   if displayEnabled {
     guard captured else { throw Failure("no scanout recorded") }
     let frame = try Data(contentsOf: URL(fileURLWithPath: d + "/scanout.ppm"))

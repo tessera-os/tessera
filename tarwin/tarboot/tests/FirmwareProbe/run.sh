@@ -25,6 +25,10 @@ for isa in "${@:-all}"; do
                -Xfrontend -disable-stack-protector -parse-as-library -I "$d")
         if [[ $arch == x86_64 ]]; then flags+=(-D TARBOOT_EFI_PE_COFF); fi
         if [[ ${TARBOOT_TEST_TPM:-0} == 1 ]]; then flags+=(-D TARBOOT_TEST_TPM); fi
+        if [[ ${TARBOOT_TEST_SECURE_FIRMWARE:-0} == 1 ]]; then
+            [[ $arch == x86_64 ]] || { echo 'secure firmware fixture requires x86_64' >&2; exit 2; }
+            flags+=(-D TARBOOT_TEST_SECURE_FIRMWARE)
+        fi
         if [[ ${TARBOOT_TEST_DISPLAY:-0} == 1 ]]; then flags+=(-D TARBOOT_TEST_DISPLAY); fi
         if [[ ${TARBOOT_TEST_RNG:-0} == 1 ]]; then flags+=(-D TARBOOT_TEST_RNG); fi
         if [[ ${TARBOOT_TEST_SMP_TABLES:-0} == 1 ]]; then flags+=(-D TARBOOT_TEST_SMP_TABLES); fi
@@ -49,7 +53,27 @@ for isa in "${@:-all}"; do
             "$bin/lld-link" /subsystem:efi_application /entry:efi_main /nodefaultlib /opt:ref "/out:$image" "$d/main.obj"
             code=$arch
         fi
-        cp "$fw/edk2-$vars-vars.fd" "$d/vars.fd"
+        if [[ ${TARBOOT_TEST_SECURE_FIRMWARE:-0} == 1 ]]; then
+            # Only disposable guest NVRAM and test keys in the private scratch
+            # directory. Never read the host keychain, enroll keys on the host,
+            # or install private keys on the guest ESP.
+            umask 077
+            code=x86_64-secure
+            for key in pk kek db; do
+                openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 1 -subj "/CN=Tarwin disposable $key/" \
+                    -keyout "$d/$key.key" -out "$d/$key.crt" >/dev/null 2>&1
+            done
+            owner=$(uuidgen)
+            virt-fw-vars --input "$fw/edk2-$vars-vars.fd" --output "$d/enrolled.fd" --secure-boot \
+                --set-pk "$owner" "$d/pk.crt" --add-kek "$owner" "$d/kek.crt" --add-db "$owner" "$d/db.crt"
+            cp "$d/enrolled.fd" "$d/vars.fd"
+            swift "$here/RunFirmware.swift" "$arch" "$d" "$fw/edk2-$code-code.fd" unsigned-control
+            cp "$d/enrolled.fd" "$d/vars.fd"
+            osslsigncode sign -h sha256 -certs "$d/db.crt" -key "$d/db.key" -in "$image" -out "$d/signed.efi"
+            mv "$d/signed.efi" "$image"
+        else
+            cp "$fw/edk2-$vars-vars.fd" "$d/vars.fd"
+        fi
         swift "$here/RunFirmware.swift" "$arch" "$d" "$fw/edk2-$code-code.fd"
     done
 done

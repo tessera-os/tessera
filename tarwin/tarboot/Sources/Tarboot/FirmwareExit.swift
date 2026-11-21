@@ -80,6 +80,15 @@ public enum FirmwareExit {
     /// Snapshot firmware directory entries, without following their addresses.
     @unsafe public func locateTables() -> FirmwareTableLocations? { tableLocations(system) }
 
+    /// The validated system table owns the mapped runtime-services pointer.
+    /// Use it only in the pre-exit physical addressing mode; retain no method.
+    @unsafe public func firmwareBootMode() -> FirmwareBootMode? {
+      guard let runtime = system.load(fromByteOffset:88,as:UnsafeRawPointer?.self),
+        Self.valid(runtime,signature:0x5652_4553_544e_5552,minimum:80),
+        let get = runtime.load(fromByteOffset:72,as:GetVariable?.self) else { return nil }
+      return bootMode(revision:system.load(fromByteOffset:8,as:UInt32.self), get:get)
+    }
+
     /// Fill only the dedicated 64-byte TBIB field. Verify the firmware/source
     /// provenance separately. No partial seed may escape a failed GetRNG.
     @unsafe public func readBootSeed(into bytes: UnsafeMutableRawBufferPointer) -> Bool {

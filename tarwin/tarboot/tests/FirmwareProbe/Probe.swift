@@ -45,6 +45,15 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
       guard var boot = FirmwareBootServices(image: image, system: system),
         let tables = boot.locateTables()
       else { return false }
+      #if TARBOOT_TEST_SECURE_FIRMWARE
+        guard let mode = boot.firmwareBootMode(), mode.secureBoot, !mode.setupMode else {
+          writeDiagnostic("TARWIN-SECURE-MODE-FAILED\r\n", console:console, output:output)
+          return false
+        }
+        if !mode.meetsFirmwareMinimum {
+          writeDiagnostic("TARWIN-UEFI-BELOW-MINIMUM\r\n", console:console, output:output)
+        }
+      #endif
       #if TARBOOT_TEST_DISPLAY
         guard let display = boot.display() else {
           writeDiagnostic("TARWIN-GOP-UNAVAILABLE\r\n", console: console, output: output)
@@ -127,7 +136,10 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
         info.year = 26
         info.month = 11
         info.week = 1
-        info.security = 2  // unsigned diagnostic image; never mark Secure Boot
+        info.security = 2  // debug image; the archive is never authorized for entry
+        #if TARBOOT_TEST_SECURE_FIRMWARE
+          info.security |= 1 // OVMF admitted this PE, not the archive it reads.
+        #endif
         info.rsdp = inspected.rsdp
         info.deviceTree = inspected.deviceTree
         info.uefiTable = UInt64(UInt(bitPattern: system))
@@ -166,6 +178,7 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
               start: p.advanced(by: 4096), count: Int(storage.length) - 4096),
             at: storage.base + 4096), received.bootSet == archive.base,
           received.bootSetSize == UInt64(size),
+          received.security == info.security,
           received.kernelVirtual == virtual, received.kernelPhysical == owned.base,
           received.logAddress == info.logAddress, received.logSize == info.logSize,
           received.rsdp == inspected.rsdp, received.deviceTree == inspected.deviceTree,

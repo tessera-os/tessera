@@ -59,8 +59,22 @@ allocations. Boot-services pages remain reserved; no consumer may infer
 reclamation authority from this map. The reader checks all 32-byte records and
 coverage of the actual TBIB, map and archive before returning the decoded block.
 GOP is included when requested. The image bases name a test reservation, not
-executable code. The train and slot are fixture values. The block reports a debug
-image, not Secure Boot. With TPM enabled it includes the captured event log.
+executable code. The train and slot are fixture values. The block reports a
+debug image. Only the signed diagnostic run sets the firmware Secure Boot bit;
+with TPM enabled the block also includes the captured event log.
+
+`TARBOOT_TEST_SECURE_FIRMWARE=1 TARBOOT_TEST_RNG=1 bash run.sh x86_64` uses
+QEMU's SMM-enabled OVMF secure-code image. In addition to the usual tools it
+requires `openssl`, `osslsigncode` and `virt-fw-vars` on PATH (tested with
+virt-firmware 25.12 and setuptools 80.9 in a private Python virtualenv).
+Three temporary keys enroll PK, KEK and db in a scratch copy of guest VARS;
+no host firmware or keychain is used. The first launch must explicitly reject
+the unsigned image on the ESP's PCI path without reaching its entry marker.
+With fresh, identically enrolled VARS the same PE signed with the db test key
+must run, read SecureBoot=1 and SetupMode=0, and shut down successfully.
+The bundled OVMF's reported UEFI revision is below the Tarwin 2.9 minimum:
+it exercises enforcement but is not an admitted release platform. This test
+does not sign the archive, verify Tarwin's release chain, or authorize entry.
 
 The measured diagnostic requests the crypto-agile log with GetEventLog, refuses
 firmware-reported truncation, and copies through the *end* of the reported last
