@@ -19,11 +19,10 @@ public struct FenceWait: Equatable {
 
 // Serialized by the fence lock. Callbacks publish/enqueue only; they must
 // not block or re-enter the same fence. Rights come from a resolved handle.
-public struct GpuTimeline: Equatable {
+public struct GpuTimeline: ~Copyable {
   public internal(set) var value: UInt64 = 0
-  public let waitLimit: Int
   public internal(set) var count: Int = 0
-  public internal(set) var waiters: [FenceWait] = []
+  private let waiters: UnsafeMutableBufferPointer<FenceWait>
 
   public func inheritedPriority() -> UInt32 {
     var best: UInt32 = 0
@@ -39,8 +38,8 @@ public struct GpuTimeline: Equatable {
     if !canWait { return .denied }
     if w.target <= value { return .ready }
     for i in 0..<count { if waiters[i].key == w.key { return .duplicate } }
-    if count >= waitLimit { return .full }
-    if count == waiters.count { waiters.append(w) } else { waiters[count] = w }
+    if count >= waiters.count { return .full }
+    waiters[count] = w
     count += 1
     inherit(inheritedPriority())
     return .queued
@@ -81,7 +80,9 @@ public struct GpuTimeline: Equatable {
     return true
   }
 
-  public init(waitLimit: Int) {
-    self.waitLimit = waitLimit
+  /// Exclusive, initialized storage must outlive the fence, including the
+  /// final interrupt and wake. Signalling never allocates or copies a buffer.
+  public init(storage: UnsafeMutableBufferPointer<FenceWait>) {
+    self.waiters = storage
   }
 }

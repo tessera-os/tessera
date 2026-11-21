@@ -9,6 +9,13 @@ public func chooseDmaAddress(
   _ aperture: DeviceRange, _ bytes: UInt64, _ pageSize: UInt64, _ randomWord: UInt64,
   _ occupied: [DeviceRange]
 ) -> DmaAddress {
+  chooseDmaAddress(aperture, bytes, pageSize, randomWord, occupied.count) { occupied[$0] }
+}
+
+func chooseDmaAddress(
+  _ aperture: DeviceRange, _ bytes: UInt64, _ pageSize: UInt64, _ randomWord: UInt64,
+  _ count: Int, _ occupied: (Int) -> DeviceRange
+) -> DmaAddress {
   if !aperture.valid() || bytes == 0 || bytes > aperture.length { return .unavailable }
   if !deviceAligned(aperture.base, pageSize) || !deviceAligned(bytes, pageSize) {
     return .unavailable
@@ -21,7 +28,8 @@ public func chooseDmaAddress(
   if randomWord < excess { return .unavailable }
   let address = aperture.base + (randomWord % choices) * pageSize
   let candidate = DeviceRange(base: address, length: bytes)
-  for range in occupied {
+  for i in 0..<count {
+    let range = occupied(i)
     if !range.valid() || range.overlaps(candidate) { return .unavailable }
   }
   return .selected(address)

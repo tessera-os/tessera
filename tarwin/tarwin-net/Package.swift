@@ -7,6 +7,6 @@ let package = Package(
   dependencies: [],
   targets: [
     .target(name: "TarwinNet", dependencies: []),
-    .testTarget(name: "TarwinNetTests", dependencies: ["TarwinNet"]),
+    .testTarget(name: "TarwinNetTests", dependencies: ["TarwinNet"], path: "tests/TarwinNetTests"),
   ]
 )

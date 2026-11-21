@@ -7,6 +7,7 @@ let package = Package(
   dependencies: [],
   targets: [
     .target(name: "TarwinBlock", dependencies: []),
-    .testTarget(name: "TarwinBlockTests", dependencies: ["TarwinBlock"]),
+    .testTarget(
+      name: "TarwinBlockTests", dependencies: ["TarwinBlock"], path: "tests/TarwinBlockTests"),
   ]
 )

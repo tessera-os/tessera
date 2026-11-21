@@ -14,7 +14,7 @@ No architecture interrupt, IOMMU, MMU, registry service or capability table is s
 
 ## Swift profiles
 
-Build the library as Embedded Swift; host tests run as regular Swift. IRQ delivery, revocation, range selection, DMA retirement, and filtered config access can be checked separately without allocation:
+Build the library as Embedded Swift; host tests run as regular Swift. IRQ delivery, revocation, range selection, DMA mapping/retirement with a caller-owned registry slab, and filtered config access can be checked separately without allocation:
 
 ```sh
 SWIFTC=/path/to/swift-6.3.3/usr/bin/swiftc ./check-profile.sh

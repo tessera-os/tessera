@@ -7,6 +7,6 @@ let package = Package(
   dependencies: [],
   targets: [
     .target(name: "TarwinGPU", dependencies: []),
-    .testTarget(name: "TarwinGPUTests", dependencies: ["TarwinGPU"]),
+    .testTarget(name: "TarwinGPUTests", dependencies: ["TarwinGPU"], path: "tests/TarwinGPUTests"),
   ]
 )

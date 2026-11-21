@@ -6,6 +6,7 @@ let package = Package(
   products: [.library(name: "TarwinDevice", targets: ["TarwinDevice"])],
   targets: [
     .target(name: "TarwinDevice", dependencies: []),
-    .testTarget(name: "TarwinDeviceTests", dependencies: ["TarwinDevice"]),
+    .testTarget(
+      name: "TarwinDeviceTests", dependencies: ["TarwinDevice"], path: "tests/TarwinDeviceTests"),
   ]
 )

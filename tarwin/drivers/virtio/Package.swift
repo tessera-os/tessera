@@ -7,6 +7,7 @@ let package = Package(
   dependencies: [],
   targets: [
     .target(name: "VirtioGuest", dependencies: []),
-    .testTarget(name: "VirtioGuestTests", dependencies: ["VirtioGuest"]),
+    .testTarget(
+      name: "VirtioGuestTests", dependencies: ["VirtioGuest"], path: "tests/VirtioGuestTests"),
   ]
 )

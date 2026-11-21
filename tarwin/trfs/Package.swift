@@ -7,6 +7,6 @@ let package = Package(
   dependencies: [],
   targets: [
     .target(name: "TRFS", dependencies: []),
-    .testTarget(name: "TRFSTests", dependencies: ["TRFS"]),
+    .testTarget(name: "TRFSTests", dependencies: ["TRFS"], path: "tests/TRFSTests"),
   ]
 )

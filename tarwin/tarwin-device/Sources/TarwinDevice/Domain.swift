@@ -29,26 +29,28 @@ public enum MapDma: Equatable {
   case mapped(DmaMapping)
   case quarantined(UInt64)
 }
-struct DomainEntry {
+public struct DomainEntry {
   let id: UInt64
-  var visible: Bool
   var retirement: DmaRetirement
+
+  public static var vacant: Self {
+    Self(id: 0, retirement: DmaRetirement(domain: 0, pin: 0, base: 0, bytes: 0, phase: .released))
+  }
 }
 
 // Serialized with slot revocation. VM's pin resolves COW, exact writable
 // range, ownership and charge; mapPinned installs only the requested access.
 // A zero pin is failure; no identity address, pin, or partially installed
 // translation is ever returned to a driver.
-public struct SlotDomain {
+public struct SlotDomain: ~Copyable {
   public let group: UInt64
   public let koid: UInt64
   public let epoch: UInt64
   public let aperture: DeviceRange
   public let page: UInt64
-  public let limit: Int
   public internal(set) var serial: UInt64 = 0
   public internal(set) var count: Int = 0
-  var entries: [DomainEntry] = []
+  private let entries: UnsafeMutableBufferPointer<DomainEntry>
 
   public mutating func create(
     _ domain: PinnedIoHandle, _ memory: PinnedIoHandle, _ slot: DeviceSlotState, _ process: UInt64,
@@ -56,7 +58,8 @@ public struct SlotDomain {
     _ mapPinned: (UInt64, UInt64, UInt64, DmaSpan) -> Bool
   ) -> MapDma {
     if !domain.permits(.dmaBufferCreate, koid) || slot.group != group || !slot.owns(process, epoch)
-      || count >= limit || serial == 0xffff_ffff_ffff_ffff || !deviceAligned(span.offset, page)
+      || count >= entries.count || serial == 0xffff_ffff_ffff_ffff
+      || !deviceAligned(span.offset, page)
       || span.bytes == 0 || !deviceAligned(span.bytes, page) || span.offset >= memorySize
       || span.bytes > memorySize - span.offset
     {
@@ -68,25 +71,22 @@ public struct SlotDomain {
     if memory.koid == 0 || memory.kind != .memory || memory.rights & required != required {
       return .refused
     }
-    var occupied: [DeviceRange] = []
-    for i in 0..<count {
-      occupied.append(
-        DeviceRange(base: entries[i].retirement.base, length: entries[i].retirement.bytes))
+    let candidate = chooseDmaAddress(aperture, span.bytes, page, randomWord, count) { i in
+      DeviceRange(base: entries[i].retirement.base, length: entries[i].retirement.bytes)
     }
-    switch chooseDmaAddress(aperture, span.bytes, page, randomWord, occupied) {
+    switch candidate {
     case .unavailable: return .retry
     case .selected(let iova):
       let pinned = pin(memory.koid, span)
       if pinned == 0 { return .refused }
       serial += 1
       let entry = DomainEntry(
-        id: serial, visible: false,
+        id: serial,
         retirement: DmaRetirement(
           domain: koid, pin: pinned, base: iova, bytes: span.bytes, phase: .mapped))
-      if count == entries.count { entries.append(entry) } else { entries[count] = entry }
+      entries[count] = entry
       count += 1
       if !mapPinned(koid, iova, pinned, span) { return .quarantined(serial) }
-      entries[count - 1].visible = true
       return .mapped(DmaMapping(id: serial, address: iova))
     }
   }
@@ -100,24 +100,27 @@ public struct SlotDomain {
   ) -> Bool {
     for i in 0..<count {
       if entries[i].id == id {
-        entries[i].visible = false
         if !entries[i].retirement.retire(detach, invalidate, drainAtcs, unpin) { return false }
         count -= 1
         entries[i] = entries[count]
+        entries[count] = .vacant
         return true
       }
     }
     return false
   }
 
+  /// The registry supplies exclusively owned, initialized slab storage that
+  /// outlives this domain. Drain all mappings before releasing that slab.
   public init(
-    group: UInt64, koid: UInt64, epoch: UInt64, aperture: DeviceRange, page: UInt64, limit: Int
+    group: UInt64, koid: UInt64, epoch: UInt64, aperture: DeviceRange, page: UInt64,
+    storage: UnsafeMutableBufferPointer<DomainEntry>
   ) {
     self.group = group
     self.koid = koid
     self.epoch = epoch
     self.aperture = aperture
     self.page = page
-    self.limit = limit
+    self.entries = storage
   }
 }

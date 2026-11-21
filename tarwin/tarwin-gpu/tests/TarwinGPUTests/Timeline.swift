@@ -4,26 +4,30 @@ import XCTest
 
 final class TimelineTests: XCTestCase {
   func testSignalPublishesBeforeWakeAndDropsDonation() {
-    var t = GpuTimeline(waitLimit: 2)
-    var boost: UInt32 = 0
-    var visible: UInt64 = 0
-    var woke: UInt64 = 0
-    let donate: (UInt32) -> Void = { p in boost = p }
-    let publish: (UInt64) -> Void = { v in visible = v }
-    let wake: (UInt64) -> Void = { key in if visible >= 3 { woke = key } }
-    XCTAssertTrue(
-      t.waitFor(false, FenceWait(key: 5, target: 3, priority: 5), donate) == WaitResult.denied)
-    XCTAssertTrue(
-      t.waitFor(true, FenceWait(key: 5, target: 3, priority: 5), donate) == WaitResult.queued)
-    XCTAssertTrue(
-      t.waitFor(true, FenceWait(key: 7, target: 9, priority: 1), donate) == WaitResult.queued)
-    XCTAssertTrue(boost == 5)
-    XCTAssertTrue(!t.advance(false, 3, publish, wake, donate))
-    XCTAssertTrue(t.advance(true, 3, publish, wake, donate))
-    XCTAssertTrue(woke == 5 && boost == 1 && t.count == 1)
-    XCTAssertTrue(!t.advance(true, 1, publish, wake, donate))
-    XCTAssertTrue(t.cancel(7, donate))
-    XCTAssertTrue(boost == 0 && visible == 3)
+    withUnsafeTemporaryAllocation(of: FenceWait.self, capacity: 2) { storage in
+      storage.initialize(repeating: FenceWait(key: 0, target: 0, priority: 0))
+      defer { storage.deinitialize() }
+      var t = GpuTimeline(storage: storage)
+      var boost: UInt32 = 0
+      var visible: UInt64 = 0
+      var woke: UInt64 = 0
+      let donate: (UInt32) -> Void = { p in boost = p }
+      let publish: (UInt64) -> Void = { v in visible = v }
+      let wake: (UInt64) -> Void = { key in if visible >= 3 { woke = key } }
+      XCTAssertTrue(
+        t.waitFor(false, FenceWait(key: 5, target: 3, priority: 5), donate) == WaitResult.denied)
+      XCTAssertTrue(
+        t.waitFor(true, FenceWait(key: 5, target: 3, priority: 5), donate) == WaitResult.queued)
+      XCTAssertTrue(
+        t.waitFor(true, FenceWait(key: 7, target: 9, priority: 1), donate) == WaitResult.queued)
+      XCTAssertTrue(boost == 5)
+      XCTAssertTrue(!t.advance(false, 3, publish, wake, donate))
+      XCTAssertTrue(t.advance(true, 3, publish, wake, donate))
+      XCTAssertTrue(woke == 5 && boost == 1 && t.count == 1)
+      XCTAssertTrue(!t.advance(true, 1, publish, wake, donate))
+      XCTAssertTrue(t.cancel(7, donate))
+      XCTAssertTrue(boost == 0 && visible == 3)
+    }
   }
 
   func testDoorbellRefusesNonPageRangesAndRevokedSlots() {
