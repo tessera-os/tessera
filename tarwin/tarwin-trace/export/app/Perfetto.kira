@@ -1,0 +1,55 @@
+import Foundation
+
+// The trace service emits standard perfetto.protos.Trace packets, not JSON
+// pretending to be Perfetto. Strings are not interned; packets do not depend on earlier incremental state.
+function varint(out: borrow mut [UN8], word: U64) {
+    var n = word
+    while n >= 128 {
+        out.append(UN8((n & 127) | 128))
+        n = n >> 7
+    }
+    out.append(UN8(n))
+}
+function integerField(out: borrow mut [UN8], field: U64, word: U64) {
+    varint(out,field << 3)
+    varint(out,word)
+}
+function dataField(out: borrow mut [UN8], field: U64, data: borrow [UN8]) {
+    varint(out,(field << 3) | 2)
+    varint(out,U64(data.count))
+    for byte in data { out.append(byte) }
+}
+function wrapPacket(packet: borrow [UN8]) -> [UN8] {
+    var out: [UN8] = []
+    dataField(out,1,packet)
+    return out
+}
+public function perfettoTrack(uuid: U64, label: borrow String, counter: Bool) -> [UN8] {
+    var track: [UN8] = []
+    integerField(track,1,uuid)
+    dataField(track,2,label.utf8())
+    if counter { dataField(track,8,[]) }
+    var packet: [UN8] = []
+    integerField(packet,10,1)
+    dataField(packet,60,track)
+    return wrapPacket(packet)
+}
+public enum TrackType { Begin End Instant Counter }
+public function perfettoEvent(uuid: U64, monotonicNs: U64, kind: TrackType, category: borrow String,
+                              name: borrow String, counterBits: U64) -> [UN8] {
+    let t: U64 = match kind { Begin -> 1 End -> 2 Instant -> 3 Counter -> 4 }
+    var event: [UN8] = []
+    integerField(event,9,t)
+    integerField(event,11,uuid)
+    if kind != .End {
+        dataField(event,22,category.utf8())
+        dataField(event,23,name.utf8())
+    }
+    if kind == .Counter { integerField(event,30,counterBits) }
+    var packet: [UN8] = []
+    integerField(packet,8,monotonicNs)
+    integerField(packet,58,3)
+    integerField(packet,10,1)
+    dataField(packet,11,event)
+    return wrapPacket(packet)
+}

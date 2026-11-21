@@ -1,0 +1,71 @@
+// §27 conservative cost algebra over compiler-verified structured TIR. Zero
+// is a valid empty block; values above limit poison the enclosing expression.
+public namespace ProbeLimit {
+    let instructions: U64 = 1000000
+    let invalid: U64 = 1000001
+    let entries: U64 = 16777216
+}
+public function sequentialCost(a: U64, b: U64) -> U64 {
+    if a > ProbeLimit.instructions || b > ProbeLimit.instructions - a { return ProbeLimit.invalid }
+    return a + b
+}
+public function branchCost(yes: U64, no: U64) -> U64 {
+    return sequentialCost(1, yes > no ? yes : no)
+}
+public function loopCost(body: U64, provenBound: U64) -> U64 {
+    let iteration = sequentialCost(body,1)
+    if iteration > ProbeLimit.instructions || provenBound > (ProbeLimit.instructions - 1) / iteration {
+        return ProbeLimit.invalid
+    }
+    return 1 + iteration * provenBound
+}
+public enum ProbeHook { Tracepoint Entry Exit Scheduler SysEnter SysExit Block File Packet Endpoint Audit }
+public enum ProbeEffect { ReadContext MapAccess RingWrite Pass Drop Redirect Mark }
+public function effectAllowed(hook: ProbeHook, action: ProbeEffect) -> Bool {
+    if action == .ReadContext { return true }
+    if hook == .Packet { return action == .Pass || action == .Drop || action == .Redirect || action == .Mark }
+    if hook == .Endpoint { return action == .Pass || action == .Drop }
+    return action == .MapAccess || action == .RingWrite
+}
+public enum ProbeMapKind { Array Hash PerCpu Ring }
+public struct ProbeMapShape { let kind: ProbeMapKind let capacity: U64 let elementSize: U64 }
+public function validMap(shape: borrow ProbeMapShape, cpus: U64, byteQuota: U64) -> Bool {
+    if shape.capacity == 0 || shape.capacity > ProbeLimit.entries || shape.elementSize == 0 { return false }
+    let copies = shape.kind == .PerCpu ? cpus : U64(1)
+    return copies != 0 && copies <= 4096 && shape.elementSize <= byteQuota / copies / shape.capacity
+}
+
+// A declared map is an already resolved immutable kernel object, never an unchecked probe address.
+public function mapOffset(shape: borrow ProbeMapShape, cpu: U64, cpus: U64, index: U64,
+                          byteQuota: U64) -> U64 {
+    if !validMap(shape,cpus,byteQuota) || index >= shape.capacity || cpu >= cpus
+        || (shape.kind != .PerCpu && cpu != 0) { return 0xffffffffffffffff }
+    return (cpu * shape.capacity + index) * shape.elementSize
+}
+
+public struct ProbeAttachment {
+    var image: U64 = 0
+    var hookToken: U64 = 0
+
+    // The verifier callback authenticates the immutable image, device key/probe role,
+    // train, architecture, hook schema, map handles and hardening before returning a pin.
+    function attach(borrow mut self, hasProbeResource: Bool, module: U64, hook: U64,
+                    verifyAndPin: borrow (U64,U64) -> U64,
+                    publish: borrow (U64,U64) -> Bool, unpin: borrow (U64) -> Void) -> Bool {
+        if !hasProbeResource || image != 0 || module == 0 || hook == 0 { return false }
+        let verified = verifyAndPin(module,hook)
+        if verified == 0 { return false }
+        if !publish(hook,verified) { unpin(verified) return false }
+        image = verified
+        hookToken = hook
+        return true
+    }
+    function detach(borrow mut self, unpublishAndDrain: borrow (U64,U64) -> Bool,
+                    unpin: borrow (U64) -> Void) -> Bool {
+        if image == 0 || !unpublishAndDrain(hookToken,image) { return false }
+        unpin(image)
+        image = 0
+        hookToken = 0
+        return true
+    }
+}

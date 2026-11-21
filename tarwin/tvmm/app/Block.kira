@@ -1,0 +1,63 @@
+import Foundation
+
+public enum BlockOperation { Read Write Flush Discard WriteZeroes }
+public enum BlockError { Io Unsupported }
+public struct BlockRequest {
+    let operation: BlockOperation
+    let byteOffset: U64
+    let byteLength: U64
+}
+public struct BlockRange { let offset: U64 let length: U64 let unmap: Bool }
+
+function rangeFits(sector: U64, size: U64, capacity: U64) -> Bool {
+    return size % 512 == 0 && sector <= capacity && size / 512 <= capacity - sector
+        && sector <= 0xffffffffffffffff / 512
+        && size <= 0xffffffffffffffff - sector * 512
+}
+
+// Decode the readable header separately from the writable status byte. The caller
+// assembles the bytes from validated scatter/gather segments, not from host pointers.
+public function blockRequest(header: borrow [UN8], readableData: U64, writableData: U64,
+                              capacitySectors: U64, readOnly: Bool, canFlush: Bool,
+                              canDiscard: Bool, canZero: Bool) -> Result<BlockRequest, BlockError> {
+    if header.count != 16 { return .Error(.Io) }
+    let op = vword(header,0,4)
+    let sector = vword(header,8,8)
+    match op {
+        0, 1 -> {
+            let write = op == 1
+            if (write && (readOnly || writableData != 0)) || (!write && readableData != 0) { return .Error(.Io) }
+            let size = write ? readableData : writableData
+            if !rangeFits(sector,size,capacitySectors) { return .Error(.Io) }
+            return .Ok(BlockRequest { operation: write ? .Write : .Read, byteOffset: sector * 512, byteLength: size })
+        }
+        4 -> {
+            if !canFlush { return .Error(.Unsupported) }
+            if readableData != 0 || writableData != 0 || sector != 0 { return .Error(.Io) }
+            return .Ok(BlockRequest { operation: .Flush, byteOffset: 0, byteLength: 0 })
+        }
+        11, 13 -> {
+            if (op == 11 && !canDiscard) || (op == 13 && !canZero) { return .Error(.Unsupported) }
+            if readOnly || writableData != 0 || readableData == 0 || readableData % 16 != 0 { return .Error(.Io) }
+            return .Ok(BlockRequest { operation: op == 11 ? .Discard : .WriteZeroes, byteOffset: 0, byteLength: readableData })
+        }
+        else -> return .Error(.Unsupported)
+    }
+}
+
+public function blockRanges(payload: borrow [UN8], operation: BlockOperation, maxRanges: U64,
+                             maxSectors: U64, capacity: U64, mayUnmap: Bool) -> Result<[BlockRange], BlockError> {
+    if operation != .Discard && operation != .WriteZeroes { return .Error(.Unsupported) }
+    if payload.count < 16 || payload.count % 16 != 0 || U64(payload.count / 16) > maxRanges { return .Error(.Io) }
+    var ranges: [BlockRange] = []
+    for i in 0..(payload.count / 16) {
+        let sector = vword(payload,i*16,8)
+        let sectors = vword(payload,i*16+8,4)
+        let flags = vword(payload,i*16+12,4)
+        if flags != 0 && !(flags == 1 && operation == .WriteZeroes && mayUnmap) { return .Error(.Unsupported) }
+        let size = sectors * 512
+        if sectors > maxSectors || !rangeFits(sector,size,capacity) { return .Error(.Io) }
+        ranges.append(BlockRange { offset: sector * 512, length: size, unmap: flags == 1 })
+    }
+    return .Ok(ranges)
+}

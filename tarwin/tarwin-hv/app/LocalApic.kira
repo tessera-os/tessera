@@ -1,0 +1,55 @@
+// Fixed-size local APIC IRR/ISR banks. TPR and the top in-service priority class
+// both mask lower/equal classes; pending vectors remain latched until accepted.
+public struct VectorSet {
+    var a: U64 = 0
+    var b: U64 = 0
+    var c: U64 = 0
+    var d: U64 = 0
+
+    function change(borrow mut self, vector: U64, on: Bool) {
+        let bit = U64(1) << (vector % 64)
+        let clear = bit ^ 0xffffffffffffffff
+        match vector / 64 {
+            0 -> a = on ? a | bit : a & clear
+            1 -> b = on ? b | bit : b & clear
+            2 -> c = on ? c | bit : c & clear
+            3 -> d = on ? d | bit : d & clear
+            else -> {}
+        }
+    }
+    function highest(borrow self) -> U64 {
+        var word = d
+        var base: U64 = 192
+        if word == 0 { word = c base = 128 }
+        if word == 0 { word = b base = 64 }
+        if word == 0 { word = a base = 0 }
+        if word == 0 { return 0 }
+        while word > 1 { word = word >> 1 base += 1 }
+        return base
+    }
+}
+
+public struct LocalApic {
+    var pending: VectorSet
+    var active: VectorSet
+    var tpr: U64 = 0
+
+    function raise(borrow mut self, vector: U64) -> Bool {
+        if vector < 16 || vector > 255 { return false }
+        pending.change(vector, true)
+        return true
+    }
+    function acknowledge(borrow mut self) -> U64 {
+        let v = pending.highest()
+        let cls = v >> 4
+        if cls <= (tpr >> 4) || cls <= (active.highest() >> 4) { return 0 }
+        pending.change(v, false)
+        active.change(v, true)
+        return v
+    }
+    function endOfInterrupt(borrow mut self) -> U64 {
+        let v = active.highest()
+        if v != 0 { active.change(v, false) }
+        return v
+    }
+}

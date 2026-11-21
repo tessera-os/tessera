@@ -1,0 +1,60 @@
+import Foundation
+
+public enum BridgeService { Input Clipboard Notification Audio Camera Folder }
+public struct AppWindow {
+    let app: U64
+    let window: U64
+    let surface: U64
+    let epoch: U64
+}
+public struct HostGrant {
+    let token: U64
+    let app: U64
+    let epoch: U64
+    let service: BridgeService
+    let handle: U64
+}
+
+// One instance per sandboxed VM job. Bind/issue/revoke are host control-plane
+// operations; the guest can only request a route. A handle never crosses to Android.
+public struct AndroidBridge {
+    var epoch: U64
+    var windows: [AppWindow] = []
+    var grants: [HostGrant] = []
+    let windowLimit: Number
+    let grantLimit: Number
+
+    function bind(borrow mut self, app: U64, window: U64, surface: U64) -> Bool {
+        if windows.count >= windowLimit || window == 0 || surface == 0 { return false }
+        for w in windows { if w.window == window || w.surface == surface { return false } }
+        windows.append(AppWindow { app: app, window: window, surface: surface, epoch: epoch })
+        return true
+    }
+    function closeWindow(borrow mut self, window: U64) {
+        var live: [AppWindow] = []
+        for w in windows { if w.window != window { live.append(copy w) } }
+        windows = live
+    }
+    function issue(borrow mut self, grant: HostGrant) -> Bool {
+        if grant.epoch != epoch || grant.token == 0 || grant.handle == 0 || grants.count >= grantLimit { return false }
+        for g in grants { if g.token == grant.token { return false } }
+        grants.append(grant)
+        return true
+    }
+    function revoke(borrow mut self, token: U64) {
+        var live: [HostGrant] = []
+        for g in grants { if g.token != token { live.append(copy g) } }
+        grants = live
+    }
+    function route(borrow self, app: U64, window: U64, surface: U64, generation: U64,
+                   service: BridgeService, token: U64) -> U64 {
+        if generation != epoch { return 0 }
+        for w in windows {
+            if w.app != app || w.window != window || w.surface != surface || w.epoch != epoch { continue }
+            for g in grants {
+                if g.token == token && g.app == app && g.epoch == epoch && g.service == service { return g.handle }
+            }
+        }
+        return 0
+    }
+}

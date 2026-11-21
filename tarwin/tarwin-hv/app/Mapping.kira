@@ -1,0 +1,45 @@
+public enum ExtentPhase { Empty Mapped Detached Invalidated }
+public struct GuestExtent {
+    var phase: ExtentPhase = .Empty
+    var start: U64 = 0
+    var size: U64 = 0
+    var pin: U64 = 0
+
+    // Under the VM address-space writer lock, with a reserved nonoverlapping interval.
+    // install is all-or-nothing; pin/unpin own the backing object across shootdown.
+    function map(borrow mut self, guest: U64, offset: U64, length: U64, guestLimit: U64,
+                 objectSize: U64, page: U64, permissions: U64, rights: U64,
+                 pinMemory: borrow (U64,U64) -> U64, install: borrow (U64,U64,U64,U64) -> Bool,
+                 unpin: borrow (U64) -> Void) -> Bool {
+        if phase != .Empty || !validMapping(guest,offset,length,guestLimit,objectSize,page,permissions,rights) {
+            return false
+        }
+        let token = pinMemory(offset,length)
+        if token == 0 { return false }
+        if !install(guest,length,token,permissions) { unpin(token) return false }
+        start = guest
+        size = length
+        pin = token
+        phase = .Mapped
+        return true
+    }
+
+    // Failed shootdown leaves the interval quarantined; a retry never re-detaches.
+    function retire(borrow mut self, detach: borrow (U64,U64) -> Bool,
+                    shootdown: borrow (U64,U64) -> Bool, unpin: borrow (U64) -> Void) -> Bool {
+        if phase == .Empty { return false }
+        if phase == .Mapped {
+            if !detach(start,size) { return false }
+            phase = .Detached
+        }
+        if phase == .Detached {
+            if !shootdown(start,size) { return false }
+            phase = .Invalidated
+        }
+        unpin(pin)
+        pin = 0
+        size = 0
+        phase = .Empty
+        return true
+    }
+}

@@ -1,0 +1,20 @@
+import Foundation
+import TarwinProbe
+
+function cost(terms: borrow [ProbeTerm], hook: ProbeHook) -> U64 {
+    match worstCase(terms,64,hook) { Ok(n) -> return n Error(e) -> { absorb e return ProbeLimit.invalid } }
+}
+
+@Test
+function costIncludesControlFlowAndChecksEvenColdArms() {
+    expect!(cost([.DefinedScalar,.Counted(Bound { body: 0, bound: 499999 }),.DirectCall(1)],.Tracepoint) == 1000000)
+    expect!(cost([.DefinedScalar,.Counted(Bound { body: 0, bound: 500000 })],.Tracepoint) == ProbeLimit.invalid)
+    expect!(cost([.DefinedScalar,.Counted(Bound { body: 0, bound: 0xffffffffffffffff })],.Tracepoint) == ProbeLimit.invalid)
+    expect!(cost([.DefinedScalar,.Unsupported,.Choice(Edges { a: 0, b: 1 })],.Tracepoint) == ProbeLimit.invalid)
+    expect!(cost([.DirectCall(0)],.Tracepoint) == ProbeLimit.invalid)
+    expect!(cost([.DefinedScalar,.UnprovenLoop],.Tracepoint) == ProbeLimit.invalid)
+    expect!(cost([.Context(ByteRead { offset: 60, width: 4 }),.Helper(.Drop),.Sequence(Edges { a: 0, b: 1 })],.Endpoint) == 2)
+    expect!(cost([.Context(ByteRead { offset: 60, width: 5 })],.Packet) == ProbeLimit.invalid)
+    expect!(cost([.Helper(.Redirect)],.Endpoint) == ProbeLimit.invalid)
+    expect!(cost([.Helper(.RingWrite)],.Audit) == 1)
+}

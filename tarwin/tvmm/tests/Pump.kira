@@ -1,0 +1,42 @@
+import Foundation
+
+function oneAvailable() -> U64 { return 1 }
+function first(slot: U64) -> U64 { return 0 }
+function descriptors() -> [UN8] { return [0,0,0,0,0,0,0,0, 32,0,0,0, 2,0,0,0] }
+function transfer(segments: [Segment]) -> U64 { return segments[0].length }
+function overrun(segments: [Segment]) -> U64 { return 33 }
+var published: U64 = 0
+var usedLength: U64 = 0
+function used(slot: U64, head: U64, length: U64) { usedLength = length }
+function publish(next: U64) { published = next }
+function drained() -> Bool { return true }
+
+@Test
+function publishesUsedAfterExecutionAndBreaksOnOverrun() {
+    var pump = QueuePump { slots: 1 }
+    let ram = GuestAperture { base: 0, length: 4096 }
+    expect!(pump.serviceOne(ram,oneAvailable,first,descriptors,transfer,used,publish) == PumpResult.Progress)
+    expect!(published == 1)
+    expect!(usedLength == 32)
+    expect!(pump.serviceOne(ram,oneAvailable,first,descriptors,transfer,used,publish) == PumpResult.Drained)
+    var bad = QueuePump { slots: 1 }
+    expect!(bad.serviceOne(ram,oneAvailable,first,descriptors,overrun,used,publish) == PumpResult.Broken)
+    expect!(bad.nextUsed == 0)
+    expect!(bad.broken)
+}
+
+@Test
+function modernTransportRequiresVersionAndNegotiationBeforeDriverOk() {
+    var state = ModernVirtio { offered: 0x100000004 }
+    expect!(!state.writeStatus(15,drained))
+    expect!(state.writeStatus(1,drained))
+    expect!(state.writeStatus(3,drained))
+    expect!(!state.negotiate(4))
+    expect!(!state.negotiate(0x100000008))
+    expect!(state.negotiate(0x100000004))
+    expect!(state.writeStatus(11,drained))
+    expect!(state.writeStatus(15,drained))
+    expect!(state.ready())
+    expect!(state.writeStatus(0,drained))
+    expect!(!state.ready())
+}

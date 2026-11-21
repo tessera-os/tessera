@@ -1,0 +1,55 @@
+public enum KernelCategory { Boot Sched Vm Alloc Ipc Loader Security Device Block Trfs Net Gpu Hypervisor Power Thermal Probe Panic }
+public enum TraceKind { Switch Wake Interrupt Syscall Fault Block Network Fence Power UserBegin UserEnd UserInstant UserCounter }
+public struct TraceRecord {
+    let monotonicNanos: U64
+    let kind: TraceKind
+    let subject: U64
+    let value: U64
+}
+
+public function logEnabled(level: U64, minimum: U64) -> Bool { return level >= minimum }
+
+// One writer per ring (kernel CPU or user thread). The ring owner keeps 'produced'
+// private. Accessors supply acquire/release and write the whole record before publication.
+// The reader's ticket is untrusted: invalid cursors must not yield a writable pointer.
+public struct TraceProducer {
+    let capacity: U64
+    var produced: U64 = 0
+    var dropped: U64 = 0
+    function push(borrow mut self, record: borrow TraceRecord, consumed: U64,
+                  store: borrow (U64,TraceRecord) -> Void, releaseHead: borrow (U64) -> Void) -> Bool {
+        if capacity < 64 || capacity > 65536 || (capacity & (capacity-1)) != 0 || consumed > produced
+            || produced - consumed >= capacity || produced == 0xffffffffffffffff {
+            if dropped < 0xffffffffffffffff { dropped += 1 }
+            return false
+        }
+        store(produced & (capacity-1),copy record)
+        produced += 1
+        releaseHead(produced)
+        return true
+    }
+}
+
+public enum CounterScope { Thread Process System }
+public function counterAccess(scope: CounterScope, targetOwner: U64, caller: U64, debugResource: Bool) -> Bool {
+    if scope == .System { return debugResource }
+    return targetOwner != 0 && targetOwner == caller
+}
+
+public struct CounterSession {
+    let target: U64
+    var hardware: U64 = 0
+    var total: U64 = 0
+    function start(borrow mut self, program: borrow (U64) -> U64) -> Bool {
+        if hardware != 0 { return false }
+        hardware = program(target)
+        return hardware != 0
+    }
+    function stop(borrow mut self, disableReadAndRelease: borrow (U64) -> U64) -> Bool {
+        if hardware == 0 { return false }
+        let delta = disableReadAndRelease(hardware)
+        total = delta > 0xffffffffffffffff - total ? U64(0xffffffffffffffff) : total + delta
+        hardware = 0
+        return true
+    }
+}
