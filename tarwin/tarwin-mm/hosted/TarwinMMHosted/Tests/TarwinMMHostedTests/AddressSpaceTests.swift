@@ -124,3 +124,84 @@ private final class TaskMappings: HostedTaskMappings {
     .critical, processes: [processes[0]], signal: { _, _ in },
     reclaimed: { false }, terminate: { _ in }) == .noEligibleProcess)
 }
+
+@Test func pressureReclaimsOldestCleanFilePagesAndVolatileEntriesBeforeJetsam() throws {
+  let page = hostedPageSize
+  let task = TaskMappings()
+  let space = try HostedAddressSpace(window: page..<(8 * page), task: task)
+  var reads: [UInt64] = []
+  let backing = HostedFileBacking(size: 3 * page) { offset, buffer in
+    reads.append(offset)
+    buffer.initializeMemory(as: UInt8.self, repeating: 42)
+    return buffer.count
+  }
+  let volatile = try HostedPurgeableMemory(size: page)
+  let protected = try HostedPurgeableMemory(size: page)
+  let rw: HostedProtection = [.read, .write]
+  try space.reserveFile(address: page, size: 2 * page, backing: backing, offset: 0, protection: .read)
+  try space.reserveFile(address: 3 * page, size: page, backing: backing, offset: 2 * page, protection: rw)
+  try space.map(.init(address: 4 * page, size: page, entry: volatile.entry, protection: rw))
+  try space.map(.init(address: 5 * page, size: page, entry: protected.entry, protection: rw))
+  #expect(try space.fault(address: 2 * page, access: .read) == .mapped)
+  try volatile.makeVolatile()
+  #expect(try space.fault(address: page, access: .read) == .mapped)
+  #expect(try space.fault(address: 3 * page, access: .write) == .mapped)
+
+  let spaces = [HostedPressureAddressSpace(id: 1, band: 6, limit: 0, space: space)]
+  var signaled: [UInt64] = []
+  var killed: [HostedJetsamEvent] = []
+  func pressure(_ level: HostedMemoryPressure, enough: () -> Bool) throws -> HostedJetsamResult {
+    try HostedJetsam.handle(level, addressSpaces: spaces,
+      signal: { id, _ in signaled.append(id) }, reclaimed: enough, terminate: { killed.append($0) })
+  }
+  #expect(space.footprint == 5 * page)
+  #expect(try pressure(.normal) { false } == .noAction)
+  #expect(signaled.isEmpty)
+  #expect(try pressure(.warning) { space.footprint <= 4 * page } == .noAction)
+  #expect(!task.commands.contains { $0.address == 2 * page })
+  #expect(task.commands.contains { $0.address == page })
+  #expect(try volatile.state() == .volatile)
+  #expect(space.occupiedRanges.contains { $0.contains(2 * page) })
+
+  #expect(try pressure(.critical) { space.footprint <= 3 * page } == .noAction)
+  #expect(try volatile.state() == .empty)
+  #expect(task.commands.contains { $0.address == page })
+  #expect(killed.isEmpty)
+
+  #expect(try space.fault(address: 2 * page, access: .read) == .mapped)
+  #expect(reads == [page, 0, 2 * page, page])
+  let reloaded = try #require(task.commands.last).entry.mapLocally(protection: .read)
+  let bytes = try #require(UnsafeRawPointer(bitPattern: UInt(reloaded.address)))
+  #expect(bytes.load(as: UInt8.self) == 42)
+
+  #expect(try pressure(.critical) { false } == killed.last.map(HostedJetsamResult.terminated))
+  #expect(signaled == [1, 1, 1])
+  #expect(killed.count == 1)
+  #expect(killed.first?.footprint == 2 * page)
+  #expect(try protected.state() == .nonvolatile)
+  #expect(task.commands.contains { $0.address == 3 * page })
+  #expect(try !volatile.makeNonvolatile())
+  #expect(space.footprint == 3 * page)
+}
+
+@Test func failedPressureUnmapKeepsTheFilePageChargedAndCanBeRetried() throws {
+  let page = hostedPageSize
+  let task = TaskMappings()
+  let space = try HostedAddressSpace(window: page..<(2 * page), task: task)
+  try space.reserveFile(address: page, size: page,
+    backing: HostedFileBacking(size: page) { _, buffer in buffer.count }, offset: 0, protection: .read)
+  #expect(try space.fault(address: page, access: .read) == .mapped)
+  let spaces = [HostedPressureAddressSpace(id: 1, band: 6, limit: 0, space: space)]
+  func reclaim() throws -> HostedJetsamResult {
+    try HostedJetsam.handle(.warning, addressSpaces: spaces,
+      signal: { _, _ in }, reclaimed: { false }, terminate: { _ in Issue.record("unexpected jetsam") })
+  }
+  task.fail = true
+  #expect(throws: TransportError.unavailable) { try reclaim() }
+  #expect(space.footprint == page)
+  #expect(try space.fault(address: page, access: .read) == .notPresentOnHost)
+  task.fail = false
+  #expect(try reclaim() == .noAction)
+  #expect(space.footprint == 0)
+  #expect(try space.fault(address: page, access: .read) == .mapped)
+}

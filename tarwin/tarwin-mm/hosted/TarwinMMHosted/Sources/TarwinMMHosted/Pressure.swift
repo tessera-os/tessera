@@ -31,6 +31,29 @@ public enum HostedJetsamResult: Equatable {
   case noEligibleProcess
 }
 
+public struct HostedPressureAddressSpace {
+  public let id: UInt64
+  public let band: UInt8
+  public let limit: UInt64
+  public let space: HostedAddressSpace
+
+  public init(id: UInt64, band: UInt8, limit: UInt64, space: HostedAddressSpace) {
+    self.id = id
+    self.band = band
+    self.limit = limit
+    self.space = space
+  }
+
+  public var process: HostedPressureProcess {
+    HostedPressureProcess(id: id, band: band, footprint: space.footprint, limit: limit)
+  }
+}
+
+struct HostedReclaimCandidate {
+  let since: UInt64
+  let reclaim: () throws -> Bool
+}
+
 public enum HostedJetsam {
   public static func enforceLimit(
     of process: HostedPressureProcess, terminate: (HostedJetsamEvent) throws -> Void
@@ -56,6 +79,33 @@ public enum HostedJetsam {
     for process in ordered { signal(process.id, level) }
     let enough = try reclaimed()
     guard level == .critical, !enough else { return .noAction }
+    return try terminateVictim(ordered, terminate: terminate)
+  }
+
+  public static func handle(
+    _ level: HostedMemoryPressure, addressSpaces: [HostedPressureAddressSpace],
+    signal: (UInt64, HostedMemoryPressure) -> Void,
+    reclaimed: () throws -> Bool, terminate: (HostedJetsamEvent) throws -> Void
+  ) throws -> HostedJetsamResult {
+    guard level != .normal else { return .noAction }
+    let spaces = addressSpaces.filter { $0.id != 0 }
+    let eligible = spaces.filter { $0.band <= 6 }.sorted {
+      $0.band != $1.band ? $0.band > $1.band : $0.id < $1.id
+    }
+    for space in eligible { signal(space.id, level) }
+    if try reclaimed() { return .noAction }
+    let candidates = try spaces.flatMap { try $0.space.reclaimCandidates() }
+      .sorted { $0.since < $1.since }
+    for candidate in candidates {
+      if try candidate.reclaim(), try reclaimed() { return .noAction }
+    }
+    guard level == .critical else { return .noAction }
+    return try terminateVictim(eligible.map(\.process), terminate: terminate)
+  }
+
+  private static func terminateVictim(
+    _ ordered: [HostedPressureProcess], terminate: (HostedJetsamEvent) throws -> Void
+  ) rethrows -> HostedJetsamResult {
     let victim = ordered.reduce(noCandidate()) {
       selectVictim($0, next: PressureCandidate(koid: $1.id, band: $1.band, bytes: $1.footprint))
     }

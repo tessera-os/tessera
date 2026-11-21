@@ -122,4 +122,33 @@ private final class PagerBinding: @unchecked Sendable {
   #expect(faults.withLock { $0 } == [UInt64(KERN_PROTECTION_FAILURE)])
   #expect(space.footprint == 3 * page)
   #expect(kernel.containsProcess(process))
+
+  let reclaimed = try HostedJetsam.handle(.warning,
+    addressSpaces: [.init(id: 1, band: 6, limit: 0, space: space)],
+    signal: { _, _ in }, reclaimed: { space.footprint == 2 * page },
+    terminate: { _ in Issue.record("unexpected jetsam") })
+  #expect(reclaimed == .noAction)
+  #expect(space.footprint == 2 * page)
+
+  let nextStack = stackAddress + page - 32
+  try #require(try task.command(.createThread(id: 2, entry: TaskWindow.base,
+    argument: faultAddress, stack: nextStack, tls: stackAddress))
+    .get().status == KERN_SUCCESS)
+  try #require(try task.command(.resumeThread(id: 2)).get().status == KERN_SUCCESS)
+  let refillDeadline = DispatchTime.now() + .seconds(5)
+  value = 0
+  repeat {
+    var bytesRead: UInt64 = 0
+    let status = withUnsafeMutablePointer(to: &value) {
+      mach_vm_read_overwrite(mach_task_self_, result.address + page - 32,
+        UInt64(MemoryLayout<UInt32>.size), UInt64(UInt(bitPattern: $0)), &bytesRead)
+    }
+    try #require(status == KERN_SUCCESS)
+    if value != 0 { break }
+    usleep(1_000)
+  } while DispatchTime.now() < refillDeadline
+  #expect(value == 42)
+  #expect(faults.withLock { $0 } == Array(repeating: UInt64(KERN_PROTECTION_FAILURE), count: 2))
+  #expect(space.footprint == 3 * page)
+  #expect(kernel.containsProcess(process))
 }

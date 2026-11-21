@@ -37,7 +37,9 @@ public enum HostedPurgeState: Equatable, Sendable {
 }
 
 public final class HostedMemoryEntry {
-  private final class Identity {}
+  private final class Identity {
+    var purgeable: HostedPurgeableState?
+  }
 
   public let port: mach_port_t
   public let size: UInt64
@@ -45,6 +47,7 @@ public final class HostedMemoryEntry {
   private let object: Identity
   let objectOffset: UInt64
   var objectID: ObjectIdentifier { ObjectIdentifier(object) }
+  var purgeable: HostedPurgeableState? { object.purgeable }
 
   private init(
     port: mach_port_t, size: UInt64, protection: HostedProtection, object: Identity,
@@ -62,7 +65,11 @@ public final class HostedMemoryEntry {
   public static func anonymous(size: UInt64, purgeable: Bool = false) throws -> HostedMemoryEntry {
     let rw: HostedProtection = [.read, .write]
     let flags = MAP_MEM_NAMED_CREATE | (purgeable ? MAP_MEM_PURGABLE : 0)
-    return try make(size: size, offset: 0, protection: rw, flags: flags, parent: 0)
+    let entry = try make(size: size, offset: 0, protection: rw, flags: flags, parent: 0)
+    if purgeable {
+      entry.object.purgeable = try HostedPurgeableState(mapping: entry.mapLocally(protection: rw))
+    }
+    return entry
   }
 
   public func restricted(to protection: HostedProtection) throws -> HostedMemoryEntry {
@@ -181,32 +188,77 @@ public final class HostedLocalMapping {
 
 public final class HostedPurgeableMemory {
   public let entry: HostedMemoryEntry
-  private let mapping: HostedLocalMapping
-  private let lock = NSLock()
+  private let backing: HostedPurgeableState
 
   public init(size: UInt64) throws {
     entry = try .anonymous(size: size, purgeable: true)
-    mapping = try entry.mapLocally(protection: [.read, .write])
+    guard let backing = entry.purgeable else { throw HostedMemoryError.notPurgeable }
+    self.backing = backing
   }
 
   public func state() throws -> HostedPurgeState {
-    try lock.withLock { try control(VM_PURGABLE_GET_STATE, state: 0) }
+    try backing.state()
   }
 
   @discardableResult
   public func makeVolatile() throws -> HostedPurgeState {
-    try lock.withLock { try control(VM_PURGABLE_SET_STATE, state: VM_PURGABLE_VOLATILE) }
+    try backing.makeVolatile()
   }
 
   public func makeNonvolatile() throws -> Bool {
-    try lock.withLock { try control(VM_PURGABLE_SET_STATE, state: VM_PURGABLE_NONVOLATILE) != .empty }
+    try backing.makeNonvolatile()
   }
 
   @discardableResult
   public func discardIfVolatile() throws -> Bool {
+    try backing.discardIfVolatile()
+  }
+}
+
+final class HostedPurgeableState {
+  private let mapping: HostedLocalMapping
+  private let lock = NSLock()
+  private var volatileSince: UInt64?
+
+  init(mapping: HostedLocalMapping) { self.mapping = mapping }
+
+  func state() throws -> HostedPurgeState {
+    try lock.withLock { try control(VM_PURGABLE_GET_STATE, state: 0) }
+  }
+
+  func makeVolatile() throws -> HostedPurgeState {
     try lock.withLock {
+      let previous = try control(VM_PURGABLE_SET_STATE, state: VM_PURGABLE_VOLATILE)
+      if previous == .nonvolatile { volatileSince = DispatchTime.now().uptimeNanoseconds }
+      return previous
+    }
+  }
+
+  func makeNonvolatile() throws -> Bool {
+    try lock.withLock {
+      let kept = try control(VM_PURGABLE_SET_STATE, state: VM_PURGABLE_NONVOLATILE) != .empty
+      volatileSince = nil
+      return kept
+    }
+  }
+
+  func candidate() throws -> HostedReclaimCandidate? {
+    try lock.withLock {
+      guard let since = volatileSince,
+        try control(VM_PURGABLE_GET_STATE, state: 0) == .volatile else { return nil }
+      return HostedReclaimCandidate(since: since) { [weak self] in
+        try self?.discardIfVolatile(since: since) ?? false
+      }
+    }
+  }
+
+  func discardIfVolatile(since: UInt64? = nil) throws -> Bool {
+    try lock.withLock {
+      if let since, since != volatileSince { return false }
       guard try control(VM_PURGABLE_GET_STATE, state: 0) == .volatile else { return false }
-      return try control(VM_PURGABLE_SET_STATE, state: VM_PURGABLE_EMPTY) != .empty
+      let discarded = try control(VM_PURGABLE_SET_STATE, state: VM_PURGABLE_EMPTY) != .empty
+      volatileSince = nil
+      return discarded
     }
   }
 

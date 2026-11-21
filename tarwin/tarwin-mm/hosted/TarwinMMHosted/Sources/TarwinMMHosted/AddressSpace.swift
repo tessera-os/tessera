@@ -91,9 +91,16 @@ public final class HostedAddressSpace {
     let protection: HostedProtection
   }
 
-  private struct Mapping {
+  private final class Mapping {
     let command: HostedMapCommand
     let charged: Bool
+    let cleanSince: UInt64?
+
+    init(command: HostedMapCommand, charged: Bool, cleanSince: UInt64?) {
+      self.command = command
+      self.charged = charged
+      self.cleanSince = cleanSince
+    }
   }
 
   public let window: Range<UInt64>
@@ -174,7 +181,8 @@ public final class HostedAddressSpace {
       let entry = try file.backing.page(at: offset, writable: file.protection.contains(.write))
       let map = try HostedMapCommand(
         address: pageAddress, size: hostedPageSize, entry: entry, protection: file.protection)
-      try install(map, charged: true)
+      try install(map, charged: true,
+        cleanSince: file.protection == .read ? DispatchTime.now().uptimeNanoseconds : nil)
       return .mapped
     }
   }
@@ -199,6 +207,7 @@ public final class HostedAddressSpace {
   public var footprint: UInt64 {
     lock.withLock {
       var seen: [ObjectIdentifier: [Range<UInt64>]] = [:]
+      var emptied: [ObjectIdentifier: Bool] = [:]
       var bytes: UInt64 = 0
       func charge(_ n: UInt64) {
         let remaining = UInt64.max - bytes
@@ -209,9 +218,15 @@ public final class HostedAddressSpace {
         if map.copy {
           charge(map.size)
         } else {
+          let object = map.entry.objectID
+          if let purgeable = map.entry.purgeable {
+            let empty = emptied[object] ?? ((try? purgeable.state()) == .empty)
+            emptied[object] = empty
+            if empty { continue }
+          }
           let offset = map.entry.objectOffset + map.entryOffset
           let span = offset..<(offset + map.size)
-          seen[map.entry.objectID, default: []].append(span)
+          seen[object, default: []].append(span)
         }
       }
       for spans in seen.values {
@@ -225,6 +240,32 @@ public final class HostedAddressSpace {
     }
   }
 
+  func reclaimCandidates() throws -> [HostedReclaimCandidate] {
+    try lock.withLock {
+      var candidates: [HostedReclaimCandidate] = []
+      var purgeableObjects: Set<ObjectIdentifier> = []
+      for (address, mapping) in mappings.sorted(by: { $0.key < $1.key }) {
+        if let since = mapping.cleanSince {
+          candidates.append(HostedReclaimCandidate(since: since) { [weak self, weak mapping] in
+            guard let self, let mapping else { return false }
+            return try self.lock.withLock {
+              guard self.mappings[address] === mapping else { return false }
+              try self.task.unmap(address: address, size: mapping.command.size)
+              self.mappings.removeValue(forKey: address)
+              return true
+            }
+          })
+        } else if !mapping.command.copy, let purgeable = mapping.command.entry.purgeable,
+          purgeableObjects.insert(mapping.command.entry.objectID).inserted,
+          let candidate = try purgeable.candidate()
+        {
+          candidates.append(candidate)
+        }
+      }
+      return candidates
+    }
+  }
+
   public var occupiedRanges: [Range<UInt64>] {
     lock.withLock {
       files.values.map(\.range) + mappings.values.map {
@@ -233,9 +274,11 @@ public final class HostedAddressSpace {
     }
   }
 
-  private func install(_ command: HostedMapCommand, charged: Bool) throws {
+  private func install(
+    _ command: HostedMapCommand, charged: Bool, cleanSince: UInt64? = nil
+  ) throws {
     try task.map(command)
-    mappings[command.address] = Mapping(command: command, charged: charged)
+    mappings[command.address] = Mapping(command: command, charged: charged, cleanSince: cleanSince)
   }
 
   private func checkFree(address: UInt64, size: UInt64) throws -> Range<UInt64> {
