@@ -8,6 +8,8 @@
 
 typedef struct {
   int32_t kind;
+  mach_port_t thread_port;
+  uint64_t thread_id;
   uint64_t code, subcode, fault_address, pc, sp, x[29];
 } th_exception;
 typedef int (*th_exception_callback)(void *, th_exception *);

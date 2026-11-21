@@ -15,6 +15,12 @@ public struct HostExceptionState: Sendable {
   }
 }
 
+/// The port is borrowed only during the sink callback; threadID is the stable kernel identity.
+public struct HostThreadIdentity: Sendable {
+  public let port: UInt32
+  public let threadID: UInt64
+}
+
 /// A decoded Mach exception with its two 64-bit codes and faulting register state.
 public struct HostException: Sendable {
   /// Exception numbers match XNU's public EXC_* constants.
@@ -26,6 +32,7 @@ public struct HostException: Sendable {
   public let subcode: UInt64
   public let faultAddress: UInt64
   public let state: HostExceptionState
+  public let thread: HostThreadIdentity
   public var pc: UInt64 { state.pc }
   public var sp: UInt64 { state.sp }
   public var x: [UInt64] { state.x }
@@ -69,7 +76,8 @@ private final class ExceptionLoop: @unchecked Sendable {
         guard let kind = HostException.Kind(rawValue: c.kind) else { return 0 }
         let registers = withUnsafeBytes(of: c.x) { Array($0.bindMemory(to: UInt64.self)) }
         let exception = HostException(kind: kind, code: c.code, subcode: c.subcode,
-          faultAddress: c.fault_address, state: HostExceptionState(pc: c.pc, sp: c.sp, x: registers))
+          faultAddress: c.fault_address, state: HostExceptionState(pc: c.pc, sp: c.sp, x: registers),
+          thread: HostThreadIdentity(port: c.thread_port, threadID: c.thread_id))
         switch loop.sink.handle(exception) {
         case .terminate: return 0
         case .resume(let state):

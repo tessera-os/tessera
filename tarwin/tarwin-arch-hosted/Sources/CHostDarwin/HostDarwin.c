@@ -23,6 +23,17 @@ kern_return_t hcatch_hosted_exception_raise(mach_port_t port, mach_port_t thread
       (thread_state_t)&state, &words);
   if (result == KERN_SUCCESS && count > 0 && callback) {
     th_exception event = {0};
+    thread_identifier_info_data_t identity;
+    mach_msg_type_number_t identity_words = THREAD_IDENTIFIER_INFO_COUNT;
+    if (thread_info(thread, THREAD_IDENTIFIER_INFO, (thread_info_t)&identity,
+        &identity_words) != KERN_SUCCESS) {
+      task_terminate(task);
+      mach_port_deallocate(mach_task_self(), thread);
+      mach_port_deallocate(mach_task_self(), task);
+      return KERN_FAILURE;
+    }
+    event.thread_port = thread;
+    event.thread_id = identity.thread_id;
     event.kind = exception;
     event.code = code[0];
     event.subcode = count > 1 ? code[1] : 0;
