@@ -158,6 +158,7 @@ enum Machine: String {
 }
 struct DeviceTransport {
   let features: UInt64
+  let configBytes: UInt64, generation: () -> UInt32
   let config: (Int) -> UInt8
   let notify: (Int) -> Void
   let acknowledge: () -> Void
@@ -169,13 +170,12 @@ func transport(
   if machine == .x64 {
     return try pciTransport(q, type: type, instance: instance, supported: supported, queues: queues)
   }
-  // This harness uses the transport registers and at most 8 config bytes.
-  let matching = q.mmio.filter { $0.length >= 0x108 && q.read("l", $0.base + 8) == type }.map(
-    \.base)
+  let matching = q.mmio.filter { $0.length >= 0x108 && q.read("l", $0.base + 8) == type }
   guard matching.indices.contains(instance) else {
     throw q.error ?? Failure("Missing virtio MMIO device")
   }
-  let base = matching[instance]
+  let window = matching[instance]
+  let base = window.base
   let read: (UInt32) -> UInt32 = { UInt32(q.read("l", base + UInt64($0))) }
   let write: (UInt32, UInt32) -> Void = { q.write("l", base + UInt64($0), $1) }
   let expiry = ContinuousClock.now + .seconds(2)
@@ -188,7 +188,8 @@ func transport(
   }
   try q.require(driverReady(read, write), "Queue activation failed")
   return DeviceTransport(
-    features: features, config: { UInt8(q.read("b", base + 0x100 + UInt64($0))) },
+    features: features, configBytes: window.length - 0x100, generation: { read(0xfc) },
+    config: { UInt8(q.read("b", base + 0x100 + UInt64($0))) },
     notify: { write(0x50, UInt32($0)) },
     acknowledge: {
       let irq = read(0x60)
@@ -217,14 +218,18 @@ func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?) throws {
     count: 8, descriptors: machine.ram + 0x100000, available: machine.ram + 0x101000,
     used: machine.ram + 0x102000)
   let transport = try transport(
-    q, machine, type: 2, supported: 0x2220,
+    q, machine, type: 2, supported: dma == nil ? 0x6220 : 0x220,
     queues: [
       QueueMemory(
         count: mem.count, descriptors: mem.descriptors + bias, available: mem.available + bias,
         used: mem.used + bias)
     ])
-  let capacity = (0..<8).reduce(UInt64(0)) { $0 | UInt64(transport.config($1)) << (8 * $1) }
-  let features = transport.features
+  guard
+    let config = BlockConfiguration.snapshot(
+      features: transport.features, configBytes: transport.configBytes,
+      generation: transport.generation, read: transport.config)
+  else { throw Failure("Invalid or changing block device configuration") }
+  let capacity = config.capacity
   var queue = SplitQueue()
   try q.require(queue.initialize(Int(mem.count)) && capacity > 7, "Invalid disk geometry")
   let header: UInt64 = machine.ram + 0x110000
@@ -256,18 +261,23 @@ func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?) throws {
   q.write("q", list, data + bias)
   q.write("l", list + 8, 512)
   q.write("l", list + 12, 0)
-  for operation in [TarwinBlockWire.BlockOp.write, .flush, .read] {
+  var ops: [TarwinBlockWire.BlockOp] = [.write, .flush, .read]
+  if dma == nil { ops += [.zero, .discard, .flush] }
+  for operation in ops {
     let flush = operation == .flush
+    let hasVector = operation == .write || operation == .read
+    let lba: UInt64 = flush ? 0 : operation == .zero ? 12 : operation == .discard ? 64 : 7
+    let blocks: UInt64 = flush ? 0 : operation == .zero ? 3 : operation == .discard ? 8 : 1
     let physicalData = dma != nil && operation == .read ? 0x180000 : data
-    if let dma, !flush {
+    if let dma, hasVector {
       try dma.mapData(frame: physicalData, access: operation == .read ? .deviceWrite : .deviceRead)
     }
     let key = UInt64(operation.rawValue)
     let cookie = scheduler.submit(
       BlockCommand(
-        op: operation, lba: flush ? 0 : 7, blocks: flush ? 0 : 1, qos: .interactive, queue: 0),
+        op: operation, lba: lba, blocks: blocks, qos: .interactive, queue: 0),
       object: 2, key: key, port: 1, ports: &user)
-    let payload = flush ? BlockPayload() : BlockPayload(list: list + bias, vectors: 1)
+    let payload = hasVector ? BlockPayload(list: list + bias, vectors: 1) : BlockPayload()
     guard cookie != 0,
       case .ring(.transferred) = scheduler.publish(
         queue: 0, payload: { _, _ in payload }, ring: &requests)
@@ -276,7 +286,8 @@ func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?) throws {
     guard case .transferred = service.pop(into: &record),
       case .ready(let pending) = prepareBlockIo(
         record, epoch: scheduler.epoch, queue: 0,
-        capacitySectors: capacity, features: features, header: header + bias, status: status + bias,
+        config: config, header: header + bias, status: status + bias,
+        rangeBuffer: dma == nil ? machine.ram + 0x114000 : nil,
         allows: { addr, n, writable in
           (addr == list + bias && n == 16 && !writable)
             || (addr == data + bias && n == 512 && writable == (operation == .read))
@@ -294,24 +305,28 @@ func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?) throws {
       _ = q.send("memset \(physicalData) 512 0")
       if dma != nil { _ = q.send("memset \(data) 512 0x5a") }
     }
-    let submitted = submitBlock(
-      &queue, cookie, p, capacity, features,
-      { iova, kind, sector in
+    let submitted = pending.submit(
+      &queue,
+      storeHeader: { iova, kind, sector in
         let addr = iova - bias
         q.write("l", addr, kind)
         q.write("l", addr + 4, 0)
         q.write("q", addr + 8, sector)
       },
-      { addr, value in q.write("b", addr - bias, value) },
-      { index, address, length, flags, next in
+      storeRange: { addr, lba, count, flags in
+        q.write("q", addr - bias, lba)
+        q.write("l", addr - bias + 8, count)
+        q.write("l", addr - bias + 12, flags)
+      }, setStatus: { addr, value in q.write("b", addr - bias, value) },
+      descriptor: { index, address, length, flags, next in
         let slot = mem.descriptors + UInt64(index) * 16
         q.write("q", slot, address)
         q.write("l", slot + 8, length)
         q.write("w", slot + 12, flags)
         q.write("w", slot + 14, next)
       },
-      { index, head in q.write("w", mem.available + 4 + UInt64(index) * 2, head) },
-      { idx in q.write("w", mem.available + 2, idx) })
+      putAvailable: { index, head in q.write("w", mem.available + 4 + UInt64(index) * 2, head) },
+      releaseAvailable: { idx in q.write("w", mem.available + 2, idx) })
     try q.require(submitted, "Request \(cookie) submission failed")
     transport.notify(0)
     let deadline = ContinuousClock.now + .seconds(3)
@@ -334,10 +349,10 @@ func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?) throws {
       scheduler.release(
         id: cookie, at: 77, ports: &user,
         retireBuffers: {
-          $0 == buffer.cookie && (flush || dma?.retireData(frame: physicalData) != false)
+          $0 == buffer.cookie && (!hasVector || dma?.retireData(frame: physicalData) != false)
         }),
       let packet = user.port.take(), packet.kind == 3, packet.key == key,
-      packet.error == 0, packet.result0 == (flush ? 0 : 512), user.references == 0
+      packet.error == 0, packet.result0 == (hasVector ? 512 : 0), user.references == 0
     else { throw Failure("Block completion did not reach the client port") }
     if op == .read {
       if dma != nil {
@@ -355,7 +370,7 @@ func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?) throws {
       dma.retired == 2 && q.read("l", 0xfed9_0034) == 0,
       "Unexpected remapping fault or missing drain")
   }
-  try q.require(user.notifications == 3, "Expected one wake per terminal packet")
+  try q.require(user.notifications == ops.count, "Expected one wake per terminal packet")
 }
 
 func run() throws {
@@ -370,7 +385,7 @@ func run() throws {
   guard !translated || machine == .x64 else { throw Failure("--vtd requires q35") }
   let disk = FileManager.default.temporaryDirectory.appendingPathComponent(
     UUID().uuidString + ".raw")
-  try Data(repeating: 0, count: 1 << 20).write(to: disk, options: .withoutOverwriting)
+  try Data(repeating: 0x6c, count: 1 << 20).write(to: disk, options: .withoutOverwriting)
   defer { try? FileManager.default.removeItem(at: disk) }
   let q = try QTest(
     binary: CommandLine.arguments[1], machine: machine, disk: disk, translated: translated,
@@ -389,9 +404,18 @@ func run() throws {
   let contents = try Data(contentsOf: disk)
   let sector = 7 * 512
   let pattern = Data((0..<512).map { UInt8(truncatingIfNeeded: $0 ^ 0xa5) })
-  guard contents.count == 1 << 20, contents[sector..<sector + 512].elementsEqual(pattern),
-    contents[..<sector].allSatisfy({ $0 == 0 }), contents[(sector + 512)...].allSatisfy({ $0 == 0 })
-  else { throw Failure("Backing disk changed outside the requested sector or failed to persist") }
+  var expected = Data(repeating: 0x6c, count: 1 << 20)
+  expected.replaceSubrange(sector..<sector + 512, with: pattern)
+  if !translated {
+    expected.replaceSubrange(12 * 512..<15 * 512, with: Data(repeating: 0, count: 3 * 512))
+    // Reads after discard are unspecified. Check every byte outside the range.
+    guard contents.count == expected.count else { throw Failure("Backing disk size changed") }
+    expected.replaceSubrange(64 * 512..<72 * 512, with: contents[64 * 512..<72 * 512])
+  }
+  guard contents == expected else {
+    throw Failure("Backing disk differs outside expected ranges or zero failed to persist")
+  }
+
 }
 do {
   try run()
@@ -400,7 +424,8 @@ do {
       ? "PASS: q35 VT-d translated disk DMA, IOTLB drain and same-IOVA remap"
       : CommandLine.arguments.last == "--neighbors"
         ? "PASS: ARP and IPv6 neighbor discovery via virtio-net against restricted libslirp"
-        : "PASS: QEMU virtio-blk write/flush/readback and paced UDP delivery across isolated NICs")
+        : "PASS: QEMU virtio-blk write/flush/readback, zero/discard extents and paced UDP delivery across isolated NICs"
+  )
 } catch {
   FileHandle.standardError.write(Data("\(error)\n".utf8))
   exit(1)

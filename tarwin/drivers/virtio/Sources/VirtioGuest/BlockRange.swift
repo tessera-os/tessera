@@ -14,6 +14,21 @@ public struct BlockRangeLimits: Equatable {
     self.alignment = alignment
     self.mayUnmap = mayUnmap
   }
+  public func supports(
+    _ op: GuestBlockOp, sector: UInt64, sectors: UInt32, unmap: Bool, features: UInt64
+  ) -> Bool {
+    let zeroes = op == .writeZeroes
+    if !zeroes && op != .discard { return false }
+    let required: UInt64 = zeroes ? 0x4000 : 0x2000
+    if (features & 32) != 0 || (features & required) == 0 || segments == 0
+      || sectors == 0 || sectors > self.sectors || sector >= capacity
+      || UInt64(sectors) > capacity - sector || (unmap && (!zeroes || !mayUnmap))
+      || (!zeroes && alignment > 1 && sector % UInt64(alignment) != 0)
+    {
+      return false
+    }
+    return true
+  }
 }
 
 // A single checked range; the caller owns the three exclusive DMA buffers
@@ -26,15 +41,9 @@ public func submitRange(
   _ putAvailable: (Int, UInt16) -> Void, _ releaseAvailable: (UInt16) -> Void
 ) -> Bool {
   let zeroes = p.op == .writeZeroes
-  if !zeroes && p.op != .discard { return false }
-  let required: UInt64 = zeroes ? 0x4000 : 0x2000
-  if (features & 32) != 0 || (features & required) == 0 || p.bytes != 16 || limits.segments == 0
-    || sectors == 0 || sectors > limits.sectors || p.sector >= limits.capacity
-    || UInt64(sectors) > limits.capacity - p.sector || (unmap && (!zeroes || !limits.mayUnmap))
-    || (!zeroes && limits.alignment > 1 && p.sector % UInt64(limits.alignment) != 0)
-  {
-    return false
-  }
+  guard p.bytes == 16,
+    limits.supports(p.op, sector: p.sector, sectors: sectors, unmap: unmap, features: features)
+  else { return false }
   if !validArea(p.header, 16, 1) || !validArea(p.data, 16, 1)
     || !distinctAreas(p.header, 16, p.data, 16) || !distinctAreas(p.header, 16, p.status, 1)
     || !distinctAreas(p.data, 16, p.status, 1)

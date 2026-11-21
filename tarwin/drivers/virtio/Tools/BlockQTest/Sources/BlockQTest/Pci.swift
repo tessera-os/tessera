@@ -95,7 +95,8 @@ func pciTransport(
   let cfgBase = bars[Int(windows.config.bar)] + windows.config.offset
   let isr = bars[Int(windows.isr.bar)] + windows.isr.offset
   return DeviceTransport(
-    features: features, config: { UInt8(q.read("b", cfgBase + UInt64($0))) },
+    features: features, configBytes: windows.config.length, generation: { read(21, 1) },
+    config: { UInt8(q.read("b", cfgBase + UInt64($0))) },
     notify: { q.write("w", notifications[$0], UInt16($0)) },
     acknowledge: { _ = q.read("b", isr) })
 }
