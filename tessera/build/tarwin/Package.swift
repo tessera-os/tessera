@@ -19,6 +19,7 @@ let package = Package(
     .package(path: "../../../tarwin/tarwin-mm"),
     .package(path: "../../../tarwin/tarwin-arch-aarch64"),
     .package(path: "../../../tarwin/tarwin-syscall"),
+    .package(path: "../../../tarwin/tarwin-security/random"),
   ],
   targets: [
     .target(
@@ -38,6 +39,8 @@ let package = Package(
     .testTarget(name: "TarbootPreflightTests", dependencies: ["TarbootPreflight"]),
     .target(
       name: "TarwinW1Bootstrap", dependencies: [
+        .product(name: "TarwinKernelRandom", package: "random"),
+        .product(name: "TarwinRandomCore", package: "random"),
         .product(name: "TarwinArchAarch64", package: "tarwin-arch-aarch64"),
         .product(name: "TarwinSyscall", package: "tarwin-syscall"),
         .product(name: "TarwinBoot", package: "tarwin-boot"),

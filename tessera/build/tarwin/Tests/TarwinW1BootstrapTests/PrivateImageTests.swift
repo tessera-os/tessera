@@ -1,11 +1,10 @@
-import CryptoKit
 import Foundation
 import TarwinArchAarch64
 import TarwinLoader
-import TarwinW1Bootstrap
 import Testing
 
 @testable import TarwinW0Verify
+@testable import TarwinW1Bootstrap
 
 // Loader interoperability corpus only. No signing identity, enrollment,
 // PCR, address-space switch, PAC instruction or user execution in this test.
@@ -20,8 +19,8 @@ import Testing
     data: withUnsafeBytes(of: UUID(uuidString: "ea5d84f9-32ca-1647-888d-f1c1d07d950f")!.uuid) {
       Data($0)
     })
-  let digest = NSData(
-    data: Data(SHA256.hash(data: Data("function tessera_test_open() -> U32\n".utf8))))
+  let hash = Data("function tessera_test_open() -> U32\n".utf8).withUnsafeBytes(measurementDigest)
+  let digest = NSData(data: withUnsafeBytes(of: hash) { Data($0) })
   func raw(_ d: NSData) -> UnsafeRawBufferPointer { .init(start: d.bytes, count: d.length) }
   defer { withExtendedLifetime((inputs, symbol, uuid, digest)) {} }
   let z = BlakeCv(w0: 0, w1: 0, w2: 0, w3: 0, w4: 0, w5: 0, w6: 0, w7: 0)
@@ -30,8 +29,8 @@ import Testing
   let poly = UnsafeMutableBufferPointer<Int32>.allocate(capacity: 2048)
   let temp = UnsafeMutableRawBufferPointer.allocate(byteCount: 16 * 54 * 32, alignment: 16)
   let page = 16384
-  let slots = 12
-  let tableBytes = 8 * 16384
+  let slots = 20
+  let tableBytes = 10 * 16384
   let ram = UnsafeMutableRawBufferPointer.allocate(byteCount: slots * page, alignment: page)
   defer {
     ram.deallocate()
@@ -60,6 +59,7 @@ import Testing
   var calls = 0
   func build(_ size: Int) -> W1PrivateImages? {
     calls = 0
+    let thread = W1ThreadPlacement(stackBytes: 32768, draw: { .max })
     return preparePrivateW1Images(
       set, plan: plan, archive: archive, storage: .init(rebasing: ram[..<size]),
       physical: base, tableBytes: tableBytes, nodes: nodes, witnesses: temp,
@@ -69,7 +69,7 @@ import Testing
       },
       signImport: { target, modifier in
         sign && target == plan.targetAddress && modifier == plan.storageModifier ? 0x1234_5678 : nil
-      })
+      }, firstThread: consume thread)
   }
   func denied(_ size: Int) -> Bool {
     ram.initializeMemory(as: UInt8.self, repeating: 0xaa)
@@ -83,13 +83,14 @@ import Testing
   #expect(denied(ram.count) && calls == 2)
   sign = true
   #expect(denied(tableBytes + page) && calls == 1)
+  #expect(denied(tableBytes + 5 * page) && calls == 2)
   guard let images = build(ram.count) else {
     Issue.record("private image set rejected")
     return
   }
   #expect(
-    calls == 2 && images.tables.physicalRoot == base && images.usedBytes == tableBytes + 3 * page)
-  #expect(images.libraryCode == plan.libraryCode && images.processCode.contains(plan.processEntry))
+    calls == 2 && images.tables.physicalRoot == base && images.usedBytes == tableBytes + 7 * page)
+  #expect(images.libraryCode == plan.libraryCode && images.processEntry == plan.processEntry)
   // Walk the descriptors independently, including the image reservation holes.
   func leaf(_ va: UInt64) -> UInt64 {
     var index = 0
@@ -115,4 +116,21 @@ import Testing
   let slot = tableBytes + page + Int(plan.slotAddress & 16383)
   #expect(ram.load(fromByteOffset: slot, as: UInt64.self) == 0x1234_5678)
   #expect(ram[slot + 8..<tableBytes + 2 * page].allSatisfy { $0 == 0 })
+  let stagedThread = images.initialThread
+  let thread = try #require(stagedThread)
+  let start = tableBytes + 3 * page
+  let tcb = start + 2 * page
+  let expectedTCB: [UInt64] = [
+    thread.tcb, .max, thread.stack.lowerBound, 0, 0, thread.shadow.lowerBound, 0, 0,
+  ]
+  #expect(ram[start..<tcb].allSatisfy { $0 == 0 })
+  #expect(
+    ram[tcb..<tcb + 64].withUnsafeBytes { Array($0.bindMemory(to: UInt64.self)) } == expectedTCB)
+  #expect(ram[tcb + 64..<images.usedBytes].allSatisfy { $0 == 0 })
+  #expect(thread.shadowPhysical == base + UInt64(tcb + page))
+  #expect(leaf(thread.stack.lowerBound - 1) == 0 && leaf(thread.stack.upperBound) == 0)
+  #expect(leaf(thread.shadow.lowerBound - 1) == 0 && leaf(thread.shadow.upperBound) == 0)
+  #expect(leaf(thread.shadow.lowerBound) == 0)
+  #expect(
+    leaf(thread.tcb) == armUserPage(base + UInt64(tcb), write: true, execute: false, lpa2: false))
 }

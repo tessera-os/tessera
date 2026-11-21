@@ -7,6 +7,8 @@ import TarwinW0Verify
 public struct W1PrivateImages: ~Copyable {
   public var tables: ArmUserTranslation
   public let processCode, libraryCode: Range<UInt64>
+  public let processEntry: UInt64
+  public let initialThread: W1ThreadStorage?
   /// Includes page tables. The caller must pin at least this prefix.
   public let usedBytes: Int
 }
@@ -95,7 +97,7 @@ struct W1FramePool {
   archive: UnsafeRawBufferPointer, storage: UnsafeMutableRawBufferPointer,
   physical: UInt64, tableBytes: Int, nodes: UnsafeMutableBufferPointer<BlakeCv>,
   witnesses: UnsafeMutableRawBufferPointer, cleanToPoU: (UnsafeRawBufferPointer) -> Bool,
-  signImport: (UInt64, UInt64) -> UInt64?
+  signImport: (UInt64, UInt64) -> UInt64?, firstThread: consuming W1ThreadPlacement? = nil
 ) -> W1PrivateImages? {
   let ram = UnsafeRawBufferPointer(storage)
   let cache = UnsafeRawBufferPointer(nodes)
@@ -138,8 +140,13 @@ struct W1FramePool {
       physical: pool.physical + UInt64(slot),
       sign: signImport)
   else { return nil }
+  var installed: W1ThreadStorage?
+  if let thread = consume firstThread {
+    guard let result = pool.stageThread(thread, tables: &tables) else { return nil }
+    installed = result
+  }
   finished = true
   return W1PrivateImages(
     tables: consume tables, processCode: process, libraryCode: library,
-    usedBytes: tableBytes + pool.used)
+    processEntry: plan.processEntry, initialThread: installed, usedBytes: tableBytes + pool.used)
 }
