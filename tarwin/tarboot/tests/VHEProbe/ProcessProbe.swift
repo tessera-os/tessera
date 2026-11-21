@@ -4,6 +4,11 @@ import TarwinObject
 import TarwinSyscall
 
 @_extern(c, "tarwin_w1_active_host_root") private func activeHost(_ root: UInt64) -> UInt32
+@_extern(c, "tarwin_w1_prior_root") private func lowerRoot() -> UInt64
+@_extern(c, "tarwin_w1_retire_slice_root")
+private func retireRoot(_ prior: UInt64, _ child: UInt64, _ host: UInt64)
+@_extern(c, "tarwin_w1_load_user_word")
+private func readUserWord(_ address: UInt64, _ value: UnsafeMutablePointer<UInt64>) -> UInt32
 
 @_extern(c, "tarwin_w1_guarded_slice") private func slice(
   _ root: UInt64, _ host: UInt64, _ keys: UnsafePointer<UInt64>,
@@ -16,7 +21,10 @@ private struct SingleCaller: CurrentProcessContext {
   let thread: UInt64
   var services = 0
   mutating func withCaller<R>(_ body: (inout ProcessExecution, borrowing JobTree) -> R) -> R? {
-    guard process.pointee.gate(thread, tree: tree.pointee) == .dispatch else { return nil }
+    var value: UInt64 = 0
+    guard lowerRoot() == process.pointee.initialMap,
+      readUserWord(1 << 32, &value) == 1, value == 0xcafe,
+      process.pointee.gate(thread, tree: tree.pointee) == .dispatch else { return nil }
     services += 1
     return body(&process.pointee, tree.pointee)
   }
@@ -79,6 +87,14 @@ private struct SingleCaller: CurrentProcessContext {
   frame.copyMemory(from: context + 1024, byteCount: saved.count)
   let bank = (context + 512).assumingMemoryBound(to: UInt64.self)
   let cursor = (context + 256).assumingMemoryBound(to: UInt64.self)
+  let before = lowerRoot()
+  guard let dispatch = W1ArmDispatchRoots(user: roots.pointee.b, host: roots.pointee.host),
+    switchArmUserRoot(roots.pointee.b, host: roots.pointee.host),
+    W1ArmDispatchRoots(user: roots.pointee.b, host: roots.pointee.host) == nil,
+    dispatch.dispatch(user: roots.pointee.b, host: roots.pointee.host, frame: saved,
+      library: lib..<lib + librarySize, provider: &provider) == .invalidKernelFrame,
+    provider.context.services == 0, lowerRoot() == root else { return 0 }
+  retireRoot(before, root, host)
   var returned: UInt64 = 0
   for interval in 0..<2 {
     guard activeHost(host) == 1, activeHost(root) == 0,
@@ -87,10 +103,10 @@ private struct SingleCaller: CurrentProcessContext {
       frame.load(fromByteOffset: 16 * 8, as: UInt64.self) == TarwinCall.processCurrent
     else { return 0 }
     let userValue = frame.load(as: UInt64.self)
-    let decision = dispatchPrivateW1Trap(frame: .init(start: frame, count: ArmTrapLayout.size),
-      libraryCode: lib..<lib + librarySize, userRange: 1 << 32..<1 << 47,
-      scratch: .init(start: nil, count: 0), provider: &provider)
-    guard provider.context.services == 1 else { return 0 }
+    guard lowerRoot() == before else { return 0 }
+    let decision = dispatch.dispatch(user: roots.pointee.b, host: roots.pointee.host, frame: saved,
+      library: lib..<lib + librarySize, provider: &provider)
+    guard lowerRoot() == before, provider.context.services == 1 else { return 0 }
     if interval == 0 {
       guard case .resumeEL0 = decision, frame.load(as: UInt64.self) == 0 else { return 0 }
       returned = frame.load(fromByteOffset: 16, as: UInt64.self)

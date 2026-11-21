@@ -13,10 +13,6 @@ import TarwinSyscall
     _ frame: UnsafeMutableRawPointer, _ cursor: UnsafeMutablePointer<UInt64>,
     _ low: UInt64, _ top: UInt64
   ) -> UInt32
-  @_extern(c, "tarwin_w1_prior_root")
-  private func priorRoot() -> UInt64
-  @_extern(c, "tarwin_w1_retire_slice_root")
-  private func retireRoot(_ prior: UInt64, _ user: UInt64, _ host: UInt64)
 #endif
 
 /// One measured initial thread. Own and pin the backing, archive, roots,
@@ -26,7 +22,7 @@ import TarwinSyscall
 public struct W1GuardedExecution: ~Copyable {
   fileprivate enum Phase { case ready, captured, stopped }
   fileprivate let user: ArmFinishedUserRoot
-  fileprivate let hostRoot: UInt64
+  fileprivate let roots: W1ArmDispatchRoots
   fileprivate let task, thread: UnsafePointer<ObjectHeader>
   fileprivate let library, shadow: Range<UInt64>
   fileprivate let frame: UnsafeMutableRawBufferPointer
@@ -44,7 +40,7 @@ public struct W1GuardedExecution: ~Copyable {
     host: borrowing ArmFinishedKernelRoot, stacks: ArmStopStacks
   ) -> Bool {
     guard phase == .ready, child.header == task, selected.header == thread,
-      stacks.root == host.physical, host.physical == hostRoot, host.layout == .guarded, user.layout == .guarded,
+      stacks.root == host.physical, roots.restored(user: user, host: host),
       shadow.contains(cursor), cursor & 7 == 0, let p = frame.baseAddress
     else { return false }
     let root = user.physical
@@ -60,8 +56,10 @@ public struct W1GuardedExecution: ~Copyable {
         return false
       #endif
     }
-    if ran { phase = .captured }
-    return ran
+    guard ran else { return false }
+    guard roots.restored(user: user, host: host) else { phase = .stopped; return false }
+    phase = .captured
+    return true
   }
 
   /// Dispatch with host keys but the *captured* child root for any LDTR/STTR
@@ -73,22 +71,9 @@ public struct W1GuardedExecution: ~Copyable {
   ) -> Arm64TrapOutcome {
     guard phase == .captured else { return .invalidKernelFrame }
     phase = .stopped
-    guard host.physical == hostRoot, host.layout == .guarded else { return .invalidKernelFrame }
-    #if hasFeature(Embedded) && arch(arm64) && os(none)
-      let prior = priorRoot()
-      guard switchArmUserRoot(user, host: host) else { return .invalidKernelFrame }
-      var scratch = InlineArray<32, UInt64>(repeating: 0)
-      let outcome = withUnsafeMutableBytes(of: &scratch) {
-        dispatchPrivateW1Trap(
-          frame: frame, libraryCode: library, userRange: 1 << 32..<1 << 47,
-          scratch: $0.bindMemory(to: UInt64.self), provider: &provider)
-      }
-      retireRoot(prior, user.physical, host.physical)
-      if w1ArmVectorAction(outcome) == 1 { phase = .ready }
-      return outcome
-    #else
-      return .invalidKernelFrame
-    #endif
+    let outcome = roots.dispatch(user: user, host: host, frame: frame, library: library, provider: &provider)
+    if w1ArmVectorAction(outcome) == 1 { phase = .ready }
+    return outcome
   }
 }
 
@@ -118,6 +103,7 @@ extension W1PrivateImages {
     else { return nil }
     let rx = libraryCode
     guard let root = tables.finish(), root.physical == gcs.root,
+      let roots = W1ArmDispatchRoots(user: root, host: host),
       child.join(thread, qos: 0, realtimeEntitled: false, tree: tree) == .added,
       measureAuthorizedQEMUInit(
         authorized, in: archive, previousPCR10: previousPCR10, port: &port,
@@ -125,7 +111,7 @@ extension W1PrivateImages {
       child.start(thread.pointee.header.pointee.koid, tree: tree)
     else { return nil }
     return W1GuardedExecution(
-      user: root, hostRoot: host.physical, task: child.header, thread: thread.pointee.header,
+      user: root, roots: roots, task: child.header, thread: thread.pointee.header,
       library: rx, shadow: storage.shadow, frame: frame, cursor: gcs.pointer)
   }
 }

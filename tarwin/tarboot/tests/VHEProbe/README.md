@@ -115,5 +115,7 @@ With `TARBOOT_TEST_PROCESS_CURRENT=1`, a separate unsigned process runs
 the actual generated LibTessera body on a private RX page. Its first SVC
 reaches the current-process provider; the returned handle names that process
 with the expected rights. A second SVC outside LibTessera must stop without
-invoking the provider again. The active-host-root check accepts TTBR1 and
-rejects the user root before each interval. This is not signed init staging.
+invoking the provider again. The provider reads a known word through the
+captured child root. Both dispatches restore the original lower root;
+dispatch from an already installed child root refuses without a provider call.
+This is not signed init staging.
