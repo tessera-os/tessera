@@ -11,13 +11,15 @@ private func checksum(_ data: [UInt8]) -> [UInt8] {
   while n > 0xffff { n = (n >> 16) + (n & 0xffff) }
   return be(UInt32(65535 - n), 2)
 }
-private func wire(
-  _ seq: UInt32, _ data: [UInt8], flags: UInt8 = 16, options: [UInt8] = [], v6: Bool = false
+func wire(
+  _ seq: UInt32, _ data: [UInt8], flags: UInt8 = 16, options: [UInt8] = [], v6: Bool = false,
+  ack: UInt32 = 5, window: UInt16 = 64
 ) -> [UInt8] {
   let head = 20 + options.count
   precondition(head % 4 == 0)
   var tcp: [UInt8] =
-    [0, 80, 0x81, 0x44] + be(seq, 4) + [0, 0, 0, 5, UInt8(head / 4) << 4, flags, 0, 64, 0, 0, 0, 0]
+    [0, 80, 0x81, 0x44] + be(seq, 4) + be(ack, 4) + [UInt8(head / 4) << 4, flags]
+    + be(UInt32(window), 2) + [0, 0, 0, 0]
     + options + data
   let addr: [UInt8] =
     v6

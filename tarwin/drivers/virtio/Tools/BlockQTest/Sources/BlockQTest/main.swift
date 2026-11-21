@@ -406,13 +406,13 @@ func run() throws {
   try Data(repeating: 0x6c, count: 1 << 20).write(to: disk, options: .withoutOverwriting)
   defer { try? FileManager.default.removeItem(at: disk) }
   if tcp {
-    try withPipePair { _, path, input, _ in
+    try withPipePair { _, path, input, output in
       let q = try QTest(
         binary: CommandLine.arguments[1], machine: machine, disk: disk, translated: false,
         neighbors: true, extraDevices: ["-chardev", "pipe,id=tcpfixture,path=" + path],
         tcpFixture: true)
       defer { q.close() }
-      try testNeighbors(q, machine, tcpInput: input)
+      try testNeighbors(q, machine, tcpPipes: (input, output))
     }
     return
   }
@@ -461,7 +461,7 @@ do {
   try run()
   print(
     CommandLine.arguments.last == "--tcp-receive"
-      ? "PASS: TCP receive stream and cumulative ACKs against isolated libslirp"
+      ? "PASS: TCP active open, bidirectional stream, lost-segment retransmit and acknowledged FIN against isolated libslirp"
       : CommandLine.arguments.last == "--byte-streams"
         ? "PASS: bidirectional single-port virtio-console and short uncredited virtio-rng input"
         : CommandLine.arguments.last == "--vtd-xts"

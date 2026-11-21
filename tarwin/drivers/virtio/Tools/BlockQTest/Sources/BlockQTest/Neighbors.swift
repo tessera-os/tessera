@@ -4,7 +4,8 @@ import VirtioGuest
 
 /// Libslirp supplies both gateways; it has no forwarding or host uplink in
 /// this test. No reply bytes or peer MAC addresses are furnished by Swift.
-func testNeighbors(_ q: QTest, _ machine: Machine, tcpInput: FileHandle? = nil) throws {
+func testNeighbors(_ q: QTest, _ machine: Machine, tcpPipes: (FileHandle, FileHandle)? = nil) throws
+{
   let base = machine.ram + 0x400000
   func ring(_ at: UInt64) -> QueueMemory {
     QueueMemory(count: 8, descriptors: at, available: at + 4096, used: at + 8192)
@@ -54,8 +55,9 @@ func testNeighbors(_ q: QTest, _ machine: Machine, tcpInput: FileHandle? = nil) 
     }
     throw Failure("No matching libslirp response")
   }
-  if let tcpInput {
-    try tcpReceiveInterop(mac: mac, pipe: tcpInput, post: post, send: send, take: take)
+  if let tcpPipes {
+    try tcpInterop(
+      mac: mac, input: tcpPipes.0, output: tcpPipes.1, post: post, send: send, take: take)
     return
   }
   let local: [UInt8] = [0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15]
