@@ -214,7 +214,7 @@ public struct TrfsVolume<M: TrfsMedia>: ~Copyable {
     switch page[112] {
     case 1:  // directory entry, zero target = whiteout
       return blob == .empty && p.word(16) == 0 && page[113] == 0 && nameBytes > 0
-        && Self.validName(p[128..<(128 + nameBytes)])
+        && Self.validName(UnsafeRawBufferPointer(rebasing: p[128..<(128 + nameBytes)]))
     case 2:  // inode, value = size
       if page[113] == TrfsNodeKind.symlink.rawValue {
         return nameBytes == 0 && p.word(16) == 0 && (1...4096).contains(p.word(24))
@@ -231,9 +231,18 @@ public struct TrfsVolume<M: TrfsMedia>: ~Copyable {
     default: return false
     }
   }
-  private static func validName<C: Collection>(_ n: C) -> Bool where C.Element == UInt8 {
-    n.count > 0 && n.count <= 255 && !n.contains(where: { $0 < 32 || $0 == 47 })
-      && !(n.count <= 2 && n.allSatisfy { $0 == 46 })
+  private static func validName(_ bytes: UnsafeRawBufferPointer) -> Bool {
+    guard bytes.count > 0 && bytes.count <= 255 else { return false }
+    var dotsOnly = bytes.count <= 2
+    for i in 0..<bytes.count {
+      let b = bytes[i]
+      if b < 32 || b == 47 { return false }
+      if b != 46 { dotsOnly = false }
+    }
+    return !dotsOnly
+  }
+  private static func validName(_ name: [UInt8]) -> Bool {
+    name.withUnsafeBytes { validName($0) }
   }
 
   // nil = media/integrity failure, false = absent. Strictly decreasing
