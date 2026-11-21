@@ -1,4 +1,4 @@
-#if TARBOOT_ENTER_W0
+#if TARBOOT_ENTER_W0 || TARBOOT_ENTER_W1_INTAKE
 import Tarboot
 import TarwinLoader
 import TarwinW0Verify

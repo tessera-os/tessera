@@ -43,6 +43,19 @@
               guard let fixed = readFixedClaim(), exerciseFixedRandom(block: block,
                 at: UInt64(UInt(bitPattern: block.baseAddress)), map: map, id: fixed,
                 beforeRetirement: { launch in
+                  #if TARBOOT_TEST_KERNEL_INTAKE
+                  let base = UInt64(UInt(bitPattern: block.baseAddress))
+                  guard W1ColdKernelIntake(handoff: base + 4096) == nil,
+                    let intake = W1ColdKernelIntake(handoff: base) else { return false }
+                  let copy = UnsafeMutableRawPointer(bitPattern: UInt(intake.layout.signature))!
+                  for i in 0..<16 { copy.storeBytes(of: UInt8(0xcc), toByteOffset: i, as: UInt8.self) }
+                  guard intake.verify(launch: launch, enrollment: absent, systemEnrollment: absent,
+                    policy: policy, contract: contract) == nil, copy.load(fromByteOffset: 15, as: UInt8.self) == 0xcc
+                  else { return false }
+                  for i in 0..<expected.utf8CodeUnitCount
+                    where copy.load(fromByteOffset: i, as: UInt8.self) != expected.utf8Start[i] { return false }
+                  guard emit("TARWIN-W1-KERNEL-INTAKE-FENCE-RECHECKED\r\n") else { return false }
+                  #endif
                   profile = W1HandoffProfile(nonRestorable: launch)
                   return profile != nil
                 }) else { return nil }

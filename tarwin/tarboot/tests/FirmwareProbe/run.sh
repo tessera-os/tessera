@@ -136,6 +136,38 @@ for isa in "${@:-all}"; do
                 "$device"/{Range,ColdVirtPCI,VirtBootFence}.swift
             entry_source+=("$composition/Sources/TarwinW1Bootstrap/ColdReverification.swift" "$composition/Sources/TarwinW1Bootstrap/ColdBus.swift" "$here/FenceRegisters.swift")
         fi
+        if [[ ${TARBOOT_TEST_KERNEL_INTAKE:-0} == 1 ]]; then
+            [[ ${TARBOOT_TEST_COLD_FENCE:-0} == 1 && ${TARBOOT_TEST_FIXED_RNG:-0} == 1 &&
+               ${TARBOOT_TEST_HIGH_PCI:-0} == 0 ]] || exit 2
+            flags+=(-D TARBOOT_TEST_KERNEL_INTAKE)
+            entry_source+=("$composition/Sources/TarwinW1Bootstrap/ColdKernelIntake.swift")
+        fi
+        if [[ ${TARBOOT_ENTER_W1_INTAKE:-0} == 1 ]]; then
+            [[ ${TARBOOT_TEST_KERNEL_INTAKE:-0} == 1 && ${TARBOOT_TEST_FLOOR:-0} == 1 &&
+               ${TARBOOT_TEST_CPU:-0} == 1 && ${TARBOOT_TEST_EXTRA_PCI:-0} == 0 &&
+               -f ${TARBOOT_W1_SIGNATURE:-} && -f ${TARBOOT_TEST_STAGE0_ARCHIVE:-} ]] || exit 2
+            flags+=(-D TARBOOT_ENTER_W1_INTAKE)
+            entry_source+=("$composition/Sources/TarwinW1Bootstrap/ColdLog.swift")
+            export TARBOOT_TEST_W1_GATE_ONLY=${TARBOOT_TEST_W1_GATE_ONLY:-1}
+            case $TARBOOT_TEST_W1_GATE_ONLY in
+                1) flags+=(-D TARBOOT_TEST_W1_GATE_ONLY);;
+                0) ;;
+                *) exit 2;;
+            esac
+            if [[ ${TARBOOT_TEST_W1_CHANGED_COPY:-0} == 1 ]]; then
+                [[ ${TARBOOT_TEST_W1_GATE_ONLY:-0} == 1 ]] || exit 2
+                flags+=(-D TARBOOT_TEST_W1_CHANGED_COPY)
+            fi
+            entry_source+=("$composition-stage0/QEMUEntry.swift" "$composition-stage0/Kernel/W1Authority.swift" "$here/W1IntakeTransfer.swift")
+            cp "$TARBOOT_W1_SIGNATURE" "$d/esp/BOOT.SIG"
+            swift "$composition-stage0/W1PublicInstallation.swift" "${TARBOOT_W1_INSTALL:?}" \
+                "${TARBOOT_W1_BOOT_SHA256:?}" "${TARBOOT_W1_SYSTEM_SHA256:?}" > "$d/install.ll"
+            swift "$composition-stage0/ArmHandoffVariants.swift" > "$d/transfer.ll"
+            for part in install transfer; do
+                "$bin/clang" -target aarch64-unknown-windows-msvc -O2 -Wno-override-module -c "$d/$part.ll" -o "$d/$part.obj"
+                extra+=("$d/$part.obj")
+            done
+        fi
         if [[ ${TARBOOT_TEST_PSCI:-0} == 1 ]]; then
             [[ $arch == aarch64 && ${TARBOOT_TEST_CPU:-0} == 1 && ${TARBOOT_TEST_SMP_TABLES:-0} == 1 ]] || exit 2
             flags+=(-D TARBOOT_TEST_PSCI)
@@ -231,6 +263,9 @@ for isa in "${@:-all}"; do
         fi
         if [[ ${TARBOOT_ENTER_W0:-0} == 1 ]] && LC_ALL=C grep -aFq 'TARWIN W0 PASS' "$image"; then
             echo "kernel-only pass marker found in EFI image" >&2; exit 1
+        fi
+        if [[ ${TARBOOT_ENTER_W1_INTAKE:-0} == 1 ]] && LC_ALL=C grep -aFq 'TARWIN-W1-KERNEL-REVERIFIED' "$image"; then
+            echo 'kernel-only reverification marker found in EFI image' >&2; exit 1
         fi
         swift "$here/RunFirmware.swift" "$arch" "$d" "$fw/edk2-$code-code.fd"
     done

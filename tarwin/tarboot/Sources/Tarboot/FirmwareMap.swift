@@ -32,6 +32,13 @@ public struct FirmwareRegion {
     attributes & 8 != 0 && attributes & 0xffff_ffff_0006_b000 == 0
   }
 
+  /// An exact loader-owned range still backed by ordinary RAM at firmware exit.
+  public func holdsLoaderData(base start: UInt64, length size: UInt64) -> Bool {
+    guard type == 2, ordinaryWritableRAM, size > 0, start >= base else { return false }
+    let offset = start - base
+    return offset < length && size <= length - offset
+  }
+
   public func bootMapKind(afterExit: Bool) -> UInt32 {
     switch type {
     case 5: return 2  // runtime code

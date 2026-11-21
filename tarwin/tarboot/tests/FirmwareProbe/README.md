@@ -266,6 +266,43 @@ does not certify an arbitrary hypervisor. Only use this single-vCPU, stopped
 snapshot profile; do not accept a boot-set flag as management authorization.
 The guest polls the page; it does not rely on a VMGenID IRQ.
 
+### Reserved-copy W1 gate (AArch64 debug only)
+
+Use the fixed, single-CPU cold profile below with its checked emulator, EDK II
+and a fresh swtpm. The trusted test launcher owns the EFI image, its public
+enrollments and signed SDK receipt, RTC, TPM path and all emulated devices.
+No passthrough, other submitters, snapshots, migration or hotplug. This does
+not protect an EFI image on attacker-controlled media or prove physical DMA
+isolation before exit. Do not transfer without an independent protected launcher.
+
+Set these in addition to the usual Embedded Swift and firmware paths:
+
+```sh
+export TARBOOT_TEST_FIXED_GENID=1 TARBOOT_TEST_FIXED_RNG=1 TARBOOT_TEST_COLD_FENCE=1
+export TARBOOT_TEST_RNG=1 TARBOOT_TEST_W1_EVIDENCE=1 TARBOOT_TEST_TPM=1 TARBOOT_TEST_FIFO=1
+export TARBOOT_TEST_KERNEL_INTAKE=1 TARBOOT_ENTER_W1_INTAKE=1 TARBOOT_TEST_CPU=1 TARBOOT_TEST_FLOOR=1
+export TARBOOT_TEST_STAGE0_ARCHIVE=/path/to/TARWIN.TIR TARBOOT_W1_SIGNATURE=/path/to/TARWIN.SIG
+export TARBOOT_W1_INSTALL=/path/to/independent-public-installation
+# Set TARBOOT_W1_BOOT_SHA256 and TARBOOT_W1_SYSTEM_SHA256 to the trusted enrollment pins,
+# not hashes learned from the archive or the ESP.
+export TARBOOT_TEST_W1_GATE_ONLY=1
+bash run.sh aarch64
+TARBOOT_TEST_W1_CHANGED_COPY=1 bash run.sh aarch64
+```
+
+The default stops **before kernel installation**. The EFI application verifies
+and measures the archive and raw boot.json once, copies the archive and
+detached envelope, then exits. After acknowledged DMA exclusion it checks both
+fresh hashes against the log (including final events) and both replayed bank
+values in one TPM read, then independently authorizes the frozen set. The
+negative test changes one byte in the retained archive, never the input file;
+it must stop at measurement, not at signature verification. Only this fixed
+debug profile dedicates PCRs 8 and 9 exclusively to the selected set.
+
+The gate's success marker is not a kernel-entry witness. A separately
+authorized debug transfer requires the kernel-only reverification marker
+after the transfer marker; a PCR 10 result is later pre-init evidence, not EL0.
+
 The **debug-only fixed-ID** test is a separate cold launch, not an Arm
 generation device. Apply `qemu-11.1.3-no-migration.patch` to QEMU 11.1.3,
 rebuild, and put the resulting emulator first on PATH. With the usual

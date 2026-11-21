@@ -58,3 +58,19 @@ private struct EFIBytes: ByteSource {
     }
   }
 }
+
+@Test func frozenRangesMustFitOneWritableLoaderDescriptor() {
+  for (type, flags): (UInt32, UInt64) in [(2, 8), (2, 8 | 0x20000), (7, 8), (1, 8)] {
+    var map = EFIBytes()
+    map.descriptor(type, 0x4000, 2, flags)
+    var region = FirmwareRegion.empty
+    withUnsafeMutablePointer(to: &region) {
+      var out = UnsafeMutableBufferPointer(start: $0, count: 1)
+      #expect(stageFirmwareMap(map, stride: 48, version: 1, into: &out) == 1)
+      #expect(out[0].holdsLoaderData(base: 0x4000, length: 8192) == (type == 2 && flags == 8))
+      for (base, length): (UInt64, UInt64) in [(0x3fff, 1), (0x4000, 0), (0x5000, 4097), (0x6000, 1), (.max, .max)] {
+        #expect(!out[0].holdsLoaderData(base: base, length: length))
+      }
+    }
+  }
+}

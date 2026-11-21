@@ -178,7 +178,23 @@ func check() throws {
     if cold { fixedArgs += ["-global", "fw_cfg_mem.dma_enabled=off"] }
   }
   let evidence = ProcessInfo.processInfo.environment["TARBOOT_TEST_W1_EVIDENCE"] == "1"
-  let evidenceArgs = (evidence ? ["-fw_cfg", "name=opt/org.tessera/tarwin/w1.sig,string=not-a-signature"] : [])
+  let intake = ProcessInfo.processInfo.environment["TARBOOT_ENTER_W1_INTAKE"] == "1"
+  let gateOnly = ProcessInfo.processInfo.environment["TARBOOT_TEST_W1_GATE_ONLY"] == "1"
+  guard !gateOnly || intake else { throw Failure("gate-only test requires W1 firmware") }
+  let changedCopy = ProcessInfo.processInfo.environment["TARBOOT_TEST_W1_CHANGED_COPY"] == "1"
+  guard !changedCopy || gateOnly else { throw Failure("copy mutation requires the no-transfer test") }
+  let badPIO = ProcessInfo.processInfo.environment["TARBOOT_TEST_INVALID_W1_PIO"] == "1"
+  var sigPath = d + "/esp/BOOT.SIG"
+  if badPIO {
+    guard intake else { throw Failure("PIO refusal requires signed kernel intake") }
+    var copy = try Data(contentsOf: URL(fileURLWithPath: sigPath))
+    guard !copy.isEmpty else { throw Failure("empty W1 signature") }
+    copy[copy.count - 1] ^= 1
+    sigPath = d + "/altered.sig"
+    try copy.write(to: URL(fileURLWithPath: sigPath))
+  }
+  let signature = intake ? "file=" + sigPath : "string=not-a-signature"
+  let evidenceArgs = (evidence ? ["-fw_cfg", "name=opt/org.tessera/tarwin/w1.sig," + signature] : [])
     + (extraPCI ? ["-device", "virtio-balloon-pci,addr=3,iommu_platform=on,disable-legacy=on"] : [])
   process.arguments =
     (fixed ? [] : ["qemu-system-" + a]) + machine + tpmArgs + displayArgs + rngArgs + generationArgs + evidenceArgs + (mcaArgs + q35Args + fixedArgs) + [
@@ -203,7 +219,11 @@ func check() throws {
   }
   try input.fileHandleForWriting.write(
     contentsOf: Data("{\"execute\":\"qmp_capabilities\"}\n".utf8))
-  let deadline = ContinuousClock.now.advanced(by: .seconds(60))
+  let measuredInit = ProcessInfo.processInfo.environment["TARBOOT_TEST_SIGNED_INIT_PCR10"] == "1"
+  let stagedImages = ProcessInfo.processInfo.environment["TARBOOT_TEST_PRIVATE_W1_IMAGES"] == "1"
+  guard !stagedImages || measuredInit else { throw Failure("private image check needs PCR 10") }
+  guard !measuredInit || intake else { throw Failure("PCR 10 requires signed kernel intake") }
+  let deadline = ContinuousClock.now.advanced(by: .seconds(intake ? 300 : 60))
   var captured = false
   let bootKernel = ProcessInfo.processInfo.environment["TARBOOT_ENTER_W0"] == "1"
   var nextShot = ContinuousClock.now
@@ -257,6 +277,48 @@ func check() throws {
   var injected = 0
   let expectedReports = mca == "wide" ? 1 : 2
   while process.isRunning && ContinuousClock.now < deadline {
+    if intake, let raw = try? Data(contentsOf: URL(fileURLWithPath: serial)) {
+      let lines = String(decoding: raw, as: UTF8.self).components(separatedBy: "\r\n").dropLast()
+      if gateOnly && lines.contains("TARBOOT-W1-VERIFIED-TRANSFER") {
+        throw Failure("gate-only firmware attempted kernel transfer")
+      }
+      if let failure = lines.first(where: { $0.hasPrefix("TARBOOT-W1-REFUSED") || $0.hasPrefix("TARWIN-W1-KERNEL-REFUSED") }) {
+        if changedCopy, failure == "TARBOOT-W1-REFUSED-MEASUREMENT",
+          lines.contains("TARBOOT-W1-TEST-CHANGED-COPY"), !lines.contains("TARBOOT-W1-FROZEN-COPY-CONFIRMED"),
+          !lines.contains("TARBOOT-W1-VERIFIED-TRANSFER") {
+          print("aarch64: changed reserved archive refused by measurement gate after DMA exclusion, before kernel installation")
+          return
+        }
+        if badPIO, failure == "TARBOOT-W1-REFUSED-SET",
+           !lines.contains("TARBOOT-W1-VERIFIED-TRANSFER") {
+          print("aarch64: altered post-EFI PIO signature refused before signed kernel transfer")
+          return
+        }
+        throw Failure(failure)
+      }
+      if gateOnly, lines.contains("TARBOOT-W1-FROZEN-COPY-CONFIRMED") {
+        guard !badPIO, !changedCopy, !lines.contains("TARBOOT-W1-VERIFIED-TRANSFER") else { throw Failure("unexpected gate result") }
+        print("aarch64: fenced copy reauthorized; PCR 8 and 9 matched one live TPM read; stopped before kernel installation")
+        return
+      }
+      if !gateOnly, let gate = lines.firstIndex(of: "TARBOOT-W1-FROZEN-COPY-CONFIRMED"),
+         let jump = lines[(gate+1)...].firstIndex(of: "TARBOOT-W1-VERIFIED-TRANSFER"),
+         let verified = lines.suffix(from: jump + 1).firstIndex(of: "TARWIN-W1-KERNEL-REVERIFIED-BOOTSET") {
+        guard !badPIO else { throw Failure("altered PIO signature passed signed intake") }
+        if measuredInit {
+          if let measured = lines[verified...].firstIndex(of: "TARWIN-W1-KERNEL-MEASURED-SIGNED-INIT-PCR10") {
+            guard !stagedImages || lines[verified..<measured].contains("TARWIN-W1-KERNEL-STAGED-PRIVATE-IMAGES")
+            else { throw Failure("kernel measured init without staging private images") }
+            let stage = stagedImages ? "staged both private images and " : ""
+            print("aarch64: signed kernel \(stage)measured the authorized init into PCR 10; no EL0 entry")
+            return
+          }
+        } else {
+          print("aarch64: signed intake kernel independently reverified the boot set after the firmware transfer; no EL0 entry")
+          return
+        }
+      }
+    }
     if mca != "0", injected < expectedReports, let raw = try? Data(contentsOf: URL(fileURLWithPath: mcaLog)) {
       let prefix = "MCA\(injected) "
       let lines = String(decoding: raw, as: UTF8.self).components(separatedBy: "\n").dropLast()
@@ -402,6 +464,10 @@ func check() throws {
       log.contains(fixed ? "TARWIN-DEBUG-FIXED-TBIB-SWTPM-RNG-ACCEPTED" : "TARWIN-COLD-VMGEN-ACCEPTED")
     else { throw Failure("missing cold generation or device fence") }
     print("aarch64: post-EFI disk/RNG streams denied before detached signature copy (\(highPCI ? "high" : "low") BARs)")
+    if ProcessInfo.processInfo.environment["TARBOOT_TEST_KERNEL_INTAKE"] == "1" {
+      guard log.contains("TARWIN-W1-KERNEL-INTAKE-FENCE-RECHECKED") else { throw Failure("kernel intake refused the pinned workspace") }
+      print("aarch64: kernel intake rechecked the retained fence and refused a displaced workspace before reading the detached envelope")
+    }
   }
   if evidence {
     guard uart.range(of: Data("TARWIN-W1-FIRMWARE-KERNEL-REFUSED".utf8)) != nil,

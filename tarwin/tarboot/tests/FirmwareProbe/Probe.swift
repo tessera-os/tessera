@@ -98,14 +98,30 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
       #else
         let archivePages: UInt = 1
       #endif
+      #if TARBOOT_TEST_KERNEL_INTAKE
+        let handoffPages = ColdKernelLayout.pages
+        let mapCapacity: Int? = ColdKernelLayout.mapBytes
+      #else
+        let handoffPages: UInt = 6
+        let mapCapacity: Int? = nil
+      #endif
       guard let archive = boot.reserveLoaderPages(archivePages),
-        let storage = boot.reserveLoaderPages(6),
-        let archiveBase = UnsafeMutableRawPointer(bitPattern: UInt(archive.base)),
-        let size = exerciseFile(
+        let storage = boot.reserveLoaderPages(handoffPages),
+        let archiveBase = UnsafeMutableRawPointer(bitPattern: UInt(archive.base)) else { return false }
+      #if TARBOOT_ENTER_W1_INTAKE
+        guard let input = boot.reserveLoaderPages(archivePages + 16),
+          let signature = boot.reserveLoaderPages(16),
+          let sizes = prepareW1(&boot, input: input, archive: archive, signature: signature,
+            storage: storage)
+        else { writeDiagnostic("TARBOOT-W1-REFUSED-INSTALL\r\n", console: console, output: output); return false }
+        let size = sizes.archive
+      #else
+        guard let size = exerciseFile(
           &boot, system: system, console: console, output: output,
           into: UnsafeMutableRawBufferPointer(start: archiveBase, count: Int(archive.length)))
-      else { return false }
-      #if TARBOOT_TEST_W1_EVIDENCE
+        else { return false }
+      #endif
+      #if TARBOOT_TEST_W1_EVIDENCE && !TARBOOT_ENTER_W1_INTAKE
         guard refusesFirmwareKernel(.init(start: archiveBase, count: size), services: boot)
         else { return false }
         writeDiagnostic("TARWIN-W1-FIRMWARE-KERNEL-REFUSED\r\n", console: console, output: output)
@@ -149,6 +165,9 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
         }
         let virtual = placed.virtual
         let owned = placed.takePages()
+        #if TARBOOT_ENTER_W1_INTAKE
+          guard let stack = boot.reserveLoaderPages(128) else { return false }
+        #endif
         #if TARBOOT_ENTER_W0
           guard let stack = boot.reserveLoaderPages(16),
             let entry = installArmKernel(kernel, in: owned)
@@ -171,7 +190,21 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
           return false
         }
       #endif
-      #if TARBOOT_TEST_COLD_FENCE
+      #if TARBOOT_TEST_KERNEL_INTAKE
+        guard let fencePages = boot.finishForColdKernel(storage: storage, map: raw, into: &buffer) else { return false }
+        let n = fencePages.regions
+        #if TARBOOT_ENTER_W1_INTAKE
+          guard let layout = ColdKernelLayout(handoff: storage.base),
+            fenceBeforeW1(fencePages, layout: layout, archive: archive, signature: signature,
+              image: owned, stack: stack, log: logPages, regions: .init(rebasing: buffer[..<n]))
+          else { _ = reportFixedMarker("TARBOOT-W1-REFUSED-FENCE\r\n"); return false }
+          #if TARBOOT_TEST_W1_CHANGED_COPY
+            let copy = UnsafeMutableRawBufferPointer(start: archiveBase, count: size)
+            copy[size - 1] ^= 1
+            guard reportFixedMarker("TARBOOT-W1-TEST-CHANGED-COPY\r\n") else { return false }
+          #endif
+        #endif
+      #elseif TARBOOT_TEST_COLD_FENCE
         guard let fencePages = boot.finishForColdBoot(map: raw, into: &buffer) else { return false }
         let n = fencePages.regions
       #else
@@ -211,7 +244,7 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
           let logBase = UnsafeRawPointer(bitPattern: UInt(logPages.base)),
           checkEventLog(UnsafeRawBufferPointer(start: logBase, count: firmwareLogSize))
         else { return false }
-        #if TARBOOT_TEST_FIFO
+        #if TARBOOT_TEST_FIFO && !TARBOOT_ENTER_W1_INTAKE
           guard let logSize = exerciseKernelFIFO(UnsafeRawBufferPointer(start: archiveBase, count: size),
             log: UnsafeMutableRawBufferPointer(start: UnsafeMutableRawPointer(mutating: logBase),
               count: Int(logPages.length)), used: firmwareLogSize) else { return false }
@@ -269,10 +302,11 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
         guard
           writeHandoff(
             info, regions: UnsafeBufferPointer(rebasing: buffer[..<n]),
-            storage: storage, archive: archive, archiveBytes: UInt64(size), debugFixedGeneration: claim),
+            storage: storage, archive: archive, archiveBytes: UInt64(size), debugFixedGeneration: claim,
+            mapCapacity: mapCapacity),
           let p = UnsafeRawPointer(bitPattern: UInt(storage.base)) else { return false }
         let block = UnsafeRawBufferPointer(start: p, count: 4096)
-        let map = UnsafeRawBufferPointer(start: p + 4096, count: Int(storage.length) - 4096)
+        let map = UnsafeRawBufferPointer(start: p + 4096, count: mapCapacity ?? Int(storage.length) - 4096)
         let standard = readHandoff(block: block, at: storage.base, map: map, at: storage.base + 4096)
         #if TARBOOT_TEST_FIXED_GENID
           guard standard == nil, let debug = readFixedDebugQEMUHandoff(block: block, at: storage.base,
@@ -300,9 +334,13 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
           guard exerciseGeneration(bootSeed: .init(start: p + 96, count: 64),
             regions: .init(rebasing: buffer[..<n])) else { return false }
         #endif
-        #if TARBOOT_TEST_COLD_FENCE
+        #if TARBOOT_ENTER_W1_INTAKE
+          guard transferW1(handoff: storage.base, image: owned, stack: stack, archive: archive, size: size,
+            signature: signature, signatureBytes: sizes.signature, log: logPages, logBytes: logSize)
+          else { _ = reportFixedMarker("TARBOOT-W1-REFUSED-SET\r\n"); return false }
+        #elseif TARBOOT_TEST_COLD_FENCE
           guard exerciseColdEvidence(pages: fencePages, block: .init(start: p, count: 4096),
-            map: .init(start: p + 4096, count: Int(storage.length) - 4096),
+            map: map,
             archive: .init(start: archiveBase, count: size)) else { return false }
         #elseif TARBOOT_TEST_W1_EVIDENCE
           guard exerciseW1Evidence(block: .init(start: p, count: 4096), at: storage.base,
