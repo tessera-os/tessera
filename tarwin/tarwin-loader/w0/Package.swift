@@ -16,5 +16,6 @@ let package = Package(
         .product(name: "KCore", package: "kcore"),
       ]),
     .testTarget(
-      name: "TarwinW0Tests", dependencies: ["TarwinW0Verify"], resources: [.copy("acvp-43.json")]),
+      name: "TarwinW0Tests", dependencies: ["TarwinW0Verify"],
+      resources: [.copy("acvp-43.json"), .copy("SignedAArch64")]),
   ])

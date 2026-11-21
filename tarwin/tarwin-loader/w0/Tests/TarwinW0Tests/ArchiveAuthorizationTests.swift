@@ -4,23 +4,44 @@ import TarwinW0Verify
 import XCTest
 
 final class ArchiveAuthorizationTests: XCTestCase {
-  // Integration with an independently generated, exact signed W0 release set.
-  // No keys, trust pins or fake "signature passed" callbacks in the test binary.
-  func testExactSignedStage0Archive() throws {
+  func testRecordedAArch64Authorization() throws {
+    let root = try XCTUnwrap(Bundle.module.resourceURL).appendingPathComponent("SignedAArch64")
+    try checkArchive(
+      archive: Data(contentsOf: root.appendingPathComponent("BOOT.TIR")),
+      signature: Data(contentsOf: root.appendingPathComponent("BOOT.SIG")),
+      key: Data(contentsOf: root.appendingPathComponent("test-enrollment.pub")),
+      clock: 1_795_237_353, target: 183, entry: 0x4000)
+  }
+
+  func testExternalStage0Archive() throws {
     let e = ProcessInfo.processInfo.environment
-    guard let a = e["W0_TEST_ARCHIVE"], let s = e["W0_TEST_SIGNATURE"],
-      let k = e["W0_TEST_ENROLLMENT"],
-      let clock = UInt64(e["W0_TEST_UTC"] ?? "")
-    else { throw XCTSkip("supply the signed W0 fixture and trusted test time") }
-    let archive = try Data(contentsOf: URL(fileURLWithPath: a))
-    let signature = try Data(contentsOf: URL(fileURLWithPath: s))
-    let key = try Data(contentsOf: URL(fileURLWithPath: k))
+    guard e.keys.contains(where: { $0.hasPrefix("W0_TEST_") }) else {
+      throw XCTSkip("no external W0 archive requested")
+    }
+    func data(_ name: String) throws -> Data {
+      try Data(contentsOf: URL(fileURLWithPath: XCTUnwrap(e["W0_TEST_" + name])))
+    }
+    let targets: [String: UInt16] = ["aarch64": 183, "x64": 62, "rv64": 243]
+    try checkArchive(
+      archive: data("ARCHIVE"), signature: data("SIGNATURE"), key: data("ENROLLMENT"),
+      clock: XCTUnwrap(UInt64(e["W0_TEST_UTC"] ?? "")),
+      target: XCTUnwrap(targets[e["W0_TEST_MACHINE"] ?? "aarch64"]),
+      entry: XCTUnwrap(UInt64(e["W0_TEST_ENTRY_HEX"] ?? "4000", radix: 16)))
+  }
+
+  private func checkArchive(
+    archive: Data, signature: Data, key: Data,
+    clock: UInt64, target: UInt16, entry: UInt64
+  ) throws {
+    guard key.count == 2036, signature.count > 3373, archive.count > 24 else {
+      return XCTFail("incomplete fixture")
+    }
     var hashes = Array(
       repeating: BlakeCv(w0: 0, w1: 0, w2: 0, w3: 0, w4: 0, w5: 0, w6: 0, w7: 0), count: 54)
     var work = [Int32](repeating: 0, count: 2048)
     var msg = [UInt8](repeating: 0, count: 1024)
     func run(
-      _ a: Data, _ s: Data, _ k: Data, machine: UInt16 = 183, time: UInt64? = clock,
+      _ a: Data, _ s: Data, _ k: Data, machine: UInt16 = target, time: UInt64? = clock,
       floor: UInt64? = 1, slot: UInt8 = 0, debug: Bool = true, cpu: Bool = true,
       tir: W0Version = (26, 11, 2)
     ) -> Bool {
@@ -41,7 +62,7 @@ final class ArchiveAuthorizationTests: XCTestCase {
                   XCTAssertEqual(
                     result.bytes.baseAddress, aa.baseAddress! + result.range.lowerBound)
                   XCTAssertEqual(result.bytes.count, result.range.count)
-                  XCTAssertEqual(result.image.entry, 0x4000)
+                  XCTAssertEqual(result.image.entry, entry)
                   XCTAssertEqual(result.securityVersion, 1)
                   return true
                 }
@@ -65,7 +86,7 @@ final class ArchiveAuthorizationTests: XCTestCase {
     var bad = archive
     bad[24] ^= 1
     XCTAssertFalse(run(bad, signature, key))
-    XCTAssertFalse(run(archive, signature, key, machine: 62))
+    XCTAssertFalse(run(archive, signature, key, machine: target == 62 ? 183 : 62))
     XCTAssertFalse(run(archive, signature, key, time: nil))
     XCTAssertFalse(run(archive, signature, key, time: .max))
     XCTAssertFalse(run(archive, signature, key, floor: nil))
