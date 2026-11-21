@@ -35,6 +35,15 @@ header** in the slot registry; hold the hotplug/config lock across validation
 and the entire register transaction. Unknown or side-effect registers must
 never be classified as plain writable registers.
 
+`SlotDomainCall` implements `DeviceSlot.iommuDomain(slot)`. Its first result
+word is a new Manage-only handle in the calling process, not a hardware domain
+ID or an address. Record the domain binding after isolation succeeds; the
+registry owns both object headers. Hold the registry, job, process and handle
+writer locks across lookup and installation. A frozen registry, replaced slot
+or mismatched binding cannot issue a domain handle. The call does not attach
+devices or enable bus mastering; DMA creation must still validate the live
+slot epoch on every mapping.
+
 ## Driver rings
 
 A fresh pinned, cache-coherent Memory mapping contains the A.4 ring pair. Initialize it before sharing, then open exactly one lane per direction and role. The mapping is initialized as atomic words and attaches TarwinIPC RingEndpoint directly: that shared implementation owns geometry validation, private cursors, record snapshots and the idle handshake. Use a latched Event so a notification just before sleeping is retained. Any impossible peer cursor poisons the lane. Reattach only to a **new**, quiesced epoch, never reset a live ring. Device-specific records, object grants and process mappings remain the subsystem's responsibility.
