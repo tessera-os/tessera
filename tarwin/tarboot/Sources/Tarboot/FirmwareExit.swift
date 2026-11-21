@@ -36,6 +36,9 @@ public enum FirmwareExit {
     private typealias Exit = @convention(c) (UnsafeRawPointer, UInt) -> UInt
     private let image: UnsafeRawPointer
     private let protocolFor: HandleProtocol?
+    private let locate: LocateProtocol?
+    private enum Measurement { case notAttempted, stopped, complete }
+    private var measurement: Measurement = .notAttempted
     private let allocate: Allocate?
     private let release: Release?
     private let getMap: GetMap
@@ -53,6 +56,9 @@ public enum FirmwareExit {
       else { return nil }
       self.image = image
       self.protocolFor = boot.load(fromByteOffset: 152, as: HandleProtocol?.self)
+      self.locate =
+        boot.load(fromByteOffset: 12, as: UInt32.self) >= 328
+        ? boot.load(fromByteOffset: 320, as: LocateProtocol?.self) : nil
       self.allocate = boot.load(fromByteOffset: 40, as: Allocate?.self)
       self.release = boot.load(fromByteOffset: 48, as: Release?.self)
       self.getMap = map
@@ -67,6 +73,25 @@ public enum FirmwareExit {
         self.base = base
         self.count = count
       }
+    }
+
+    /// Measure pinned, authenticated archive and canonical config bytes before exit.
+    /// Does not verify their authenticity. Any failure is terminal for this boot:
+    /// firmware may have extended a PCR even if it failed to log the event.
+    @unsafe public mutating func measureBootSet(
+      _ archive: UnsafeRawBufferPointer,
+      configuration: UnsafeRawBufferPointer
+    ) -> Bool {
+      guard measurement == .notAttempted else { return false }
+      measurement = .stopped
+      guard !archive.isEmpty, !configuration.isEmpty, let locate,
+        let tcg = FirmwareTCG.open(locate)
+      else { return false }
+      guard tcg.measure(archive, pcr: 8, label: "Tarwin boot set"),
+        tcg.measure(configuration, pcr: 9, label: "Tarwin boot configuration")
+      else { return false }
+      measurement = .complete
+      return true
     }
 
     /// Read and close a nonempty regular file on the original loaded image's
@@ -118,7 +143,8 @@ public enum FirmwareExit {
       map: UnsafeMutableRawBufferPointer,
       into regions: inout UnsafeMutableBufferPointer<FirmwareRegion>
     ) -> FirmwareExit {
-      guard let p = map.baseAddress, UInt(bitPattern: p) & 7 == 0, map.count >= 40
+      guard measurement != .stopped, let p = map.baseAddress, UInt(bitPattern: p) & 7 == 0,
+        map.count >= 40
       else { return .preflightFailure }
       var attempted = false
       for _ in 0..<4 {

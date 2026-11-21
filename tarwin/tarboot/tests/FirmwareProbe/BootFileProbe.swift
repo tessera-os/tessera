@@ -5,7 +5,10 @@ import TarwinLoader
 nonisolated(unsafe) private var digest = DigestScratch()
 nonisolated(unsafe) private var snapshot = InlineArray<4096, UInt8>(repeating: 0)
 
-func exerciseFile(_ boot: borrowing FirmwareBootServices) -> Bool {
+func exerciseFile(
+  _ boot: inout FirmwareBootServices, system: UnsafeRawPointer, console: UnsafeRawPointer,
+  output: Output
+) -> Bool {
   let filename: StaticString = "\\BOOT.TIR"
   var path = InlineArray<10, UInt16>(repeating: 0)
   for i in 0..<filename.utf8CodeUnitCount { path[i] = UInt16(filename.utf8Start[i]) }
@@ -32,7 +35,15 @@ func exerciseFile(_ boot: borrowing FirmwareBootServices) -> Bool {
           bytes, path: name, target: target,
           addressLimit: 0x10000, scratch: &digest)
       else { return false }
-      return extent == 24..<3525 && info.entry == 0x4080 && info.notes.buildID == 212..<244
+      guard extent == 24..<3525 && info.entry == 0x4080 && info.notes.buildID == 212..<244 else {
+        return false
+      }
+      #if TARBOOT_TEST_TPM
+        return exerciseMeasurements(
+          &boot, archive: bytes, system: system, console: console, output: output)
+      #else
+        return true
+      #endif
     }
   }
 }

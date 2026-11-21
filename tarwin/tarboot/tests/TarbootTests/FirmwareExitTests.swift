@@ -18,7 +18,7 @@ import Testing
     let otherError: Bool
   }
 
-  private func header(_ bytes: UnsafeMutableRawBufferPointer, _ signature: UInt64) {
+  func header(_ bytes: UnsafeMutableRawBufferPointer, _ signature: UInt64) {
     bytes.storeBytes(of: signature, as: UInt64.self)
     bytes.storeBytes(of: UInt32(bytes.count), toByteOffset: 12, as: UInt32.self)
     var crc = UInt32.max

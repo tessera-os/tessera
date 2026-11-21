@@ -4,11 +4,20 @@ import Tarboot
 import TarwinBootstrap
 import TarwinMM
 
-private typealias Output = @convention(c) (UnsafeRawPointer, UnsafePointer<UInt16>) -> UInt
+typealias Output = @convention(c) (UnsafeRawPointer, UnsafePointer<UInt16>) -> UInt
 private typealias Reset = @convention(c) (UInt32, UInt, UInt, UnsafeRawPointer?) -> Void
 nonisolated(unsafe) private var storage = InlineArray<4096, UInt64>(repeating: 0)
 nonisolated(unsafe) private var records = InlineArray<512, FirmwareRegion>(repeating: .empty)
 nonisolated(unsafe) private var cpu = BootCPU()
+
+func writeDiagnostic(_ message: StaticString, console: UnsafeRawPointer, output: Output) {
+  for i in 0..<message.utf8CodeUnitCount {
+    var character = (UInt16(message.utf8Start[i]), UInt16(0))
+    _ = withUnsafeBytes(of: &character) {
+      output(console, $0.bindMemory(to: UInt16.self).baseAddress!)
+    }
+  }
+}
 
 @_cdecl("efi_main")
 public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> UInt {
@@ -22,13 +31,7 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
     let console = system.load(fromByteOffset: 64, as: UnsafeRawPointer?.self),
     let output = console.load(fromByteOffset: 8, as: Output?.self)
   else { return unsupported }
-  let message: StaticString = "TARWIN-FIRMWARE-EXIT-TEST\r\n"
-  for i in 0..<message.utf8CodeUnitCount {
-    var character = (UInt16(message.utf8Start[i]), UInt16(0))
-    _ = withUnsafeBytes(of: &character) {
-      output(console, $0.bindMemory(to: UInt16.self).baseAddress!)
-    }
-  }
+  writeDiagnostic("TARWIN-FIRMWARE-EXIT-TEST\r\n", console: console, output: output)
   // The two static arrays are disjoint, initialized, naturally aligned and exclusive.
   let done = withUnsafeMutableBytes(of: &storage) { raw in
     withUnsafeMutableBytes(of: &records) { bytes in
@@ -38,8 +41,8 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
       #else
         let pageSize: UInt64 = 4096
       #endif
-      guard let boot = FirmwareBootServices(image: image, system: system),
-        exerciseFile(boot),
+      guard var boot = FirmwareBootServices(image: image, system: system),
+        exerciseFile(&boot, system: system, console: console, output: output),
         let owned = boot.reserveLoaderPages(UInt(2 * 64 * pageSize / 4096 - 1)),
         case .exited(let n) = boot.finish(map: raw, into: &buffer)
       else { return false }
