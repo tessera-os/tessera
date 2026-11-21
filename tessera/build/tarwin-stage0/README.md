@@ -39,3 +39,13 @@ into a verified native-image candidate. Tarboot must authorize a signed archive
 and member on the very bytes it loads, measure them, and enforce the version
 floor. A locally produced digest, ELF note, or test signer embedded in the ELF
 is not trust. Packaging and host tests alone are not a boot or timer interrupt.
+
+### Assemble the W0 archive
+
+    swift run --scratch-path "$work/tools" Stage0Image bootset "$work/kernel.unsigned.elf" "$work/BOOT.TIR"
+
+This deterministic TIRA contains two sorted raw members: debug slot-A
+`boot.json` with security version 1, and the supplied `kernel`, verbatim.
+Each has an uncompressed BLAKE3 digest. After native signing, rerun with the
+signed ELF to a new archive path; sign the exact repacked TIRA separately.
+This is a W0 fixture, not the full §6.3 boot set.

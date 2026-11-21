@@ -73,6 +73,11 @@ public func memberDigestMatches(
   return false
 }
 
+public enum RawBootMember {
+  case invalidArchive, notFound, compressed, digestMismatch
+  case intact(Range<Int>)
+}
+
 public enum KernelPreflight {
   case invalidArchive, notFound, compressed, digestMismatch, invalidELF
   /// Directory range is archive-relative; all image ranges are member-relative.
@@ -80,14 +85,14 @@ public enum KernelPreflight {
   case inspected(member: Range<Int>, image: InspectedImage)
 }
 
-/// Inspect the raw kernel member of the same immutable archive throughout.
+/// Inspect a raw member of the same immutable archive throughout.
 /// The caller still must authenticate the manifest, signer, notes and rollback
 /// counter, and keep exactly these bytes pinned through subsequent policy checks.
-public func inspectBootKernel(
+public func inspectRawMember(
   _ archive: UnsafeRawBufferPointer, path: UnsafeRawBufferPointer,
-  target: UInt16, addressLimit: UInt64, scratch: inout DigestScratch
+  scratch: inout DigestScratch
 )
-  -> KernelPreflight
+  -> RawBootMember
 {
   let member = findBootMember(ArchiveBytes(bytes: archive), name: ArchiveBytes(bytes: path))
   guard member.validArchive else { return .invalidArchive }
@@ -102,6 +107,22 @@ public func inspectBootKernel(
   guard memberDigestMatches(bytes, digest: digest, scratch: &scratch) else {
     return .digestMismatch
   }
+  return .intact(extent)
+}
+
+public func inspectBootKernel(
+  _ archive: UnsafeRawBufferPointer, path: UnsafeRawBufferPointer,
+  target: UInt16, addressLimit: UInt64, scratch: inout DigestScratch
+) -> KernelPreflight {
+  let extent: Range<Int>
+  switch inspectRawMember(archive, path: path, scratch: &scratch) {
+  case .invalidArchive: return .invalidArchive
+  case .notFound: return .notFound
+  case .compressed: return .compressed
+  case .digestMismatch: return .digestMismatch
+  case .intact(let range): extent = range
+  }
+  let bytes = UnsafeRawBufferPointer(rebasing: archive[extent])
   guard
     let image = inspectELF(
       bytes, target: target, addressLimit: addressLimit,

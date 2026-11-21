@@ -30,6 +30,13 @@ func packageKernel(_ object: ObjectFile) throws -> NativeImage {
   static func main() {
     do {
       let a = CommandLine.arguments
+      if a.count == 4, a[1] == "bootset" {
+        let kernel = try Data(contentsOf: URL(fileURLWithPath: a[2]))
+        let archive = try bootSet(kernel: Array(kernel))
+        try Data(archive).write(to: URL(fileURLWithPath: a[3]), options: .withoutOverwriting)
+        print("W0 archive signing input: \(archive.count) bytes; no detached signature")
+        return
+      }
       guard a.count == 3 else { throw InputError("usage: Stage0Image KERNEL.o NEW-UNSIGNED.elf") }
       let source = try Data(contentsOf: URL(fileURLWithPath: a[1]))
       let image = try packageKernel(readKernelObject(Array(source)))

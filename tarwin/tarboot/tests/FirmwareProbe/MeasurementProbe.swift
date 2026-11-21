@@ -104,11 +104,9 @@
   }
 
   func exerciseMeasurements(
-    _ boot: inout FirmwareBootServices, archive: UnsafeRawBufferPointer,
+    _ boot: inout FirmwareBootServices, archive: UnsafeRawBufferPointer, config:UnsafeRawBufferPointer,
     system: UnsafeRawPointer, console: UnsafeRawPointer, output: Output
   ) -> Bool {
-    let json: StaticString = #"{"flags":[],"slot":"A"}"#
-    let config = UnsafeRawBufferPointer(start: json.utf8Start, count: json.utf8CodeUnitCount)
     return readPCR(system, pcr: 8, before: true, console: console, output: output)
       && readPCR(system, pcr: 9, before: true, console: console, output: output)
       && boot.measureBootSet(archive, configuration: config)

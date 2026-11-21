@@ -88,3 +88,14 @@ event verification, not replay or attestation of the rest of the firmware chain.
 With `swtpm` installed, run `TARBOOT_TEST_TPM=1 bash run.sh aarch64 x86_64`. This starts a fresh software TPM for each guest. Before exit, the probe reads SHA-256 PCRs 8 and 9, uses UEFI TCG2 to hash, log and extend the archive and a fixed canonical config, then reads both PCRs again. The host independently hashes each payload and checks the resulting PCR against the previous PCR and that hash. A partially logged/extended pair is terminal; the guest never retries or treats a skipped measurement as success. This verifies PCR values, not the complete firmware event log or signer provenance. The bundled RV64 EDK II firmware returns `EFI_NOT_FOUND` for TCG2 with a TPM device attached, so measured boot on RV64 is **not verified**.
 
 This calls firmware on emulated CPUs. It does **not** authenticate firmware or boot sets, establish CPU admission, produce kernel-profile TIR, or enter the Tarwin kernel. The Swift/LLVM diagnostic link (including the x64 PE call ABI and the RV64 EDK II image converter) is not release build wiring.
+
+For the unsigned stage-0 intake control, supply the archive produced by
+`Stage0Image bootset` with the unsigned A12 kernel:
+
+    TARBOOT_TEST_STAGE0_ARCHIVE=/absolute/path/to/BOOT.TIR TARBOOT_TEST_TPM=1 TARBOOT_TEST_RNG=1 TARBOOT_TEST_DISPLAY=1 bash run.sh aarch64
+
+The guest reads the archive from the ESP, checks both member digests, parses
+the restricted debug config and checks the ELF's unsigned build ID and kernel
+profile. The run requires explicit rejection by signed-image preflight.
+PCR 9 measures the actual archive member; host replay uses the independently
+expected config. Only the EFI diagnostic runs and writes to the display.

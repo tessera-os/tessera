@@ -24,6 +24,10 @@ for isa in "${@:-all}"; do
         flags=(-target "$triple" -enable-experimental-feature Embedded -no-allocations -wmo -O
                -Xfrontend -disable-stack-protector -parse-as-library -I "$d")
         if [[ $arch == x86_64 ]]; then flags+=(-D TARBOOT_EFI_PE_COFF); fi
+        if [[ -n ${TARBOOT_TEST_STAGE0_ARCHIVE:-} ]]; then
+            [[ $arch == aarch64 ]] || { echo 'stage-0 intake requires aarch64' >&2; exit 2; }
+            flags+=(-D TARBOOT_TEST_STAGE0)
+        fi
         if [[ ${TARBOOT_TEST_TPM:-0} == 1 ]]; then flags+=(-D TARBOOT_TEST_TPM); fi
         if [[ ${TARBOOT_TEST_SECURE_FIRMWARE:-0} == 1 ]]; then
             [[ $arch == x86_64 ]] || { echo 'secure firmware fixture requires x86_64' >&2; exit 2; }

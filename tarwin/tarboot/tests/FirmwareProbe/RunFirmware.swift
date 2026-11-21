@@ -174,6 +174,11 @@ func check() throws {
   }
   let uart = try Data(contentsOf: URL(fileURLWithPath: serial))
   guard !denied else { throw Failure("no explicit unsigned boot rejection") }
+  if ProcessInfo.processInfo.environment["TARBOOT_TEST_STAGE0_ARCHIVE"] != nil {
+    guard uart.range(of:Data("TARWIN-STAGE0-UNSIGNED-NOT-LAUNCHABLE".utf8)) != nil
+    else { throw Failure("missing explicit unsigned kernel rejection") }
+    print("\(a): read the stage-0 archive; unsigned kernel passed integrity checks but was refused launch preflight")
+  }
   guard uart.range(of: Data("TARWIN-FIRMWARE-EXIT-TEST".utf8)) != nil else {
     throw Failure("\(a): probe did not run")
   }
@@ -214,7 +219,8 @@ func check() throws {
       return bytes
     }
     let archive = try Data(contentsOf: URL(fileURLWithPath: d + "/esp/BOOT.TIR"))
-    for (i, payload) in [(8, archive), (9, Data(#"{"flags":[],"slot":"A"}"#.utf8))] {
+    let config=try Data(contentsOf:URL(fileURLWithPath:d+"/expected-config.json"))
+    for (i, payload) in [(8, archive), (9, config)] {
       let before = try pcr("TARWIN-PCR-BEFORE-\(i)=")
       let after = try pcr("TARWIN-PCR-AFTER-\(i)=")
       guard Data(SHA256.hash(data: before + Data(SHA256.hash(data: payload)))) == after

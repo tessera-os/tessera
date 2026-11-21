@@ -60,7 +60,12 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
           return false
         }
       #endif
-      guard let archive = boot.reserveLoaderPages(1),
+      #if TARBOOT_TEST_STAGE0
+        let archivePages: UInt = 256
+      #else
+        let archivePages: UInt = 1
+      #endif
+      guard let archive = boot.reserveLoaderPages(archivePages),
         let storage = boot.reserveLoaderPages(6),
         let archiveBase = UnsafeMutableRawPointer(bitPattern: UInt(archive.base)),
         let size = exerciseFile(
