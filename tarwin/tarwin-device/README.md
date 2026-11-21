@@ -48,6 +48,25 @@ See the optional virtio QTest for a device-model readback with a fresh IOVA and 
 
 ## Physical device registry
 
+The PCI walker takes reusable scratch for all 256 bus numbers and streams
+functions in parent-first order without heap allocation. A visitor may stop
+the scan before another config read; discard that partial snapshot. The array
+API collects the same visits. Neither API infers DMA groups from PCI ancestry.
+
+On a Mac with swift.org Swift 6.3.3, QEMU's EDK II images and built EDK II
+edk2-stable202408 BaseTools, set `EMBEDDED_SWIFTC`, `QEMU_FIRMWARE` and
+`EDK_BASETOOLS` as for the tarboot firmware probe. Then run:
+
+    bash tests/FirmwarePCI/run.sh
+
+The same non-allocating Swift walk executes **inside** an unsigned EFI
+diagnostic on aarch64, x86-64 and riscv64. It reads PCI config via EFI's
+root-bridge protocol, finds the boot disk, and checks the RNG's parent
+against the discovered bridge. Moving the RNG onto the root bus must fail
+that check. Both cases require a console verdict and a guest-requested
+shutdown. This tests discovery before ExitBootServices, not native ECAM
+access, an IOMMU group, a booted Tarwin kernel or physical hardware.
+
 The kernel accepts a complete parent-first firmware/PCI inventory, not driver-reported MMIO, group membership or identity. The platform supplies the salted stable ID; the registry separately issues boot-local IDs that never repeat. Missing group coverage permits enumeration but never slot assignment. DeviceRoot holders may snapshot or read the latest delta; a lapped reader must take a full snapshot. This is the privileged inventory, not the public DeviceKit matching service.
 
 Freeze admission on any topology change before resampling, under the same hardware hotplug lock that stops bus mastering. The registry invalidates each changed node, its provider descendants and every inseparable group peer. It publishes removals leaf first and additions parent first. Before replacements can acquire slots it masks interrupts, revokes CPU mappings and drains DMA for all affected groups, resetting surviving groups. Failed drain keeps grants frozen. A notification during a retry requires another snapshot before thaw. A replacement at the same physical address receives a new boot ID even when the original group number or slot epoch would otherwise match.
