@@ -31,7 +31,7 @@ final class QTest {
 
   init(
     binary: String, machine: Machine, disk: URL, translated: Bool, neighbors: Bool,
-    extraDevices: [String] = [], tcpFixture: Bool = false
+    extraDevices: [String] = [], tcpFixture: Bool = false, listenerSocket: String? = nil
   ) throws {
     process.executableURL = URL(fileURLWithPath: binary)
     process.arguments = [
@@ -58,6 +58,7 @@ final class QTest {
         neighbors
           ? "user,id=nic0,restrict=on,net=10.0.2.0/24,host=10.0.2.2,ipv6-net=fd00:23::/64,ipv6-host=fd00:23::2"
             + (tcpFixture ? ",guestfwd=tcp:10.0.2.100:4242-chardev:tcpfixture" : "")
+            + (listenerSocket.map { ",hostfwd=unix:\($0)-10.0.2.15:4242" } ?? "")
           : "hubport,id=nic\(i),hubid=1",
         "-device", device + ",netdev=nic\(i),iommu_platform=on,mac=52:54:00:00:00:0\(i+1)",
       ]
@@ -394,7 +395,8 @@ func run() throws {
   let neighbors = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--neighbors"
   let streams = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--byte-streams"
   let tcp = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--tcp-receive"
-  guard CommandLine.arguments.count == 2 || translated || neighbors || streams || tcp,
+  let listen = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--tcp-listen"
+  guard CommandLine.arguments.count == 2 || translated || neighbors || streams || tcp || listen,
     let machine = Machine(
       rawValue: URL(fileURLWithPath: CommandLine.arguments[1]).lastPathComponent)
   else {
@@ -405,6 +407,20 @@ func run() throws {
     UUID().uuidString + ".raw")
   try Data(repeating: 0x6c, count: 1 << 20).write(to: disk, options: .withoutOverwriting)
   defer { try? FileManager.default.removeItem(at: disk) }
+  if listen {
+    let dir = URL(fileURLWithPath: "/tmp").appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(
+      at: dir, withIntermediateDirectories: false,
+      attributes: [.posixPermissions: 0o700])
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let socket = dir.appendingPathComponent("peer").path
+    let q = try QTest(
+      binary: CommandLine.arguments[1], machine: machine, disk: disk, translated: false,
+      neighbors: true, listenerSocket: socket)
+    defer { q.close() }
+    try testNeighbors(q, machine, listenerSocket: socket)
+    return
+  }
   if tcp {
     try withPipePair { _, path, input, output in
       let q = try QTest(
@@ -462,15 +478,17 @@ do {
   print(
     CommandLine.arguments.last == "--tcp-receive"
       ? "PASS: TCP active open, bidirectional stream, lost-segment retransmit and acknowledged FIN against isolated libslirp"
-      : CommandLine.arguments.last == "--byte-streams"
-        ? "PASS: bidirectional single-port virtio-console and short uncredited virtio-rng input"
-        : CommandLine.arguments.last == "--vtd-xts"
-          ? "PASS: AES-256-XTS known-answer sector over q35 VT-d, retired before decryption"
-          : CommandLine.arguments.last == "--vtd"
-            ? "PASS: q35 VT-d translated disk DMA, IOTLB drain and same-IOVA remap"
-            : CommandLine.arguments.last == "--neighbors"
-              ? "PASS: router advertisement, SLAAC/DAD, ARP and IPv6 neighbor discovery against restricted libslirp"
-              : "PASS: QEMU virtio-blk write/flush/readback, zero/discard extents and paced UDP delivery across isolated NICs"
+      : CommandLine.arguments.last == "--tcp-listen"
+        ? "PASS: passive TCP handshake and bidirectional stream against restricted libslirp via a private Unix socket"
+        : CommandLine.arguments.last == "--byte-streams"
+          ? "PASS: bidirectional single-port virtio-console and short uncredited virtio-rng input"
+          : CommandLine.arguments.last == "--vtd-xts"
+            ? "PASS: AES-256-XTS known-answer sector over q35 VT-d, retired before decryption"
+            : CommandLine.arguments.last == "--vtd"
+              ? "PASS: q35 VT-d translated disk DMA, IOTLB drain and same-IOVA remap"
+              : CommandLine.arguments.last == "--neighbors"
+                ? "PASS: router advertisement, SLAAC/DAD, ARP and IPv6 neighbor discovery against restricted libslirp"
+                : "PASS: QEMU virtio-blk write/flush/readback, zero/discard extents and paced UDP delivery across isolated NICs"
   )
 } catch {
   FileHandle.standardError.write(Data("\(error)\n".utf8))

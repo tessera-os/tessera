@@ -1,6 +1,6 @@
 /// An established route is supplied by the network policy/route owner. It
 /// reserves the source port and prevents reuse of a live or TIME-WAIT tuple.
-public struct TcpPath {
+public struct TcpPath: Equatable {
   public let local: [UInt8], remote: [UInt8], localPort: UInt16, remotePort: UInt16, mtu: Int,
     hops: UInt8
   public init?(
@@ -22,14 +22,14 @@ public struct TcpPath {
     self.mtu = mtu
     self.hops = hops
   }
-  fileprivate var ip: Int { local.count == 4 ? 20 : 40 }
-  fileprivate var mss: Int { mtu - ip - 20 }
-  fileprivate func matches(_ p: TcpSegment) -> Bool {
+  var ip: Int { local.count == 4 ? 20 : 40 }
+  var mss: Int { mtu - ip - 20 }
+  func matches(_ p: TcpSegment) -> Bool {
     p.source == remote && p.destination == local && p.sourcePort == remotePort
       && p.destinationPort == localPort
   }
   /// The caller has already bounded data and options to the path MTU.
-  fileprivate func encode(
+  func encode(
     _ seq: UInt32, _ ack: UInt32, _ flags: UInt8, _ win: UInt32, _ options: [UInt8], _ data: [UInt8]
   ) -> [UInt8] {
     let opt = (options.count + 3) & ~3
@@ -71,8 +71,29 @@ public struct TcpPath {
   }
 }
 private func delta(_ a: UInt32, _ b: UInt32) -> Int { Int(Int32(bitPattern: a &- b)) }
-private func later(_ now: UInt64, _ delay: UInt64) -> UInt64 {
+func tcpLater(_ now: UInt64, _ delay: UInt64) -> UInt64 {
   now > UInt64.max - delay ? .max : now + delay
+}
+func tcpWindowShift(_ bytes: Int) -> UInt8 {
+  var shift: UInt8 = 0
+  while (65535 << shift) < bytes { shift += 1 }
+  return shift
+}
+func tcpTimestamp(_ stamp: UInt32?, echo: UInt32) -> [UInt8] {
+  guard let stamp else { return [] }
+  var opt: [UInt8] = [1, 1, 8, 10]
+  for v in [stamp, echo] {
+    for shift in [24, 16, 8, 0] { opt.append(UInt8(truncatingIfNeeded: v >> shift)) }
+  }
+  return opt
+}
+func tcpSynOptions(_ path: TcpPath, sack: Bool, shift: UInt8?, timestamp: UInt32?, echo: UInt32)
+  -> [UInt8]
+{
+  var opts: [UInt8] = [2, 4, UInt8(path.mss >> 8), UInt8(truncatingIfNeeded: path.mss)]
+  if sack { opts += [4, 2] }
+  if let shift { opts += [3, 3, shift] }
+  return opts + tcpTimestamp(timestamp, echo: echo)
 }
 
 public enum TcpState: Equatable {
@@ -114,10 +135,42 @@ public struct TcpConnection: ~Copyable {
     capacity = receiveBytes
     retryLimit = retries
     self.timestampOffset = timestampOffset
-    var shift: UInt8 = 0
-    while (65535 << shift) < receiveBytes { shift += 1 }
-    offeredShift = shift
+    offeredShift = tcpWindowShift(receiveBytes)
     rx = window
+  }
+  // Called only after the bounded listener validates the third handshake
+  // segment. No full-sized receive buffer is allocated for the initial SYN.
+  init?(
+    accepted path: TcpPath, localNext: UInt32, peer: TcpPeerSyn, capacity: Int,
+    timestampOffset: UInt32?, now: UInt64
+  ) {
+    guard
+      let window = TcpReceiveWindow(
+        next: peer.sequence &+ 1,
+        capacity: peer.scale == nil ? min(65535, capacity) : capacity, sackNegotiated: peer.sack)
+    else { return nil }
+    self.path = path
+    self.capacity = capacity
+    self.timestampOffset = timestampOffset
+    retryLimit = 5
+    offeredShift = tcpWindowShift(capacity)
+    rx = window
+    una = localNext
+    next = localNext
+    lastAckSent = peer.sequence &+ 1
+    wl1 = peer.sequence
+    wl2 = localNext
+    peerMss = Int(peer.mss ?? (path.ip == 20 ? 536 : 1220))
+    peerWindow = Int(peer.window)
+    maxPeerWindow = peerWindow
+    if let s = peer.scale {
+      sendShift = s
+      receiveShift = offeredShift
+    }
+    recent = timestampOffset == nil ? nil : peer.timestamp
+    recentAt = now
+    state = .established
+    clock = now
   }
   public var readable: Int { state == .reset || state == .timedOut ? 0 : rx.readable }
   public var endOfInput: Bool { rx.atEnd }
@@ -135,24 +188,14 @@ public struct TcpConnection: ~Copyable {
     return true
   }
   private func packet(_ seq: UInt32, _ flags: UInt8, _ data: [UInt8]) -> [UInt8] {
-    func timestamp(_ echo: UInt32) -> [UInt8] {
-      guard let stamp = localTimestamp else { return [] }
-      var opt: [UInt8] = [1, 1, 8, 10]
-      for v in [stamp, echo] {
-        for shift in [24, 16, 8, 0] { opt.append(UInt8(truncatingIfNeeded: v >> shift)) }
-      }
-      return opt
-    }
     if flags == 2 {
-      let m = path.mss
-      let opts: [UInt8] = [
-        2, 4, UInt8(m >> 8), UInt8(truncatingIfNeeded: m), 4, 2, 3, 3, offeredShift,
-      ]
       return path.encode(
-        seq, 0, 2, UInt32(min(65535, capacity)), opts + timestamp(0), [])
+        seq, 0, 2, UInt32(min(65535, capacity)),
+        tcpSynOptions(path, sack: true, shift: offeredShift, timestamp: localTimestamp, echo: 0), []
+      )
     }
     let ack = rx.acknowledgement
-    let ts = recent.map { timestamp($0) } ?? []
+    let ts = recent.map { tcpTimestamp(localTimestamp, echo: $0) } ?? []
     let room = min(40, (data.isEmpty ? path.mss : min(peerMss, path.mss)) - data.count)
     let opts = ts + ack.sackOption(available: (room & ~3) - ts.count)
     return path.encode(seq, ack.next, flags, min(65535, ack.window >> receiveShift), opts, data)
@@ -172,7 +215,7 @@ public struct TcpConnection: ~Copyable {
   ) -> Bool {
     guard flight == nil, publish(next, flags, bytes, emit) else { return false }
     flight = Flight(
-      sequence: next, data: bytes, flags: flags, deadline: later(now, rto), first: now,
+      sequence: next, data: bytes, flags: flags, deadline: tcpLater(now, rto), first: now,
       lastSent: now, stamp: localTimestamp)
     next = next &+ UInt32(bytes.count + (flags & 3 != 0 ? 1 : 0))
     ackPending = false
@@ -218,7 +261,7 @@ public struct TcpConnection: ~Copyable {
   }
   private mutating func timeWait(_ now: UInt64) {
     state = .timeWait
-    expires = later(now, 120_000_000_000)
+    expires = tcpLater(now, 120_000_000_000)
   }
   private mutating func acknowledged(_ f: Flight, _ echo: UInt32?, _ now: UInt64) {
     if recent != nil {
@@ -343,7 +386,7 @@ public struct TcpConnection: ~Copyable {
       } else {
         f.data.removeFirst(advance)
         f.sequence = una
-        f.deadline = later(now, rto)
+        f.deadline = tcpLater(now, rto)
         flight = f
       }
     }
@@ -382,7 +425,7 @@ public struct TcpConnection: ~Copyable {
       f.lastSent = now
       f.retries += 1
       rto = min(60_000_000_000, rto * 2)
-      f.deadline = later(now, rto)
+      f.deadline = tcpLater(now, rto)
       flight = f
       ackPending = false
       return true
