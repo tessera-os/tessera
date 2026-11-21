@@ -16,7 +16,7 @@ enum SectionLookup {
 }
 
 extension ELFReader {
-  private func extent(at: Int) -> Range<Int>? {
+  func extent(at: Int) -> Range<Int>? {
     let start = u64(at)
     let size = u64(at + 8)
     guard imageContains(UInt64(bytes.count), start, size) else { return nil }
