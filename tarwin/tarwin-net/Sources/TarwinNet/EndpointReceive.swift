@@ -3,33 +3,24 @@ import TarwinIoCompletion
 import TarwinObject
 import TarwinSyscall
 
-public enum ReceiveStart: ~Copyable {
-  case ready(EndpointReceive)
-  case unsupported, invalid, invalidHandle, wrongType, denied, notConnected, full
-}
+public typealias ReceiveStart = StreamStart<EndpointReceive>
 public enum ReceiveProgress { case waiting, finished, inactive }
 
 /// A worker serves the head of a submitted stream receive queue. Keep the
 /// submitting process, its writable VM pins and the stream registry alive.
 /// The resolver may only look up the payload of the retained Endpoint.
 public struct EndpointReceive: ~Copyable {
-  private let stream: TcpAcceptedStream, buffers: [UnsafeMutableRawBufferPointer]
-  private let count: Int, flags: UInt32
-  private var endpoint: ObjectGrant?, credit: IoReservation?
-
+  private var grant: StreamGrant
+  private let buffers: [UnsafeMutableRawBufferPointer], count: Int, flags: UInt32
   private init(
-    _ stream: TcpAcceptedStream, _ buffers: [UnsafeMutableRawBufferPointer],
-    _ count: Int, _ flags: UInt32, _ endpoint: consuming ObjectGrant,
-    _ credit: consuming IoReservation
+    _ buffers: [UnsafeMutableRawBufferPointer], _ count: Int, _ flags: UInt32,
+    _ grant: consuming StreamGrant
   ) {
-    self.stream = stream
+    self.grant = consume grant
     self.buffers = buffers
     self.count = count
     self.flags = flags
-    self.endpoint = consume endpoint
-    self.credit = consume credit
   }
-
   /// A validated kernel snapshot of the iovecs, never pointers from the call
   /// frame. maxVectors is the trusted submission limit, not an ABI argument.
   public static func begin<P: IoPorts & ~Copyable>(
@@ -47,50 +38,17 @@ public struct EndpointReceive: ~Copyable {
       length += b.count
     }
     guard length > 0 else { return .invalid }  // reserve a zero count for orderly EOF
-    let table = caller.handleReader
-    switch table.pinWithinEpoch(name, kind: TarwinKind.endpoint, need: 4) {
-    case .invalidHandle: return .invalidHandle
-    case .wrongType: return .wrongType
-    case .accessDenied: return .denied
-    case .found(let e):
-      guard let s = resolve(e.header), s.connection.state != .idle, s.connection.state != .synSent
-      else {
-        e.drop(retire: retire)
-        return .notConnected
-      }
-      // Do not park WaitAll forever on a request larger than the entire
-      // negotiated receive ring. This provider does not stage extra pages.
-      guard flags & 2 == 0 || length <= s.connection.inputLimit else {
-        e.drop(retire: retire)
-        return .unsupported
-      }
-      switch table.pinWithinEpoch(port, kind: TarwinKind.port, need: 8) {
-      case .invalidHandle:
-        e.drop(retire: retire)
-        return .invalidHandle
-      case .wrongType:
-        e.drop(retire: retire)
-        return .wrongType
-      case .accessDenied:
-        e.drop(retire: retire)
-        return .denied
-      case .found(let p):
-        let r = IoReservation(
-          port: p.header.pointee.koid, object: e.header.pointee.koid,
-          key: key, kind: 7,
-          owner: OperationHandle(process: caller.header.pointee.koid, name: name), ports: &ports)
-        p.drop(retire: retire)
-        guard let r else {
-          e.drop(retire: retire)
-          return .full
-        }
-        return .ready(EndpointReceive(s, buffers, length, flags, consume e, consume r))
-      }
+    return StreamGrant.acquire(
+      caller: caller, name: name, port: port, key: key, rights: 4, ports: &ports,
+      resolve: resolve, supports: { flags & 2 == 0 || length <= $0.connection.inputLimit },
+      retire: retire
+    ) {
+      (g: consuming StreamGrant) in EndpointReceive(buffers, length, flags, consume g)
     }
   }
 
   public func matches(port: UInt64, operation: PortOperation) -> Bool {
-    credit?.matches(port: port, operation: operation) == true
+    grant.matches(port: port, operation: operation)
   }
 
   /// Under the stream worker lock. Check the process and network grant again;
@@ -99,8 +57,8 @@ public struct EndpointReceive: ~Copyable {
     at now: UInt64, ports: inout P, permitted: Bool,
     releasePins: () -> Void, retire: (UnsafePointer<ObjectHeader>) -> Void
   ) -> ReceiveProgress {
-    guard credit != nil else { return .inactive }
-    let s = stream
+    guard grant.active else { return .inactive }
+    let s = grant.stream
     let state = s.connection.state
     let available = s.connection.readable
     if permitted && state != .reset && state != .timedOut && !s.connection.inputFinished {
@@ -109,7 +67,7 @@ public struct EndpointReceive: ~Copyable {
     let dest = buffers
     let peek = flags & 1 != 0
     let limit = count
-    credit.take()!.finish(at: now, ports: &ports) {
+    grant.finish(at: now, ports: &ports, releasePins: releasePins, retire: retire) {
       var p = PortPacket()
       if !permitted {
         p.error = 4
@@ -148,8 +106,6 @@ public struct EndpointReceive: ~Copyable {
       if p.error != 0 { p.subsystem = 6 }
       return p
     }
-    releasePins()
-    endpoint.take()!.drop(retire: retire)
     return .finished
   }
 
@@ -159,15 +115,6 @@ public struct EndpointReceive: ~Copyable {
     at now: UInt64,
     ports: inout P, releasePins: () -> Void, retire: (UnsafePointer<ObjectHeader>) -> Void
   ) -> Bool {
-    guard let c = credit.take() else { return false }
-    c.finish(at: now, ports: &ports) {
-      var p = PortPacket()
-      p.error = 26
-      p.subsystem = 1
-      return p
-    }
-    releasePins()
-    endpoint.take()!.drop(retire: retire)
-    return true
+    grant.withdraw(at: now, ports: &ports, releasePins: releasePins, retire: retire)
   }
 }

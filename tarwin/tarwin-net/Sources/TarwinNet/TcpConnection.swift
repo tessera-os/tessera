@@ -135,6 +135,7 @@ public struct TcpConnection: ~Copyable {
     expires: UInt64 = 0
   private var rto: UInt64 = 1_000_000_000, srtt: UInt64?, rttvar: UInt64 = 0
   private var deferred: DeferredSend?, persist: PersistTimer?
+  private var output: ArraySlice<UInt8> = [], corkUntil: UInt64?
   private let timestampOffset: UInt32?, offeredShift: UInt8
   private var recent: UInt32?, recentAt: UInt64 = 0, lastAckSent: UInt32 = 0
   private var sendShift: UInt8 = 0, receiveShift: UInt8 = 0, maxPeerWindow = 0
@@ -200,6 +201,8 @@ public struct TcpConnection: ~Copyable {
   public var unacknowledged: UInt32 { next &- una }
   /// Policy revocation or interface removal cancels the connection locally.
   public mutating func abort() {
+    output = []
+    corkUntil = nil
     flight = nil
     deferred = nil
     persist = nil
@@ -255,7 +258,8 @@ public struct TcpConnection: ~Copyable {
   public mutating func write(_ bytes: ArraySlice<UInt8>, at now: UInt64, emit: ([UInt8]) -> Bool)
     -> Int
   {
-    guard state == .established || state == .closeWait, flight == nil, deferred == nil, stamp(now)
+    guard output.isEmpty, state == .established || state == .closeWait, flight == nil,
+      deferred == nil, stamp(now)
     else { return 0 }
     let payload = min(peerMss, path.mss) - (recent == nil ? 0 : 12)
     if peerWindow == 0, payload > 0, let byte = bytes.first {
@@ -268,6 +272,10 @@ public struct TcpConnection: ~Copyable {
     return n
   }
   public mutating func finish(at now: UInt64, emit: ([UInt8]) -> Bool) -> Bool {
+    if !output.isEmpty {
+      corkUntil = nil
+      return false
+    }
     guard state == .established || state == .closeWait, flight == nil, deferred == nil, stamp(now)
     else { return false }
     if peerWindow == 0 {
@@ -464,6 +472,29 @@ public struct TcpConnection: ~Copyable {
     deferred = nil
     return true
   }
+  var outputLimit: Int { max(0, min(peerMss, path.mss) - (recent == nil ? 0 : 12)) }
+  var outputRoom: Int {
+    // Once publication starts, drain this backing store before extending it.
+    output.startIndex == 0 ? max(0, outputLimit - output.count) : 0
+  }
+  /// Called only at send commit under the stream lock. No transport callback
+  /// runs while the client's completion port is locked.
+  mutating func enqueueOutput(_ bytes: [UInt8], flags: UInt32, at now: UInt64) {
+    precondition(bytes.count <= outputRoom)
+    if bytes.isEmpty { return }
+    let fresh = output.isEmpty
+    output.append(contentsOf: bytes)
+    if flags & 2 == 0 || flags & 1 != 0 || output.count == outputLimit {
+      corkUntil = nil
+    } else if fresh {
+      corkUntil = tcpLater(now, 200_000_000)
+    }
+  }
+  private mutating func consumeOutput(_ count: Int) {
+    output.removeFirst(count)
+    if output.isEmpty { output = [] }
+    corkUntil = nil
+  }
   /// Called at incoming events, writable-device notifications and timer expiry.
   /// Egress policy, pacing and challenge-ACK rate limiting precede publication.
   @discardableResult public mutating func pump(at now: UInt64, emit: ([UInt8]) -> Bool) -> Bool {
@@ -509,6 +540,18 @@ public struct TcpConnection: ~Copyable {
       flight = f
       ackPending = false
       return true
+    }
+    if flight == nil, deferred == nil, let first = output.first, now >= (corkUntil ?? 0) {
+      if peerWindow == 0 {
+        deferred = .byte(first)
+        consumeOutput(1)
+        updatePersist(now)
+      } else {
+        let n = min(peerWindow, output.count)
+        guard start(0x18, Array(output.prefix(n)), now, emit) else { return false }
+        consumeOutput(n)
+        return true
+      }
     }
     guard ackPending, publish(next, 16, [], emit) else { return false }
     ackPending = false

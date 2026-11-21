@@ -67,7 +67,7 @@ func passiveInterop(
     throw Failure("No matching inbound TCP segment")
   }
   try withAcceptedEndpoint(
-    local: local, port: service, receiveCount: request.count,
+    local: local, port: service, request: request, response: response,
     handshake: { l in
       for _ in 0..<8 {
         let p = try next()
@@ -90,22 +90,18 @@ func passiveInterop(
         throw Failure("Rejected peer data")
       }
     },
-    exchange: { c, received in
+    flush: { c in
       _ = c.pump(at: now, emit: emit)
       if let txError { throw txError }
-      guard received == request, c.write(response[...], at: now, emit: emit) == response.count
-      else {
-        throw txError ?? Failure("Passive stream data mismatch")
-      }
-      var got: [UInt8] = []
-      while got.count < response.count {
-        var poller = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-        guard poll(&poller, 1, 3000) > 0 else { throw Failure("Private peer timed out") }
-        var buf = [UInt8](repeating: 0, count: response.count - got.count)
-        let n = buf.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
-        guard n > 0 else { throw Failure("Private peer read failed") }
-        got += buf.prefix(n)
-      }
-      guard got == response else { throw Failure("Private peer bytes differ") }
     })
+  var got: [UInt8] = []
+  while got.count < response.count {
+    var poller = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+    guard poll(&poller, 1, 3000) > 0 else { throw Failure("Private peer timed out") }
+    var buf = [UInt8](repeating: 0, count: response.count - got.count)
+    let n = buf.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
+    guard n > 0 else { throw Failure("Private peer read failed") }
+    got += buf.prefix(n)
+  }
+  guard got == response else { throw Failure("Private peer bytes differ") }
 }

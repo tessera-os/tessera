@@ -27,7 +27,9 @@ struct AcceptPorts: IoPorts, ~Copyable {
     visit(&port)
   }
 }
-private enum Outcome { case accepted, receive, cancelled, closed, reset, quota, denied, withdrawn }
+private enum Outcome {
+  case accepted, receive, send, cancelled, closed, reset, quota, denied, withdrawn
+}
 private func acceptScenario(_ outcome: Outcome, v6: Bool = false) {
   let ids = KoidSource()
   let headers = UnsafeMutableBufferPointer<ObjectHeader>.allocate(capacity: 5)
@@ -89,7 +91,7 @@ private func acceptScenario(_ outcome: Outcome, v6: Bool = false) {
     }
     return n
   }
-  let e = install(.init(listener), rights: 4)
+  let e = install(.init(listener), rights: outcome == .send ? 12 : 4)
   let p = install(.init(sink), rights: 8)
   let denied = install(.init(listener), rights: 0)
   let local: [UInt8] = v6 ? [0xfe, 0x80] + Array(repeating: 0, count: 13) + [2] : [192, 0, 2, 2]
@@ -163,7 +165,7 @@ private func acceptScenario(_ outcome: Outcome, v6: Bool = false) {
     XCTAssertNil(result)
     XCTAssertEqual(ports.wakes, 0)
   }
-  if outcome == .accepted || outcome == .receive {
+  if outcome == .accepted || outcome == .receive || outcome == .send {
     XCTAssertEqual(result?.error, 0)
     XCTAssertEqual(service.ready, 0)
     guard let name = result?.result0,
@@ -171,9 +173,13 @@ private func acceptScenario(_ outcome: Outcome, v6: Bool = false) {
         name, kind: TarwinKind.endpoint, need: 4)
     else { return XCTFail() }
     XCTAssertEqual(g.header, UnsafePointer(child))
-    XCTAssertEqual(g.rights, 4)
+    XCTAssertEqual(g.rights, outcome == .send ? 12 : 4)
     g.drop(retire: { _ in XCTFail() })
-    if outcome == .receive {
+    if outcome == .send {
+      checkSend(
+        caller: &caller, name: name, denied: denied, port: p, ports: &ports, child: .init(child),
+        stream: payload!, incoming: incoming)
+    } else if outcome == .receive {
       checkReceive(
         caller: &caller, name: name, denied: denied, port: p, ports: &ports, child: .init(child),
         stream: payload!, incoming: incoming)
@@ -254,6 +260,10 @@ final class EndpointAcceptTests: XCTestCase {
   func testStreamReceiveThroughAcceptedHandle() {
     acceptScenario(.receive)
     acceptScenario(.receive, v6: true)
+  }
+  func testStreamSendThroughAcceptedHandle() {
+    acceptScenario(.send)
+    acceptScenario(.send, v6: true)
   }
   func testCancellationAndClosedPortNeverPublish() {
     for o in [Outcome.cancelled, .withdrawn, .closed] { acceptScenario(o) }

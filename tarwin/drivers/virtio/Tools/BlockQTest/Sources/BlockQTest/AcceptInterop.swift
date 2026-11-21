@@ -6,9 +6,9 @@ import TarwinSyscall
 /// Hosted process and port storage. The network worker receives a checksum-
 /// validated handshake, and the client can only use the returned type-13 handle.
 func withAcceptedEndpoint(
-  local: [UInt8], port: UInt16, receiveCount: Int,
+  local: [UInt8], port: UInt16, request: [UInt8], response: [UInt8],
   handshake: (inout TcpService) throws -> Void, advance: (inout TcpConnection) throws -> Void,
-  exchange: (inout TcpConnection, [UInt8]) throws -> Void
+  flush: (inout TcpConnection) throws -> Void
 ) throws {
   let ids = KoidSource()
   let headers = UnsafeMutableBufferPointer<ObjectHeader>.allocate(capacity: 5)
@@ -99,6 +99,7 @@ func withAcceptedEndpoint(
   guard matchesChild, peer[0] == 0, Array(peer[8..<12]) == path.remote,
     UInt16(peer[4]) | UInt16(peer[5]) << 8 == path.remotePort
   else { throw Failure("Wrong endpoint identity or peer") }
+  let receiveCount = request.count
   guard receiveCount >= 2 else { throw Failure("Need two scatter buffers") }
   let bytes = UnsafeMutableRawBufferPointer.allocate(byteCount: receiveCount + 3, alignment: 8)
   defer { bytes.deallocate() }
@@ -130,5 +131,32 @@ func withAcceptedEndpoint(
     rx.result0 == UInt64(receiveCount), released == 1, ports.references == 0,
     bytes[0] == 0xcd, bytes[3] == 0xcd, bytes[bytes.count - 1] == 0xcd
   else { throw Failure("Incomplete or out-of-bounds scatter receive") }
-  try exchange(&payload.connection, Array(a) + b)
+  guard Array(a) + b == request else { throw Failure("Private peer request differs") }
+  try response.withUnsafeBytes { source in
+    let parts = [
+      UnsafeRawBufferPointer(rebasing: source[..<(source.count / 2)]),
+      UnsafeRawBufferPointer(rebasing: source[(source.count / 2)...]),
+    ]
+    guard
+      case .ready(var send) = EndpointSend.begin(
+        call: TarwinCall.endpointSend, caller: caller,
+        name: completion.result0, port: dest, key: 46, flags: 1, sources: parts, maxVectors: 4,
+        ports: &ports,
+        permitted: true, resolve: { $0 == UnsafePointer(child) ? payload : nil },
+        retire: { _ in preconditionFailure() })
+    else { throw Failure("Cannot submit accepted endpoint response") }
+    defer {
+      _ = send.withdraw(
+        at: 14, ports: &ports, releasePins: {}, retire: { _ in preconditionFailure() })
+    }
+    guard
+      send.poll(
+        at: 13, ports: &ports, permitted: true, releasePins: { released += 1 },
+        retire: { _ in preconditionFailure() }) == .finished,
+      let tx = ports.port.take(), tx.kind == 7, tx.key == 46, tx.error == 0,
+      tx.result0 == UInt64(response.count),
+      ports.references == 0, released == 2
+    else { throw Failure("Incomplete accepted endpoint response") }
+  }
+  try flush(&payload.connection)
 }

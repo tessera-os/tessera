@@ -1,5 +1,6 @@
-import TarwinNet
 import XCTest
+
+@testable import TarwinNet
 
 final class TcpPersistTests: XCTestCase {
   private func opened(_ window: UInt16, _ v6: Bool) -> TcpConnection {
@@ -12,6 +13,32 @@ final class TcpPersistTests: XCTestCase {
     XCTAssertTrue(c.input(syn, at: 1) { _ in true })
     XCTAssertTrue(c.pump(at: 1) { _ in true })
     return c
+  }
+  func testCorkExpiryAndClosedWindowDrainQueuedDataWithoutOvertaking() {
+    for window: UInt16 in [0, 32] {
+      var c = opened(window, false)
+      c.enqueueOutput([21, 22, 23], flags: 2, at: 5)
+      var sent: [UInt8] = []
+      func emit(_ b: [UInt8]) -> Bool {
+        sent += tcpSegment(b)!.payload
+        return true
+      }
+      XCTAssertEqual(c.write([99][...], at: 5, emit: emit), 0)
+      XCTAssertFalse(c.pump(at: 200_000_004, emit: emit))
+      XCTAssertTrue(sent.isEmpty)
+      let deadline: UInt64 = 200_000_005
+      XCTAssertEqual(c.pump(at: deadline, emit: emit), window != 0)
+      if window == 0 {
+        XCTAssertTrue(c.pump(at: deadline + 1_000_000_000, emit: emit))
+        XCTAssertEqual(sent, [21])
+        XCTAssertTrue(
+          c.input(
+            tcpSegment(wire(71, [], flags: 16, ack: 0, window: 2))!, at: deadline + 1_000_000_000
+          ) { _ in true })
+        XCTAssertTrue(c.pump(at: deadline + 1_000_000_000, emit: emit))
+      }
+      XCTAssertEqual(sent, [21, 22, 23])
+    }
   }
   func testOneNewBytePersistsUntilPeerOpensEvenAfterManyReplies() {
     for v6 in [false, true] {
