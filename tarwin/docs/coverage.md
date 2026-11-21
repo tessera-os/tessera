@@ -25,9 +25,15 @@
 The [device package](../tarwin-device/README.md)
 documents the cold Arm firmware-style queue reset and SMMUv3 all-abort stream
 table. Both QEMU PCI requesters are denied their former queue pages with
-either low MMIO or the pinned 512 GiB high MMIO window. The platform owner
-also observed the low-MMIO fence return after actual EDK2 ExitBootServices;
-this hosted high-BAR test does not execute EFI. No signed W1/EL0 entry:
+either low MMIO or the pinned 512 GiB high MMIO window.
+
+In the separate [Arm EFI guest fixture](../tarboot/tests/FirmwareProbe/README.md),
+the platform owner observed `streamsDenied` after EDK2 ExitBootServices and
+before copying the detached signature bytes on **both** layouts. With high
+MMIO enabled, the guest checked all eight pages of the two BAR4s with
+`AT S1E2W` for writable, identity-mapped Device memory before touching either
+endpoint. This checks the CPU mappings; the hosted QEMU traces above test
+DMA denial. Low-only remains the default. No signed image or W1/EL0 entry:
 integration of that handoff with the signed launcher, protected work-page lifetime,
 continuous exclusion across entry, and re-establishing DMA protection before
 resuming restored devices are unverified. The platform's separate read-only
