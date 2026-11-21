@@ -47,19 +47,19 @@ public struct ThermalZone: Equatable {
     self.critical = critical
   }
 }
-public func thermalBand(_ zones: [ThermalZone]) -> ThermalBand {
-  var level: Int = 0
-  for z in zones {
-    if z.fair >= z.serious || z.serious >= z.critical || z.millidegrees >= z.critical {
-      return .critical
-    }
-    if z.millidegrees >= z.serious {
-      level = 2
-    } else if z.millidegrees >= z.fair && level < 1 {
-      level = 1
-    }
+private func thermalLevel(_ z: ThermalZone) -> Int {
+  if z.fair >= z.serious || z.serious >= z.critical || z.millidegrees >= z.critical { return 3 }
+  if z.millidegrees >= z.serious { return 2 }
+  if z.millidegrees >= z.fair { return 1 }
+  return 0
+}
+public func thermalBand(_ zones: [ThermalZone], skin: ThermalZone? = nil) -> ThermalBand {
+  var level = skin.map(thermalLevel) ?? 0
+  for zone in zones { level = max(level, thermalLevel(zone)) }
+  switch level {
+  case 3: return .critical
+  case 2: return .serious
+  case 1: return .fair
+  default: return .nominal
   }
-  if level == 2 { return .serious }
-  if level == 1 { return .fair }
-  return .nominal
 }
