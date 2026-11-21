@@ -2,6 +2,9 @@
 
 [`trap-decode/`](trap-decode/) provides `TarwinTrapDecode`, the dependency-free
 AArch64 decoder shared by the hosted image signer and loader rewriter.
+[`kernel-gate/`](kernel-gate/) contains `TarwinKernelGate` and the
+kernel-backed dispatch and spawned-task tests. Gate transport and image
+rewriting do not depend on the hosted kernel.
 
 The gate request is a simple Mach message (`GateRequest.messageID`). Its
 destination is the task's gate send right (`COPY_SEND`). It carries a

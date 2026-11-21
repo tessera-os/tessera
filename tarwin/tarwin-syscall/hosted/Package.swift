@@ -7,11 +7,9 @@ let package = Package(
   products: [
     .library(name: "TarwinHostedGate", targets: ["TarwinHostedGate"]),
     .library(name: "TarwinGateTransport", targets: ["TarwinGateTransport"]),
-    .library(name: "TarwinKernelGate", targets: ["TarwinKernelGate"]),
   ],
   dependencies: [
     .package(name: "TarwinSyscall", path: ".."),
-    .package(path: "../../../tessera/build/tarwin-hosted"),
   ],
   targets: [
     .target(name: "TarwinHostedGate", dependencies: [
@@ -22,13 +20,4 @@ let package = Package(
       "TarwinHostedGate", .product(name: "TarwinABI", package: "TarwinSyscall"),
     ]),
     .testTarget(name: "TarwinGateTransportTests", dependencies: ["TarwinGateTransport"]),
-    .target(name: "TarwinKernelGate", dependencies: [
-      "TarwinGateTransport", "TarwinHostedGate", .product(name: "TarwindKernel", package: "tarwin-hosted"),
-    ]),
-    .testTarget(name: "TarwinKernelGateTests", dependencies: [
-      "TarwinKernelGate", "TarwinGateTransport", "TarwinHostedGate",
-      .product(name: "TarwinABI", package: "TarwinSyscall"),
-      .product(name: "TarwinSyscall", package: "TarwinSyscall"),
-      .product(name: "TarwindKernel", package: "tarwin-hosted"),
-    ]),
   ])
