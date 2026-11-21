@@ -179,7 +179,9 @@ would not prove §5.1 supervisor setup, virtualization or working CET.
 `TARBOOT_TEST_TRANSLATION=1 TARBOOT_TEST_CPU=1 bash run.sh aarch64` builds
 16 KiB stage-1 tables in a private post-exit reservation. On a single
 EL2 CPU the diagnostic issues AT S1E0R/W for lower-half frames and a
-guard page, and AT S1E1R/W for code and stack in a separate upper-half
+guard page, including a formerly writable RELRO page sealed in the
+unpublished root: its frame still resolves on read, but writes fault
+at level 3. It issues AT S1E1R/W for code and stack in a separate upper-half
 TTBR1 root. EL0 cannot read kernel code or write the kernel stack, and
 EL1 cannot write the read-only code or read an unmapped guard. It checks
 physical frame addresses and architectural fault status from PAR_EL1,

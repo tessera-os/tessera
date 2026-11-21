@@ -11,7 +11,7 @@
   // code, user pointers or user instructions are involved in this test.
   func checkUserTranslation(base: UInt64, length: UInt64) -> Bool {
     let skip = (0 &- base) & 16383
-    guard skip <= length, 12 * 16384 <= length - skip else { return false }
+    guard skip <= length, 13 * 16384 <= length - skip else { return false }
     let root = base + skip
     guard let p = UnsafeMutableRawPointer(bitPattern: UInt(root)),
       var tables = ArmUserTranslation(backing: .init(start: p, count: 4 * 16384), physical: root)
@@ -20,7 +20,9 @@
     let rx = root + 4 * 16384
     let rw = rx + 16384
     guard tables.insert(virtual: va, physical: rx, write: false, execute: true),
-      tables.insert(virtual: va + 16384, physical: rw, write: true, execute: false)
+      tables.insert(virtual: va + 16384, physical: rw, write: true, execute: false),
+      tables.insert(virtual: va + 32768, physical: root + 12 * 16384, write: true, execute: false),
+      tables.sealReadOnly(va + 32768..<va + 49152)
     else { return false }
     let kva: UInt64 = 0xffff_8000_0000_0000
     let kernel = root + 6 * 16384
@@ -34,7 +36,7 @@
       privileged.insert(virtual: kva, physical: code, write: false, execute: true),
       privileged.insert(virtual: kva + 16384, physical: stack, write: true, execute: false)
     else { return false }
-    var results = InlineArray<10, UInt64>(repeating: .max)
+    var results = InlineArray<12, UInt64>(repeating: .max)
     guard
       withUnsafeMutableBytes(
         of: &results,
@@ -51,5 +53,7 @@
       && results[5] & 0x7f == 0x1f && results[6] & 0x7f == 0x1f
       && results[7] & 1 == 0 && results[7] & address == stack
       && results[8] & 0x7f == 0x1f && results[9] & 0x7f == 0x0f
+      && results[10] & 1 == 0 && results[10] & address == root + 12 * 16384
+      && results[11] & 0x7f == 0x1f
   }
 #endif

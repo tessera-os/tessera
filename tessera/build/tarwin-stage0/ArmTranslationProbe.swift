@@ -60,6 +60,15 @@ add x1, x1, #4, lsl #12
 at s1e0r, x1
 isb
 mrs x10, par_el1
+str x10, [x2, #80]
+at s1e0w, x1
+isb
+mrs x10, par_el1
+str x10, [x2, #88]
+add x1, x1, #4, lsl #12
+at s1e0r, x1
+isb
+mrs x10, par_el1
 str x10, [x2, #24]
 at s1e1r, x12
 isb

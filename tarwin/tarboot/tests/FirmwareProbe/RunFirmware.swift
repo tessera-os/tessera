@@ -259,7 +259,7 @@ func check() throws {
     print("\(a): PSCI AFFINITY_INFO reports the MPIDR-matched boot CPU ON and three secondaries OFF")
   }
   if ProcessInfo.processInfo.environment["TARBOOT_TEST_TRANSLATION"] == "1" {
-    print("\(a): EL0 hardware translation resolved two frames, rejected write to RX and read from guard page")
+    print("\(a): EL0 hardware translation resolved RX, RW and sealed RELRO frames; writes to RX/RELRO and guard reads denied")
     print("\(a): upper-half EL1 code and stack resolved; EL0 access, writes to privileged RX and EL1 guard reads denied")
   }
   if secure {
