@@ -21,6 +21,20 @@ public struct W1BootSet {
 public func authorizeQEMUStage1(
   archive: UnsafeRawBufferPointer, signature: UnsafeRawBufferPointer,
   enrollment: UnsafeRawBufferPointer, systemEnrollment: UnsafeRawBufferPointer, policy: W0Policy,
+  contract: EarlyRIDLContract,
+  hashes: UnsafeMutableBufferPointer<BlakeCv>, polynomials: UnsafeMutableBufferPointer<Int32>,
+  message: UnsafeMutableRawBufferPointer
+) -> W1BootSet? {
+  verifyStage1(
+    archive: archive, signature: signature, enrollment: enrollment,
+    systemEnrollment: systemEnrollment, policy: policy, initEntryTag: 0x4d3e_7643,
+    contract: contract, hashes: hashes, polynomials: polynomials, message: message)
+}
+
+// The interop corpus has its own entry tag; it must never authorize a launch.
+func verifyStage1(
+  archive: UnsafeRawBufferPointer, signature: UnsafeRawBufferPointer,
+  enrollment: UnsafeRawBufferPointer, systemEnrollment: UnsafeRawBufferPointer, policy: W0Policy,
   initEntryTag: UInt32, contract: EarlyRIDLContract,
   hashes: UnsafeMutableBufferPointer<BlakeCv>, polynomials: UnsafeMutableBufferPointer<Int32>,
   message: UnsafeMutableRawBufferPointer

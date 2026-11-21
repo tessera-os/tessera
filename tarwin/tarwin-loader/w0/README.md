@@ -43,14 +43,16 @@ run, never a clock to use in the guest. No private key is in the corpus.
 
 ## W1 restricted user-set verification
 
-`authorizeQEMUStage1(archive:signature:enrollment:systemEnrollment:policy:initEntryTag:contract:hashes:polynomials:message:)`
+`authorizeQEMUStage1(archive:signature:enrollment:systemEnrollment:policy:contract:hashes:polynomials:message:)`
 is the AArch64 debug-QEMU entry point. Use the W0 modules, scratch sizes,
 real CPU checks, UTC, slot and TPM floor above. The boot pin covers the
 archive and kernel; the system pin covers each user image. The two TQE1
-public pins, process runtime entry tag, and `EarlyRIDLContract` (ABI UUID,
+public pins and `EarlyRIDLContract` (ABI UUID,
 exact RIDL symbol, canonical interface SHA-256 and function type tag) must
 be installed independently. Do not copy any from the archive or assume a
-platform-dependent symbol RVA or a fixed load address.
+platform-dependent symbol RVA or a fixed load address. The verifier requires
+the AArch64 process-entry tag from Tarwin §11.2 (`0x4d3e7643`); callers
+cannot substitute the W0 handoff tag or an interoperability fixture's tag.
 
 The accepted TIRA has four disjoint, uncompressed, hash-verified members:
 `boot.json`, `kernel`, `tessera.init` and `LibTessera`. Each native image has

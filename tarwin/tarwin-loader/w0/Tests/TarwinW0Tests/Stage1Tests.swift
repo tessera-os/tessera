@@ -55,7 +55,7 @@ final class Stage1Tests: XCTestCase {
       machine: 183, baselineSupported: true, trustedUTC: 1_795_238_964,
       train: (26, 11, 1), tir: (26, 11, 2), addressLimit: 1 << 32, securityFloor: 1, slot: 0,
       debugEmulator: true)
-    func validate() -> Bool {
+    func validate(publicContract: Bool = false) -> Bool {
       a.withUnsafeBytes { ar in
         s.withUnsafeBytes { sig in
           enrollment.withUnsafeBytes { e in
@@ -66,12 +66,19 @@ final class Stage1Tests: XCTestCase {
                     hashes.withUnsafeMutableBufferPointer { h in
                       poly.withUnsafeMutableBufferPointer { w in
                         msg.withUnsafeMutableBytes { m in
+                          let contract = EarlyRIDLContract(
+                            uuid: u, symbol: n, textSHA256: d, typeTag: type)
+                          if publicContract {
+                            return authorizeQEMUStage1(
+                              archive: ar, signature: sig, enrollment: e, systemEnrollment: k,
+                              policy: policy, contract: contract, hashes: h, polynomials: w,
+                              message: m) != nil
+                          }
                           guard
-                            let r = authorizeQEMUStage1(
+                            let r = verifyStage1(
                               archive: ar, signature: sig, enrollment: e,
                               systemEnrollment: k, policy: policy, initEntryTag: entry,
-                              contract: EarlyRIDLContract(
-                                uuid: u, symbol: n, textSHA256: d, typeTag: type),
+                              contract: contract,
                               hashes: h, polynomials: w, message: m)
                           else { return false }
                           XCTAssertEqual(
@@ -103,6 +110,7 @@ final class Stage1Tests: XCTestCase {
       }
     }
     XCTAssertTrue(validate())
+    XCTAssertFalse(validate(publicContract: true))
     id[0] ^= 1
     XCTAssertFalse(validate())
     id = uuid
