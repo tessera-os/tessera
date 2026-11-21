@@ -4,6 +4,7 @@ import TarwinFsWire
 import TarwinIPC
 import TarwinIoCompletion
 import TarwinObject
+import TarwinReadOnlyFS
 import TarwinSyscall
 import XCTest
 
@@ -40,8 +41,8 @@ private struct Staging: FatShares {
   }
 }
 private enum Outcome { case success, cancel, closed, removed, badCopy, unpublished }
-private func runRead(
-  _ volume: FatVolume<Media>, node: UInt64, offset: UInt64, expected: [UInt8], outcome: Outcome
+private func runRead<V: ReadOnlyVolume>(
+  _ volume: V, node: UInt64, offset: UInt64, expected: [UInt8], outcome: Outcome
 ) {
   mounted(volume) { session, server in
     let ids = KoidSource()
@@ -216,7 +217,7 @@ private func runRead(
       commits, outcome == .badCopy || (outcome == .success && !expected.isEmpty) ? 1 : 0)
   }
 }
-func readMountedMedia(_ v: FatVolume<Media>, node: UInt64, expected: [UInt8]) {
+func readMountedMedia<V: ReadOnlyVolume>(_ v: V, node: UInt64, expected: [UInt8]) {
   runRead(v, node: node, offset: 0, expected: expected, outcome: .success)
 }
 final class MountedReadTests: XCTestCase {

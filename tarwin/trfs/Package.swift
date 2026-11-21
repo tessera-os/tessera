@@ -6,6 +6,8 @@ let package = Package(
   products: [
     .library(name: "TarwinFsWire", targets: ["TarwinFsWire"]),
     .library(name: "TarwinFAT", targets: ["TarwinFAT"]),
+    .library(name: "TarwinArchive", targets: ["TarwinArchive"]),
+    .library(name: "TarwinReadOnlyFS", targets: ["TarwinReadOnlyFS"]),
     .library(name: "TRFS", targets: ["TRFS"]),
   ],
   dependencies: [
@@ -15,15 +17,18 @@ let package = Package(
   ],
   targets: [
     .target(
-      name: "TarwinFAT",
+      name: "TarwinReadOnlyFS",
       dependencies: ["TarwinFsWire", .product(name: "TarwinIPC", package: "tarwin-ipc")]),
+    .target(name: "TarwinFAT", dependencies: ["TarwinReadOnlyFS"]),
+    .target(name: "TarwinArchive", dependencies: ["TarwinReadOnlyFS"]),
     .testTarget(
       name: "FATTests",
       dependencies: [
         .product(name: "TarwinObject", package: "tarwin-object"),
         .product(name: "TarwinSyscall", package: "tarwin-syscall"),
         .product(name: "TarwinIoCompletion", package: "tarwin-device"),
-        "TarwinFAT", "TRFS", "TarwinFsWire", .product(name: "TarwinIPC", package: "tarwin-ipc"),
+        "TarwinFAT", "TarwinArchive", "TarwinReadOnlyFS", "TRFS", "TarwinFsWire",
+        .product(name: "TarwinIPC", package: "tarwin-ipc"),
         .product(name: "TarwinDevice", package: "tarwin-device"),
       ], path: "tests/FATTests"),
     .target(

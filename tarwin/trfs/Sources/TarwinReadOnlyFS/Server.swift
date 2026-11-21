@@ -3,19 +3,19 @@ import TarwinIPC
 
 /// Resolves only the named request's exact, volume-local share. Stores are
 /// all-or-nothing. No mapped view survives the return of either method.
-public protocol FatShares: ~Copyable {
+public protocol ReadOnlyShares: ~Copyable {
   mutating func load(request: UInt64, share: UInt64, length: UInt32) -> [UInt8]?
   mutating func store(request: UInt64, share: UInt64, capacity: UInt32, bytes: [UInt8]) -> Bool
 }
 
-public enum FatStep: Equatable { case waitRequest, waitReply, replied, stopped }
+public enum ReadOnlyStep: Equatable { case waitRequest, waitReply, replied, stopped }
 
-public struct FatServer<M: FatMedia>: ~Copyable {
-  private let volume: FatVolume<M>, epoch: UInt64
+public struct ReadOnlyServer<V: ReadOnlyVolume>: ~Copyable {
+  private let volume: V, epoch: UInt64
   private var requests: RingEndpoint, replies: RingEndpoint, pending: FsReply?, last: UInt64 = 0,
     stopped = false
   public init?(
-    volume: FatVolume<M>, epoch: UInt64, requests: consuming RingEndpoint,
+    volume: V, epoch: UInt64, requests: consuming RingEndpoint,
     replies: consuming RingEndpoint
   ) {
     guard epoch != 0 else { return nil }
@@ -26,9 +26,9 @@ public struct FatServer<M: FatMedia>: ~Copyable {
   }
   /// One reply may be retained under backpressure. Flush it before consuming
   /// another request; in particular, never repeat a share write on retry.
-  public mutating func step<S: FatShares & ~Copyable>(
+  public mutating func step<S: ReadOnlyShares & ~Copyable>(
     shares: inout S, signalSpace: () -> Void, signalReply: () -> Void
-  ) -> FatStep {
+  ) -> ReadOnlyStep {
     guard !stopped else { return .stopped }
     if pending == nil {
       var wire = RingRecord()
@@ -58,14 +58,17 @@ public struct FatServer<M: FatMedia>: ~Copyable {
       return .stopped
     }
   }
-  private func serve<S: FatShares & ~Copyable>(_ r: FsRecord, shares: inout S) -> (FsStatus, UInt32)
-  {
+  private func serve<S: ReadOnlyShares & ~Copyable>(_ r: FsRecord, shares: inout S) -> (
+    FsStatus, UInt32
+  ) {
     do {
       let bytes: [UInt8]
       let node = try volume.node(r.node)
       switch r.op {
       case .lookup:
-        guard r.offset == 0, (1...12).contains(r.inputBytes), r.outputBytes >= 8 else {
+        guard r.offset == 0, r.inputBytes > 0, r.inputBytes <= min(255, V.maxNameBytes),
+          r.outputBytes >= 8
+        else {
           return (.invalid, 0)
         }
         guard let name = shares.load(request: r.id, share: r.input, length: r.inputBytes),
@@ -78,7 +81,7 @@ public struct FatServer<M: FatMedia>: ~Copyable {
         bytes = try volume.bytes(node: node.id, offset: r.offset, count: Int(r.outputBytes))
       case .readDirectory, .getAttributes:
         guard r.input == 0, r.outputBytes > 0 else { return (.invalid, 0) }
-        let entry: FatNode
+        let entry: V.Node
         if r.op == .readDirectory {
           guard let n = try volume.entry(parent: node.id, index: r.offset) else { return (.ok, 0) }
           entry = n
@@ -86,9 +89,12 @@ public struct FatServer<M: FatMedia>: ~Copyable {
           guard r.offset == 0 else { return (.invalid, 0) }
           entry = node
         }
-        bytes = FsEntry(
-          id: entry.id, size: UInt64(entry.size), directory: entry.directory,
-          name: Array(entry.name.utf8))!.bytes()
+        guard let size = UInt64(exactly: entry.size),
+          let record = FsEntry(
+            id: entry.id, size: size, directory: entry.directory,
+            name: Array(entry.name.utf8))
+        else { return (.invalid, 0) }
+        bytes = record.bytes()
       case .flush, .sync:
         guard r.input == 0, r.output == 0, r.offset == 0 else { return (.invalid, 0) }
         return (.ok, 0)
@@ -104,8 +110,8 @@ public struct FatServer<M: FatMedia>: ~Copyable {
         return (.denied, 0)
       }
       return (.ok, UInt32(bytes.count))
-    } catch FatError.notFound { return (.notFound, 0) } catch FatError.notDirectory {
+    } catch VolumeError.notFound { return (.notFound, 0) } catch VolumeError.notDirectory {
       return (.notDirectory, 0)
-    } catch FatError.io { return (.io, 0) } catch { return (.invalid, 0) }
+    } catch VolumeError.io { return (.io, 0) } catch { return (.invalid, 0) }
   }
 }

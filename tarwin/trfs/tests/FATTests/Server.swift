@@ -3,6 +3,7 @@ import TarwinDevice
 import TarwinFAT
 import TarwinFsWire
 import TarwinIPC
+import TarwinReadOnlyFS
 import XCTest
 
 private struct Shares: FatShares {
@@ -19,8 +20,8 @@ private struct Shares: FatShares {
     return true
   }
 }
-func mounted(
-  _ v: FatVolume<Media>, _ visit: (inout FsRingSession, inout FatServer<Media>) -> Void
+func mounted<V: ReadOnlyVolume>(
+  _ v: V, _ visit: (inout FsRingSession, inout ReadOnlyServer<V>) -> Void
 ) {
   let raw = UnsafeMutableRawBufferPointer.allocate(byteCount: 12288, alignment: 4096)
   defer { raw.deallocate() }
@@ -28,13 +29,13 @@ func mounted(
   var kernel = FsRingSession(
     volume: 9, epoch: 17, limit: 80, requests: m.endpoint(completion: false, producer: true)!,
     replies: m.endpoint(completion: true, producer: false)!)!
-  var server = FatServer(
+  var server = ReadOnlyServer(
     volume: v, epoch: 17, requests: m.endpoint(completion: false, producer: false)!,
     replies: m.endpoint(completion: true, producer: true)!)!
   visit(&kernel, &server)
 }
 // Also used with a volume produced by independent mtools.
-func throughServer(_ v: FatVolume<Media>, folders: [String], file: String, expected: [UInt8]) {
+func throughServer<V: ReadOnlyVolume>(_ v: V, folders: [String], file: String, expected: [UInt8]) {
   mounted(v) { kernel, server in
     var shares = Shares()
     var node = v.root

@@ -1,13 +1,12 @@
-/// A read-only, partition-relative snapshot pinned for this mount's lifetime.
-/// A hot-unplug or generation change must fail reads, not rebind the snapshot.
-public protocol FatMedia {
-  var byteCount: UInt64 { get }
-  func read(at: UInt64, count: Int) -> [UInt8]?
-}
-public enum FatError: Error {
-  case invalidMedia, io, notFound, notDirectory, isDirectory, invalidName, tooLarge
-}
-public struct FatNode {
+import TarwinReadOnlyFS
+
+public typealias FatMedia = VolumeMedia
+public typealias FatError = VolumeError
+public typealias FatStep = ReadOnlyStep
+public typealias FatShares = ReadOnlyShares
+public typealias FatServer<M: FatMedia> = ReadOnlyServer<FatVolume<M>>
+
+public struct FatNode: ReadOnlyNode {
   public let id: UInt64, name: String, size: Int, directory: Bool
   fileprivate let chain: [Int]
 }
@@ -38,7 +37,8 @@ private func canonical(_ bytes: [UInt8]) throws -> String {
 
 /// FAT16 and FAT32 with ASCII short filenames; metadata is verified before exposing
 /// the root. Directory indices contain only discovered nodes, not raw sectors.
-public struct FatVolume<M: FatMedia> {
+public struct FatVolume<M: FatMedia>: ReadOnlyVolume {
+  public static var maxNameBytes: UInt32 { 12 }
   public let root: UInt64 = 1
   private let media: M, clusterBytes: Int, dataStart: Int, nodes: [FatNode],
     children: [UInt64: [String: UInt64]]
