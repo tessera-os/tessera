@@ -22,6 +22,7 @@ public enum HostedMemoryError: Error, Equatable {
   case unsupportedHost
   case invalidRange
   case invalidProtection
+  case rollbackFailed
   case notPurgeable
   case posix(Int32)
   case mach(kern_return_t)

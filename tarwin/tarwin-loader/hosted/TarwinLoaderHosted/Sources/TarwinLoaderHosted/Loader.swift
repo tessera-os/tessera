@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import TarwinLoader
 import TarwinMMHosted
+import TarwinTaskProtocol
 
 public final class HostedImageCache {
   private struct Key: Hashable {
@@ -55,6 +56,7 @@ public final class HostedImageCache {
 public struct HostedLoadedImage {
   public let range: Range<UInt64>
   public let entry: UInt64?
+  public let siteMap: [UInt64: UInt64]
 }
 
 public final class HostedImageLoader {
@@ -62,7 +64,9 @@ public final class HostedImageLoader {
     _ kind: LoaderTableKind, _ table: Data, _ count: UInt32, _ imageBase: UInt64
   ) throws -> [HostedRelocation]
 
-  public typealias TrapRewriter = (_ code: Data, _ rva: UInt64, _ imageBase: UInt64) throws -> Data
+  public typealias TrapRewriter = (
+    _ code: Data, _ rva: UInt64, _ imageBase: UInt64, _ veneersAt: UInt64
+  ) throws -> (text: Data, veneers: Data, siteMap: [UInt64: UInt64])
 
   private let space: HostedAddressSpace
   private let cache: HostedImageCache
@@ -79,18 +83,52 @@ public final class HostedImageLoader {
   ) throws -> HostedLoadedImage {
     try lock.withLock {
       var random = SystemRandomNumberGenerator()
+      let gatePage = TaskGatePage.address..<(TaskGatePage.address + hostedPageSize)
+      let occupied = reservations + space.occupiedRanges + [gatePage]
       let base = try HostedImagePlacement.choose(
-        window: space.window, occupied: reservations + space.occupiedRanges, span: image.span,
+        window: space.window, occupied: occupied, span: image.span,
         alignment: image.alignment, using: &random)
       let range = base..<(base + image.span)
       let segments = try relocatedSegments(image, base: base, resolve: resolve)
+      let imageMappings = segments.map { (base + $0.rva)..<(base + $0.rva + $0.size) }
+      var sidecars: [Range<UInt64>] = []
+      var veneerCommands: [HostedMapCommand] = []
+      var siteMap: [UInt64: UInt64] = [:]
+      let trapSites = Set(image.trapRVAs.map { base + $0 })
       var commands: [HostedMapCommand] = []
       for segment in segments {
         var segment = segment
         if segment.protection.contains(.execute) {
-          let result = try rewrite(segment.bytes, segment.rva, base)
-          guard result.count == segment.bytes.count else { throw HostedImageError.invalidTrapRewrite }
-          segment.bytes = result
+          let start = base + segment.rva
+          let end = start + segment.size
+          let gap = veneerGap(
+            after: end, window: space.window, occupied: occupied + imageMappings + sidecars)
+          let veneersAt = gap?.lowerBound ?? end
+          let result = try rewrite(segment.bytes, segment.rva, base, veneersAt)
+          let veneerSize = UInt64(result.veneers.count)
+          let textEnd = start + UInt64(segment.bytes.count)
+          let expected = trapSites.filter { start <= $0 && $0 < textEnd }
+          guard result.text.count == segment.bytes.count, veneerSize % 4 == 0,
+            Set(result.siteMap.values) == expected, result.siteMap.count == expected.count,
+            result.siteMap.keys.allSatisfy({
+              $0 >= veneersAt && $0 - veneersAt < veneerSize && $0 % 4 == 0
+            })
+          else { throw HostedImageError.invalidTrapRewrite }
+          segment.bytes = result.text
+          if veneerSize != 0 {
+            guard let gap, veneerSize <= UInt64(gap.count) else {
+              throw HostedImageError.noPlacement
+            }
+            let size = (veneerSize + hostedPageSize - 1) & ~(hostedPageSize - 1)
+            let veneer = HostedSegment(
+              rva: veneersAt &- base, size: size, protection: [.read, .execute],
+              bytes: result.veneers)
+            let entry = try cache.entry(image: image, segment: veneer, share: true)
+            veneerCommands.append(try HostedMapCommand(
+              address: veneersAt, size: size, entry: entry, protection: veneer.protection))
+            sidecars.append(veneersAt..<(veneersAt + size))
+            siteMap.merge(result.siteMap) { current, _ in current }
+          }
         }
         let copy = segment.protection.contains(.write)
         let entry = try cache.entry(image: image, segment: segment, share: !copy)
@@ -98,28 +136,40 @@ public final class HostedImageLoader {
           address: base + segment.rva, size: segment.size, entry: entry,
           protection: segment.protection, copy: copy))
       }
-      var installed: [HostedMapCommand] = []
       do {
-        for command in commands {
-          try space.map(command, charged: !command.protection.contains(.execute))
-          installed.append(command)
-        }
-      } catch {
-        var failed = false
-        for map in installed.reversed() {
-          do { try space.unmap(address: map.address, size: map.size) }
-          catch { failed = true }
-        }
-        if failed {
-          reservations.append(range)
-          throw HostedImageError.rollbackFailed
-        }
-        throw error
+        try space.mapBatch((commands + veneerCommands).map {
+          (command: $0, charged: !$0.protection.contains(.execute))
+        })
+      } catch HostedMemoryError.rollbackFailed {
+        reservations += [range] + sidecars
+        throw HostedImageError.rollbackFailed
       }
-      reservations.append(range)
-      return HostedLoadedImage(range: range, entry: image.entry == 0 ? nil : base + image.entry)
+      reservations += [range] + sidecars
+      return HostedLoadedImage(
+        range: range, entry: image.entry == 0 ? nil : base + image.entry, siteMap: siteMap)
     }
   }
+}
+
+private func veneerGap(
+  after textEnd: UInt64, window: Range<UInt64>, occupied: [Range<UInt64>]
+) -> Range<UInt64>? {
+  let nearby = UInt64(1 << 27)
+  let lower = max(window.lowerBound, textEnd > nearby ? textEnd - nearby : 0)
+  let upper = textEnd + min(nearby, window.upperBound - textEnd)
+  guard lower < upper else { return nil }
+  var cursor = lower
+  var before: Range<UInt64>?
+  for range in occupied.sorted(by: { $0.lowerBound < $1.lowerBound }) + [upper..<upper]
+    where range.upperBound > lower && range.lowerBound <= upper
+  {
+    if cursor < range.lowerBound {
+      if cursor >= textEnd { return cursor..<range.lowerBound }
+      before = cursor..<min(range.lowerBound, textEnd)
+    }
+    cursor = max(cursor, range.upperBound)
+  }
+  return before
 }
 
 private func relocatedSegments(

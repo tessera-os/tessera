@@ -11,9 +11,14 @@ Keep one `HostedImageCache` per running kernel and one
 free placements in the task's reserved 64 GiB window. That window alone
 offers at most 22 bits of 16 KiB page placement entropy; meeting a 28-bit
 absolute-address requirement additionally depends on the task-host
-reservation policy. The trap rewrite supplied by H2 runs before sealing;
-different rewritten bytes never alias a cached right. Stable image-relative
-branches to the gate stub let different load biases share the same code.
+reservation policy. Before sealing, the caller passes the admitted
+`trapRVAs` for each text segment to H2's rewriter. Only listed AArch64
+`svc #0` sites become eligible for syscalls; diagnostic BRK entries do
+not. The rewrite receives the guest veneer address and returns `text`,
+`veneers`, and `siteMap`. The loader maps the text and veneers RX in
+the same transaction, then returns the absolute veneer-PC-to-original-PC
+map for that process. Keep guest threads stopped until the map is enrolled.
+Different rewritten bytes never alias a cached right.
 
 The task command transport is `HostedTaskCommandMappings`. Its exchange
 closure sends the frozen H2 command and the optional capability, waiting

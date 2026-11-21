@@ -133,6 +133,29 @@ public final class HostedAddressSpace {
     }
   }
 
+  public func mapBatch(_ batch: [(command: HostedMapCommand, charged: Bool)]) throws {
+    try lock.withLock {
+      var installed: [HostedMapCommand] = []
+      do {
+        for (command, charged) in batch {
+          _ = try checkFree(address: command.address, size: command.size)
+          try install(command, charged: charged)
+          installed.append(command)
+        }
+      } catch {
+        var failed = false
+        for command in installed.reversed() {
+          do {
+            try task.unmap(address: command.address, size: command.size)
+            mappings.removeValue(forKey: command.address)
+          } catch { failed = true }
+        }
+        if failed { throw HostedMemoryError.rollbackFailed }
+        throw error
+      }
+    }
+  }
+
   public func fault(address: UInt64, access: HostedProtection) throws -> HostedFaultResult {
     try lock.withLock {
       guard access == .read || access == .write || access == .execute else { return .protection }

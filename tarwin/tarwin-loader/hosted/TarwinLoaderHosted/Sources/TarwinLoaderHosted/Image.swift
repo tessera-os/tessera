@@ -31,6 +31,7 @@ public struct HostedVerifiedImage {
   let relro: Range<UInt64>?
   let records: Data?
   public let train: Data
+  public let trapRVAs: [UInt64]
   public let threadLocalImage: Data?
   public let threadLocalSize: UInt64
   public let threadLocalAlignment: UInt64
@@ -117,6 +118,7 @@ public struct HostedVerifiedImage {
     self.entry = layout.entry
     self.relro = relro
     self.records = layout.loaderRecords.map { Data(file[$0]) }
+    self.trapRVAs = try hostedTrapRVAs(file: file, layout: layout, segments: segments)
     self.train = Data(file[trainRange])
     self.identity = SHA256.hash(data: Data(file))
     self.threadLocalImage = tls

@@ -8,12 +8,18 @@ let package = Package(
   dependencies: [
     .package(path: "../.."),
     .package(name: "TarwinMMHosted", path: "../../../tarwin-mm/hosted/TarwinMMHosted"),
+    .package(path: "../../../tarwin-task"),
+    .package(path: "../../../../libtessera/app/Backend/Tarwin/hosted/TarwinHostedImage"),
   ],
   targets: [
     .target(name: "TarwinLoaderHosted", dependencies: [
       .product(name: "TarwinLoader", package: "tarwin-loader"),
       .product(name: "TarwinMMHosted", package: "TarwinMMHosted"),
+      .product(name: "TarwinTaskProtocol", package: "tarwin-task"),
     ]),
-    .testTarget(name: "TarwinLoaderHostedTests", dependencies: ["TarwinLoaderHosted"]),
+    .testTarget(name: "TarwinLoaderHostedTests", dependencies: [
+      "TarwinLoaderHosted",
+      .product(name: "TarwinHostedImage", package: "TarwinHostedImage"),
+    ]),
   ]
 )
