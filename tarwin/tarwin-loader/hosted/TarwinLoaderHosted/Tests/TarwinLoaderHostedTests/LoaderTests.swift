@@ -1,6 +1,5 @@
 import Darwin
 import Foundation
-import TarwinHostedImage
 import TarwinLoaderHosted
 import TarwinMMHosted
 import Testing
@@ -164,48 +163,6 @@ private let window: Range<UInt64> = (1 << 36)..<(1 << 37)
   }
   #expect(space.occupiedRanges.isEmpty)
   #expect(task.mapped.isEmpty)
-}
-
-private func trapRewriter(for image: HostedVerifiedImage) -> HostedImageLoader.TrapRewriter {
-  { code, rva, base, veneersAt in
-    try HostedTrapRewrite.rewrite(code, rva, base, veneersAt, verifiedTrapRVAs: image.trapRVAs)
-  }
-}
-
-@Test func loadsH2VeneersFromSignedSiteMetadataAndRollsBackOnSidecarFailure() throws {
-  let page = UInt32(hostedPageSize)
-  let image = try HostedVerifiedImage.admit(
-    elf(train: 1, trapSites: [page, page + 4]), requiresEntry: true
-  ) { _, _ in }
-  #expect(image.trapRVAs == [UInt64(page)])
-  let task = Task()
-  let space = try HostedAddressSpace(window: window, task: task)
-  let loader = HostedImageLoader(space: space, cache: HostedImageCache())
-  task.failAt = 3
-  #expect(throws: Failure.map) {
-    try loader.load(image, resolve: { _, _, _, _ in throw Failure.unexpectedRecord },
-      rewrite: trapRewriter(for: image))
-  }
-  #expect(task.mapped.isEmpty)
-  #expect(space.occupiedRanges.isEmpty)
-
-  task.failAt = nil
-  let loaded = try loader.load(image, resolve: { _, _, _, _ in throw Failure.unexpectedRecord },
-    rewrite: trapRewriter(for: image))
-  let veneer = try #require(task.mapped.last)
-  let text = try #require(task.mapped.first)
-  #expect(loaded.siteMap == [veneer.address: text.address])
-  #expect(veneer.entry.protection == [.read, .execute])
-  #expect(veneer.address != text.address)
-  let mapped = try veneer.entry.mapLocally(protection: [.read, .execute])
-  let pointer = try #require(UnsafeRawPointer(bitPattern: UInt(mapped.address)))
-  #expect(pointer.load(as: UInt32.self) == HostedTrapRewrite.gateTrap)
-  #expect(mach_vm_protect(mach_task_self_, mapped.address, mapped.size, 0, VM_PROT_READ | VM_PROT_WRITE)
-    == KERN_PROTECTION_FAILURE)
-  let mappedText = try text.entry.mapLocally(protection: [.read, .execute])
-  let textPointer = try #require(UnsafeRawPointer(bitPattern: UInt(mappedText.address)))
-  #expect(textPointer.load(fromByteOffset: 4, as: UInt32.self) == 0xd420_00e0)
-  #expect(textPointer.load(fromByteOffset: 8, as: UInt32.self) == HostedTrapRewrite.forbiddenTrap)
 }
 
 @Test func rejectsInvalidTrapMetadataAndUnenrolledVeneerClaims() throws {

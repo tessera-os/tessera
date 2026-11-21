@@ -39,6 +39,9 @@ the kernel supplies thread-local storage and passes the TCB address in H2's
 
 Run `swift test --package-path hosted/TarwinLoaderHosted` from
 `tarwin-loader` on an Apple silicon Mac.
+Run `swift test --package-path hosted/integration` to test the loader with
+H2's LibTessera trap rewriter. This test package is separate so that the
+kernel can depend on the loader without importing LibTessera's package graph.
 Run `swift test --package-path ../tarwin-mm/hosted/TarwinMMHosted` for the
 hosted memory suite.
 Run `swift test --package-path ../tarwin-mm/hosted/Integration` from the
