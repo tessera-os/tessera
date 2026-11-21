@@ -43,5 +43,7 @@ stale completion and moves from the lower-energy model point to the faster
 one as the next interval approaches its deadline. These are model operating
 points, not changes to the guest CPU's clock.
 Success requires both the EFI console marker and QMP's guest shutdown event.
+The event-pair diagnostic signals the peer through the native binding, refuses
+a wait-only duplicate's signal, and checks peer death only after the last close.
 No user mode, hardware trap, context switch, interrupt or signed Tarwin image
 is involved. This does not boot a Tarwin kernel or measure performance.

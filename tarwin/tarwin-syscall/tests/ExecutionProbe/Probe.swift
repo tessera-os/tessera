@@ -486,8 +486,66 @@ private func jobQuota(_ arena: inout Arena, _ limit: UInt64) -> Bool {
   }
 }
 
+private struct PrivateEvents: EventNamespace {
+  let record: UnsafeMutablePointer<EventEndpoints>
+  let table: UnsafeMutablePointer<HandleTable>
+  var notified: UInt32 = 0
+  mutating func withNewEvent(
+    pair: Bool, _ body: (inout EventEndpoints, inout HandleTable) -> CallResult
+  ) -> CallResult {
+    body(&record.pointee, &table.pointee)
+  }
+  mutating func withEvent(
+    named: UInt64,
+    _ body: (borrowing EventEndpoints, borrowing HandleTable, (UnsafePointer<ObjectHeader>) -> Void)
+      -> CallResult
+  ) -> CallResult {
+    body(record.pointee, table.pointee, { notified = $0.pointee.signals })
+  }
+}
+
+private func eventPair(_ arena: inout Arena) -> Bool {
+  let cells = arena.take(HandleCell.self, count: 3)
+  let heads = arena.take(ObjectHeader.self, count: 2)
+  let ids = KoidSource()
+  guard var t = HandleTable(storage: cells, salt: 11) else { return false }
+  defer { cells.deinitialize() }
+  for i in 0..<2 {
+    guard
+      let h = ObjectHeader(
+        source: ids, ownerJob: 1, kind: TarwinKind.eventPair,
+        maximumRights: EventEndpoints.initialRights)
+    else { return false }
+    (heads.baseAddress! + i).initialize(to: h)
+  }
+  defer { heads.deinitialize() }
+  guard
+    var e = EventEndpoints(first: .init(heads.baseAddress!), second: .init(heads.baseAddress! + 1))
+  else { return false }
+  return withUnsafeMutablePointer(to: &t) { table in
+    withUnsafeMutablePointer(to: &e) { record in
+      var g = RegisterGate(calls: EventCalls(context: PrivateEvents(record: record, table: table)))
+      let pair = NativeEvents.pair(gate: &g)
+      guard pair.status == 0, heads[0].release() == .stillLive, heads[1].release() == .stillLive
+      else { return false }
+      defer { table.pointee.drain { h in record.pointee.destroy(h) { _ in } } }
+      guard NativeEvents.signal(pair.first, set: 1 << 24, clear: 0, gate: &g).status == 0,
+        g.calls.context.notified == 1 << 24, heads[0].signals == 0,
+        case .installed(let copy) = table.pointee.derive(pair.first, rights: 128, duplicate: true),
+        table.pointee.close(pair.first, retire: { _ in preconditionFailure() }),
+        heads[1].signals == 1 << 24,
+        NativeEvents.signal(copy, set: 8, clear: 0, gate: &g).code == 4,
+        table.pointee.close(copy, retire: { h in record.pointee.destroy(h) { _ in } })
+      else { return false }
+      return heads[1].signals == (1 << 24 | 4)
+        && NativeEvents.signal(pair.second, set: 8, clear: 0, gate: &g).code == 27
+    }
+  }
+}
+
 private func exercise(_ bytes: UnsafeMutableRawBufferPointer, _ challenge: UInt64) -> Bool {
   var arena = Arena(remaining: bytes)
+  guard eventPair(&arena) else { return false }
   guard intervalDemand(&arena, challenge) else { return false }
   guard jobQuota(&arena, challenge >> 1) else { return false }
   let cells = arena.take(HandleCell.self, count: 4)

@@ -64,6 +64,7 @@ public struct ObjectHeader: ~Copyable, Sendable {
   }
 
   public var signals: UInt32 { signalBits.load(ordering: .acquiring) }
+  var released: Bool { references.load(ordering: .acquiring) == 0 }
 
   /// Call under the object's observer lock so changes and FIFO observer
   /// delivery are ordered together. Masks are validated by the operation.
