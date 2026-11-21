@@ -7,10 +7,11 @@ public struct NVMeController: ~Copyable {
   private let io: any NVMeAccess, pages: NVMePages
   private var queue: Queue
   public let namespace: UInt32, limits: BlockLimits, epoch: UInt64
+  public let maxTransferBytes: UInt64
   private var stopped = false
   private init(
     io: any NVMeAccess, pages: NVMePages, queue: consuming Queue, namespace: UInt32,
-    limits: BlockLimits, epoch: UInt64
+    limits: BlockLimits, epoch: UInt64, maxTransferBytes: UInt64
   ) {
     self.io = io
     self.pages = pages
@@ -18,6 +19,7 @@ public struct NVMeController: ~Copyable {
     self.namespace = namespace
     self.limits = limits
     self.epoch = epoch
+    self.maxTransferBytes = maxTransferBytes
   }
   /// Cold start only; no implicit reset of an enabled or shared controller.
   /// The caller selects one active namespace returned by Identify (first
@@ -75,6 +77,9 @@ public struct NVMeController: ~Copyable {
       try execute(cmd)
     }
     try identify(1, 0)
+    let maxBytes = transferLimit(
+      mdts: UInt8(truncatingIfNeeded: io.load(pages.scratch + 76) >> 8),
+      lists: !pages.lists.isEmpty)
     let sizes = io.load(pages.scratch + 512)
     guard sizes & 15 <= 6, (sizes >> 4) & 15 >= 6, (sizes >> 8) & 15 <= 4, (sizes >> 12) & 15 >= 4,
       io.load(pages.scratch + 516) > 0
@@ -102,7 +107,8 @@ public struct NVMeController: ~Copyable {
     let shift = (format >> 16) & 255
     guard (9...12).contains(shift), format & 65535 == 0,
       let limits = BlockLimits(
-        capacity: blocks, blockBytes: 1 << shift, maxVectors: 2, flush: true, fua: true,
+        capacity: blocks, blockBytes: 1 << shift, maxVectors: pages.lists.isEmpty ? 2 : 513,
+        flush: true, fua: true,
         discard: false, zero: false, readOnly: (io.load(pages.scratch + 96) >> 24) & 1 != 0)
     else { throw NVMeError.configuration }
     var number = Command(9)
@@ -120,8 +126,10 @@ public struct NVMeController: ~Copyable {
     try execute(create)
     return NVMeController(
       io: io, pages: pages,
-      queue: Queue(id: 1, depth: depth, sq: pages.sq, cq: pages.cq, stride: stride), namespace: ns,
-      limits: limits, epoch: epoch)
+      queue: Queue(
+        id: 1, depth: depth, sq: pages.sq, cq: pages.cq, stride: stride, lists: pages.lists),
+      namespace: ns,
+      limits: limits, epoch: epoch, maxTransferBytes: maxBytes)
   }
   /// Caller resolves the validated read-only vector table once, pinning all
   /// granted ranges until completion or positive reset/domain-drain.
@@ -137,10 +145,12 @@ public struct NVMeController: ~Copyable {
       throw NVMeError.configuration
     }
     var cmd = Command(r.op == .read ? 2 : r.op == .flush ? 0 : 1)
+    var listEntries = ArraySlice<UInt64>()
     cmd.ns = namespace
     if r.op != .flush {
       let listBytes = UInt64(r.payload.vectors) * 16
-      guard r.blocks <= 8192 / UInt64(limits.blockBytes), pages.disjoint(r.payload.list, listBytes),
+      guard r.blocks <= maxTransferBytes / UInt64(limits.blockBytes),
+        pages.disjoint(r.payload.list, listBytes),
         allows(r.payload.list, listBytes, false)
       else { throw NVMeError.configuration }
       var spans: [BlockDmaVector] = []
@@ -152,15 +162,16 @@ public struct NVMeController: ~Copyable {
       }
       guard
         spans.withUnsafeBufferPointer({ limits.checkVectors(r, snapshot: $0, validate: allows) }),
-        let prps = pagePointers(spans)
+        let prps = pagePointers(spans, maxPages: pages.lists.isEmpty ? 2 : 513)
       else { throw NVMeError.configuration }
-      cmd.prp1 = prps.0
-      cmd.prp2 = prps.1
+      cmd.prp1 = prps[0]
+      if prps.count == 2 { cmd.prp2 = prps[1] }
+      if prps.count > 2 { listEntries = prps.dropFirst() }
       cmd.d10 = UInt32(truncatingIfNeeded: r.lba)
       cmd.d11 = UInt32(r.lba >> 32)
       cmd.d12 = UInt32(r.blocks - 1) | (r.op == .fua ? 1 << 30 : 0)
     }
-    try queue.submit(cmd, r.id, io)
+    try queue.submit(cmd, r.id, io, listEntries: listEntries)
   }
   public mutating func poll() throws -> BlockCompletion? {
     guard !stopped, io.register(28) & 3 == 1 else {
@@ -189,20 +200,36 @@ public struct NVMeController: ~Copyable {
   }
 }
 private let strideWords = Swift.stride(from: UInt64(0), to: 4096, by: 4)
-/// PRP1 may have a dword-aligned offset; PRP2 names a complete second
-/// page base, never a PRP list. Two distinct grants may meet at a page edge.
-func pagePointers(_ spans: [BlockDmaVector]) -> (UInt64, UInt64)? {
-  guard (1...2).contains(spans.count) else { return nil }
-  let a = spans[0].address
-  let n = UInt64(spans[0].bytes)
-  let first = 4096 - (a & 4095)
-  guard a != 0, a & 3 == 0, n > 0, n - 1 <= UInt64.max - a else { return nil }
-  if spans.count == 1 {
-    guard n <= first + 4096 else { return nil }
-    return (a, n > first ? a + first : 0)
+func transferLimit(mdts: UInt8, lists: Bool) -> UInt64 {
+  let ceiling: UInt8 = lists ? 9 : 1
+  return UInt64(4096) << (mdts == 0 ? ceiling : min(mdts, ceiling))
+}
+
+/// PRP1 may start within a page. A discontiguous grant can follow only
+/// after the preceding page is exhausted. Never traverse a data page twice.
+func pagePointers(_ spans: [BlockDmaVector], maxPages: Int) -> [UInt64]? {
+  guard let first = spans.first, first.address & 3 == 0 else { return nil }
+  var pages: [UInt64] = []
+  var visited: Set<UInt64> = []
+  var last: UInt64?
+  for span in spans {
+    var a = span.address
+    var n = UInt64(span.bytes)
+    guard a != 0, n != 0, n - 1 <= UInt64.max - a else { return nil }
+    while n > 0 {
+      if let last, last & 4095 != 4095 {
+        guard a == last + 1 else { return nil }
+      } else {
+        guard pages.isEmpty || a & 4095 == 0, pages.count < maxPages,
+          visited.insert(a >> 12).inserted
+        else { return nil }
+        pages.append(a)
+      }
+      let chunk = min(n, 4096 - (a & 4095))
+      last = a + (chunk - 1)
+      n -= chunk
+      if n != 0 { a += chunk }
+    }
   }
-  let b = spans[1].address
-  let m = UInt64(spans[1].bytes)
-  guard n == first, b != 0, b & 4095 == 0, b >> 12 != a >> 12, m > 0, m <= 4096 else { return nil }
-  return (a, b)
+  return pages
 }

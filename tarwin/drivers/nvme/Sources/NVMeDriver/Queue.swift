@@ -18,18 +18,23 @@ public enum NVMeError: Error, Equatable {
 }
 public struct NVMePages {
   let aSQ: UInt64, aCQ: UInt64, sq: UInt64, cq: UInt64, scratch: UInt64
-  var pages: [UInt64] { [aSQ, aCQ, sq, cq, scratch] }
-  /// All five 4 KiB pages are exclusive to this fresh controller epoch.
+  let lists: [UInt64]
+  var pages: [UInt64] { [aSQ, aCQ, sq, cq, scratch] + lists }
+  /// Queue, Identify and optional device-readable PRP list pages are pinned
+  /// and exclusive to this controller epoch. No chained lists.
   public init?(
     adminSubmission: UInt64, adminCompletion: UInt64, submission: UInt64, completion: UInt64,
-    identify: UInt64
+    identify: UInt64, prpLists: [UInt64] = []
   ) {
     aSQ = adminSubmission
     aCQ = adminCompletion
     sq = submission
     cq = completion
     scratch = identify
-    guard pages.allSatisfy({ $0 != 0 && $0 & 4095 == 0 }), Set(pages).count == 5 else { return nil }
+    lists = prpLists
+    guard lists.count <= 63, pages.allSatisfy({ $0 != 0 && $0 & 4095 == 0 }),
+      Set(pages).count == pages.count
+    else { return nil }
   }
   func disjoint(_ addr: UInt64, _ length: UInt64) -> Bool {
     length != 0 && length - 1 <= .max - addr
@@ -46,19 +51,24 @@ struct Done { let token: UInt64, status: UInt16, result: UInt32 }
 struct Queue: ~Copyable {
   let id: Int, depth: Int, sq: UInt64, cq: UInt64, db: UInt64, stride: UInt64
   private var tail = 0, sqHead = 0, head = 0, phase: UInt32 = 1, next: UInt16 = 0
-  private var live: [UInt16: (token: UInt64, fetchedAfter: UInt64)] = [:]
+  private var live: [UInt16: (token: UInt64, fetchedAfter: UInt64, list: UInt64?)] = [:]
+  private let listPages: [UInt64]
   private var issued: UInt64 = 0, fetched: UInt64 = 0
   private(set) var poisoned = false
   var idle: Bool { live.isEmpty }
-  init(id: Int, depth: Int, sq: UInt64, cq: UInt64, stride: UInt64) {
+  init(id: Int, depth: Int, sq: UInt64, cq: UInt64, stride: UInt64, lists: [UInt64] = []) {
     self.id = id
     self.depth = depth
     self.sq = sq
     self.cq = cq
     self.stride = stride
+    listPages = lists
     db = 0x1000 + UInt64(2 * id) * stride
   }
-  mutating func submit(_ cmd: Command, _ token: UInt64, _ io: any NVMeAccess) throws {
+  mutating func submit(
+    _ cmd: Command, _ token: UInt64, _ io: any NVMeAccess,
+    listEntries: ArraySlice<UInt64> = []
+  ) throws {
     guard !poisoned else { throw NVMeError.protocolFault }
     let new = (tail + 1) % depth
     guard new != sqHead, issued != .max, live.count < depth - 1,
@@ -67,6 +77,18 @@ struct Queue: ~Copyable {
       throw NVMeError.busy
     }
     while live[next] != nil { next &+= 1 }
+    var list: UInt64?
+    if !listEntries.isEmpty {
+      guard (2...512).contains(listEntries.count), cmd.prp2 == 0, !listPages.isEmpty
+      else { throw NVMeError.configuration }
+      guard let page = listPages.first(where: { page in !live.values.contains { $0.list == page } })
+      else { throw NVMeError.busy }
+      list = page
+      for (i, addr) in listEntries.enumerated() {
+        io.store(page + UInt64(i * 8), UInt32(truncatingIfNeeded: addr))
+        io.store(page + UInt64(i * 8 + 4), UInt32(addr >> 32))
+      }
+    }
     let cid = next
     next &+= 1
     let entry = sq + UInt64(tail * 64)
@@ -77,8 +99,8 @@ struct Queue: ~Copyable {
         case 1: cmd.ns
         case 6: UInt32(truncatingIfNeeded: cmd.prp1)
         case 7: UInt32(cmd.prp1 >> 32)
-        case 8: UInt32(truncatingIfNeeded: cmd.prp2)
-        case 9: UInt32(cmd.prp2 >> 32)
+        case 8: UInt32(truncatingIfNeeded: list ?? cmd.prp2)
+        case 9: UInt32((list ?? cmd.prp2) >> 32)
         case 10: cmd.d10
         case 11: cmd.d11
         case 12: cmd.d12
@@ -87,7 +109,7 @@ struct Queue: ~Copyable {
       io.store(entry + UInt64(i * 4), v)
     }
     issued += 1
-    live[cid] = (token, issued)
+    live[cid] = (token, issued, list)
     tail = new
     io.release()
     io.setRegister(db, UInt32(tail))

@@ -535,7 +535,7 @@ do {
       : CommandLine.arguments.last == "--ufs"
         ? "PASS: q35 UFS discovered LUs 1 and 2, stopped on invalid selection, verified LU 2 scatter write/FUA/flush/read and unchanged LU 1"
         : CommandLine.arguments.last == "--nvme"
-          ? "PASS: discovered NVMe namespace, split-PRP FUA write, flush, readback, shutdown and backing-byte check on q35"
+          ? "PASS: q35 NVMe four-page PRP list, 12 KiB FUA write, flush, guarded readback, shutdown and backing-file check"
           : CommandLine.arguments.last == "--intx"
             ? "PASS: observed disk INTx, IOAPIC masking, Device notifications and handle-authorized rearm on q35"
             : CommandLine.arguments.last == "--tcp-receive"

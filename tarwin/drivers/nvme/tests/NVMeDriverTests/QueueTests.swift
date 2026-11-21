@@ -68,7 +68,7 @@ final class QueueTests: XCTestCase {
     func p(_ a: UInt64, _ n: UInt32, _ b: UInt64 = 0, _ m: UInt32 = 0) -> (UInt64, UInt64)? {
       var s = [BlockDmaVector(address: a, bytes: n)]
       if b != 0 { s.append(BlockDmaVector(address: b, bytes: m)) }
-      return pagePointers(s)
+      return pagePointers(s, maxPages: 2).map { ($0[0], $0.count == 2 ? $0[1] : 0) }
     }
     XCTAssertEqual(p(0x1ffc, 4)?.1, 0)
     XCTAssertEqual(p(0x1ffc, 8)?.1, 0x2000)
@@ -105,5 +105,54 @@ final class QueueTests: XCTestCase {
     XCTAssertEqual(start(), .timeout)
     XCTAssertEqual(m.registers[40], 0x1000)
     XCTAssertEqual(m.registers[20], 0x46_0001)
+  }
+
+  func testSingleListCoverageAndIdentifyLimits() {
+    func plan(_ spans: [(UInt64, UInt32)]) -> [UInt64]? {
+      pagePointers(spans.map { BlockDmaVector(address: $0.0, bytes: $0.1) }, maxPages: 513)
+    }
+    XCTAssertEqual(
+      plan([(0x1ffc, 4), (0xb000, 3), (0xb003, 8189), (0xa000, 1)]),
+      [0x1ffc, 0xb000, 0xc000, 0xa000])
+    XCTAssertEqual(plan([(0x1ffc, 2 << 20)])?.count, 513)
+    XCTAssertNil(plan([(0x1ffc, (2 << 20) + 5)]))
+    XCTAssertNil(plan([(0x1ffc, 4), (0xb000, 8192), (0xc000, 8)]))
+    XCTAssertNil(plan([(0x1ffc, 4), (0xb000, 3), (0xb004, 8188)]))
+    XCTAssertEqual(transferLimit(mdts: 0, lists: true), 2 << 20)
+    XCTAssertEqual(transferLimit(mdts: 1, lists: true), 8192)
+    XCTAssertEqual(transferLimit(mdts: 3, lists: true), 32768)
+    XCTAssertEqual(transferLimit(mdts: 255, lists: true), 2 << 20)
+    XCTAssertEqual(transferLimit(mdts: 8, lists: false), 8192)
+    XCTAssertNil(
+      NVMePages(
+        adminSubmission: 4096, adminCompletion: 8192,
+        submission: 12288, completion: 16384, identify: 20480, prpLists: [20480]))
+    let pages = NVMePages(
+      adminSubmission: 4096, adminCompletion: 8192,
+      submission: 12288, completion: 16384, identify: 20480, prpLists: [24576])!
+    XCTAssertFalse(pages.disjoint(24575, 2))
+  }
+
+  func testOnlyMatchingCompletionReleasesPrivateList() throws {
+    let m = Memory()
+    var q = Queue(id: 1, depth: 4, sq: 0x1000, cq: 0x2000, stride: 4, lists: [0x9000])
+    var cmd = Command(1)
+    cmd.prp1 = 0xab00
+    try q.submit(cmd, 1, m, listEntries: [0x1_0000_b000, 0xc000])
+    XCTAssertEqual(m.load(0x1020), 0x9000)
+    XCTAssertEqual(m.load(0x9000), 0xb000)
+    XCTAssertEqual(m.load(0x9004), 1)
+    try q.submit(Command(0), 2, m)
+    m.cqe(0, head: 2, id: 1, phase: 1)
+    XCTAssertEqual(try q.poll(m)?.token, 2)
+    XCTAssertThrowsError(try q.submit(cmd, 3, m, listEntries: [0xd000, 0xe000])) {
+      XCTAssertEqual($0 as? NVMeError, .busy)
+    }
+    XCTAssertEqual(m.load(0x9000), 0xb000)
+    m.cqe(1, head: 2, id: 0, phase: 1)
+    XCTAssertEqual(try q.poll(m)?.token, 1)
+    try q.submit(cmd, 3, m, listEntries: [0xd000, 0xe000])
+    XCTAssertEqual(m.load(0x9000), 0xd000)
+    XCTAssertEqual(m.load(0x9008), 0xe000)
   }
 }
