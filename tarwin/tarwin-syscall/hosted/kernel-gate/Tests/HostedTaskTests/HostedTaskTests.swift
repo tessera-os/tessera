@@ -21,27 +21,37 @@ private final class TestHost: TarwindHost {
   func panic(record: [UInt8]) { Issue.record("kernel panicked") }
 }
 
-private final class FixtureTrapSink: HostExceptionSink {
+private final class HookTrapSink: HostExceptionSink {
+  let hooks: TarwindLaunchHooks
+  let process: TarwindProcessID
+  let wrongThreadProcess: TarwindProcessID
   let gates: [UInt64: UInt64]
   let fatalSite: UInt64
   let stopped = DispatchSemaphore(value: 0)
   let dispatcher = Mutex<KernelGateDispatch?>(nil)
   let faultThread = Mutex<UInt64?>(nil)
 
-  init(gates: [UInt64: UInt64], fatalSite: UInt64) {
+  init(hooks: TarwindLaunchHooks, process: TarwindProcessID, wrongThreadProcess: TarwindProcessID,
+    gates: [UInt64: UInt64], fatalSite: UInt64
+  ) {
+    self.hooks = hooks
+    self.process = process
+    self.wrongThreadProcess = wrongThreadProcess
     self.gates = gates
     self.fatalSite = fatalSite
   }
 
   func handle(_ fault: HostException) -> HostExceptionDisposition {
-    if fault.kind == .breakpoint, gates[fault.pc] != nil {
+    if let authorization = hooks.authorizeTrap(process, fault) {
       faultThread.withLock { $0 = fault.thread.threadID }
-      let x = fault.x
-      let request = GateRequest(threadID: 1, number: x[16],
+      #expect(hooks.authorizeTrap(wrongThreadProcess, fault) == nil)
+      #expect(gates[fault.pc] == authorization.originalPC)
+      let x = authorization.arguments
+      let request = GateRequest(threadID: authorization.threadID, number: authorization.number,
         arguments: CallRegisters(x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]))
       guard dispatcher.withLock({ $0?.authorizeTrap(request) == true }) else { return .terminate }
       var resumed = fault.state
-      resumed.pc += 4
+      resumed.pc = authorization.resumePC
       return .resume(resumed)
     }
     #expect(fault.kind == .breakpoint)
@@ -56,13 +66,20 @@ private final class FixtureTrapSink: HostExceptionSink {
   try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
   defer { try? FileManager.default.removeItem(at: directory) }
   let executable = try taskExecutable()
+  let adapter = HostedKernelLaunchHooks()
+  let hooks = adapter.hooks
   let kernel = try Tarwind.boot(.init(
     diskPath: directory.appendingPathComponent("disk").path,
     systemImagePath: directory.appendingPathComponent("image").path,
     panicRecordPath: directory.appendingPathComponent("panic").path,
-    taskExecutablePath: executable), host: TestHost())
+    taskExecutablePath: executable), host: TestHost(), devices: HostDeviceRegistry(), hooks: hooks)
   defer { kernel.shutdown() }
   let process = kernel.createKernelProcess(name: "hosted-trap-test")
+  let wrongThreadProcess = kernel.createKernelProcess(name: "wrong-thread-test")
+  defer {
+    adapter.removeProcess(process)
+    adapter.removeProcess(wrongThreadProcess)
+  }
   var create = TarwinCallRegisters(number: TarwinCall.eventCreate)
   guard case .completed(let event) = kernel.gate.call(process: process, registers: &create),
     event.status == 0 else { Issue.record("event creation failed"); return }
@@ -86,7 +103,8 @@ private final class FixtureTrapSink: HostExceptionSink {
     0xd400_1001,  // unlisted svc #0x80; must never reach XNU
   ], at: text, listedTraps: [text + 8], veneersAt: veneer)
 
-  let sink = FixtureTrapSink(gates: image.gateTrapSites, fatalSite: text + 32)
+  let sink = HookTrapSink(hooks: hooks, process: process, wrongThreadProcess: wrongThreadProcess,
+    gates: image.gateTrapSites, fatalSite: text + 32)
   let exceptionPort = try HostExceptionPort(sink: sink)
   let exceptionSend = try exceptionPort.makeSend()
   let task = try TaskSpawner.spawn(executable: executable, exceptionPort: exceptionSend.rawName)
@@ -126,6 +144,8 @@ private final class FixtureTrapSink: HostExceptionSink {
   let report = try #require(UnsafePointer<UInt64>(bitPattern: UInt(local)))
   try command(.createThread(id: 1, entry: text, argument: 0, stack: stack, tls: tcb))
   let kernelThreadID = try task.threadIdentity(id: 1).get()
+  hooks.enroll(process, image.gateTrapSites, [kernelThreadID: 1])
+  hooks.enroll(wrongThreadProcess, image.gateTrapSites, [kernelThreadID == 1 ? 2 : 1: 1])
   var registers = InlineArray<31, UInt64>(repeating: 0)
   registers[0] = event.first
   registers[1] = 8

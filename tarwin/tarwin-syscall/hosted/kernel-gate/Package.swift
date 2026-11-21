@@ -17,6 +17,7 @@ let package = Package(
     .target(name: "TarwinKernelGate", dependencies: [
       .product(name: "TarwinGateTransport", package: "HostedGate"),
       .product(name: "TarwinHostedGate", package: "HostedGate"),
+      .product(name: "TarwinHostedImage", package: "TarwinHostedImage"),
       .product(name: "TarwindKernel", package: "tarwin-hosted"),
     ]),
     .testTarget(name: "TarwinKernelGateTests", dependencies: [
