@@ -49,6 +49,7 @@ let package = Package(
         .product(name: "TarwinObject", package: "tarwin-object"),
         .product(name: "TarwinIPCChannels", package: "tarwin-ipc"),
         .product(name: "TarwinKernelRandom", package: "random"),
+        .product(name: "TarwinProcessKeys", package: "random"),
         .product(name: "TarwinRandomCore", package: "random"),
         .product(name: "TarwinArchAarch64", package: "tarwin-arch-aarch64"),
         .product(name: "TarwinSyscall", package: "tarwin-syscall"),
@@ -58,6 +59,8 @@ let package = Package(
         .product(name: "TarwinMM", package: "tarwin-mm"),
       ]),
     .testTarget(name: "TarwinW1BootstrapTests", dependencies: [
+      .product(name: "TarwinKernelRandom", package: "random"),
+      .product(name: "TarwinProcessKeys", package: "random"),
       .product(name: "TarwinIPCChannels", package: "tarwin-ipc"),
       .product(name: "TarwinObject", package: "tarwin-object"),
       .product(name: "TarwinW0Verify", package: "w0"),

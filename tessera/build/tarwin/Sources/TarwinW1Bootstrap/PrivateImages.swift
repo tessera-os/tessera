@@ -1,5 +1,6 @@
 import TarwinArchAarch64
 import TarwinLoader
+import TarwinObject
 import TarwinW0Verify
 
 /// Only an unpublished address space. Keep the backing pinned and private;
@@ -9,6 +10,11 @@ public struct W1PrivateImages: ~Copyable {
   public let processCode, libraryCode: Range<UInt64>
   public let processEntry: UInt64
   public let initialThread: W1ThreadStorage?
+  let owner: ProcessKey
+  let header: UnsafePointer<ObjectHeader>
+  func belongs(to child: borrowing ProcessExecution) -> Bool {
+    owner == child.member && header == child.header && child.initialMap == tables.physicalRoot
+  }
   /// Includes page tables. The caller must pin at least this prefix.
   public let usedBytes: Int
 }
@@ -92,17 +98,20 @@ struct W1FramePool {
 /// exclusive contiguous run of normal RAM at `physical` and disjoint scratch.
 /// No frame, table, scratch or archive may alias physically, including DMA.
 /// On failure no root escapes; erase any staged image pages and descriptors.
-@unsafe public func preparePrivateW1Images(
+@unsafe func preparePrivateW1Images(
   _ set: borrowing W1BootSet, plan: W1AddressPlan,
   archive: UnsafeRawBufferPointer, storage: UnsafeMutableRawBufferPointer,
   physical: UInt64, tableBytes: Int, nodes: UnsafeMutableBufferPointer<BlakeCv>,
   witnesses: UnsafeMutableRawBufferPointer, cleanToPoU: (UnsafeRawBufferPointer) -> Bool,
+  child: borrowing ProcessExecution, tree: borrowing JobTree,
   signImport: (UInt64, UInt64) -> UInt64?, firstThread: consuming W1ThreadPlacement? = nil
 ) -> W1PrivateImages? {
   let ram = UnsafeRawBufferPointer(storage)
   let cache = UnsafeRawBufferPointer(nodes)
   let proof = UnsafeRawBufferPointer(witnesses)
-  guard tableBytes >= 16384, tableBytes < storage.count, (tableBytes | storage.count) & 16383 == 0,
+  guard child.initialMap == physical, child.phase == .created, child.threadCount == 0,
+    tree.returnGate(child.member) == .run,
+    tableBytes >= 16384, tableBytes < storage.count, (tableBytes | storage.count) & 16383 == 0,
     physical != 0, physical & 16383 == 0, physical < 1 << 48,
     UInt64(storage.count) <= (1 << 48) - physical,
     !plan.processReservation.overlaps(plan.libraryReservation),
@@ -148,5 +157,6 @@ struct W1FramePool {
   finished = true
   return W1PrivateImages(
     tables: consume tables, processCode: process, libraryCode: library,
-    processEntry: plan.processEntry, initialThread: installed, usedBytes: tableBytes + pool.used)
+    processEntry: plan.processEntry, initialThread: installed, owner: child.member,
+    header: child.header, usedBytes: tableBytes + pool.used)
 }

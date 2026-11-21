@@ -32,7 +32,7 @@ public struct W1StackOutputPins: ~Copyable {
     images: borrowing W1PrivateImages, child: borrowing ProcessExecution, hostRoot: UInt64,
     alias: UnsafeMutableRawBufferPointer, hostPage: (UInt64, UInt64) -> Bool
   ) {
-    guard let t = images.initialThread, child.initialMap == images.tables.physicalRoot,
+    guard let t = images.initialThread, images.belongs(to: child),
       hostRoot != 0, hostRoot != images.tables.physicalRoot, let p = alias.baseAddress,
       UInt64(alias.count) == t.stack.upperBound - t.stack.lowerBound
     else { return nil }

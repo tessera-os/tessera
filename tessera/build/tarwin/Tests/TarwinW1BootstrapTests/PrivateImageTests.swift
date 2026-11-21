@@ -1,6 +1,9 @@
 import Foundation
 import TarwinArchAarch64
+import TarwinKernelRandom
 import TarwinLoader
+import TarwinObject
+import TarwinProcessKeys
 import Testing
 
 @testable import TarwinW0Verify
@@ -9,6 +12,17 @@ import Testing
 // Loader interoperability corpus only. No signing identity, enrollment,
 // PCR, address-space switch, PAC instruction or user execution in this test.
 @Test func stageBothInteropMembersOrEraseEveryPrivatePage() throws {
+  let base: UInt64 = 0x100000
+  let ids = KoidSource()
+  try withTestChild(root: base, ids: ids) { child, tree in
+    try stageImages(child: &child, tree: tree, ids: ids, base: base)
+  }
+}
+
+private func stageImages(
+  child: inout ProcessExecution, tree: borrowing JobTree, ids: borrowing KoidSource,
+  base: UInt64
+) throws {
   let dir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent(
     "../../../../../tarwin/tarwin-loader/w0/Tests/TarwinW0Tests/InteropW1")
   let inputs = try ["TEST-ONLY.TIR", "TEST-ONLY.SIG", "test-boot.pub", "test-only.pub"].map {
@@ -53,10 +67,53 @@ import Testing
       hashes: nodes, polynomials: poly, message: temp))
   let plan = try #require(
     set.addressPlan(occupied: .init(start: nil, count: 0), nextRandom: { UInt64.max }))
-  let base: UInt64 = 0x100000
+  let bank = UnsafeMutableBufferPointer<UInt64>.allocate(capacity: 10)
+  defer { bank.deallocate() }
+  let seed = UnsafeMutableRawBufferPointer.allocate(byteCount: 96, alignment: 8)
+  defer { seed.deallocate() }
+  seed.initializeMemory(as: UInt8.self, repeating: 0x68)
+  let sample = UnsafeRawBufferPointer(seed)
+  var rng = KernelRandom(
+    policy: .debugQEMU, bootSeed: .init(rebasing: sample[..<64]),
+    hardware: .init(rebasing: sample[64...]), source: .emulatedTPM,
+    generation: .virtualMachine(low: 1, high: 2))!
+  guard
+    let keys = ArmProcessKeys(
+      child: &child, root: base, tree: tree, storage: bank,
+      random: &rng, generation: .virtualMachine(low: 1, high: 2))
+  else {
+    Issue.record("diagnostic key provision failed")
+    return
+  }
   var clean = true
   var sign = true
   var calls = 0
+  var signedCalls = 0
+  func signSlot(
+    _ target: UInt64, _ modifier: UInt64, root: UInt64, child: borrowing ProcessExecution,
+    tree: borrowing JobTree
+  ) -> UInt64? {
+    let host: UInt64 = 0x80000
+    return signProcessImport(
+      target, modifier, plan: plan, root: root, host: host, child: child,
+      tree: tree, keys: keys
+    ) { addr, mod, p, ttbr1 in
+      signedCalls += 1
+      #expect(addr == plan.targetAddress && mod == plan.storageModifier && ttbr1 == host)
+      #expect(p == UnsafePointer(bank.baseAddress!))
+      return sign ? 0x1234_5678 : 0
+    }
+  }
+  #expect(
+    signSlot(plan.targetAddress + 4, plan.storageModifier, root: base, child: child, tree: tree)
+      == nil)
+  #expect(
+    signSlot(plan.targetAddress, plan.storageModifier ^ 8, root: base, child: child, tree: tree)
+      == nil)
+  #expect(
+    signSlot(plan.targetAddress, plan.storageModifier, root: base + 16384, child: child, tree: tree)
+      == nil)
+  #expect(signedCalls == 0)
   func build(_ size: Int) -> W1PrivateImages? {
     calls = 0
     let thread = W1ThreadPlacement(stackBytes: 81920, draw: { .max })
@@ -67,8 +124,9 @@ import Testing
         calls += 1
         return clean
       },
+      child: child, tree: tree,
       signImport: { target, modifier in
-        sign && target == plan.targetAddress && modifier == plan.storageModifier ? 0x1234_5678 : nil
+        signSlot(target, modifier, root: base, child: child, tree: tree)
       }, firstThread: consume thread)
   }
   func denied(_ size: Int) -> Bool {
@@ -134,6 +192,17 @@ import Testing
   #expect(
     leaf(thread.tcb) == armUserPage(base + UInt64(tcb), write: true, execute: false, lpa2: false))
   let stack = UnsafeMutableRawBufferPointer(rebasing: ram[start..<tcb])
-  try checkStartupFrame(images, root: base + 16384, accepted: false, stack: stack)
-  try checkStartupFrame(images, root: base, accepted: true, stack: stack)
+  for otherRoot in [base + 16384, base] {
+    try withTestChild(root: otherRoot, ids: ids) { other, otherTree in
+      let before = signedCalls
+      let refused =
+        signSlot(
+          plan.targetAddress, plan.storageModifier, root: otherRoot, child: other, tree: otherTree)
+        == nil
+      #expect(refused && signedCalls == before)
+      try checkStartupFrame(
+        images, child: &other, tree: otherTree, ids: ids, accepted: false, stack: stack)
+    }
+  }
+  try checkStartupFrame(images, child: &child, tree: tree, ids: ids, accepted: true, stack: stack)
 }

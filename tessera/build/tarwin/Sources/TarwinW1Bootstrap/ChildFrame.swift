@@ -4,19 +4,6 @@ import TarwinIPCChannels
 import TarwinObject
 
 extension W1PrivateImages {
-  /// Attach a fresh, non-runnable task to this private image root. The owner
-  /// pins the header, root and storage until ordinary task cleanup finishes.
-  public func createChild(
-    header: UnsafePointer<ObjectHeader>, job: JobKey, tree: borrowing JobTree,
-    slots: UnsafeMutableBufferPointer<ThreadSlot>, cells: UnsafeMutableBufferPointer<HandleCell>,
-    salt: UInt8
-  ) -> ProcessExecution? {
-    guard initialThread != nil else { return nil }
-    return ProcessExecution(
-      header: header, job: job, tree: tree, slots: slots, cells: cells,
-      salt: salt, initialMap: tables.physicalRoot)
-  }
-
   /// Transfer only the grants selected by trusted launch policy. Check the
   /// bound root and return gate before moving any staging handle. Keep the
   /// same locks through initialFrame; on failure tear down the unpublished task.
@@ -27,7 +14,7 @@ extension W1PrivateImages {
     staging: inout HandleTable, scratch: UnsafeMutableRawBufferPointer,
     invalidate: (UInt64) -> Void, retire: (UnsafePointer<ObjectHeader>) -> Void
   ) -> ChildBootstrap? {
-    guard initialThread != nil, child.initialMap == tables.physicalRoot,
+    guard initialThread != nil, belongs(to: child),
       tree.returnGate(child.member) == .run
     else { return nil }
     return channel.preloadStartup(
@@ -43,7 +30,7 @@ extension W1PrivateImages {
     _ bootstrap: ChildBootstrap, child: borrowing ProcessExecution,
     tree: borrowing JobTree, channel: borrowing ChannelPair
   ) -> ArmInitialState? {
-    guard let thread = initialThread else { return nil }
+    guard let thread = initialThread, belongs(to: child) else { return nil }
     return initialArmChildFrame(
       bootstrap, child: child, tree: tree, channel: channel, tables: tables,
       entry: processEntry, imageRX: processCode, stack: thread.stack, tcb: thread.tcb)
