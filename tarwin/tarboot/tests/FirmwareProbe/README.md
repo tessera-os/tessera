@@ -15,6 +15,15 @@ Run on macOS with the Swift **swift.org 6.3.3 release toolchain**, QEMU with its
 
 Pass a subset of `aarch64 x86_64 riscv64` as arguments for a targeted run. All PE files, writable NVRAM copies and logs are temporary. No persistent guest state, signed release image or host firmware is modified.
 
+`TARBOOT_TEST_DISPLAY=1 bash run.sh` tests the debug-only framebuffer console on
+all three architectures. Before exit, firmware supplies a linear GOP mode;
+after exit the diagnostic writes “TARWIN TEST” directly to its mapped aperture,
+without calling a firmware output service. QEMU retains the guest display at
+shutdown and the host checks every glyph and background pixel in a QMP PPM
+screendump. To keep full-size evidence, set `TARBOOT_TEST_SCANOUT_DIR` to an
+existing empty directory. This exercises emulated scanout, not kernel entry
+or a hardware display driver.
+
 With `swtpm` installed, run `TARBOOT_TEST_TPM=1 bash run.sh aarch64 x86_64`. This starts a fresh software TPM for each guest. Before exit, the probe reads SHA-256 PCRs 8 and 9, uses UEFI TCG2 to hash, log and extend the archive and a fixed canonical config, then reads both PCRs again. The host independently hashes each payload and checks the resulting PCR against the previous PCR and that hash. A partially logged/extended pair is terminal; the guest never retries or treats a skipped measurement as success. This verifies PCR values, not the complete firmware event log or signer provenance. The bundled RV64 EDK II firmware returns `EFI_NOT_FOUND` for TCG2 with a TPM device attached, so measured boot on RV64 is **not verified**.
 
 This calls firmware on emulated CPUs. It does **not** authenticate firmware or boot sets, establish CPU admission, produce kernel-profile TIR, or enter the Tarwin kernel. The Swift/LLVM diagnostic link (including the x64 PE call ABI and the RV64 EDK II image converter) is not release build wiring.

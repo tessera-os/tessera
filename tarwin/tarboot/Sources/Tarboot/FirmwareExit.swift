@@ -75,6 +75,12 @@ public enum FirmwareExit {
       }
     }
 
+    /// Snapshot a linear GOP mode, not authority to map the aperture.
+    @unsafe public func display() -> FirmwareDisplay? {
+      guard let locate else { return nil }
+      return FirmwareDisplay.current(locate)
+    }
+
     /// Measure pinned, authenticated archive and canonical config bytes before exit.
     /// Does not verify their authenticity. Any failure is terminal for this boot:
     /// firmware may have extended a PCR even if it failed to log the event.

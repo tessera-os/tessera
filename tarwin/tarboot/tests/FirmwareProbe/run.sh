@@ -25,8 +25,9 @@ for isa in "${@:-all}"; do
                -Xfrontend -disable-stack-protector -parse-as-library -I "$d")
         if [[ $arch == x86_64 ]]; then flags+=(-D TARBOOT_EFI_PE_COFF); fi
         if [[ ${TARBOOT_TEST_TPM:-0} == 1 ]]; then flags+=(-D TARBOOT_TEST_TPM); fi
+        if [[ ${TARBOOT_TEST_DISPLAY:-0} == 1 ]]; then flags+=(-D TARBOOT_TEST_DISPLAY); fi
         "$out/write-fixture" "$arch" "$d/esp/BOOT.TIR"
-        for src in "$root"/{kcore,tarboot,tarwin-mm,tarwin-time,tarwin-sched,tarwin-loader}/Sources/* \
+        for src in "$root"/{kcore,tarwin-boot,tarboot,tarwin-mm,tarwin-time,tarwin-sched,tarwin-loader}/Sources/* \
                    "$composition"/Sources/*; do
                 mod=$(basename "$src")
                 "$bin/swiftc" "${flags[@]}" -module-name "$mod" -emit-module -emit-module-path "$d/$mod.swiftmodule" "$src"/*.swift

@@ -13,7 +13,7 @@ if [ -n "${EMBEDDED_SWIFTC:-}" ]; then
     for target in aarch64-none-none-elf x86_64-unknown-none-elf riscv64-none-none-eabi; do
         dest="$out/$target"
         mkdir "$dest"
-        for pkg in kcore tarboot tarwin-boot tarwin-arch-aarch64 tarwin-arch-x64 tarwin-arch-rv64 tarwin-mm tarwin-time tarwin-sched tarwin-loader ../tessera/build/tarwin; do
+        for pkg in kcore tarwin-boot tarboot tarwin-arch-aarch64 tarwin-arch-x64 tarwin-arch-rv64 tarwin-mm tarwin-time tarwin-sched tarwin-loader ../tessera/build/tarwin; do
             for src in "$root/$pkg"/Sources/*; do
                 module=$(basename "$src")
                 "$EMBEDDED_SWIFTC" -target "$target" -enable-experimental-feature Embedded \

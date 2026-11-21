@@ -7,6 +7,43 @@ struct Failure: Error, CustomStringConvertible {
   init(_ description: String) { self.description = description }
 }
 
+private func guestShutdown(_ data: Data) -> Bool {
+  data.split(separator: 10).contains { line in
+    guard let event = (try? JSONSerialization.jsonObject(with: Data(line))) as? [String: Any],
+      event["event"] as? String == "SHUTDOWN", let data = event["data"] as? [String: Any]
+    else { return false }
+    return data["guest"] as? Bool == true && data["reason"] as? String == "guest-shutdown"
+  }
+}
+
+// QMP screendump emits binary PPM. Check the whole message on the emulated
+// scanout, not a copy of framebuffer RAM or a guest-supplied success value.
+private func verifyScanout(_ bytes: Data) throws {
+  let lines = bytes.split(separator: 10, maxSplits: 3, omittingEmptySubsequences: false)
+  guard lines.count == 4, lines[0].elementsEqual("P6".utf8), lines[2].elementsEqual("255".utf8)
+    else { throw Failure("invalid QMP PPM header") }
+  let dims = String(decoding: lines[1], as: UTF8.self).split(separator: " ").compactMap { Int($0) }
+  guard dims.count == 2, (66...16384).contains(dims[0]), (8...16384).contains(dims[1]),
+    lines[3].count == 3 * dims[0] * dims[1] else { throw Failure("invalid QMP scanout size") }
+  let glyphs: [[UInt8]] = [
+    [31,4,4,4,4,4,4], [14,17,17,31,17,17,17], [30,17,17,30,20,18,17],
+    [17,17,17,21,21,27,17], [14,4,4,4,4,4,14], [17,25,25,21,19,19,17],
+    [0,0,0,0,0,0,0], [31,4,4,4,4,4,4], [31,16,16,30,16,16,31],
+    [15,16,16,14,1,1,30], [31,4,4,4,4,4,4],
+  ]
+  let pixels = lines[3]
+  for (cell, glyph) in glyphs.enumerated() {
+    for y in 0..<8 {
+      for x in 0..<6 {
+        let i = pixels.startIndex + 3 * (y * dims[0] + cell * 6 + x)
+        let lit = y < 7 && x < 5 && glyph[y] & (16 >> x) != 0
+        guard pixels[i] == (lit ? 255 : 16), pixels[i+1] == (lit ? 255 : 32),
+          pixels[i+2] == (lit ? 255 : 64) else { throw Failure("wrong scanout pixel at \(cell * 6 + x),\(y)") }
+      }
+    }
+  }
+}
+
 func check() throws {
   guard CommandLine.arguments.count == 4 else {
     throw Failure("expected architecture, work directory and CODE.fd")
@@ -27,6 +64,8 @@ func check() throws {
     : (a == "aarch64"
       ? ["-machine", "virt,gic-version=3", "-cpu", "cortex-a72"] : ["-machine", "virt"])
   let process = Process()
+  let displayEnabled = ProcessInfo.processInfo.environment["TARBOOT_TEST_DISPLAY"] == "1"
+  let displayArgs = !displayEnabled ? [] : (a == "x86_64" ? ["-vga", "std"] : ["-device", "ramfb"]) + ["-no-shutdown"]
   let tpmEnabled = ProcessInfo.processInfo.environment["TARBOOT_TEST_TPM"] == "1"
   let state = URL(fileURLWithPath: "/tmp/tarwin-tpm-" + UUID().uuidString)
   let socket = state.appendingPathComponent("ctrl").path
@@ -63,7 +102,7 @@ func check() throws {
   }
   process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
   process.arguments =
-    ["qemu-system-" + a] + machine + tpmArgs + [
+    ["qemu-system-" + a] + machine + tpmArgs + displayArgs + [
       "-m", "512", "-smp", "1", "-display", "none",
       "-serial", "file:" + serial, "-monitor", "none", "-qmp", "stdio", "-nic", "none",
       "-drive", "if=pflash,format=raw,readonly=on,file=" + code, "-drive",
@@ -81,7 +120,19 @@ func check() throws {
   try input.fileHandleForWriting.write(
     contentsOf: Data("{\"execute\":\"qmp_capabilities\"}\n".utf8))
   let deadline = ContinuousClock.now.advanced(by: .seconds(60))
+  var captured = false
   while process.isRunning && ContinuousClock.now < deadline {
+    if displayEnabled && !captured {
+      if let log = try? Data(contentsOf: URL(fileURLWithPath: serial)),
+        log.range(of: Data("TARWIN-GOP-UNAVAILABLE".utf8)) != nil { throw Failure("\(a): no linear GOP display") }
+      if let events = try? Data(contentsOf: URL(fileURLWithPath: monitor)), guestShutdown(events) {
+        let msg: [String: Any] = ["execute": "screendump", "arguments": ["filename": d + "/scanout.ppm"]]
+        var commands = try JSONSerialization.data(withJSONObject: msg)
+        commands.append(contentsOf: "\n{\"execute\":\"quit\"}\n".utf8)
+        try input.fileHandleForWriting.write(contentsOf: commands)
+        captured = true
+      }
+    }
     if tpmEnabled, let log = try? Data(contentsOf: URL(fileURLWithPath: serial)),
       log.range(of: Data("TARWIN-TCG2-NOT-FOUND".utf8)) != nil
     {
@@ -96,14 +147,18 @@ func check() throws {
   guard uart.range(of: Data("TARWIN-FIRMWARE-EXIT-TEST".utf8)) != nil else {
     throw Failure("\(a): probe did not run")
   }
-  let messages = try Data(contentsOf: URL(fileURLWithPath: monitor)).split(separator: 10)
-  let shutdown = messages.contains { line in
-    guard let event = (try? JSONSerialization.jsonObject(with: Data(line))) as? [String: Any],
-      event["event"] as? String == "SHUTDOWN", let data = event["data"] as? [String: Any]
-    else { return false }
-    return data["guest"] as? Bool == true && data["reason"] as? String == "guest-shutdown"
+  guard guestShutdown(try Data(contentsOf: URL(fileURLWithPath: monitor)))
+    else { throw Failure("\(a): missing guest-initiated shutdown event") }
+  if displayEnabled {
+    guard captured else { throw Failure("no scanout recorded") }
+    let frame = try Data(contentsOf: URL(fileURLWithPath: d + "/scanout.ppm"))
+    try verifyScanout(frame)
+    if let dir = ProcessInfo.processInfo.environment["TARBOOT_TEST_SCANOUT_DIR"] {
+      let output = URL(fileURLWithPath: dir).appendingPathComponent(a + ".ppm")
+      try frame.write(to: output, options: .withoutOverwriting)
+    }
+    print("\(a): post-exit debug text matches QMP scanout")
   }
-  guard shutdown else { throw Failure("\(a): missing guest-initiated shutdown event") }
   if tpmEnabled {
     let console = String(decoding: uart, as: UTF8.self)
     func pcr(_ label: String) throws -> Data {

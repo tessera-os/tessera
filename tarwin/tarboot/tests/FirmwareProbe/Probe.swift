@@ -1,6 +1,7 @@
 // EFI diagnostic, not tarboot or a Tarwin kernel. The dedicated QEMU instance
 // powers off only after successful ExitBootServices and inspection of the returned map.
 import Tarboot
+import TarwinBoot
 import TarwinBootstrap
 import TarwinMM
 
@@ -41,8 +42,14 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
       #else
         let pageSize: UInt64 = 4096
       #endif
-      guard var boot = FirmwareBootServices(image: image, system: system),
-        exerciseFile(&boot, system: system, console: console, output: output),
+      guard var boot = FirmwareBootServices(image: image, system: system) else { return false }
+      #if TARBOOT_TEST_DISPLAY
+        guard let display = boot.display() else {
+          writeDiagnostic("TARWIN-GOP-UNAVAILABLE\r\n", console: console, output: output)
+          return false
+        }
+      #endif
+      guard exerciseFile(&boot, system: system, console: console, output: output),
         let owned = boot.reserveLoaderPages(UInt(2 * 64 * pageSize / 4096 - 1)),
         case .exited(let n) = boot.finish(map: raw, into: &buffer)
       else { return false }
@@ -60,9 +67,19 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
           covered = true
         }
       }
-      return usable && runtime && covered
+      guard usable && runtime && covered
         && checkPage(base: owned.base, length: owned.length, pageSize: pageSize)
-        && runBootCPU(UInt64(n))
+        && runBootCPU(UInt64(n)) else { return false }
+      #if TARBOOT_TEST_DISPLAY
+        // Dedicated debug VM. Its GOP aperture remains identity mapped after
+        // exit; no graphics driver or other CPU is using the framebuffer.
+        let mapped = UnsafeMutableRawBufferPointer(start: UnsafeMutableRawPointer(bitPattern: UInt(display.base)),
+          count: display.mode.byteCount)
+        guard var debug = DebugConsole(mapped: mapped, mode: display.mode, debugImage: true) else { return false }
+        return debug.write("TARWIN TEST")
+      #else
+        return true
+      #endif
     }
   }
   if done { shutdown(2, 0, 0, nil) }  // EfiResetShutdown; still in physical addressing mode.
