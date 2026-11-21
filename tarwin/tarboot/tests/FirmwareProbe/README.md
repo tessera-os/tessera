@@ -99,3 +99,14 @@ the restricted debug config and checks the ELF's unsigned build ID and kernel
 profile. The run requires explicit rejection by signed-image preflight.
 PCR 9 measures the actual archive member; host replay uses the independently
 expected config. Only the EFI diagnostic runs and writes to the display.
+
+With `TARBOOT_TEST_TPM=1 TARBOOT_TEST_FLOOR=1` the Mac harness provisions a
+counter in an **empty, disposable swtpm** before QEMU starts. It sends commands
+over a private socket pair, not to a host device. Only this fixture uses this
+index and the disposable platform hierarchy's empty provisioning password.
+Tarboot's read-only API takes the index and expected SHA-256 Name digest from
+trusted installation policy, requires a written platform-created counter with
+the exact NV public area, and checks both TPM responses. The guest reads the
+persisted value and rejects a different Name. A missing or malformed response
+is not floor zero. This does not enroll a physical TPM, authenticate a boot
+set, or advance the counter after a confirmed install.

@@ -95,6 +95,14 @@ public enum FirmwareExit {
       FirmwareRNG.readSeed(locate, into: bytes)
     }
 
+    /// Index and SHA-256 Name digest are trusted installation policy, never
+    /// archive or ESP input. Missing counters never imply a zero floor.
+    @available(macOS 26, *)
+    @unsafe public func securityVersionFloor(index:UInt32,name:UnsafeRawBufferPointer)->UInt64? {
+      guard let locate, let tcg=FirmwareTCG.open(locate) else { return nil }
+      return tcg.securityFloor(index:index,name:name)
+    }
+
     public struct Placement: ~Copyable {
       public let virtual: UInt64
       public let pages: LoaderPages

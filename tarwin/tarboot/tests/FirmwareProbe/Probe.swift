@@ -45,6 +45,20 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
       guard var boot = FirmwareBootServices(image: image, system: system),
         let tables = boot.locateTables()
       else { return false }
+      #if TARBOOT_TEST_FLOOR
+        // Public SHA-256 Name of this fixture's WRITTEN NV public area.
+        // ProvisionCounter runs offline before QEMU; the ESP cannot select it.
+        var name:InlineArray<32,UInt8>=[153,36,237,96,117,77,224,179,204,215,111,177,106,104,33,94,
+          62,216,121,131,3,130,95,107,144,89,201,29,0,141,121,15]
+        guard withUnsafeBytes(of:&name,{boot.securityVersionFloor(index:0x0180f001,name:$0)})==1
+        else {
+          writeDiagnostic("TARWIN-NV-READ-FAILED\r\n",console:console,output:output)
+          return false
+        }
+        name[0]^=1
+        guard withUnsafeBytes(of:&name,{boot.securityVersionFloor(index:0x0180f001,name:$0)})==nil else { return false }
+        writeDiagnostic("TARWIN-NV-FLOOR-ONE\r\n",console:console,output:output)
+      #endif
       #if TARBOOT_TEST_SECURE_FIRMWARE
         guard let mode = boot.firmwareBootMode(), mode.secureBoot, !mode.setupMode else {
           writeDiagnostic("TARWIN-SECURE-MODE-FAILED\r\n", console:console, output:output)

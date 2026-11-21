@@ -89,6 +89,14 @@ func check() throws {
   if tpmEnabled {
     try fm.createDirectory(
       at: state, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+    if ProcessInfo.processInfo.environment["TARBOOT_TEST_FLOOR"] == "1" {
+      let installer=Process()
+      installer.executableURL=URL(fileURLWithPath:"/usr/bin/swift")
+      let here=URL(fileURLWithPath:#filePath).deletingLastPathComponent()
+      installer.arguments=[here.appendingPathComponent("ProvisionCounter.swift").path,state.path]
+      try installer.run(); installer.waitUntilExit()
+      guard installer.terminationStatus==0 else { throw Failure("disposable NV provisioning failed") }
+    }
     emulator.executableURL = URL(fileURLWithPath: "/usr/bin/env")
     emulator.arguments = [
       "swtpm", "socket", "--tpm2", "--tpmstate", "dir=" + state.path,
@@ -174,6 +182,12 @@ func check() throws {
   }
   let uart = try Data(contentsOf: URL(fileURLWithPath: serial))
   guard !denied else { throw Failure("no explicit unsigned boot rejection") }
+  if ProcessInfo.processInfo.environment["TARBOOT_TEST_FLOOR"] == "1" {
+    guard uart.range(of:Data("TARWIN-NV-FLOOR-ONE".utf8)) != nil else {
+      throw Failure("missing provisioned security version floor")
+    }
+    print("\(a): matched the provisioned TPM counter Name and read its persisted floor of 1")
+  }
   if ProcessInfo.processInfo.environment["TARBOOT_TEST_STAGE0_ARCHIVE"] != nil {
     guard uart.range(of:Data("TARWIN-STAGE0-UNSIGNED-NOT-LAUNCHABLE".utf8)) != nil
     else { throw Failure("missing explicit unsigned kernel rejection") }

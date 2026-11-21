@@ -29,6 +29,10 @@ for isa in "${@:-all}"; do
             flags+=(-D TARBOOT_TEST_STAGE0)
         fi
         if [[ ${TARBOOT_TEST_TPM:-0} == 1 ]]; then flags+=(-D TARBOOT_TEST_TPM); fi
+        if [[ ${TARBOOT_TEST_FLOOR:-0} == 1 ]]; then
+            [[ ${TARBOOT_TEST_TPM:-0} == 1 ]] || { echo 'floor requires disposable TPM' >&2; exit 2; }
+            flags+=(-D TARBOOT_TEST_FLOOR)
+        fi
         if [[ ${TARBOOT_TEST_SECURE_FIRMWARE:-0} == 1 ]]; then
             [[ $arch == x86_64 ]] || { echo 'secure firmware fixture requires x86_64' >&2; exit 2; }
             flags+=(-D TARBOOT_TEST_SECURE_FIRMWARE)
@@ -37,8 +41,8 @@ for isa in "${@:-all}"; do
         if [[ ${TARBOOT_TEST_RNG:-0} == 1 ]]; then flags+=(-D TARBOOT_TEST_RNG); fi
         if [[ ${TARBOOT_TEST_SMP_TABLES:-0} == 1 ]]; then flags+=(-D TARBOOT_TEST_SMP_TABLES); fi
         "$out/write-fixture" "$arch" "$d/esp/BOOT.TIR" "$d/FixtureHashes.swift"
-        for src in "$root"/{kcore,tarwin-boot,tarboot,tarwin-mm,tarwin-time,tarwin-sched,tarwin-loader}/Sources/* \
-                   "$composition"/Sources/*; do
+        for src in "$root"/{kcore/Sources/KCore,tarwin-boot/Sources/TarwinBoot,tarboot/Sources/Tarboot,tarwin-mm/Sources/TarwinMM,tarwin-time/Sources/TarwinTime,tarwin-sched/Sources/TarwinSched,tarwin-loader/Sources/TarwinLoader} \
+                   "$composition"/Sources/{TarbootPreflight,TarwinBootstrap}; do
                 mod=$(basename "$src")
                 "$bin/swiftc" "${flags[@]}" -module-name "$mod" -emit-module -emit-module-path "$d/$mod.swiftmodule" "$src"/*.swift
         done
