@@ -1,5 +1,38 @@
 # TarwindKernel
 
+## Hosted debug signing
+
+`tarwin-hosted-sign` requires OpenSSL 3.5 or newer with Ed25519 and ML-DSA-65.
+Set `OPENSSL` to its absolute path if it is not installed at Homebrew's
+`/opt/homebrew/opt/openssl@3/bin/openssl`.
+
+```
+swift run tarwin-hosted-sign --app-id org.tessera.conformance.hosted-io-client \
+  --entitlement tessera.network.client input.elf signed.elf
+```
+
+The input must already be a compiler-finalized AArch64 ET_DYN, including its
+64-byte finalizer note 6; this tool does not manufacture a finalizer. It preserves
+existing BRK records, finds aligned SVC #0 sites using H2's TarwinTrapDecode,
+merges them into `.tirtrap` in RVA order without duplicates, then signs the
+entire result with both signatures in a TSG1 envelope. Repeated `--entitlement`
+options produce the canonical signed grant list in note 3; note 7 is the
+app/executable profile. Output creation never overwrites an existing file.
+
+The app ID is bound in the signed TSG1 identity claim, not an image note.
+TarwindAppTrust independently checks the canonical image digest, both signatures,
+train, exact aarch64.base CPU baseline, canonical entitlements and app profile.
+Its two pinned public keys are a new hosted **debug-app-only** identity. Neither
+W1/QEMU enrollment nor keys supplied by an image are consulted. The intentionally
+public development private keys are resources of the signer alone; TarwindKernel
+contains only the public trust fixture. These keys must never authorize system
+images or production applications.
+
+The admission test uses the repository's existing W1 `tessera.init` ELF as
+negative input and augments a copy with a synthetic finalizer descriptor for
+signing tests only. It checks both HostedVerifiedImage.admit and trapRVAs. This
+is not evidence of a compiler-finalized, runnable guest application.
+
 Regular Swift 6 hosted composition, with a Swift tools 6.0 manifest. The
 deployment minimum is macOS 26 because the existing IPC/channel-call packages
 require it. No AArch64 platform package or privileged entry path is linked.

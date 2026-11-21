@@ -5,7 +5,8 @@ import PackageDescription
 let root = ProcessInfo.processInfo.environment["TARWIN_SOURCE_ROOT"] ?? "../../../tarwin"
 let package = Package(
   name: "tarwin-hosted", platforms: [.macOS("26.0")],
-  products: [.library(name: "TarwindKernel", targets: ["TarwindKernel"])],
+  products: [.library(name: "TarwindKernel", targets: ["TarwindKernel"]),
+    .executable(name: "tarwin-hosted-sign", targets: ["TarwindHostedSign"])],
   dependencies: [
     .package(path: "\(root)/tarwin-arch-hosted"), .package(path: "\(root)/tarwin-time"),
     .package(path: "\(root)/tarwin-sched"), .package(path: "\(root)/tarwin-object"),
@@ -16,9 +17,19 @@ let package = Package(
     .package(path: "\(root)/tarwin-block/hosted/tarwin-block-hosted"),
     .package(path: "\(root)/trfs/hosted/trfs-hosted"), .package(path: "\(root)/trfs"),
     .package(path: "\(root)/tarwin-net/hosted/tarwin-net-hosted"),
+    .package(path: "\(root)/tarwin-loader/w0"),
+    .package(path: "\(root)/tarwin-syscall/hosted/trap-decode"),
+    .package(path: "\(root)/tarwin-loader/hosted/TarwinLoaderHosted"),
+    .package(path: "\(root)/tarwin-mm/hosted/TarwinMMHosted"),
+    .package(path: "\(root)/tarwin-task"),
   ],
   targets: [
     .target(name: "TarwindKernel", dependencies: [
+      "TarwindSigning",
+      .product(name: "TarwinLoaderHosted", package: "TarwinLoaderHosted"),
+      .product(name: "TarwinMMHosted", package: "TarwinMMHosted"),
+      .product(name: "TarwinTaskTransport", package: "tarwin-task"),
+      .product(name: "TarwinTaskProtocol", package: "tarwin-task"),
       .product(name: "TarwinArchHosted", package: "tarwin-arch-hosted"),
       .product(name: "TarwinTime", package: "tarwin-time"),
       .product(name: "TarwinSched", package: "tarwin-sched"),
@@ -42,6 +53,14 @@ let package = Package(
       .product(name: "TarwinIPC", package: "tarwin-ipc"),
       .product(name: "TarwinNetHosted", package: "tarwin-net-hosted"),
     ]),
+    .target(name: "TarwindSigning", dependencies: [
+      .product(name: "TarwinLoader", package: "tarwin-loader"),
+      .product(name: "TarwinW0Verify", package: "w0"),
+    ], resources: [.copy("HostedDebugKeys.json")]),
+    .executableTarget(name: "TarwindHostedSign", dependencies: ["TarwindSigning",
+      .product(name: "TarwinTrapDecode", package: "trap-decode"),
+    ], resources: [.copy("DevelopmentIdentity")]),
     .executableTarget(name: "TarwindPagerProbe", dependencies: ["TarwindKernel"], path: "Tests/TarwindPagerProbe"),
-    .testTarget(name: "TarwindKernelTests", dependencies: ["TarwindKernel", "TarwindPagerProbe"]),
+    .testTarget(name: "TarwindKernelTests", dependencies: ["TarwindKernel", "TarwindPagerProbe", "TarwindHostedSign"],
+      resources: [.copy("Fixtures")]),
   ], swiftLanguageModes: [.v6])
