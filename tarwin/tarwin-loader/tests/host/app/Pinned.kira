@@ -1,0 +1,47 @@
+import KCore
+import TarwinLoader
+
+struct Capture: ByteSource {
+    let address: RawPtr
+    var length: U64
+    function byteCount(borrow self) -> U64 { return length }
+    function byteAt(borrow self, offset: U64) -> U8 {
+        if offset >= length { runtimeTrap() }
+        return heapLoad<U8>(address, Int(offset))
+    }
+}
+
+function storeCv(address: RawPtr, cv: borrow BlakeCv) {
+    heapStore<U32>(address, 0, cv.w0)
+    heapStore<U32>(address, 4, cv.w1)
+    heapStore<U32>(address, 8, cv.w2)
+    heapStore<U32>(address, 12, cv.w3)
+    heapStore<U32>(address, 16, cv.w4)
+    heapStore<U32>(address, 20, cv.w5)
+    heapStore<U32>(address, 24, cv.w6)
+    heapStore<U32>(address, 28, cv.w7)
+}
+
+// Read through the same bounded views used by the pager, including zeroes
+// beyond EOF. Targets and macOS host are little-endian.
+function checkPinned(root: borrow BlakeCv, left: borrow BlakeCv) -> Bool {
+    let frame = Capture { address: heapAllocateRaw(4096, 16), length: U64(4096) }
+    var proof = Capture { address: heapAllocateRaw(64, 16), length: U64(32) }
+    heapFillBytes(frame.address, U8(0), 4096)
+    heapStore<U8>(frame.address, U8(U64(4096) % U64(251)))
+    storeCv(proof.address, left)
+    var ok = verifyFilePage(frame, proof, U64(4097), U64(4096), U64(4096), root)
+    heapStore<U8>(frame.address, 1, U8(1))
+    if verifyFilePage(frame, proof, U64(4097), U64(4096), U64(4096), root) { ok = false }
+    heapStore<U8>(frame.address, 1, U8(0))
+    proof.length = U64(64)
+    if verifyFilePage(frame, proof, U64(4097), U64(4096), U64(4096), root) { ok = false }
+    proof.length = U64(0)
+    if verifyFilePage(frame, proof, U64(4097), U64(4096), U64(4096), root) { ok = false }
+    proof.length = U64(32)
+    heapStore<U32>(proof.address, left.w0 ^ U32(1))
+    if verifyFilePage(frame, proof, U64(4097), U64(4096), U64(4096), root) { ok = false }
+    heapFreeRaw(frame.address)
+    heapFreeRaw(proof.address)
+    return ok
+}

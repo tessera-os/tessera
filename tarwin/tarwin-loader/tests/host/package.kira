@@ -1,4 +1,7 @@
 construct LoaderCases extends Package {
     let kind: PackageKind = .App
-    let dependencies: [Dependency] = [Dependency { name: "TarwinLoader", path: "../.." }]
+    let dependencies: [Dependency] = [
+        Dependency { name: "KCore", path: "../../../kcore" },
+        Dependency { name: "TarwinLoader", path: "../.." }
+    ]
 }

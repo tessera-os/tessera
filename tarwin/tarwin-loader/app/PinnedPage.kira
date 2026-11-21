@@ -1,0 +1,73 @@
+import KCore
+
+function littleWord<B: ByteSource>(bytes: borrow B, start: U64, end: U64) -> U32 {
+    var value: U32 = 0
+    for byte in 0..4 {
+        let at = start + U64(byte)
+        if at < end { value = value | (U32(bytes.byteAt(at)) << U32(byte * 8)) }
+    }
+    return value
+}
+
+function littleCv<B: ByteSource>(bytes: borrow B, at: U64, end: U64) -> BlakeCv {
+    return BlakeCv {
+        w0: littleWord(bytes, at + U64(0), end),
+        w1: littleWord(bytes, at + U64(4), end),
+        w2: littleWord(bytes, at + U64(8), end),
+        w3: littleWord(bytes, at + U64(12), end),
+        w4: littleWord(bytes, at + U64(16), end),
+        w5: littleWord(bytes, at + U64(20), end),
+        w6: littleWord(bytes, at + U64(24), end),
+        w7: littleWord(bytes, at + U64(28), end)
+    }
+}
+
+// Views are stable for the entire borrow. Frame is exactly one private,
+// read-only pinned page, not a userspace buffer. Witness bytes are a
+// kernel-private cache layout: 32-byte sibling CVs leaf-to-root for each
+// successive 1 KiB chunk; direction, length and ROOT are never trusted.
+public function verifyFilePage<B: ByteSource, W: ByteSource>(
+    frame: borrow B,
+    witnesses: borrow W,
+    size: U64,
+    fileOffset: U64,
+    pageSize: U64,
+    signedRoot: borrow BlakeCv
+) -> Bool {
+    if frame.byteCount() != pageSize { return false }
+    var page = pageIntegrity(size, fileOffset, pageSize, signedRoot)
+    if page.failed { return false }
+    var valid = size - fileOffset
+    if valid > pageSize { valid = pageSize }
+    let witnessBytes = witnesses.byteCount()
+    // U64 image size gives at most 2^54 chunks and at most 54 siblings.
+    if witnessBytes % U64(32) != U64(0) || witnessBytes > U64(16 * 54 * 32) { return false }
+    var p: U64 = 0
+    var w: U64 = 0
+    while p < valid {
+        var leaf = imageChunk(size, page.nextChunk)
+        while !leaf.hashed {
+            var length = leaf.remaining
+            if length > U64(64) { length = U64(64) }
+            if length == U64(0) || length > valid - p { return false }
+            let end = p + length
+            let block = BlakeBlock {
+                low: littleCv(frame, p, end),
+                high: littleCv(frame, p + U64(32), end)
+            }
+            if !leaf.absorb(block, U32(length)) { return false }
+            p = end
+        }
+        while leaf.nodes > U64(1) {
+            if witnessBytes - w < U64(32) { return false }
+            if !leaf.sibling(littleCv(witnesses, w, w + U64(32))) { return false }
+            w += U64(32)
+        }
+        if !page.accept(leaf) { return false }
+    }
+    while p < pageSize {
+        if frame.byteAt(p) != U8(0) { return false }
+        p += U64(1)
+    }
+    return w == witnessBytes && page.verified()
+}

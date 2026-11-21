@@ -32,5 +32,5 @@ function main() -> Int {
     if relr.take() != U64(0xffffffffffffffff) || relr.accept(U64(8)) { return 13 }
     if !relr.accept(U64(4080)) || relr.take() != U64(4080) { return 14 }
     if relr.accept(U64(5)) || !relr.accept(U64(3)) || relr.take() != U64(4088) { return 15 }
-    return 0
+    return integrityCases()
 }

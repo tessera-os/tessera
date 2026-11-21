@@ -1,4 +1,5 @@
 construct TarwinLoader extends Package {
     let kind: PackageKind = .Library
     let version: String = "26.11.1"
+    let dependencies: [Dependency] = [Dependency { name: "KCore", path: "../kcore" }]
 }
