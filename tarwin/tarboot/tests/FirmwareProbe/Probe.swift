@@ -347,10 +347,22 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
 // Only call for the dedicated firmware allocation in the identity map.
 // Never use arbitrary RAM found by scanning the map. No CPU or device shares it.
 private func checkPage(base: UInt64, length: UInt64, pageSize: UInt64) -> Bool {
-  guard var arena = arenaFromReservation(base: base, length: length, pageSize: pageSize) else {
+  guard let arena = arenaFromReservation(base: base, length: length, pageSize: pageSize) else {
     return false
   }
-  let page = takePages(&arena, order: 0)
+  var counters = InlineArray<64, UInt32>(repeating: 0)
+  return withUnsafeMutableBytes(of: &counters) {
+    guard var pages = MonitoredPageArena(fresh: arena, counts: $0.bindMemory(to: UInt32.self),
+      threshold: 1) else { return false }
+    #if TARBOOT_TEST_MCA
+      guard checkMCA(&pages) else { return false }
+    #endif
+    return checkCompression(&pages, pageSize: pageSize) && checkOwnedPage(&pages, pageSize: pageSize)
+  }
+}
+
+private func checkOwnedPage(_ pages: inout MonitoredPageArena, pageSize: UInt64) -> Bool {
+  let page = pages.take(order: 0)
   guard page.ok, let bytes = UnsafeMutableRawPointer(bitPattern: UInt(page.address)) else {
     return false
   }
@@ -359,11 +371,16 @@ private func checkPage(base: UInt64, length: UInt64, pageSize: UInt64) -> Bool {
   let correct = pageMatches(UnsafePointer(words), count: Int(pageSize / 8), value: page.address)
   for i in 0..<Int(pageSize / 8) { words[i] = 0 }
   words.deinitialize(count: Int(pageSize / 8))
-  guard correct, givePages(&arena, address: page.address, order: 0),
-    !givePages(&arena, address: page.address, order: 0)
+  // Synthetic corrected-error reports about two bytes in the same real
+  // frame. No hardware machine check, active user mappings, or DMA exist.
+  guard correct, pages.corrected(at: page.address) == .counted,
+    pages.corrected(at: page.address + pageSize - 1) == .evacuate,
+    pages.give(address: page.address, order: 0),
+    !pages.give(address: page.address, order: 0)
   else { return false }
-  let heapPage = takePages(&arena, order: 0)
-  guard heapPage.ok, let p = UnsafeMutableRawPointer(bitPattern: UInt(heapPage.address)) else {
+  let heapPage = pages.take(order: 0)
+  guard heapPage.ok, heapPage.address != page.address,
+    let p = UnsafeMutableRawPointer(bitPattern: UInt(heapPage.address)) else {
     return false
   }
   // QEMU's selected Arm CPU is Cortex-A72 (no MTE). Keep this page dedicated

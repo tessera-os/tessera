@@ -4,6 +4,23 @@ Before firmware exit, the diagnostic opens a raw TIRA test archive on its own EF
 
 Build a disposable PE32+ diagnostic and start it from the removable-media path in QEMU's EDK II firmware. It validates table CRCs, reserves loader pages, and exits boot services with the key for the final validated map. After exit it checks the reservation against that map, allocates a Tarwin physical page inside it, writes and reads back the whole page, releases it and rejects a second free.
 
+Two synthetic corrected-error reports on that page cross a test threshold;
+the next allocation must use a different frame. For an x64 bank-level test,
+run `TARBOOT_TEST_MCA=1 bash run.sh x86_64`. On the pinned one-CPU Intel
+TCG profile the host injects two corrected reports for the guest's page.
+The guest polls bank 4, checks the physical address and error type, counts
+each report before clearing it, and excludes the frame after release.
+`TARBOOT_TEST_MCA=wide` injects an address range spanning multiple pages:
+the guest must leave the report in the bank and not charge any one page.
+No uncorrectable exception, ECC hardware or process termination is tested.
+
+On each architecture, the post-exit probe compresses two different page
+patterns into one reserved RAM page, frees and overwrites the source frames,
+then restores both into a different frame. Discarding the first block
+compacts the segment without invalidating the second block's handle.
+These are explicit restore calls, not hardware page faults; hosted tests
+also round-trip packed allocation tags at both supported page sizes.
+
 The diagnostic dedicates a page to two type-isolated small-object slabs. An
 exhausted slab cannot use its neighbour or reclaim a quarantined slot. After
 explicit release of a test quarantine batch the slot is zero on reuse. The

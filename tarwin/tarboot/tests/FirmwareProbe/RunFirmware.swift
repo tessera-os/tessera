@@ -61,6 +61,11 @@ func check() throws {
   let d = CommandLine.arguments[2]
   let code = CommandLine.arguments[3]
   let serial = d + "/console.log"
+  let mca = ProcessInfo.processInfo.environment["TARBOOT_TEST_MCA"] ?? "0"
+  guard ["0", "1", "wide"].contains(mca), mca == "0" || a == "x86_64"
+  else { throw Failure("invalid MCA diagnostic target") }
+  let mcaLog = d + "/mca.log"
+  let mcaArgs = mca == "0" ? [] : ["-accel", "tcg", "-cpu", "max,vendor=GenuineIntel", "-debugcon", "file:" + mcaLog]
   let monitor = d + "/monitor.log"
   let input = Pipe()
   let fm = FileManager.default
@@ -151,7 +156,7 @@ func check() throws {
   let evidenceArgs = (evidence ? ["-fw_cfg", "name=opt/org.tessera/tarwin/w1.sig,string=not-a-signature"] : [])
     + (extraPCI ? ["-device", "virtio-balloon-pci,addr=3,iommu_platform=on,disable-legacy=on"] : [])
   process.arguments =
-    ["qemu-system-" + a] + machine + tpmArgs + displayArgs + rngArgs + generationArgs + evidenceArgs + [
+    ["qemu-system-" + a] + machine + tpmArgs + displayArgs + rngArgs + generationArgs + evidenceArgs + mcaArgs + [
       "-m", "512", "-smp", multiple ? "4" : "1", "-display", "none", "-rtc", "base=utc",
       "-serial", "file:" + serial, "-monitor", "none", "-qmp", "stdio", "-nic", "none",
       "-drive", "if=pflash,format=raw,readonly=on,file=" + code, "-drive",
@@ -224,7 +229,22 @@ func check() throws {
     guard try Data(contentsOf: URL(fileURLWithPath: path)).elementsEqual(wire)
     else { throw Failure("device and paused guest generation differ") }
   }
+  var injected = 0
+  let expectedReports = mca == "wide" ? 1 : 2
   while process.isRunning && ContinuousClock.now < deadline {
+    if mca != "0", injected < expectedReports, let raw = try? Data(contentsOf: URL(fileURLWithPath: mcaLog)) {
+      let prefix = "MCA\(injected) "
+      let lines = String(decoding: raw, as: UTF8.self).components(separatedBy: "\n").dropLast()
+      if let line = lines.first(where: { $0.hasPrefix(prefix) }) {
+        let hex = line.dropFirst(prefix.count)
+        guard hex.count == 16, let gpa = UInt64(hex, radix: 16), gpa > 0, gpa < 512 << 20,
+          gpa & 4095 == 0 else { throw Failure("invalid MCA test frame") }
+        let command = "mce 0 4 0x9c00000000000090 0 \(gpa + UInt64(injected)) \(mca == "wide" ? 141 : 128)"
+        let reply = try request("human-monitor-command", ["command-line": command])
+        guard let s = reply as? String, s.isEmpty else { throw Failure("MCA report refused: \(reply)") }
+        injected += 1
+      }
+    }
     if restore && !loaded, let uart = try? Data(contentsOf: URL(fileURLWithPath: serial)),
       uart.range(of: Data("TARWIN-VMGEN-SNAPSHOT-READY".utf8)) != nil {
       _ = try request("stop")
@@ -318,6 +338,13 @@ func check() throws {
     throw Failure("\(a): guest did not shut down normally")
   }
   let uart = try Data(contentsOf: URL(fileURLWithPath: serial))
+  if mca != "0" {
+    let log = try String(contentsOfFile: mcaLog, encoding: .utf8)
+    let marker = mca == "wide" ? "MCA-WIDE-RETAINED" : "MCA-CORRECTED-FRAME-RETIRED"
+    guard injected == expectedReports, log.components(separatedBy: "\n").contains(marker)
+    else { throw Failure("missing MCA verdict") }
+    print("x86_64: " + marker)
+  }
   if cold {
     let log = String(decoding: uart, as: UTF8.self)
     if let line = log.split(whereSeparator: \.isNewline).first(where: { $0.contains("TARWIN-FENCE-REFUSED-") }) {
@@ -344,6 +371,11 @@ func check() throws {
       (a == "x86_64" ? "TARWIN-CPU-CPUID-SNAPSHOT" : "TARWIN-CPU-SBI-SNAPSHOT")
     guard uart.range(of:Data(expected.utf8)) != nil else {throw Failure("missing CPU snapshot")}
     print("\(a): \(expected)")
+  }
+  if ProcessInfo.processInfo.environment["TARBOOT_TEST_TSC_REFUSAL"] == "1" {
+    guard a == "x86_64", uart.range(of: Data("TARWIN-X64-DEADLINE-REFUSED".utf8)) != nil
+    else { throw Failure("missing x64 timer refusal") }
+    print("x86_64: refused TSC-deadline on the unsupported emulated CPU")
   }
   if ProcessInfo.processInfo.environment["TARBOOT_TEST_FLOOR"] == "1" {
     guard uart.range(of:Data("TARWIN-NV-FLOOR-ONE".utf8)) != nil else {
@@ -454,7 +486,7 @@ func check() throws {
     return
   }
   print(
-    "\(a): ESP file read, TIRA member and ELF preflight, EFI exit, page, boot queue and shutdown passed"
+    "\(a): ESP file read, TIRA member and ELF preflight, EFI exit, compressed-page restore, page retirement, boot queue and shutdown passed"
   )
 }
 

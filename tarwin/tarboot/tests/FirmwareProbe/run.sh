@@ -36,12 +36,28 @@ for isa in "${@:-all}"; do
             "$bin/clang" -target "$machine" -O2 -Wno-override-module -c "$d/processor.ll" -o "$d/processor.o"
             extra+=("$d/processor.o")
         fi
+        if [[ ${TARBOOT_TEST_TSC_REFUSAL:-0} == 1 ]]; then
+            [[ $arch == x86_64 && ${TARBOOT_TEST_CPU:-0} == 1 ]] || exit 2
+            flags+=(-D TARBOOT_TEST_TSC_REFUSAL)
+            swift "$root/tarwin-time/tools/X64Timer.swift" > "$d/tsc.ll"
+            "$bin/clang" -target x86_64-unknown-windows-msvc -Wno-override-module -O2 -c "$d/tsc.ll" -o "$d/tsc.obj"
+            extra+=("$d/tsc.obj")
+        fi
         if [[ -n ${TARBOOT_TEST_STAGE0_ARCHIVE:-} ]]; then
             [[ $arch == aarch64 || ($arch == x86_64 && ${TARBOOT_TEST_CPU:-0} == x64-refusal && -n ${TARBOOT_TEST_SIGNATURE:-}) ]] || exit 2
             flags+=(-D TARBOOT_TEST_STAGE0)
         fi
         modules=()
-        entry_source=()
+        entry_source=("$here/CompressedPages.swift")
+        if [[ ${TARBOOT_TEST_MCA:-0} != 0 ]]; then
+            [[ $arch == x86_64 && ${TARBOOT_TEST_SMP_TABLES:-0} == 0 && -z ${TARBOOT_TEST_SIGNATURE:-} ]] || exit 2
+            flags+=(-D TARBOOT_TEST_MCA -enable-experimental-feature Extern)
+            if [[ $TARBOOT_TEST_MCA == wide ]]; then flags+=(-D TARBOOT_TEST_MCA_WIDE); fi
+            entry_source+=("$here/MCAPages.swift")
+            swift "$here/MCAInstructions.swift" > "$d/mca.ll"
+            "$bin/clang" -target x86_64-unknown-windows-msvc -Wno-override-module -O2 -c "$d/mca.ll" -o "$d/mca.obj"
+            extra+=("$d/mca.obj")
+        fi
         if [[ ${TARBOOT_TEST_RO_GENID:-0} == 1 ]]; then
             [[ $arch == aarch64 && ${TARBOOT_TEST_GENERATION:-0} == 1 ]] || exit 2
             flags+=(-D TARBOOT_TEST_RO_GENID)

@@ -47,6 +47,14 @@
       #elseif arch(x86_64)
         guard v[0] >= 7, v[4] >= 0x8000_0001 else { return false }
         writeDiagnostic("TARWIN-CPU-CPUID-SNAPSHOT\r\n", console: console, output: output)
+        #if TARBOOT_TEST_TSC_REFUSAL
+          // Never alter a firmware-owned timer, even on a capable machine.
+          guard let f = X64TargetFeatures(UnsafeBufferPointer(v)),
+            !f.invariantCounter || !f.deadlineTimer else { return false }
+          var port = X64LocalDeadlineRegisters()
+          guard !applyX64Deadline(123, features: f, vector: 64, registers: &port) else { return false }
+          writeDiagnostic("TARWIN-X64-DEADLINE-REFUSED\r\n", console: console, output: output)
+        #endif
         #if TARBOOT_TEST_X64_REFUSAL
           guard let f = X64TargetFeatures(UnsafeBufferPointer(v)) else { return false }
           if !f.shadowStack { writeDiagnostic("TARWIN-X64-MISSING-SHSTK\r\n",console:console,output:output) }
