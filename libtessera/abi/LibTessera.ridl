@@ -1,0 +1,8 @@
+// LibTessera RIDL surface, initial additive slice for Tarwin W1 (roadmap/16-libtessera.md §2.1, §11.2).
+// Not the full SDK surface.
+
+struct Handle {
+    let raw: U64
+}
+
+function processCurrent() -> Handle

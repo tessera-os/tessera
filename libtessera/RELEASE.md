@@ -43,6 +43,11 @@ Expanded Linux system interfaces for partitions, remote processors, kernel loggi
 - `standardStreamsToKernelLog` and `kernelLogText` for writing to and reading from the kernel log.
 - Developer dead-zone settings and live-area calculations for avoiding a damaged screen edge.
 
+- `abi/LibTessera.ridl` with its first frozen ABI record,
+  `abi/6f1b36cbca464ed89885486fccf2a255.ridlsig`: `struct Handle { let raw: U64 }`
+  and `function processCurrent() -> Handle`. This is the first additive slice of
+  the RIDL surface, which Tarwin W1 needs. It is not the full SDK surface.
+
 ## Changed
 
 - Expanded explicit unsafe scopes across Linux process, memory, channels, debugging, and other native implementation paths.
@@ -53,4 +58,7 @@ Expanded Linux system interfaces for partitions, remote processors, kernel loggi
   Inlay → PID 1 → Notes document-open path is now connected in source, but the
   generic signed-registry dispatcher, document picker for other apps, and
   live-app RIDL activation are not yet integrated or guest-boot verified.
+- The frozen RIDL slice is unsigned. It lets consumers check wire compatibility.
+  It grants no developer CA or launch authority, and signing waits on a Tessera
+  developer identity (TIR §29.4).
 - Hardware-specific remote-processor startup and partition behavior have not been validated across device profiles for these notes.

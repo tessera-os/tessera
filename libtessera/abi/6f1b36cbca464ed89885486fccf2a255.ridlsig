@@ -1,0 +1,6 @@
+ridlsig 1
+uuid 6f1b36cbca464ed89885486fccf2a255
+added
+struct Handle { let raw : U64 }
+function processCurrent ( ) -> Handle
+superseded
