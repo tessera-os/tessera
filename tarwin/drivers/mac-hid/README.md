@@ -4,6 +4,46 @@ Swift 6.2+, macOS 26+. Products: `HostedDeviceWire` (also shared by mac-audio
 and mac-power), `MacHIDCapture` (AppKit host), `MacHIDDriver` (virtual reports).
 Build and test with `swift build && swift test`.
 
+## Live input check
+
+```sh
+TARWIN_HID_LIVE=1 swift test
+swift test
+```
+
+The opted-in test creates and activates a real NSWindow with a first-responder
+NSView. It posts tagged CGEvents at the HID event tap, pumps AppKit's event loop,
+and translates only the NSEvents delivered to that view. A test channel sends
+the resulting frames through `HostedDriverEndpoint.send` to slot 0 opened from
+a `HostDeviceRegistry` containing `MacHIDDeviceProvider`; there is no loopback
+shortcut into the driver. It checks 12 events and 20 ordered InputRing reports:
+Shift/A down/up (usage 4, modifier bit 2), relative mouse movement, click,
+button-held drag, line scroll, and continuous pixel scroll. Both scroll axes,
+the precise-scroll wire flag, absolute pointer companions, and continuous-clock
+timestamps are checked. Events are posted individually to prevent coalescing.
+
+Without the environment flag the live test returns without opening a window;
+the existing offline tests still run. Opted-in permission, focus, delivery, and
+Mach errors fail rather than skip. Run only in an unlocked graphical session:
+the test temporarily takes focus and moves the pointer. Explicit
+`activate(ignoringOtherApps: true)` was needed for the command-line xctest runner
+on this Mac; ordinary `activate()` did not focus the window.
+
+`CGPreflightPostEventAccess()` was already true on this Mac, and the live test
+posted successfully without new TCC grants or database writes. The system TCC
+database already had allowed Accessibility, PostEvent, and ListenEvent entries
+for `/Library/Devin/agent/devin-remote`. The runner was
+`/Applications/Xcode.app/Contents/Developer/usr/bin/xctest`. On another machine,
+grant Accessibility to the responsible terminal/test runner in System Settings
+→ Privacy & Security → Accessibility, then relaunch it. Input Monitoring is not
+needed by this test: it receives events in its own view, not a global event tap.
+
+The installed public CoreGraphics SDK exposes no CGEvent gesture type,
+magnification field, or supported magnify/rotate/swipe constructor. This live
+test does not invent undocumented numeric event fields or substitute a directly
+constructed NSEvent for a posted gesture. Live trackpad gesture synthesis is
+therefore not exercised; the translator's gesture reports retain offline coverage.
+
 ## Hosted platform registry
 
 Register `try MacHIDDeviceProvider(driver: driver)` in `HostPlatform.devices`
