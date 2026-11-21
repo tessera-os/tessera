@@ -30,7 +30,7 @@ enum WriteFixture {
     let fixtureConfigHash: StaticString = "\(hex(config))"
     """
     if ProcessInfo.processInfo.environment["TARBOOT_TEST_FIFO"] == "1" {
-      let digest = Data(SHA256.hash(data: Data("Tarwin post-exit FIFO fixture".utf8)))
+      let digest = Data(SHA256.hash(data: fixture))
       let after = SHA256.hash(data: Data(repeating: 0, count: 32) + digest)
       for (name, bytes) in [("fifoProbeDigest", digest), ("fifoProbePCR", Data(after))] {
         source += "\nlet \(name): InlineArray<32,UInt8> = [" + bytes.map(String.init).joined(separator: ",") + "]\n"

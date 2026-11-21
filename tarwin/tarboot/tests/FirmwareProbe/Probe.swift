@@ -160,9 +160,6 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
         }
       #endif
       guard case .exited(let n) = boot.finish(map: raw, into: &buffer) else { return false }
-      #if TARBOOT_TEST_FIFO
-        guard exerciseKernelFIFO() else { return false }
-      #endif
       #if TARBOOT_TEST_SMP_TABLES
         #if arch(arm64)
           let family = ProcessorFamily.arm64
@@ -189,11 +186,18 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
       #endif
       #if TARBOOT_TEST_TPM
         guard
-          let logSize = pending.finish(
+          let firmwareLogSize = pending.finish(
             in: logPages, regions: UnsafeBufferPointer(rebasing: buffer[..<n])),
           let logBase = UnsafeRawPointer(bitPattern: UInt(logPages.base)),
-          checkEventLog(UnsafeRawBufferPointer(start: logBase, count: logSize))
+          checkEventLog(UnsafeRawBufferPointer(start: logBase, count: firmwareLogSize))
         else { return false }
+        #if TARBOOT_TEST_FIFO
+          guard let logSize = exerciseKernelFIFO(UnsafeRawBufferPointer(start: archiveBase, count: size),
+            log: UnsafeMutableRawBufferPointer(start: UnsafeMutableRawPointer(mutating: logBase),
+              count: Int(logPages.length)), used: firmwareLogSize) else { return false }
+        #else
+          let logSize = firmwareLogSize
+        #endif
       #endif
       guard
         let inspected = inspectFirmwareTables(

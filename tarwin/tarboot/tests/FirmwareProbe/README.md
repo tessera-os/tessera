@@ -197,10 +197,12 @@ start a secondary CPU or test IPI delivery or scheduling.
 
 `TARBOOT_TEST_TPM=1 TARBOOT_TEST_FIFO=1 bash run.sh aarch64` binds a single
 QEMU virt platform-bus TIS device to disposable swtpm. After ExitBootServices,
-TarwinBoot requests locality zero, reads PCR 10, extends a diagnostic digest
-once, records a private SHA-256 event, and reads the register back using the
-MMIO FIFO only. The starting value must be zero and the result must equal
-the host's SHA-256 replay. A short, malformed or timed-out transaction is
-terminal, including when the device may already have executed the command.
-This is not an init image measurement, production TPM discovery or a
-multi-bank extension of the firmware log. No W1 image is launched.
+TarwinBoot requests locality zero and streams the ESP fixture bytes through
+the TPM event sequence. The final command extends PCR 10 and returns each
+bank's digest. The probe appends an Event2 record to the reserved copy of
+the firmware log, requiring its digest banks to match the Spec ID header.
+Through the MMIO FIFO only, it reads the starting SHA-256 PCR (must be zero)
+and the result (must match the host replay). Add `TARBOOT_TEST_RNG=1` to
+check the new log extent in the physical boot-info handoff. A short, malformed
+or timed-out transaction is terminal. This measures test data, not an authorized
+init image; it does not discover a production TPM or launch W1.

@@ -17,17 +17,6 @@
     func receive() -> UInt8 { read8(base + 0x24) }
     func send(_ v: UInt8) { write8(base + 0x24, v) }
   }
-  private struct Bytes: ByteBuffer {
-    let b: UnsafeMutableRawBufferPointer
-    func byteCount() -> UInt64 { UInt64(b.count) }
-    func byteAt(_ pos: UInt64) -> UInt8 { b[Int(pos)] }
-    func putByte(_ pos: UInt64, value: UInt8) { b[Int(pos)] = value }
-  }
-  private struct Label: ByteSource {
-    let label: StaticString
-    func byteCount() -> UInt64 { UInt64(label.utf8CodeUnitCount) }
-    func byteAt(_ pos: UInt64) -> UInt8 { label.utf8Start[Int(pos)] }
-  }
 
   private func readTen(_ port: inout TPMFIFO<VirtFIFO>, expected: UnsafeRawBufferPointer?) -> Bool {
     let command: InlineArray<20, UInt8> = [
@@ -42,30 +31,30 @@
     return true
   }
 
-  func exerciseKernelFIFO() -> Bool {
-    var command = InlineArray<96, UInt8>(repeating: 0)
-    var event = InlineArray<96, UInt8>(repeating: 0)
-    var digest = fifoProbeDigest
-    let expected = fifoProbePCR
+  func exerciseKernelFIFO(
+    _ fixture: UnsafeRawBufferPointer, log: UnsafeMutableRawBufferPointer,
+    used: Int
+  ) -> Int? {
+    var command = InlineArray<1100, UInt8>(repeating: 0)
+    var cursor = MeasurementLog(used: UInt64(used), stopped: false)
+    let label: StaticString = "Tarwin FIFO diagnostic"
     return withUnsafeMutableBytes(of: &command) { raw in
       guard var port = TPMFIFO(registers: VirtFIFO(), scratch: raw, pollLimit: 500000),
-        readTen(&port, expected: nil)
-      else { return false }
-      return withUnsafeMutableBytes(of: &digest) { d in
-        withUnsafeMutableBytes(of: &event) { e in
-          var log = Bytes(b: e)
-          var cursor = MeasurementLog(used: 0, stopped: false)
-          let label = Label(label: "Tarwin FIFO diagnostic")
-          guard
-            extendAndRecord(
-              &port, state: &cursor, log: &log, pcr: 10, digest: Bytes(b: d),
-              event: label), !cursor.stopped, cursor.used == 50 + label.byteCount(),
-            little(log, at: 0, bytes: 4) == 10
-          else { return false }
-          for i in 0..<32 where e[14 + i] != d[i] { return false }
-          return withUnsafeBytes(of: expected) { readTen(&port, expected: $0) }
-        }
+        readTen(&port, expected: nil),
+        measureEarlyProcess(fixture, port: &port, state: &cursor, log: log, label: label),
+        !cursor.stopped, withUnsafeBytes(of: fifoProbePCR, { readTen(&port, expected: $0) })
+      else { return nil }
+      let bytes = UnsafeRawBufferPointer(rebasing: UnsafeRawBufferPointer(log)[..<Int(cursor.used)])
+      guard let fmt = EventLogFormat(bytes), let event = fmt.event(bytes, at: used),
+        event.pcr == 10, event.type == 13, event.payload.upperBound == bytes.count,
+        event.payload.count == label.utf8CodeUnitCount
+      else { return nil }
+      for i in 0..<32 where bytes[event.sha256 + i] != fifoProbeDigest[i] { return nil }
+      for i in 0..<label.utf8CodeUnitCount
+      where bytes[event.payload.lowerBound + i] != label.utf8Start[i] {
+        return nil
       }
+      return bytes.count
     }
   }
 #endif

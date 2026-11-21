@@ -1,10 +1,11 @@
 /// Bounded TCG PC Client crypto-agile log. The first record has the legacy
 /// layout and describes the digest banks of the following Event2 records.
 public struct EventLogFormat {
-  private let banks: UInt32
+  let banks: UInt32
+  let digestListBytes: Int
   public let firstEvent: Int
 
-  private static func bank(_ id: UInt16) -> (mask: UInt32, size: Int)? {
+  static func bank(_ id: UInt16) -> (mask: UInt32, size: Int)? {
     switch id {
     case 4: return (1, 20)
     case 11: return (2, 32)
@@ -25,14 +26,17 @@ public struct EventLogFormat {
     let n = Int(u32(log, 28))
     guard (1...5).contains(count), n <= log.count - 32, 29 + 4 * count <= n else { return nil }
     var known: UInt32 = 0
+    var digestBytes = 4
     for i in 0..<count {
       let p = 60 + 4 * i
       guard let b = Self.bank(u16(log, p)), b.size == Int(u16(log, p + 2)), known & b.mask == 0
       else { return nil }
       known |= b.mask
+      digestBytes += 2 + b.size
     }
     guard known & 2 != 0, n == 29 + 4 * count + Int(log[60 + 4 * count]) else { return nil }
     banks = known
+    digestListBytes = digestBytes
     firstEvent = 32 + n
   }
 
