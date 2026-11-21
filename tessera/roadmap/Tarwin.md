@@ -1296,6 +1296,8 @@ Tarwin is LibTessera's native backend. Every LibTessera guarantee is enforced by
 | Random (section 19) | A kernel ChaCha20 generator seeded from the hardware source and the boot seed and reseeded continuously; LibTessera keeps per-thread generators seeded from it and reseeds them when the kernel reports a virtual-machine generation change (snapshot restore) |
 | Diagnostics (section 20) | Logging, tracing and crash reporting (section 28) |
 
+**Randomness in virtual machines.** Certified guests require a trusted generation that changes before any CPU resumes from a restored snapshot. An absent generation is not a physical-machine ID. Only a debug QEMU kernel, independently launched with migration and snapshot save/load disabled for its entire lifetime (`-no-migration` on a harness that enforces it), may use a fixed generation instead. The harness supplies a fresh, nonzero 128-bit ID per cold launch through the protected, debug-labelled TBIB. Neither a boot member nor the TBIB may select this policy. The ID identifies a launch; it contributes no entropy and replaces neither the boot seed nor the fresh hardware sample. A fixed ID is never a fallback for a missing live witness in a restorable or certified guest. Loss or change of the fixed ID invalidates the generator for that launch.
+
 ---
 
 ## 32. Limits
