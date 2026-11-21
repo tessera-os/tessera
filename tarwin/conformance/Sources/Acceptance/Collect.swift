@@ -1,7 +1,12 @@
 import Foundation
 
+let qemuMilestones = [
+  "w0.tarboot-kernel-self-test", "w1.smp-signed-init", "w1.objects", "w1.ipc",
+]
+let roleKey = "platform.form-factor"
+
 func deviceCases(_ ref: Reference) -> [String] {
-  var required = cases()
+  var required = cases() + platformCases(ref.arch, backend: ref.backend)
   required.append(ref.nested ? "hv.nested" : "hv.reject-nested")
   required.append(ref.confidential ? "hv.confidential-attestation" : "hv.reject-confidential")
   return required
@@ -16,7 +21,11 @@ struct Sample {
 
 // A controller may batch reboots, but may not reuse another trial's samples.
 func samples(_ ref: Reference) -> [Sample] {
+  if ref.target == .qemu {
+    return qemuMilestones.map { Sample(key: $0, system: "tarwin", trial: 1) }
+  }
   var plan = deviceCases(ref).map { Sample(key: $0, system: "tarwin", trial: 1) }
+  plan.append(Sample(key: roleKey, system: "tarwin", trial: 1))
   for b in budgets(ref.battery) {
     let comparators =
       b.baseline == "best-fs"

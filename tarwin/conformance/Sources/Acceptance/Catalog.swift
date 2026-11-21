@@ -21,14 +21,79 @@ func cases() -> [String] {
     "net.filters", "net.vpn", "hv.guest-tessera", "hv.guest-linux", "hv.guest-android",
     "hv.guest-windows", "hv.architecture-suite", "hv.device-assignment", "hv.dirty-log",
     "tvmm.snapshot-restore", "tvmm.migration", "tvmm.hotplug", "tvmm.job-limits",
-    "tvmm.venus", "tvmm.tvgpu-ember", "tvmm.console", "android.per-window-surfaces", "android.grant-isolation",
+    "tvmm.venus", "tvmm.tvgpu-metal", "tvmm.console", "android.per-window-surfaces",
+    "android.grant-isolation",
     "power.10000-cycles", "power.wake", "power.thermal", "boot.ab-fallback", "boot.rollback",
     "boot.recovery", "boot.soft-reboot", "boot.live-update", "probes.verifier-positive",
     "probes.verifier-negative", "probes.hooks", "trace.log-filter-ring", "trace.perfetto",
     "trace.counters-ownership", "trace.panic-warm-reset", "trace.debug-only",
     "train.native-abi", "train.driver-window", "train.bib-window", "train.limits",
     "train.diagnostics", "train.kernel-profile", "train.layers",
-  ]
+    "security.capability-only", "security.measured-firmware", "security.cpu-admission",
+    "security.return-control-flow", "security.indirect-control-flow",
+    "security.code-pointer-integrity",
+    "platform.driver-boundary", "platform.completion-rings", "platform.no-loadable-modules",
+    "hv.access", "hv.creator-thread", "hv.register-sets", "hv.cancel-running",
+    "hv.map-protect-unmap", "hv.remote-shootdown", "hv.interrupt-routing", "hv.timer-offset",
+    "hv.assignment-iommu", "hv.assignment-interrupt", "hv.assignment-mmio",
+    "hv.exit.mmio", "hv.exit.hypercall", "hv.exit.system-register", "hv.exit.wait",
+    "hv.exit.exception", "hv.exit.debug", "hv.exit.shutdown-reset",
+    "hv.guest.pv-clock", "hv.guest.steal-time", "hv.guest.spin-yield", "hv.guest.detect",
+    "tvmm.pci-msi-msix", "tvmm.cpu-topology", "tvmm.direct-boot-tbib", "tvmm.secure-uefi-vtpm",
+    "tvmm.block-multiqueue", "tvmm.net-nat-bridge", "tvmm.rng", "tvmm.vsock", "tvmm.input",
+    "tvmm.audio", "tvmm.fs-grant-dax", "tvmm.iommu", "tvmm.balloon", "tvmm.pmem", "tvmm.ptp",
+    "tvmm.scanout-surfaces", "tvmm.snapshot-incremental", "tvmm.cpu-hotplug",
+    "android.input", "android.clipboard", "android.notifications", "android.audio",
+    "android.camera-grant", "android.file-grant", "android.job-sandbox",
+    "probes.signed-native", "probes.resource", "probes.maps-and-rings", "probes.helper-isolation",
+    "trace.per-cpu-events", "trace.user-ring", "trace.monotonic", "trace.counter-callchains",
+    "trace.crash-report", "trace.debug-dump", "trace.stop-all", "trace.release-no-debugger",
+    "train.hv-version", "train.changelog", "train.decisions", "train.external-contracts",
+    "security.attestation-challenge", "security.key-isolation", "device.metal-paravirtual-gpu",
+    "tvmm.metal-context-grants", "tvmm.metal-clear-blit", "tvmm.metal-ordered-release",
+    "tvmm.metal-quarantine", "tvmm.mosaic-present-deadline",
+  ] + limitCases + diagnosticCases + probeHooks
+    + (1...22).map {
+      String(format: "decision.TW-%03d", $0)
+    }
+}
+
+private let limitCases = [
+  "cpus", "physical-memory", "numa-nodes", "processes", "threads-default", "threads-policy",
+  "handles-default", "handles-policy", "channel-bytes", "channel-handles", "queue-default",
+  "queue-option", "port-packets", "ring-range-and-power-of-two", "mappings", "memory-object-bytes",
+  "timers", "virtual-machines", "vcpus", "probe-instructions", "probe-map-entries",
+].map { "limits." + $0 }
+
+private let diagnosticCases = [
+  "K0001", "K0002", "K0003", "S0001", "S0002", "S0003", "S0004", "S0010", "B0001",
+  "B0002", "B0003", "B0004", "D0001", "D0002", "D0003", "H0001", "P0001", "P0002",
+  "P0003", "P0004", "P0005", "P0006", "P0007",
+].map { "diagnostic.TARWIN-" + $0 }
+
+private let probeHooks = [
+  "tracepoint", "function", "scheduler", "syscall", "block-file", "packet", "endpoint", "audit",
+].map { "probes.hook." + $0 }
+
+func platformCases(_ arch: String, backend: String?) -> [String] {
+  switch arch {
+  case "aarch64":
+    return [
+      "hv.vhe-stage2", "hv.vgic-its", "hv.vgic-ack-eoi", "hv.vgic-masked-pending",
+      "hv.cntvoff", "hv.virtual-timer-ppi", "hv.arm-scalar-mmio",
+    ]
+  case "rv64":
+    return [
+      "hv.hs-gstage", "hv.imsic", "hv.imsic-guest-file", "hv.imsic-claim",
+      "hv.htimedelta", "hv.vstimecmp", "hv.rv-scalar-mmio", "hv.rv-compressed-mmio",
+    ]
+  case "x64":
+    let common = ["hv.exit.port-io", "hv.tsc-offset-scale"]
+    if backend == "vmx" { return common + ["hv.vmx-ept", "hv.apicv"] }
+    if backend == "svm" { return common + ["hv.svm-npt", "hv.avic"] }
+    return common + ["hv.vmx-ept", "hv.apicv", "hv.svm-npt", "hv.avic"]
+  default: return []
+  }
 }
 
 struct Budget {

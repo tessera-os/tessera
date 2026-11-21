@@ -2,10 +2,12 @@ import Foundation
 
 extension Reference {
   var row: String {
-    [
-      "physical", arch, serial, tarwin, linux, battery ? "yes" : "no",
-      nested ? "yes" : "no", confidential ? "yes" : "no",
-    ].joined(separator: "\t")
+    if target == .qemu { return ["qemu", arch, serial, tarwin].joined(separator: "\t") }
+    return
+      ([
+        "physical", arch, serial, tarwin, linux, battery ? "yes" : "no",
+        nested ? "yes" : "no", confidential ? "yes" : "no",
+      ] + (backend.map { [$0] } ?? [])).joined(separator: "\t")
   }
 }
 
