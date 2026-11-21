@@ -1,0 +1,132 @@
+--- a/qemu-options.hx
++++ b/qemu-options.hx
+@@ -5467,6 +5467,9 @@
+     to issuing the migrate\_incoming to allow the migration to begin.
+ ERST
+ 
++DEF("no-migration", 0, QEMU_OPTION_no_migration, \
++    "-no-migration       disable VM migration and machine snapshots\n", QEMU_ARCH_ALL)
++
+ DEF("only-migratable", 0, QEMU_OPTION_only_migratable, \
+     "-only-migratable     allow only migratable devices\n", QEMU_ARCH_ALL)
+ SRST
+--- a/include/migration/blocker.h
++++ b/include/migration/blocker.h
+@@ -15,6 +15,10 @@
+ #define MIGRATION_BLOCKER_H
+ 
+ #include "qapi/qapi-types-migration.h"
++
++/* Process-lifetime launch policy. No monitor operation can clear it. */
++void migrate_disable_permanently(void);
++bool migrate_disabled_by_launch(Error **errp);
+ 
+ /**
+  * @migrate_add_blocker - prevent all modes of migration from proceeding
+--- a/migration/migration.c
++++ b/migration/migration.c
+@@ -1817,6 +1817,21 @@
+     }
+ }
+ 
++static bool no_migration;
++
++void migrate_disable_permanently(void)
++{
++    no_migration = true;
++}
++
++bool migrate_disabled_by_launch(Error **errp)
++{
++    if (no_migration) {
++        error_setg(errp, "VM state transfer disabled by -no-migration");
++    }
++    return no_migration;
++}
++
+ void qmp_migrate_incoming(const char *uri, bool has_channels,
+                           MigrationChannelList *channels,
+                           bool has_exit_on_error, bool exit_on_error,
+@@ -1826,6 +1841,9 @@
+     static bool once = true;
+     MigrationIncomingState *mis = migration_incoming_get_current();
+ 
++    if (migrate_disabled_by_launch(errp)) {
++        return;
++    }
+     if (!once) {
+         error_setg(errp, "The incoming migration has already been started");
+         return;
+--- a/migration/options.c
++++ b/migration/options.c
+@@ -25,6 +25,7 @@
+ #include "migration/colo.h"
+ #include "migration/cpr.h"
+ #include "migration/misc.h"
++#include "migration/blocker.h"
+ #include "migration.h"
+ #include "migration-stats.h"
+ #include "qemu-file.h"
+@@ -549,6 +550,10 @@
+     MigrationState *s = migrate_get_current();
+     int i;
+ 
++    if (migrate_disabled_by_launch(errp)) {
++        return false;
++    }
++
+     for (i = 0; i < check_caps_savevm.size; i++) {
+         int incomp_cap = check_caps_savevm.caps[i];
+ 
+--- a/migration/savevm.c
++++ b/migration/savevm.c
+@@ -31,6 +31,7 @@
+ #include "net/net.h"
+ #include "migration.h"
+ #include "migration/snapshot.h"
++#include "migration/blocker.h"
+ #include "migration-stats.h"
+ #include "migration/vmstate.h"
+ #include "migration/misc.h"
+@@ -1298,6 +1299,10 @@
+ {
+     SaveStateEntry *se;
+ 
++    if (migrate_disabled_by_launch(errp)) {
++        return true;
++    }
++
+     QTAILQ_FOREACH(se, &savevm_state.handlers, entry) {
+         if (se->vmsd && se->vmsd->unmigratable) {
+             error_setg(errp, "State blocked by non-migratable device '%s'",
+--- a/system/vl.c
++++ b/system/vl.c
+@@ -83,6 +83,7 @@
+ #include "hw/i386/x86.h"
+ #include "hw/i386/pc.h"
+ #include "migration/cpr.h"
++#include "migration/blocker.h"
+ #include "migration/misc.h"
+ #include "migration/snapshot.h"
+ #include "system/tpm.h"
+@@ -3562,6 +3563,9 @@
+                 }
+                 incoming_option_parse(optarg);
+                 break;
++            case QEMU_OPTION_no_migration:
++                migrate_disable_permanently();
++                break;
+             case QEMU_OPTION_only_migratable:
+                 only_migratable = 1;
+                 break;
+@@ -3742,6 +3746,10 @@
+      */
+     loc_set_none();
+ 
++    if ((loadvm || incoming || only_migratable) &&
++        migrate_disabled_by_launch(&error_fatal)) {
++        g_assert_not_reached();
++    }
+     qemu_validate_options(machine_opts_dict);
+     qemu_process_sugar_options();
+ 
