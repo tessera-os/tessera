@@ -28,7 +28,8 @@ struct AcceptPorts: IoPorts, ~Copyable {
   }
 }
 private enum Outcome {
-  case accepted, receive, send, shutdown, cancelled, closed, reset, quota, denied, withdrawn
+  case accepted, receive, send, shutdown, datagram, cancelled, closed, reset, quota, denied,
+    withdrawn
 }
 private func acceptScenario(_ outcome: Outcome, v6: Bool = false) {
   let ids = KoidSource()
@@ -97,6 +98,12 @@ private func acceptScenario(_ outcome: Outcome, v6: Bool = false) {
   let e = install(.init(listener), rights: rights)
   let p = install(.init(sink), rights: 8)
   let denied = install(.init(listener), rights: 0)
+  if outcome == .datagram {
+    checkDatagram(
+      caller: &caller, name: e, denied: denied, port: p, ports: &ports, object: .init(listener),
+      v6: v6)
+    return
+  }
   let local: [UInt8] = v6 ? [0xfe, 0x80] + Array(repeating: 0, count: 13) + [2] : [192, 0, 2, 2]
   let remote: [UInt8] = v6 ? [0xfe, 0x80] + Array(repeating: 0, count: 13) + [3] : [192, 0, 2, 3]
   var service = TcpService(
@@ -276,6 +283,10 @@ final class EndpointAcceptTests: XCTestCase {
   func testShutdownPreservesAcceptedBytesAndIndependentStreamHalves() {
     acceptScenario(.shutdown)
     acceptScenario(.shutdown, v6: true)
+  }
+  func testDatagramReadsThroughTypedHandles() {
+    acceptScenario(.datagram)
+    acceptScenario(.datagram, v6: true)
   }
   func testCancellationAndClosedPortNeverPublish() {
     for o in [Outcome.cancelled, .withdrawn, .closed] { acceptScenario(o) }

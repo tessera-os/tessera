@@ -151,13 +151,15 @@ func testNetwork(_ q: QTest, _ machine: Machine) throws {
     let id = inbound.receive(record)
   else { throw Failure("Invalid RX completion") }
   var copied: [UInt8] = []
+  var receivedIp: [UInt8] = []
   var done = false
   let ok = inbound.deliver(id: id, sync: { $0 == 71 }) { pin, n in
     guard pin == 71, n == count else { return }
     let bytes = (0..<Int(n)).map { UInt8(q.read("b", rxFrame + UInt64($0))) }
     guard bytes.prefix(14).elementsEqual(frame.prefix(14)) else { return }
+    receivedIp = Array(bytes.dropFirst(14))
     let delivered = endpoint.deliver(
-      Array(bytes.dropFirst(14)), 3, { p, iface, _ in p == 91 && iface == 3 },
+      receivedIp, 3, { p, iface, _ in p == 91 && iface == 3 },
       { r, b, off, len in
         guard r == dst else { return false }
         copied = Array(b[off..<off + len])
@@ -168,6 +170,7 @@ func testNetwork(_ q: QTest, _ machine: Machine) throws {
   try q.require(
     ok && done && copied == payload && q.read("b", rxFrame + UInt64(count)) == 0xac,
     "UDP payload, completion or sentinel mismatch")
+  try checkDatagramEndpoint(receivedIp, route: route, expected: payload)
   left.acknowledge()
   right.acknowledge()
 }

@@ -3,37 +3,47 @@ import TarwinIoCompletion
 import TarwinObject
 import TarwinSyscall
 
-public enum StreamStart<T: ~Copyable>: ~Copyable {
+public enum EndpointIoStart<T: ~Copyable>: ~Copyable {
   case ready(T)
   case unsupported, invalid, invalidHandle, wrongType, denied, notConnected, full
 }
+public typealias StreamStart<T: ~Copyable> = EndpointIoStart<T>
+protocol EndpointPayload {
+  func acceptsIo(object: UInt64) -> Bool
+}
+extension TcpAcceptedStream: EndpointPayload {
+  func acceptsIo(object: UInt64) -> Bool {
+    connection.state != .idle && connection.state != .synSent
+  }
+}
+typealias StreamGrant = EndpointGrant<TcpAcceptedStream>
 
 /// Bound to the caller's read epoch and the serialized network worker.
 /// A live credit owns the port, and the Endpoint grant pins its object.
-struct StreamGrant: ~Copyable {
-  let stream: TcpAcceptedStream
+struct EndpointGrant<Payload: EndpointPayload>: ~Copyable {
+  let payload: Payload
   private var endpoint: ObjectGrant?, credit: IoReservation?
   private init(
-    stream: TcpAcceptedStream, endpoint: consuming ObjectGrant, credit: consuming IoReservation
+    payload: Payload, endpoint: consuming ObjectGrant, credit: consuming IoReservation
   ) {
-    self.stream = stream
+    self.payload = payload
     self.endpoint = consume endpoint
     self.credit = consume credit
   }
   var active: Bool { credit != nil }
   static func acquire<P: IoPorts & ~Copyable, T: ~Copyable>(
     caller: borrowing ProcessExecution, name: UInt64, port: UInt64, key: UInt64, rights: UInt64,
-    ports: inout P, resolve: (UnsafePointer<ObjectHeader>) -> TcpAcceptedStream?,
-    supports: (TcpAcceptedStream) -> Bool, retire: (UnsafePointer<ObjectHeader>) -> Void,
-    make: (consuming StreamGrant) -> T
-  ) -> StreamStart<T> {
+    ports: inout P, resolve: (UnsafePointer<ObjectHeader>) -> Payload?,
+    supports: (Payload) -> Bool, retire: (UnsafePointer<ObjectHeader>) -> Void,
+    make: (consuming EndpointGrant) -> T
+  ) -> EndpointIoStart<T> {
     let table = caller.handleReader
     switch table.pinWithinEpoch(name, kind: TarwinKind.endpoint, need: rights) {
     case .invalidHandle: return .invalidHandle
     case .wrongType: return .wrongType
     case .accessDenied: return .denied
     case .found(let e):
-      guard let s = resolve(e.header), s.connection.state != .idle, s.connection.state != .synSent
+      guard let s = resolve(e.header), s.acceptsIo(object: e.header.pointee.koid)
       else {
         e.drop(retire: retire)
         return .notConnected
@@ -62,7 +72,7 @@ struct StreamGrant: ~Copyable {
           e.drop(retire: retire)
           return .full
         }
-        return .ready(make(StreamGrant(stream: s, endpoint: consume e, credit: consume r)))
+        return .ready(make(EndpointGrant(payload: s, endpoint: consume e, credit: consume r)))
       }
     }
   }

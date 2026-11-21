@@ -51,7 +51,7 @@ public struct EndpointSend: ~Copyable {
     releasePins: () -> Void, retire: (UnsafePointer<ObjectHeader>) -> Void
   ) -> SendProgress {
     guard grant.active else { return .inactive }
-    let stream = grant.stream
+    let stream = grant.payload
     let state = stream.connection.state
     let error: UInt32
     if !permitted {

@@ -76,19 +76,6 @@ public struct EndpointAccept: ~Copyable {
   public func matches(port: UInt64, operation: PortOperation) -> Bool {
     credit?.matches(port: port, operation: operation) == true
   }
-  private static func address(
-    _ path: TcpPath, interface: UInt32, to b: UnsafeMutableRawBufferPointer
-  ) {
-    for i in 0..<32 { b[i] = 0 }
-    b[0] = path.remote.count == 4 ? 0 : 1
-    b[4] = UInt8(truncatingIfNeeded: path.remotePort)
-    b[5] = UInt8(path.remotePort >> 8)
-    for i in path.remote.indices { b[8 + i] = path.remote[i] }
-    if path.remote.count == 16, path.remote[0] == 0xfe, path.remote[1] & 0xc0 == 0x80 {
-      b[6] = 1
-      for i in 0..<4 { b[24 + i] = UInt8(truncatingIfNeeded: interface >> (8 * i)) }
-    }
-  }
   /// Caller holds the submitting process's table writer lock. resolve returns
   /// the live, independently retained Endpoint header already bound to that
   /// exact stream. It may only inspect prepared kernel state, not fault, sleep
@@ -133,7 +120,11 @@ public struct EndpointAccept: ~Copyable {
               h.pointee.koid != koid,
               case .installed(let name) = table.install(h, rights: h.pointee.maximumRights & rights)
             {
-              if let peer { Self.address(s.connection.path, interface: iface, to: peer) }
+              if let peer {
+                storePeer(
+                  s.connection.path.remote, port: s.connection.path.remotePort, interface: iface,
+                  to: peer)
+              }
               p.result0 = name
               dequeue = true
             } else {

@@ -69,15 +69,7 @@ public struct UdpEndpoint: Equatable {
     if closed { return .noMatch }
     switch decodeUdp(bytes) {
     case .accepted(let d):
-      if d.family != family || d.destinationPort != port { return .noMatch }
-      let width: Int = d.family == .v4 ? 4 : 16
-      let start: Int = d.family == .v4 ? 12 : 8
-      if (interfaceId != 0 && interfaceId != iface) || (peerPort != 0 && peerPort != d.sourcePort)
-        || !addressMatches(bytes, start, width, peer)
-        || !addressMatches(bytes, start + width, width, local)
-      {
-        return .noMatch
-      }
+      guard matches(d, bytes, iface) else { return .noMatch }
       if !permitted(process, iface, bytes) { return .policyDenied }
       if count == 0 { return .wouldBlock }
       let r = receives[first]
@@ -90,6 +82,14 @@ public struct UdpEndpoint: Equatable {
       return .delivered(UInt32(n))
     default: return .noMatch
     }
+  }
+  func matches(_ d: Datagram, _ bytes: [UInt8], _ iface: UInt64) -> Bool {
+    let width = d.family == .v4 ? 4 : 16
+    let start = d.family == .v4 ? 12 : 8
+    return d.family == family && d.destinationPort == port
+      && (interfaceId == 0 || interfaceId == iface) && (peerPort == 0 || peerPort == d.sourcePort)
+      && addressMatches(bytes, start, width, peer)
+      && addressMatches(bytes, start + width, width, local)
   }
 
   public mutating func shutdown(_ cancel: (RegisteredReceive) -> Void) {
