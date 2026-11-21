@@ -31,6 +31,24 @@ final class QTest {
   private(set) var mmio: [DeviceRange] = []
   private(set) var error: Error?
 
+  init(coldVirt binary: String, disk: URL, fwDma: Bool, platformRng: Bool) throws {
+    process.executableURL = URL(fileURLWithPath: binary)
+    process.arguments = [
+      "-machine", "virt-11.1,virtualization=on,gic-version=3,iommu=smmuv3,default-bus-bypass-iommu=off,msi=off",
+      "-accel", "tcg", "-S", "-cpu", "max", "-smp", "1", "-m", "512",
+      "-nodefaults", "-no-user-config", "-display", "none", "-monitor", "none",
+      "-serial", "none", "-nic", "none", "-qtest", "stdio", "-qtest-log", "/dev/null",
+      "-global", "fw_cfg_mem.dma_enabled=" + (fwDma ? "on" : "off"),
+      "-drive", "if=none,id=esp,format=raw,readonly=on,file=" + disk.path,
+      "-device", "virtio-blk-pci,drive=esp,addr=1,disable-legacy=on,iommu_platform=on",
+      "-device", "virtio-rng-pci,addr=2,disable-legacy=on,iommu_platform=on",
+    ]
+    if platformRng { process.arguments! += ["-device", "virtio-rng-device"] }
+    process.standardInput = input
+    process.standardOutput = output
+    try process.run()
+  }
+
   init(
     binary: String, machine: Machine, disk: URL, translated: Bool, neighbors: Bool,
     extraDevices: [String] = [], tcpFixture: Bool = false, listenerSocket: String? = nil,
@@ -433,11 +451,12 @@ func run() throws {
   let listen = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--tcp-listen"
   let intx = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--intx"
   let nvme = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--nvme"
+  let coldPCI = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--cold-virt-pci"
   let ufs =
     CommandLine.arguments.count == 3 && ["--ufs", "--ufs-vtd"].contains(CommandLine.arguments[2])
   guard
     CommandLine.arguments.count == 2 || translated || neighbors || streams || tcp || listen || intx
-      || nvme || ufs,
+      || nvme || ufs || coldPCI,
     let machine = Machine(
       rawValue: URL(fileURLWithPath: CommandLine.arguments[1]).lastPathComponent)
   else {
@@ -451,6 +470,11 @@ func run() throws {
     UUID().uuidString + ".raw")
   try Data(repeating: 0x6c, count: 1 << 20).write(to: disk, options: .withoutOverwriting)
   defer { try? FileManager.default.removeItem(at: disk) }
+  if coldPCI {
+    guard machine == .arm else { throw Failure("--cold-virt-pci requires AArch64 virt-11.1") }
+    try testColdVirtPCI(binary: CommandLine.arguments[1], disk: disk)
+    return
+  }
   if ufs {
     try testUFS(
       binary: CommandLine.arguments[1], disk: disk,
@@ -530,7 +554,9 @@ func run() throws {
 do {
   try run()
   print(
-    CommandLine.arguments.last == "--ufs-vtd"
+    CommandLine.arguments.last == "--cold-virt-pci"
+      ? "PASS: Arm cold PCI abort acknowledged; fw_cfg DMA and an extra platform requester refused. No boot or W1 entry."
+      : CommandLine.arguments.last == "--ufs-vtd"
       ? "PASS: q35 UFS translated command pages and directional scatter DMA; nine page drains, read remap, both backing files verified"
       : CommandLine.arguments.last == "--ufs"
         ? "PASS: q35 UFS discovered LUs 1 and 2, stopped on invalid selection, verified LU 2 scatter write/FUA/flush/read and unchanged LU 1"

@@ -12,6 +12,37 @@ Integration contract:
 
 A legacy Intel VT-d backend is described below; architecture interrupt entry, MMU and capability-table bindings are not supplied here. Neither DMA isolation on physical hardware nor restart timing has been measured.
 
+## AArch64 cold PCI abort diagnostic (not a W1 entry gate)
+
+On QEMU 11.1.3 TCG, `requestColdVirtPCIAbort` checks the fixed virt-11.1
+layout before it changes the SMMUv3 global bypass policy. It requires fw_cfg
+without DMA, a single idle GICv3 redistributor, empty virtio-MMIO transports,
+and a flat PCI bus with exactly GPEX, virtio-blk and virtio-rng, all with bus
+mastering off. It refuses active SMMU translation, queues and interrupts; it
+never disables an active unit. Its only SMMU write requests global abort for
+untranslated traffic. It checks the acknowledgement with a bounded poll.
+
+Run `BlockQTest /path/to/qemu-system-aarch64 --cold-virt-pci` from the virtio
+fixture. The Mac drives the registers with the TCG CPU stopped. The positive
+case reads back the changed policy; controls enable fw_cfg DMA or add a
+virtio-MMIO requester and require refusal with the policy unchanged. There
+is no EFI, Tarwin or EL0 execution in this test.
+
+The launch is part of the trust boundary, not something register reads can
+attest. It excludes restore, hotplug, passthrough, ITS, ramfb and VMGENID;
+the two modern PCI devices explicitly use `iommu_platform=on` and the root
+bus does not bypass the SMMU. An ordinary firmware probe is not this machine.
+The result is not a drain of previously submitted I/O or cached translations,
+a held exclusion through first entry, or evidence that a signed archive is
+safe to verify. Without live VM generation the RNG must not issue child keys.
+
+For a restorable machine, QEMU's VMGENID writes 16 bytes at a firmware-supplied
+physical address in post-load, outside the PCI SMMU. Its setup and ramfb use
+fw_cfg DMA. A safe design must bind the destination GUID slot to a dedicated
+non-aliasing page independently of migrated state, reject a mismatch **before**
+the write, and keep devices and vCPUs stopped while re-establishing DMA protection
+and rotating generation. A TBIB reservation or probe result does none of this.
+
 ## Swift profiles
 
 Build the library as Embedded Swift; host tests run as regular Swift. IRQ delivery, revocation, range selection, DMA mapping/retirement with a caller-owned registry slab, and filtered config access can be checked separately without allocation:
