@@ -1,7 +1,7 @@
 // Hosted Swift stage-0 bridge for the boot CPU's VHE EL2/0 exception
 // regime. The caller provisions the guarded SP_EL2, private per-CPU context,
 // host FP access, process keys, and immutable high-half code before use.
-// No initial ERET. No scheduling, SVE/SME, interrupts, or EL1 guest exits.
+// Boot CPU only. No scheduling, SVE/SME, interrupts, or EL1 guest exits.
 @main struct HostTrapVariant {
   static func main() {
     typealias F = ArmTrapLayout
@@ -35,6 +35,10 @@
       print("stp q\(i), q\(i+1), [sp, #\(F.vectors+i*16)]")
     }
     print("""
+    mrs x9, vbar_el2
+    adr x10, .Lslice_vectors
+    cmp x9, x10
+    b.eq .Lslice_trap
     mov x0, sp
     mrs x1, tpidr_el2
     cbz x1, .Lhalt
@@ -346,5 +350,6 @@
     mov x7, xzr
     ret
     """)
+    emitArmGuardedSlice()
   }
 }

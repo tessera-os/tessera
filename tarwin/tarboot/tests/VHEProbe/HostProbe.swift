@@ -1,6 +1,6 @@
 // Standalone debug-QEMU boot CPU at EL2. Stage the VHE host MMU with RX
 // kernel text and private data in the temporary identity map. Relocate to
-// TTBR1 and switch between process roots without ever executing user code.
+// TTBR1 and switch between process roots. Only TEST_SLICE executes EL0.
 print("""
 .section .text.boot,"ax"
 .globl _start
@@ -112,6 +112,9 @@ _start:
   msr tpidr_el2, x19
   isb
   #ifdef TEST_GCS
+  #ifdef TEST_SLICE
+  #include "slice.inc"
+  #endif
   // Do not install a direct-permission TTBR0 under permission indirection.
   ldr x0, =private_a
   ldr x1, =host_root
@@ -449,4 +452,35 @@ sample:
 .quad 0xfeed
 .quad 0xcafe
 .space 5*16384-8
+#ifdef TEST_SLICE
+.p2align 14
+slice_start:
+  .inst 0xd503245f // BTI c
+  mov x10, #0x2567
+  mov x11, #0x4819
+  mov x12, x10
+  pacia x12, x11
+  mov x13, x10
+  pacib x13, x11
+  mov x14, x10
+  pacda x14, x11
+  mov x15, x10
+  pacdb x15, x11
+  pacga x17, x10, x11
+  mrs x9, tpidrro_el0
+  mrs x7, tpidr_el0
+  str x0, [sp, #-16]!
+  ldr x6, [sp], #16
+  bl .Ltest_leaf
+  svc #0
+slice_after_first:
+  mov x5, x0
+  svc #0
+slice_after_second:
+  b .
+  .Ltest_leaf:
+  ret
+  .p2align 14
+  .space 32768
+#endif
 """)

@@ -2,17 +2,6 @@ import TarwinArchAarch64
 import TarwinObject
 import TarwinSyscall
 
-/// Private assembly interface, after the scheduler's final return gate.
-/// Never convert a syscall status, result GPR,
-/// or a Swift enum's in-memory representation into a vector action.
-public func w1ArmVectorAction(_ outcome: Arm64TrapOutcome) -> UInt32 {
-  switch outcome {
-  case .resumeEL0: return 1
-  case .stopCaller: return 2
-  case .terminateBadOrigin, .otherSynchronousException, .invalidKernelFrame: return 0
-  }
-}
-
 /// Capture the trusted CPU's current thread under scheduler/task locks
 /// after exit was accepted. Store in stable per-CPU memory, never on the
 /// outgoing stack. The vector keeps interrupts masked through the switch.

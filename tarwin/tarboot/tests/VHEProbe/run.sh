@@ -6,10 +6,10 @@ arch="$pkgs/tarwin/tarwin-arch-aarch64/Sources/TarwinArchAarch64"
 bin=$(dirname "${EMBEDDED_SWIFTC:?macOS Swift toolchain with Embedded modules required}")
 d=$(mktemp -d)
 trap 'rm -rf "$d"' EXIT
-swiftc "$arch/ArmTrapLayout.swift" "$arch/StageOne.swift" "$arch/PermissionLayout.swift" \
-  "$pkgs/tessera/build/tarwin-stage0/ArmHostTrap.swift" -o "$d/emit"
+swiftc "$arch"/*.swift "$pkgs/tessera/build/tarwin-stage0"/{ArmHostTrap,ArmGuardedSlice}.swift -o "$d/emit"
 "$d/emit" > "$d/host.S"
 swift "$here/HostProbe.swift" > "$d/start.S"
+swift "$here/EL0SliceProbe.swift" > "$d/slice.inc"
 flags=(-target aarch64-none-none-elf -enable-experimental-feature Embedded -no-allocations
        -enable-experimental-feature Extern -swift-version 6 -Osize -wmo -parse-as-library
        -Xfrontend -disable-stack-protector -Xcc -mgeneral-regs-only -I "$d")
@@ -33,9 +33,9 @@ LD
 "$bin/ld.lld" --gc-sections -T "$d/sections" "$d/start.o" "$d/host.o" "$d/probe.o" -o "$d/probe.elf"
 run_guest() {
   # Bound a guest whose unhandled exception correctly stops the boot CPU.
-  perl -e 'alarm 10; exec @ARGV' qemu-system-aarch64 -machine virt,virtualization=on \
+  python3 -c 'import subprocess,sys; sys.exit(subprocess.run(sys.argv[1:], timeout=10).returncode)' qemu-system-aarch64 -machine virt,virtualization=on \
     -cpu max -smp 1 -m 128M -nodefaults -nographic -monitor none -serial none \
-    -semihosting-config enable=on,target=native -kernel "$d/$1.elf" >"$d/log" 2>&1 || {
+    -semihosting-config enable=on,target=native -d int -D "$d/exceptions" -kernel "$d/$1.elf" >"$d/log" 2>&1 || {
       cat "$d/log" >&2; exit 1
     }
 }
@@ -54,6 +54,21 @@ if grep -Fxq 'VHE-CPU-GCS-S1PIE-TCRX=111' "$d/log"; then
   grep -Fx 'VHE-GCS-STORE-ORDINARY-WRITE-DENIED' "$d/log"
   grep -Fx 'VHE-PRIVATE-PIE-RELRO-GUARD' "$d/log"
   grep -Fx 'VHE-FIRST-GCS-REGS-RESTORED' "$d/log"
+  for mod in TarwinABI TarwinSyscall; do
+    "$bin/swiftc" "${flags[@]}" -module-name "$mod" -emit-module -emit-module-path "$d/$mod.swiftmodule" \
+      "$pkgs/tarwin/tarwin-syscall/Sources/$mod"/*.swift
+  done
+  "$bin/swiftc" "${flags[@]}" -emit-ir "$pkgs/tessera/build/tarwin/Sources/TarwinW1Bootstrap/TrapDispatch.swift" \
+    "$here/TrapProbe.swift" -o "$d/dispatch.ll"
+  "$bin/clang" -target aarch64-none-none-elf -ffunction-sections -fdata-sections -Oz -c "$d/dispatch.ll" -o "$d/dispatch.o"
+  "$bin/clang" -target aarch64-none-none-elf -march=armv9.4-a+gcs -DTEST_GCS -DTEST_SLICE -I "$d" -c "$d/start.S" -o "$d/slice.o"
+  "$bin/ld.lld" --gc-sections -T "$d/sections" "$d/slice.o" "$d/host.o" "$d/gcs-probe.o" "$d/dispatch.o" -o "$d/slice.elf"
+  run_guest slice
+  grep -Fx 'Exception return from AArch64 EL2 to AArch64 EL0 PC 0x100010000' "$d/exceptions"
+  [[ $(grep -Fc 'Exception return from AArch64 EL2 to AArch64 EL0 PC ' "$d/exceptions") == 2 &&
+     $(grep -Fc '...from EL0 to EL2' "$d/exceptions") == 2 &&
+     $(grep -Fc '...with ESR 0x15/0x56000000' "$d/exceptions") == 2 ]]
+  grep -Fx 'VHE-EL0-SVC-HOST-KEYS-AND-ROOT-RESTORED' "$d/log"
   "$bin/clang" -target aarch64-none-none-elf -march=armv9.4-a+gcs -DTEST_GCS -DTEST_WRONG_BANK -c "$d/start.S" -o "$d/wrong.o"
   "$bin/ld.lld" --gc-sections -T "$d/sections" "$d/wrong.o" "$d/host.o" "$d/gcs-probe.o" -o "$d/wrong.elf"
   run_guest wrong

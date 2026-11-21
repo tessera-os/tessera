@@ -4,7 +4,7 @@ On a Mac with QEMU and the Swift 6.3.3 bare-metal toolchain, set
 `EMBEDDED_SWIFTC` to its compiler and run `bash run.sh`. The bounded,
 firmware-independent diagnostic starts one AArch64 CPU at EL2, enables
 VHE and a 16 KiB EL2/0 translation regime, and installs the host vector at
-VBAR_EL2. It never installs an EL0 entry point or dispatches a user call.
+VBAR_EL2. Only the separate guarded-interval guest executes EL0.
 
 The guest reads two words with unprivileged LDTR. A second copy starts in
 the last word of that page and faults at the guard. A third read faults on
@@ -56,6 +56,25 @@ scheduler teardown: no exiting process exists in this guest.
 The current handoff refuses active EL2 GCS rather than changing SP alone
 while leaving the supervisor control stack attached to the outgoing thread.
 
-The lower-EL synchronous slot uses a separate private frame and requires a
-kernel-owned dispatcher. This test does **not** exercise that slot, any
-return to EL0, signed user code, process keys, GCS call/return, MTE tags, or interrupts.
+### Observed EL0 interval (QEMU 11.1.3, single CPU)
+
+The additional guarded-interval guest enters a dedicated diagnostic RX
+page, **not a signed image**. The runner checks QEMU's exception trace for
+the first EL2-to-EL0 return at the exact test entry, two returns in total,
+and two EL0-to-EL2 SVCs. No key register dump is needed. The guest rejects
+disabled IA, a non-EL0 frame, a mismatched host root and a short host stack
+before entry. In EL0 it uses the user stack, reads its TLS register,
+calls and returns with GCS enabled, and calculates five PACs. Back in EL2 it
+checks those results against a separate reference, both halves of every
+restored host key, the old TTBR0, the control-stack cursor, and both saved
+PCs. The first SVC goes through the Swift private dispatcher with no service
+registered. EL0 receives its unavailable status; the second SVC is outside
+the allowed instruction interval and is not resumed.
+
+The measured-thread adapter consumes the actual private image tables and
+preloaded child frame, measures the original pinned signed init, and uses
+the runnable thread's key bank. Only the original library RX interval is
+accepted for dispatch. The guest above tests the architectural transition,
+not archive enrollment, first entry of signed init, a successful registered
+syscall, interrupt handling, SMP or scheduling. W0's independent page and
+run-queue self-test does not constitute W1 entry.

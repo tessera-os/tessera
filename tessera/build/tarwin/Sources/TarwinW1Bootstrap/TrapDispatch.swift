@@ -1,6 +1,15 @@
 import TarwinArchAarch64
 import TarwinSyscall
 
+/// Only a resume decision, never a syscall status, permits another interval.
+public func w1ArmVectorAction(_ outcome: Arm64TrapOutcome) -> UInt32 {
+  switch outcome {
+  case .resumeEL0: return 1
+  case .stopCaller: return 2
+  case .terminateBadOrigin, .otherSynchronousException, .invalidKernelFrame: return 0
+  }
+}
+
 /// Called by the VHE lower-EL synchronous vector's private dispatcher.
 /// Get the active process and its *exact mapped and verified library code*
 /// from kernel per-CPU state. Frame and scratch are disjoint, kernel-only;

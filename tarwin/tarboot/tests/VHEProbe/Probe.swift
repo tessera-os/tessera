@@ -55,6 +55,9 @@ public func buildRoots(
     let shadow = (UInt64(1) << 43) + page
     let ro = base + 2 * page
     guard q.insertControlPage(virtual: shadow, physical: sample + 3 * page),
+      q.insert(virtual: base + 4 * page, physical: sample + 6 * page, write: false, execute: true),
+      q.insert(virtual: shadow + 7 * page, physical: sample + 7 * page, write: true, execute: false),
+      q.insert(virtual: shadow + 9 * page, physical: sample + 8 * page, write: true, execute: false),
       q.mapsControlPage(shadow, physical: sample + 3 * page),
       q.insert(virtual: ro, physical: sample + 4 * page, write: true, execute: false),
       q.sealReadOnly(ro..<ro + page),

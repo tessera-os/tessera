@@ -12,6 +12,8 @@ public struct W1PrivateImages: ~Copyable {
   public let initialThread: W1ThreadStorage?
   let owner: ProcessKey
   let header: UnsafePointer<ObjectHeader>
+  let authorized: W1BootSet
+  let archive: UnsafeRawBufferPointer
   func belongs(to child: borrowing ProcessExecution) -> Bool {
     owner == child.member && header == child.header && child.initialMap == tables.physicalRoot
   }
@@ -158,5 +160,5 @@ struct W1FramePool {
   return W1PrivateImages(
     tables: consume tables, processCode: process, libraryCode: library,
     processEntry: plan.processEntry, initialThread: installed, owner: child.member,
-    header: child.header, usedBytes: tableBytes + pool.used)
+    header: child.header, authorized: set, archive: archive, usedBytes: tableBytes + pool.used)
 }
