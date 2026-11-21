@@ -24,6 +24,18 @@ mode change. The transport must discard or acknowledge each offered frame;
 on a lost connection it must drain host access before discarding it. Hit-test
 results still require the seat router to check live input grants.
 
+For a CPU-rendered preview or boot console, trusted host code can use
+`importSurface(_:client:compositor:epoch:surface:)` to retain a nonplanar BGRA8
+IOSurface without charging a Tarwin client or exposing a guest grant. Unlock
+CPU writes before calling `compose(output:generation:compositor:importedPlacements:)`.
+On successful admission, do not write the source again until its entry in
+`collect(output:).importedReceipts` arrives. A `.released` receipt permits reuse;
+a `.failed` receipt is terminal and the import must be retired. Use
+`retireSurface(_:)` to stop new copies, retrying after collection if one is
+outstanding. Retiring does not wait for presentation of the private output copy.
+Imports share the output's generation and presentation rules, but do not expose
+guest hit targets or mix with guest placements in a single composition.
+
 Open the host service slots via `HostedGraphicsDeviceProvider.Kind` in the
 hosted kernel's `HostDeviceRegistry` (`gpu` and `display`). The binding can
 register `HostedGraphicsDeviceProvider` with an opener that verifies the slot

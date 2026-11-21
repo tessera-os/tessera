@@ -1,4 +1,5 @@
 import HostedMetalGPU
+import IOSurface
 import Metal
 import Synchronization
 import TarwinArchHosted
@@ -184,6 +185,87 @@ final class HostedMetalGPUTests: XCTestCase {
     XCTAssertEqual(accounting.charged, 0)
     XCTAssertNil(register())
     XCTAssertEqual(sink.wait(2), .deviceRemoved)
+  }
+
+  @MainActor
+  func testHostImportCopiesCPUBytesAndReleasesBeforePresentation() async throws {
+    let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+    let accounting = Accounting()
+    accounting.admit = false
+    let gpu = try XCTUnwrap(HostedMetalGPU(device: device, accounting: accounting))
+    let backing = try XCTUnwrap(IOSurface(properties: [
+      .width: 16, .height: 16, .bytesPerElement: 4, .pixelFormat: 0x42475241,
+    ]))
+    func fill(_ pixel: UInt32) {
+      XCTAssertEqual(backing.lock(options: [], seed: nil), KERN_SUCCESS)
+      for row in 0..<backing.height {
+        for column in 0..<backing.width {
+          backing.baseAddress.storeBytes(
+            of: pixel, toByteOffset: row * backing.bytesPerRow + column * 4, as: UInt32.self)
+        }
+      }
+      XCTAssertEqual(backing.unlock(options: [], seed: nil), KERN_SUCCESS)
+    }
+
+    fill(0xff38_ba52)
+    func admit(_ epoch: UInt64) -> HostedImportedSurface? {
+      gpu.importSurface(backing, client: 3, compositor: 7, epoch: epoch, surface: 5)
+    }
+    let imported = try XCTUnwrap(admit(1))
+    XCTAssertNil(gpu.importSurface(backing, client: 3, compositor: 7, epoch: 1, surface: 6))
+    XCTAssertEqual(accounting.charged, 0)
+    XCTAssertFalse(gpu.retireSurface(client: 3, surface: 5, epoch: 1))
+    let mode = try XCTUnwrap(
+      HostedOutputMode(output: 1, generation: 1, width: 32, height: 24, scale: 1, refreshHz: 60))
+    XCTAssertTrue(gpu.configure(mode, compositor: 7))
+    let other = try XCTUnwrap(
+      HostedOutputMode(output: 2, generation: 1, width: 32, height: 24, scale: 1, refreshHz: 60))
+    XCTAssertTrue(gpu.configure(other, compositor: 7))
+    let placement = HostedImportedPlacement(surface: imported, x: -2, y: 3)
+    XCTAssertFalse(gpu.compose(output: 1, generation: 2, compositor: 7, importedPlacements: [placement]))
+    XCTAssertTrue(gpu.compose(output: 1, generation: 1, compositor: 7, importedPlacements: [placement]))
+    XCTAssertFalse(gpu.compose(output: 2, generation: 1, compositor: 7, importedPlacements: [placement]))
+    XCTAssertFalse(gpu.retireSurface(imported))
+
+    let copy = try await poll { gpu.collect(output: 1) }
+    XCTAssertTrue(copy.receipts.isEmpty)
+    XCTAssertEqual(copy.importedReceipts.map(\.phase), [.released])
+    XCTAssertTrue(copy.importedReceipts.first?.surface === imported)
+    XCTAssertNil(gpu.collect(output: 1))
+    XCTAssertTrue(gpu.retireSurface(imported))
+    XCTAssertNil(admit(1))
+    let replacement = try XCTUnwrap(admit(2))
+    XCTAssertFalse(gpu.retireSurface(imported))
+    XCTAssertFalse(gpu.compose(output: 2, generation: 1, compositor: 7, importedPlacements: [placement]))
+
+    fill(0xff00_0000)
+    let frame = try XCTUnwrap(copy.frame)
+    XCTAssertNotEqual(frame.surface.surfaceID, backing.surfaceID)
+    let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+      pixelFormat: .bgra8Unorm, width: mode.width, height: mode.height, mipmapped: false)
+    descriptor.storageMode = .shared
+    let texture = try XCTUnwrap(device.makeTexture(descriptor: descriptor, iosurface: frame.surface, plane: 0))
+    func pixel(_ x: Int, _ y: Int) -> UInt32 {
+      var value: UInt32 = 0
+      texture.getBytes(&value, bytesPerRow: 4, from: MTLRegionMake2D(x, y, 1, 1), mipmapLevel: 0)
+      return value
+    }
+    XCTAssertEqual(pixel(0, 2), 0xff00_0000)
+    XCTAssertEqual(pixel(0, 3), 0xff38_ba52)
+    XCTAssertEqual(pixel(13, 18), 0xff38_ba52)
+    XCTAssertEqual(pixel(14, 18), 0xff00_0000)
+    XCTAssertFalse(gpu.finishPresentation(.presented(frame.id, time: 0)))
+
+    let next = HostedImportedPlacement(surface: replacement, x: 0, y: 0)
+    XCTAssertTrue(gpu.compose(output: 1, generation: 1, compositor: 7, importedPlacements: [next]))
+    let newMode = try XCTUnwrap(
+      HostedOutputMode(output: 1, generation: 2, width: 32, height: 24, scale: 1, refreshHz: 60))
+    XCTAssertTrue(gpu.configure(newMode, compositor: 7))
+    let stale = try await poll { gpu.collect(output: 1) }
+    XCTAssertNil(stale.frame)
+    XCTAssertEqual(stale.importedReceipts.map(\.phase), [.released])
+    XCTAssertTrue(gpu.retireSurface(replacement))
+    XCTAssertEqual(accounting.charged, 0)
   }
 
   @MainActor

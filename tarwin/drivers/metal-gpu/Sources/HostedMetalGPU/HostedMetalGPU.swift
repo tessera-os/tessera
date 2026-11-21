@@ -65,6 +65,7 @@ public struct HostedPlacement {
 
 public struct HostedCompositionResult {
   public let receipts: [MosaicReceipt]
+  public let importedReceipts: [HostedImportReceipt]
   public let frame: HostedOutputFrame?
 }
 
@@ -79,6 +80,7 @@ public final class HostedMetalGPU {
   private let accounting: any HostedGPUAccounting
   private var allocationID: UInt64 = 0
   private var surfaces: [SurfaceKey: Surface] = [:]
+  private var imports: [SurfaceKey: HostImport] = [:]
   private var usedEpochs: [SurfaceKey: UInt64] = [:]
   private var outputs: [UInt64: Output] = [:]
 
@@ -94,7 +96,8 @@ public final class HostedMetalGPU {
     width: UInt32, height: UInt32, fence sink: any HostedFenceSink
   ) -> (MosaicGrant, HostedRenderFence)? {
     let key = SurfaceKey(client: client, surface: surface)
-    guard surfaces[key] == nil, epoch > usedEpochs[key, default: 0], allocationID < .max,
+    guard surfaces[key] == nil, imports[key] == nil,
+      epoch > usedEpochs[key, default: 0], allocationID < .max,
       client != 0, compositor != 0, surface != 0,
       let (backing, texture) = MetalBacking.make(
         device: device, width: Int(width), height: Int(height)),
@@ -113,6 +116,38 @@ public final class HostedMetalGPU {
     surfaces[key] = entry
     usedEpochs[key] = epoch
     return (grant, fence)
+  }
+
+  /// Register host-owned, nonplanar BGRA8 storage without charging a Tarwin client.
+  /// Only trusted host code may supply the identity and backing.
+  public func importSurface(
+    _ backing: IOSurface, client: UInt64, compositor: UInt64, epoch: UInt64, surface: UInt64
+  ) -> HostedImportedSurface? {
+    let key = SurfaceKey(client: client, surface: surface)
+    guard client != 0, compositor != 0, surface != 0,
+      surfaces[key] == nil, imports[key] == nil, epoch > usedEpochs[key, default: 0],
+      (1...16384).contains(backing.width), (1...16384).contains(backing.height),
+      backing.pixelFormat == 0x42475241, backing.planeCount == 0,
+      backing.bytesPerElement == 4, backing.bytesPerRow >= backing.width * 4,
+      backing.bytesPerRow <= backing.allocationSize / backing.height,
+      !imports.values.contains(where: { $0.backing.surfaceID == backing.surfaceID }),
+      let texture = MetalBacking.texture(device: device, surface: backing)
+    else { return nil }
+    let handle = HostedImportedSurface(client: client, surface: surface, epoch: epoch)
+    imports[key] = HostImport(handle: handle, compositor: compositor, backing: backing, texture: texture)
+    usedEpochs[key] = epoch
+    return handle
+  }
+
+  /// Stop admission immediately; retry retirement after collecting any outstanding copy.
+  @discardableResult
+  public func retireSurface(_ surface: HostedImportedSurface) -> Bool {
+    let key = SurfaceKey(client: surface.client, surface: surface.surface)
+    guard let entry = imports[key], entry.handle === surface else { return false }
+    entry.retiring = true
+    guard !entry.inFlight else { return false }
+    imports.removeValue(forKey: key)
+    return true
   }
 
   public func submit(
@@ -167,8 +202,8 @@ public final class HostedMetalGPU {
     entry.retiring = true
     guard (entry.pending == nil || entry.rendered),
       !surfaces.values.contains(where: { $0.readSource == key }),
-      !outputs.values.contains(where: { $0.pending?.keys.contains(key) == true
-        || $0.latched?.keys.contains(key) == true })
+      !outputs.values.contains(where: { $0.pending?.includes(key) == true
+        || $0.latched?.includes(key) == true })
     else { return false }
     lose(entry)
     entry.gpu = nil
@@ -199,7 +234,7 @@ public final class HostedMetalGPU {
   }
 
   private func invalidate(_ output: Output, generation: UInt64) {
-    output.latched?.composition.retire()
+    output.latched?.retire()
     output.latched = nil
     output.mode = nil
     output.generation = generation
@@ -208,8 +243,7 @@ public final class HostedMetalGPU {
   public func compose(
     output id: UInt64, generation: UInt64, compositor: UInt64, placements: [HostedPlacement]
   ) -> Bool {
-    guard let output = outputs[id], let mode = output.mode, mode.generation == generation,
-      output.compositor == compositor, output.pending == nil, output.serial < .max,
+    guard let (output, mode) = compositionOutput(id, generation: generation, compositor: compositor),
       placements.count <= 256
     else { return false }
     var layers: [MosaicLayer] = []
@@ -227,37 +261,97 @@ public final class HostedMetalGPU {
       let copy = MosaicComposition.begin(
         by: compositor, backbuffer: texture, queue: queue, layers: layers)
     else { return false }
+    enqueue(output, mode: mode, surface: surface, copy: .guest(copy, keys))
+    return true
+  }
+
+  /// On success the host must not modify any source until its receipt is collected.
+  public func compose(
+    output id: UInt64, generation: UInt64, compositor: UInt64,
+    importedPlacements: [HostedImportedPlacement]
+  ) -> Bool {
+    guard let (output, mode) = compositionOutput(id, generation: generation, compositor: compositor),
+      (1...256).contains(importedPlacements.count)
+    else { return false }
+    var sources: [HostImport] = []
+    var keys: Set<SurfaceKey> = []
+    for placement in importedPlacements {
+      let handle = placement.surface
+      let key = SurfaceKey(client: handle.client, surface: handle.surface)
+      guard keys.insert(key).inserted, let source = imports[key], source.handle === handle,
+        source.compositor == compositor, !source.inFlight, !source.retiring
+      else { return false }
+      sources.append(source)
+    }
+    guard let (surface, texture) = MetalBacking.make(
+      device: device, width: mode.width, height: mode.height),
+      let copy = HostImportCopy.begin(
+        sources: sources, placements: importedPlacements, target: texture, queue: queue)
+    else { return false }
+    enqueue(output, mode: mode, surface: surface, copy: .hostPending(copy))
+    return true
+  }
+
+  private func compositionOutput(
+    _ id: UInt64, generation: UInt64, compositor: UInt64
+  ) -> (Output, HostedOutputMode)? {
+    guard let output = outputs[id], let mode = output.mode, mode.generation == generation,
+      output.compositor == compositor, output.pending == nil, output.serial < .max
+    else { return nil }
+    return (output, mode)
+  }
+
+  private func enqueue(
+    _ output: Output, mode: HostedOutputMode, surface: IOSurface, copy: Composition.Copy
+  ) {
     output.serial += 1
     let frame = HostedOutputFrame(
-      id: HostedFrameID(output: id, generation: generation, serial: output.serial), surface: surface)
-    output.pending = Composition(frame: frame, composition: copy, keys: keys)
-    return true
+      id: HostedFrameID(output: mode.output, generation: mode.generation, serial: output.serial),
+      surface: surface)
+    output.pending = Composition(frame: frame, copy: copy)
   }
 
   /// A successful collect returns producer receipts even if the output was resized.
   /// It never changes the latched hit map.
   public func collect(output id: UInt64) -> HostedCompositionResult? {
-    guard let output = outputs[id], let pending = output.pending, !pending.offered,
-      let receipts = pending.composition.collect()
-    else { return nil }
-    var failed = false
-    for (key, receipt) in zip(pending.keys, receipts) {
-      guard let surface = surfaces[key] else { continue }
-      if receipt.phase == .released {
-        surface.pending = nil
-        surface.rendered = false
-      } else {
-        failed = true
-        lose(surface)
+    guard let output = outputs[id], let pending = output.pending, !pending.offered else { return nil }
+    let receipts: [MosaicReceipt]
+    let importedReceipts: [HostedImportReceipt]
+    let failed: Bool
+    switch pending.copy {
+    case .guest(let copy, let keys):
+      guard let finished = copy.collect() else { return nil }
+      receipts = finished
+      importedReceipts = []
+      var guestFailed = false
+      for (key, receipt) in zip(keys, receipts) {
+        guard let surface = surfaces[key] else { continue }
+        if receipt.phase == .released {
+          surface.pending = nil
+          surface.rendered = false
+        } else {
+          guestFailed = true
+          lose(surface)
+        }
       }
+      failed = guestFailed
+    case .hostPending(let copy):
+      guard let finished = copy.collect() else { return nil }
+      pending.copy = .hostCollected
+      receipts = []
+      importedReceipts = finished
+      failed = finished.contains { $0.phase != .released }
+    case .hostCollected:
+      return nil
     }
     guard !failed, output.mode?.generation == pending.frame.id.generation else {
-      pending.composition.retire()
+      pending.retire()
       output.pending = nil
-      return HostedCompositionResult(receipts: receipts, frame: nil)
+      return HostedCompositionResult(receipts: receipts, importedReceipts: importedReceipts, frame: nil)
     }
     pending.offered = true
-    return HostedCompositionResult(receipts: receipts, frame: pending.frame)
+    return HostedCompositionResult(
+      receipts: receipts, importedReceipts: importedReceipts, frame: pending.frame)
   }
 
   /// Only the trusted display transport may acknowledge a frame.
@@ -273,20 +367,20 @@ public final class HostedMetalGPU {
     output.pending = nil
     if case .presented(_, let time) = result, time.isFinite, time > 0,
       output.mode?.generation == id.generation,
-      pending.composition.latch(by: output.compositor)
+      pending.latch(by: output.compositor)
     {
-      output.latched?.composition.retire()
+      output.latched?.retire()
       output.latched = pending
       return true
     }
-    pending.composition.retire()
+    pending.retire()
     if case .discarded = result { return true }
     return false
   }
 
   public func hit(output id: UInt64, generation: UInt64, x: UInt32, y: UInt32) -> MosaicHit? {
     guard let output = outputs[id], output.mode?.generation == generation,
-      let hit = output.latched?.composition.hit(x: x, y: y),
+      let hit = output.latched?.hit(x: x, y: y),
       let surface = surfaces[SurfaceKey(client: hit.client, surface: hit.surface)],
       !surface.retired, !surface.retiring, surface.grant.epoch == hit.epoch
     else { return nil }
@@ -336,15 +430,41 @@ public final class HostedMetalGPU {
   }
 
   private final class Composition {
+    enum Copy {
+      case guest(MosaicComposition, [SurfaceKey])
+      case hostPending(HostImportCopy)
+      case hostCollected
+    }
+
     let frame: HostedOutputFrame
-    let composition: MosaicComposition
-    let keys: [SurfaceKey]
+    var copy: Copy
     var offered = false
 
-    init(frame: HostedOutputFrame, composition: MosaicComposition, keys: [SurfaceKey]) {
+    init(frame: HostedOutputFrame, copy: Copy) {
       self.frame = frame
-      self.composition = composition
-      self.keys = keys
+      self.copy = copy
+    }
+
+    func includes(_ key: SurfaceKey) -> Bool {
+      guard case .guest(_, let keys) = copy else { return false }
+      return keys.contains(key)
+    }
+
+    func retire() {
+      if case .guest(let composition, _) = copy { composition.retire() }
+    }
+
+    func latch(by compositor: UInt64) -> Bool {
+      switch copy {
+      case .guest(let composition, _): return composition.latch(by: compositor)
+      case .hostPending: return false
+      case .hostCollected: return true
+      }
+    }
+
+    func hit(x: UInt32, y: UInt32) -> MosaicHit? {
+      guard case .guest(let composition, _) = copy else { return nil }
+      return composition.hit(x: x, y: y)
     }
   }
 }
