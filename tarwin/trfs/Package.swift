@@ -10,7 +10,8 @@ let package = Package(
   ],
   dependencies: [
     .package(path: "../tarwin-ipc"), .package(path: "../tarwin-mm"),
-    .package(path: "../tarwin-device"),
+    .package(path: "../tarwin-device"), .package(path: "../tarwin-object"),
+    .package(path: "../tarwin-syscall"),
   ],
   targets: [
     .target(
@@ -19,6 +20,9 @@ let package = Package(
     .testTarget(
       name: "FATTests",
       dependencies: [
+        .product(name: "TarwinObject", package: "tarwin-object"),
+        .product(name: "TarwinSyscall", package: "tarwin-syscall"),
+        .product(name: "TarwinIoCompletion", package: "tarwin-device"),
         "TarwinFAT", "TRFS", "TarwinFsWire", .product(name: "TarwinIPC", package: "tarwin-ipc"),
         .product(name: "TarwinDevice", package: "tarwin-device"),
       ], path: "tests/FATTests"),
@@ -27,6 +31,9 @@ let package = Package(
     .target(
       name: "TRFS",
       dependencies: [
+        .product(name: "TarwinObject", package: "tarwin-object"),
+        .product(name: "TarwinSyscall", package: "tarwin-syscall"),
+        .product(name: "TarwinIoCompletion", package: "tarwin-device"),
         "TarwinFsWire", .product(name: "TarwinIPC", package: "tarwin-ipc"),
         .product(name: "TarwinMM", package: "tarwin-mm"),
       ]),

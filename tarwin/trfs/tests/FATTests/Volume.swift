@@ -108,5 +108,6 @@ final class VolumeTests: XCTestCase {
     let file = try v.lookup(parent: docs, name: Array("notes.txt".utf8))
     XCTAssertEqual(try v.bytes(node: file, offset: 0, count: 10000), Array(data))
     throughServer(v, folders: ["docs"], file: "notes.txt", expected: Array(data))
+    readMountedMedia(v, node: file, expected: Array(data))
   }
 }

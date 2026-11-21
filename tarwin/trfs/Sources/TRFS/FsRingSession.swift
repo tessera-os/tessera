@@ -9,12 +9,27 @@ public enum FsPoll: Equatable {
   case wait, disconnected, invalidReply, retiring
   case completed
 }
+/// Proof of retirement issued by the mount only after synchronous revocation.
+/// A nil status denotes server loss. Volume and epoch are kernel identities.
+public struct FsReceipt {
+  public let volume: UInt64, epoch: UInt64, request: UInt64, status: FsStatus?, count: UInt32
+  fileprivate init(_ v: UInt64, _ e: UInt64, _ id: UInt64, _ s: FsStatus?, _ n: UInt32) {
+    volume = v
+    epoch = e
+    request = id
+    status = s
+    count = n
+  }
+}
 /// Exclusive owner of one fresh A.4 pair and all request-exclusive grants
 /// for this volume's server. Serialize access under the volume lock.
 public struct FsRingSession: ~Copyable {
   private var channel: FsChannel, requests: RingEndpoint, replies: RingEndpoint
   private var terminal: FsReply?, failed = false
   public var live: Int { channel.live }
+  public var volume: UInt64 { channel.volume }
+  public var epoch: UInt64 { channel.epoch }
+  public var lastPublished: UInt64 { channel.last }
   public init?(
     volume: UInt64, epoch: UInt64, limit: Int, requests: consuming RingEndpoint,
     replies: consuming RingEndpoint
@@ -94,5 +109,21 @@ public struct FsRingSession: ~Copyable {
     failed = true
     terminal = nil
     return channel.disconnect(revoke, fail)
+  }
+  public mutating func pollRetired(
+    signalSpace: () -> Void, revoke: (FsRecord) -> Bool, deliver: (FsReceipt) -> Void
+  ) -> FsPoll {
+    let v = volume
+    let e = epoch
+    return poll(signalSpace: signalSpace, revoke: revoke) { r, reply in
+      deliver(FsReceipt(v, e, r.id, reply.status, reply.produced))
+    }
+  }
+  public mutating func disconnectRetired(revoke: (FsRecord) -> Bool, fail: (FsReceipt) -> Void)
+    -> Bool
+  {
+    let v = volume
+    let e = epoch
+    return disconnect(revoke: revoke) { fail(FsReceipt(v, e, $0, nil, 0)) }
   }
 }

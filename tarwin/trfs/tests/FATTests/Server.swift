@@ -19,7 +19,7 @@ private struct Shares: FatShares {
     return true
   }
 }
-private func mounted(
+func mounted(
   _ v: FatVolume<Media>, _ visit: (inout FsRingSession, inout FatServer<Media>) -> Void
 ) {
   let raw = UnsafeMutableRawBufferPointer.allocate(byteCount: 12288, alignment: 4096)
