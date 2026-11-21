@@ -32,7 +32,15 @@ import Testing
   #expect(takePages(&reserved, order: 0).address == 16384)
   #expect(userRegion(0, length: 4096, pageSize: 4096, userBits: 47) == 0)
   #expect(userRegion(0x1_0000_0000, length: 16384, pageSize: 16384, userBits: 47) == 1)
-  #expect(userRegion(0xff_ffff_f000, length: 8192, pageSize: 4096, userBits: 47) == 0)
+  for page: UInt64 in [4096, 16384] {
+    for bits: UInt8 in [47, 56] {
+      let edge: UInt64 = 1 << 43
+      #expect(userRegion(1 << 40, length: page, pageSize: page, userBits: bits) == 1)
+      #expect(userRegion(edge - page, length: page, pageSize: page, userBits: bits) == 1)
+      #expect(userRegion(edge - page, length: 2 * page, pageSize: page, userBits: bits) == 0)
+      #expect(userRegion(edge, length: page, pageSize: page, userBits: bits) == 2)
+    }
+  }
   #expect(userRegion(0xffff_ffff_ffff_f000, length: 4096, pageSize: 4096, userBits: 56) == 0)
   #expect(
     !permitsMapping(7, readable: true, writable: true, executable: true, code: true, sealed: false))

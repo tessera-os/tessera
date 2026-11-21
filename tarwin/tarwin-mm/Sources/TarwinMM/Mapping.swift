@@ -10,8 +10,8 @@ public func userRegion(_ base: UInt64, length: UInt64, pageSize: UInt64, userBit
   }
   if userBits != 47 && userBits != 56 { return 0 }
   let high = UInt64(1) << UInt64(userBits)
-  if withinRange(base, length: length, lower: UInt64(1) << 32, upper: UInt64(1) << 40) { return 1 }
-  if withinRange(base, length: length, lower: UInt64(1) << 40, upper: UInt64(1) << 46) { return 2 }
+  if withinRange(base, length: length, lower: UInt64(1) << 32, upper: UInt64(1) << 43) { return 1 }
+  if withinRange(base, length: length, lower: UInt64(1) << 43, upper: UInt64(1) << 46) { return 2 }
   if withinRange(
     base, length: length, lower: UInt64(1) << 46, upper: (UInt64(1) << 47) - (UInt64(1) << 36))
   {
