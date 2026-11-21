@@ -60,3 +60,15 @@ This deterministic TIRA contains two sorted raw members: debug slot-A
 Each has an uncompressed BLAKE3 digest. After native signing, rerun with the
 signed ELF to a new archive path; sign the exact repacked TIRA separately.
 This is a W0 fixture, not the full §6.3 boot set.
+
+### Assemble the restricted W1 debug candidate
+
+    swift run Stage0Image w1-bootset KERNEL.elf INIT.elf LIBTESSERA.elf NEW-W1.TIR
+
+Supply the three native-signed images, then send the output for detached
+signing. The four raw members are `LibTessera`, `boot.json`, `kernel`, and
+`tessera.init`, in bytewise name order. Paths passed on the command line
+do not set member names or establish any executable identity. The packer
+neither verifies signatures nor makes an image launchable. W0 remains a
+two-member archive; the W1 guest needs separate role and RX-range checks
+and the kernel must measure the authorized init in PCR 10 before launch.

@@ -1,16 +1,27 @@
 import TIRCore
 
-// Isolated W0 input for the archive signer. Kernel bytes may already have a
-// native signature. Packing them neither verifies it nor signs the archive.
+private let debugConfig = Array(#"{"flags":["debug"],"securityVersion":1,"slot":"A"}"#.utf8)
+let maxNativeMemberBytes = 8 << 20
+
+// Only the signer and guest verifier establish member roles and launch authority.
 func bootSet(kernel: [UInt8]) throws -> [UInt8] {
-  guard !kernel.isEmpty, kernel.count <= 8 << 20 else {
-    throw InputError("kernel size out of range")
+  try pack([("boot.json", debugConfig), ("kernel", kernel)])
+}
+
+func stage1BootSet(kernel: [UInt8], initialProcess: [UInt8], library: [UInt8]) throws -> [UInt8] {
+  try pack([("LibTessera", library), ("boot.json", debugConfig), ("kernel", kernel),
+    ("tessera.init", initialProcess)])
+}
+
+// Callers fix the names and their unsigned UTF-8 directory order.
+private func pack(_ members: [(String, [UInt8])]) throws -> [UInt8] {
+  guard members.allSatisfy({ !$0.1.isEmpty && $0.1.count <= maxNativeMemberBytes }) else {
+    throw InputError("boot member size out of range")
   }
-  let config = Array(#"{"flags":["debug"],"securityVersion":1,"slot":"A"}"#.utf8)
-  let members = [("boot.json", config), ("kernel", kernel)]
   func le(_ n: Int) -> [UInt8] { (0..<8).map { UInt8(truncatingIfNeeded: UInt64(n) >> (8 * $0)) } }
-  var file: [UInt8] = [84, 73, 82, 65, 1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0]
-  file += le(24 + config.count + kernel.count)
+  var file: [UInt8] = [84, 73, 82, 65, 1, 0, 0, 0]
+  file += le(members.count)
+  file += le(members.reduce(24) { $0 + $1.1.count })
   var index: [UInt8] = []
   for (name, body) in members {
     index.append(UInt8(name.utf8.count))
