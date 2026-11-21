@@ -39,14 +39,18 @@ public struct MountedRead: ~Copyable {
   }
   /// Copy and validate user iovecs first. The VM supplies an exclusive,
   /// writable, exact staging share and keeps both buffers valid until released.
-  /// A zero-byte operation has no share. A rejection consumes no caller buffer.
+  /// A zero-byte operation has no share. Serialize handle resolution and
+  /// reservation with name invalidation; a read epoch alone is not a close lock.
   public static func begin<P: IoPorts & ~Copyable>(
     call: UInt64, name: UInt64, port: UInt64, key: UInt64, offset: UInt64, length: UInt32,
     stage: FsShare?,
-    table: HandleReadView, ports: inout P, resolve: (UnsafePointer<ObjectHeader>) -> MountedFile?,
+    caller: borrowing ProcessExecution, ports: inout P,
+    resolve: (UnsafePointer<ObjectHeader>) -> MountedFile?,
     retire: (UnsafePointer<ObjectHeader>) -> Void
   ) -> FileReadStart {
     guard call == TarwinCall.fileRead else { return .unsupported }
+    guard caller.exit == nil else { return .denied }
+    let table = caller.handleReader
     guard (length == 0) == (stage == nil), length == 0 || UInt64(length - 1) <= UInt64.max - offset
     else { return .invalid }
     if let s = stage {
@@ -76,7 +80,7 @@ public struct MountedRead: ~Copyable {
       case .found(let p):
         let reserved = IoReservation(
           port: p.header.pointee.koid, object: f.header.pointee.koid, key: key, kind: 3,
-          ports: &ports)
+          owner: OperationHandle(process: caller.header.pointee.koid, name: name), ports: &ports)
         p.drop(retire: retire)
         guard let reserved else {
           f.drop(retire: retire)

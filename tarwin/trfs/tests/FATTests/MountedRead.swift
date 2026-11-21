@@ -40,23 +40,41 @@ private struct Staging: FatShares {
     return true
   }
 }
-private enum Outcome { case success, cancel, closed, removed, badCopy, unpublished }
+private enum Outcome { case success, cancel, handleClosed, closed, removed, badCopy, unpublished }
 private func runRead<V: ReadOnlyVolume>(
   _ volume: V, node: UInt64, offset: UInt64, expected: [UInt8], outcome: Outcome
 ) {
   mounted(volume) { session, server in
     let ids = KoidSource()
-    func object(_ kind: UInt32, _ rights: UInt64) -> UnsafeMutablePointer<ObjectHeader> {
+    func object(_ kind: UInt32, _ rights: UInt64, job: UInt64) -> UnsafeMutablePointer<ObjectHeader>
+    {
       let ptr = UnsafeMutablePointer<ObjectHeader>.allocate(capacity: 1)
-      ptr.initialize(to: ObjectHeader(source: ids, ownerJob: 1, kind: kind, maximumRights: rights)!)
+      ptr.initialize(
+        to: ObjectHeader(source: ids, ownerJob: job, kind: kind, maximumRights: rights)!)
       return ptr
     }
-    let file = object(TarwinKind.file, 7)
-    let port = object(TarwinKind.port, 8)
+    let root = object(TarwinKind.job, 0, job: 0)
+    let job = root.pointee.koid
+    let process = object(TarwinKind.process, 0, job: job)
+    let file = object(TarwinKind.file, 7, job: job)
+    let port = object(TarwinKind.port, 8, job: job)
+    let jobs = UnsafeMutableBufferPointer<JobNode>.allocate(capacity: 1)
+    let members = UnsafeMutableBufferPointer<JobMember>.allocate(capacity: 1)
+    let threads = UnsafeMutableBufferPointer<ThreadSlot>.allocate(capacity: 1)
+    jobs.initialize(repeating: JobNode())
+    members.initialize(repeating: JobMember())
+    threads.initialize(repeating: ThreadSlot())
+    let tree = JobTree(
+      jobs: jobs, members: members, root: root.pointee,
+      limits: JobLimits(
+        processes: 1, threadsPerProcess: 1, handlesPerProcess: 8, footprint: 1024, cpuShare: 1,
+        maxQos: 2, jetsamBand: 1, ioRank: 1, entitlements: 0, denials: 0, killOnClose: false))!
     let cells = UnsafeMutableBufferPointer<HandleCell>.allocate(capacity: 8)
     let pbuf = UnsafeMutableBufferPointer<PortSlot>.allocate(capacity: 1)
     pbuf.initialize(repeating: PortSlot())
-    var table = HandleTable(storage: cells, salt: 2)!
+    var caller = ProcessExecution(
+      header: UnsafePointer(process), job: tree.root, tree: tree, slots: threads, cells: cells,
+      salt: 2)!
     var ports = Ports(koid: port.pointee.koid, port: CompletionPort(storage: pbuf)!)
     func install(_ result: HandleMutation) -> UInt64 {
       guard case .installed(let n) = result else {
@@ -65,20 +83,26 @@ private func runRead<V: ReadOnlyVolume>(
       }
       return n
     }
-    let src = install(table.install(file, rights: 7))
-    let read = install(table.derive(src, rights: 4, duplicate: true))
-    let none = install(table.derive(src, rights: 0, duplicate: true))
-    let sink = install(table.install(port, rights: 8))
-    let noPost = install(table.install(port, rights: 0))
+    let (src, read, none, sink, noPost) = caller.withHandles(tree: tree) { table in
+      let src = install(table.install(file, rights: 7))
+      return (
+        src, install(table.derive(src, rights: 4, duplicate: true)),
+        install(table.derive(src, rights: 0, duplicate: true)),
+        install(table.install(port, rights: 8)), install(table.install(port, rights: 0))
+      )
+    }!
     var retired = 0
     func retire(_ h: UnsafePointer<ObjectHeader>) {
       XCTAssertEqual(h, UnsafePointer(file))
       retired += 1
     }
     defer {
-      table.drain(retire: { _ in XCTFail() })
+      caller.withHandles(tree: tree) { $0.drain(retire: { _ in XCTFail() }) }
+      XCTAssertTrue(tree.detach(caller.member))
+      XCTAssertEqual(process.pointee.release(), .destroy)
+      XCTAssertEqual(root.pointee.release(), .destroy)
       XCTAssertEqual(port.pointee.release(), .destroy)
-      for h in [file, port] {
+      for h in [file, port, process, root] {
         h.deinitialize(count: 1)
         h.deallocate()
       }
@@ -86,6 +110,12 @@ private func runRead<V: ReadOnlyVolume>(
       pbuf.deallocate()
       cells.deinitialize()
       cells.deallocate()
+      jobs.deinitialize()
+      jobs.deallocate()
+      members.deinitialize()
+      members.deallocate()
+      threads.deinitialize()
+      threads.deallocate()
     }
     let n = UInt32(expected.count + 8)
     let share = FsShare(volume: 9, id: 91, backing: 77, offset: 0, length: n, writable: true)
@@ -94,7 +124,7 @@ private func runRead<V: ReadOnlyVolume>(
     {
       MountedRead.begin(
         call: call, name: name, port: portName, key: 42, offset: offset, length: n, stage: share,
-        table: table.reader, ports: &ports,
+        caller: caller, ports: &ports,
         resolve: { h in
           h == UnsafePointer(file) ? MountedFile(volume: 9, epoch: 17, node: node) : nil
         }, retire: retire)
@@ -107,7 +137,20 @@ private func runRead<V: ReadOnlyVolume>(
       return XCTFail("missing bounded reservation")
     }
     XCTAssertEqual(ports.refs, 1)
-    for h in [src, read, none] { XCTAssertTrue(table.close(h, retire: retire)) }
+    func invalidate(_ name: UInt64) -> PortOperation? {
+      var token: PortOperation?
+      XCTAssertTrue(caller.withHandles(tree: tree) { $0.close(name, retire: retire) } == true)
+      _ = ports.port.cancel(owner: OperationHandle(process: process.pointee.koid, name: name)!) {
+        token = $0
+      }
+      return token
+    }
+    XCTAssertNil(invalidate(src))
+    XCTAssertNil(invalidate(none))
+    XCTAssertEqual(
+      ports.port.cancel(owner: OperationHandle(process: process.pointee.koid + 1, name: read)!) {
+        _ in XCTFail()
+      }, 0)
     XCTAssertNotEqual(file.pointee.release(), .destroy)
     XCTAssertEqual(retired, 0)
     var stage = Staging(bytes: n)
@@ -152,6 +195,14 @@ private func runRead<V: ReadOnlyVolume>(
           var token: PortOperation?
           XCTAssertEqual(ports.port.cancel(key: 42) { token = $0 }, 1)
           XCTAssertTrue(op.matches(port: ports.koid, operation: token!))
+        } else if outcome == .handleClosed {
+          guard let token = invalidate(read) else {
+            return XCTFail("Closing the submitting handle did not schedule cancellation")
+          }
+          XCTAssertTrue(op.matches(port: ports.koid, operation: token))
+          guard case .invalidHandle = begin(read, sink) else {
+            return XCTFail("Closed file still usable")
+          }
         } else if outcome == .closed {
           ports.port.close()
         }
@@ -187,6 +238,10 @@ private func runRead<V: ReadOnlyVolume>(
           }, release: { XCTFail() }, retire: retire))
     }
     XCTAssertEqual(ports.refs, 0)
+    if outcome != .handleClosed {
+      XCTAssertEqual(retired, 0)
+      XCTAssertNil(invalidate(read))
+    }
     XCTAssertEqual(released, 1)
     XCTAssertEqual(retired, 1)
     let packet = ports.port.take()
@@ -199,7 +254,7 @@ private func runRead<V: ReadOnlyVolume>(
       XCTAssertEqual(ports.wakes, 1)
       let code: UInt32 =
         switch outcome {
-        case .cancel: 26
+        case .cancel, .handleClosed: 26
         case .removed, .unpublished: 70
         case .badCopy: 90
         default: 0
@@ -221,10 +276,12 @@ func readMountedMedia<V: ReadOnlyVolume>(_ v: V, node: UInt64, expected: [UInt8]
   runRead(v, node: node, offset: 0, expected: expected, outcome: .success)
 }
 final class MountedReadTests: XCTestCase {
-  func testIssuedFileReadsOutliveHandleCloseAndCommitOnlyAfterRetirement() throws {
+  func testReadsUseExactSubmittingHandleAndCommitOnlyAfterRetirement() throws {
     let v = try FatVolume(sample())
     let node = try v.lookup(parent: v.root, name: Array("README.TXT".utf8))
-    for result: Outcome in [.success, .badCopy, .cancel, .closed, .removed, .unpublished] {
+    for result: Outcome in [
+      .success, .badCopy, .cancel, .handleClosed, .closed, .removed, .unpublished,
+    ] {
       runRead(v, node: node, offset: 512, expected: [1, 2, 3, 4, 5, 6], outcome: result)
     }
     runRead(v, node: node, offset: 518, expected: [], outcome: .success)
