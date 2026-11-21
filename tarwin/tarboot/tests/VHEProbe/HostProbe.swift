@@ -195,6 +195,68 @@ _start:
   adr x1, ok
   mov x0, #4
   hlt #0xf000
+  // Register-only oracle with public diagnostic keys. No target is called;
+  // the root contains no user code and no process key bank is provisioned.
+  .arch_extension pauth
+  mrs x25, sctlr_el2
+  orr x9, x25, #(1 << 31)
+  msr sctlr_el2, x9
+  isb
+  mov x21, #0x6754
+  mov x22, #0xa901
+  stp x21, x22, [sp, #-16]!
+  msr APIAKeyLo_EL1, x21
+  msr APIAKeyHi_EL1, x22
+  isb
+  mov x23, #0x100000000
+  ldr x24, =0x9156000100004008
+  pacia x23, x24
+  mov x9, #0x100000000
+  cmp x23, x9 // this fixed diagnostic tuple must exercise a nonzero PAC
+  b.eq failed
+  mov x21, #0xd3f0
+  mov x22, #0x91e4
+  msr APIAKeyLo_EL1, x21
+  msr APIAKeyHi_EL1, x22
+  isb
+  mov x0, #0x100000000
+  mov x1, x24
+  mov x2, sp
+  ldr x3, =private_a // not the expected host root
+  bl tarwin_w1_sign_private_import
+  cbnz x0, failed
+  mov x0, #0x100000000
+  mov x1, x24
+  mov x2, sp
+  ldr x3, =host_root
+  bl tarwin_w1_sign_private_import
+  cmp x0, x23
+  b.ne failed
+  orr x4, x4, x5
+  orr x4, x4, x6
+  orr x4, x4, x7
+  cbnz x4, failed
+  mrs x4, APIAKeyLo_EL1
+  cmp x4, x21
+  b.ne failed
+  mrs x4, APIAKeyHi_EL1
+  cmp x4, x22
+  b.ne failed
+  bic x9, x25, #(1 << 31)
+  msr sctlr_el2, x9
+  isb
+  mov x0, #0x100000000
+  mov x1, x24
+  mov x2, sp
+  ldr x3, =host_root
+  bl tarwin_w1_sign_private_import
+  cbnz x0, failed
+  add sp, sp, #16
+  msr sctlr_el2, x25
+  isb
+  adr x1, pac_ok
+  mov x0, #4
+  hlt #0xf000
   // Dispatch has already been tested separately. Use the vector's stop
   // continuation with a synthetic private frame; do not enter EL0.
   sub sp, sp, #816
@@ -255,6 +317,7 @@ hex_digit:
 ok: .asciz "VHE-COPY-READ-WRITE-ABORT-DENY\\nVHE-HIGH-HOST-PRIVATE-ROOT-SWITCH\\n"
 bad: .asciz "VHE-COPY-FAILED\\n"
 gcs_ok: .asciz "VHE-GCS-STORE-ORDINARY-WRITE-DENIED\\n"
+pac_ok: .asciz "VHE-IMPORT-IA-HOST-KEY-RESTORED\\n"
 stopped: .asciz "VHE-STOP-ON-SEPARATE-SCHEDULER-STACK\\n"
 .p2align 3
 exit_ok: .quad 0x20026,0

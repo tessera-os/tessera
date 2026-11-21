@@ -24,6 +24,13 @@ invalidation, checks the old identity map and stack guard are absent, and
 recovers another store fault on its high-half stack. These are data-only
 user roots, not live processes. ASID reuse and SMP shootdown are not tested.
 
+On the high host stack the import signer rejects a mismatched TTBR1 or
+disabled instruction-address authentication. With a public test IA pair
+it produces the same PAC as the CPU's reference calculation, restores both
+halves of a distinct host IA key, and clears the key-bearing registers.
+Only the caller's verified target and storage modifier belong here; no
+process key is generated and the probe never branches to the target.
+
 The probe prints the CPU's GCS, S1PIE and TCRX feature nibbles. With
 all three at version 1, a second guest enables permission indirection
 before enabling its MMU. It checks that the host refuses a direct-permission

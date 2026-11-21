@@ -241,6 +241,80 @@
     isb
     mov w0, #1
     ret
+
+    // Boot CPU, verified import only. x2 is the aligned IA pair borrowed
+    // from the unpublished child's protected key bank, x3 its owner's
+    // expected host TTBR1. Never accept these arguments from a user trap.
+    .global tarwin_w1_sign_private_import
+    .hidden tarwin_w1_sign_private_import
+    tarwin_w1_sign_private_import:
+    bti c
+    mrs x4, CurrentEL
+    cmp x4, #8
+    b.ne .Lbad_mode
+    mrs x4, hcr_el2
+    tbz x4, #34, .Lbad_mode
+    tbz x4, #27, .Lbad_mode
+    mrs x4, sctlr_el2
+    tbz x4, #0, .Lbad_mode
+    tbz x4, #31, .Lbad_mode // IA must already be enabled
+    tbnz x4, #61, .Lbad_mode // DAIF alone cannot exclude a superpriority IRQ
+    tbnz x4, #25, .Lbad_mode // little-endian key record
+    mrs x4, daif
+    and x4, x4, #0x3c0
+    cmp x4, #0x3c0
+    b.ne .Lbad_mode
+    mrs x4, pan
+    cbz x4, .Lbad_mode
+    mrs x4, ttbr1_el2
+    cbz x3, .Lbad_mode
+    cmp x4, x3
+    b.ne .Lbad_mode
+    mrs x4, tcr_el2
+    ldr x5, =0x57510b510
+    cmp x4, x5
+    b.ne .Lbad_mode
+    mov x4, #0xffff800000000000
+    adr x5, .
+    cmp x5, x4
+    b.lo .Lbad_mode
+    cmp x2, x4
+    b.lo .Lbad_mode
+    tst x2, #7
+    b.ne .Lbad_mode
+    // Both the code target and the storage address in the modifier must
+    // fit the W1 image window. The verified loader checks their exact RVAs.
+    ubfx x4, x1, #0, #48
+    tst x4, #7
+    b.ne .Lbad_mode
+    tst x0, #3
+    b.ne .Lbad_mode
+    mov x5, #0x100000000
+    cmp x0, x5
+    b.lo .Lbad_mode
+    cmp x4, x5
+    b.lo .Lbad_mode
+    orr x4, x4, x0
+    lsr x4, x4, #43
+    cbnz x4, .Lbad_mode
+    // Load both halves before changing the key. No calls, stack, memory
+    // accesses or indirect branches while the child key is installed.
+    .arch_extension pauth
+    ldp x4, x5, [x2]
+    mrs x6, APIAKeyLo_EL1
+    mrs x7, APIAKeyHi_EL1
+    msr APIAKeyLo_EL1, x4
+    msr APIAKeyHi_EL1, x5
+    isb
+    pacia x0, x1
+    msr APIAKeyLo_EL1, x6
+    msr APIAKeyHi_EL1, x7
+    isb
+    mov x4, xzr
+    mov x5, xzr
+    mov x6, xzr
+    mov x7, xzr
+    ret
     """)
   }
 }

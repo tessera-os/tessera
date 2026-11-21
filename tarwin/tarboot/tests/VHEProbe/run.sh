@@ -41,6 +41,7 @@ run_guest() {
 run_guest probe
 grep -Fx 'VHE-COPY-READ-WRITE-ABORT-DENY' "$d/log"
 grep -Fx 'VHE-HIGH-HOST-PRIVATE-ROOT-SWITCH' "$d/log"
+grep -Fx 'VHE-IMPORT-IA-HOST-KEY-RESTORED' "$d/log"
 grep -Fx 'VHE-STOP-ON-SEPARATE-SCHEDULER-STACK' "$d/log"
 grep -Ex 'VHE-CPU-GCS-S1PIE-TCRX=[0-9a-f]{3}' "$d/log"
 if grep -Fxq 'VHE-CPU-GCS-S1PIE-TCRX=111' "$d/log"; then
