@@ -6,50 +6,43 @@ import XCTest
 
 final class IoRingTests: XCTestCase {
   func testBackpressureIdleNotificationAndMaskedSlotsInBothDirections() {
-    let region = UnsafeMutableRawBufferPointer.allocate(byteCount: 4096 + 8192, alignment: 4096)
-    defer { region.deallocate() }
-    XCTAssertTrue(IoRingMapping.initialize(region, count: 64, stride: 64))
-    let pair = IoRingMapping(attaching: region)!
+    let memory = UnsafeMutableRawBufferPointer.allocate(byteCount: 4096 + 8192, alignment: 4096)
+    defer { memory.deallocate() }
+    let pair = IoRingMapping(initializing: memory, count: 64, stride: 64)!
     for completion in [false, true] {
-      var tx = pair.lane(completion: completion, producer: true)
-      var rx = pair.lane(completion: completion, producer: false)
-      withUnsafeTemporaryAllocation(of: UInt8.self, capacity: 64) { row in
-        row.initialize(repeating: 0)
-        defer { row.deinitialize() }
-        var signals = 0
-        for iteration in 0..<2 {
-          XCTAssertEqual(rx.arm(), .wait)
-          for i in 0..<64 {
-            row[0] = UInt8(64 * iteration + i)
-            XCTAssertEqual(tx.transfer(row) { signals += 1 }, .transferred)
-          }
-          XCTAssertEqual(tx.transfer(row) { XCTFail() }, .wait)
-          XCTAssertEqual(tx.arm(), .wait)
-          for i in 0..<64 {
-            XCTAssertEqual(rx.transfer(row) { signals += 1 }, .transferred)
-            XCTAssertEqual(row[0], UInt8(64 * iteration + i))
-          }
-          XCTAssertEqual(rx.transfer(row) { XCTFail() }, .wait)
+      var tx = pair.endpoint(completion: completion, producer: true)!
+      var rx = pair.endpoint(completion: completion, producer: false)!
+      var row = RingRecord()
+      for iteration in 0..<2 {
+        XCTAssertEqual(rx.pop(into: &row), .wait)
+        for i in 0..<64 {
+          row.words[0] = UInt32(64 * iteration + i)
+          XCTAssertEqual(tx.push(row), .transferred(notifyPeer: true))
         }
-        XCTAssertTrue(signals >= 4)
+        XCTAssertEqual(tx.push(row), .wait)
+        for i in 0..<64 {
+          XCTAssertEqual(rx.pop(into: &row), .transferred(notifyPeer: true))
+          XCTAssertEqual(row.words[0], UInt32(64 * iteration + i))
+        }
       }
     }
   }
   func testHostilePeerCannotChangeGeometryOrForgeCompletions() {
-    let region = UnsafeMutableRawBufferPointer.allocate(byteCount: 4096 + 8192, alignment: 4096)
-    defer { region.deallocate() }
-    XCTAssertFalse(IoRingMapping.initialize(region, count: 64, stride: 128))
-    XCTAssertTrue(IoRingMapping.initialize(region, count: 64, stride: 64))
-    var rx = IoRingMapping(attaching: region)!.lane(completion: true, producer: false)
+    let memory = UnsafeMutableRawBufferPointer.allocate(byteCount: 4096 + 8192, alignment: 4096)
+    defer { memory.deallocate() }
+    XCTAssertNil(IoRingMapping(initializing: memory, count: 64, stride: 128))
+    let pair = IoRingMapping(initializing: memory, count: 64, stride: 64)!
+    var rx = pair.endpoint(completion: true, producer: false)!
+    var row = RingRecord()
     func write(_ offset: Int, _ value: UInt32) {
-      region.baseAddress!.advanced(by: offset).assumingMemoryBound(to: Atomic<UInt32>.self)
-        .pointee.store(value.littleEndian, ordering: .releasing)
+      memory.baseAddress!.advanced(by: offset).assumingMemoryBound(to: Atomic<UInt32>.self)
+        .pointee.store(value, ordering: .releasing)
     }
     write(12, .max)
-    XCTAssertNil(IoRingMapping(attaching: region))
+    XCTAssertTrue(pair.endpoint(completion: false, producer: true) == nil)
     write(Int(RingFormat.completionProducer), 65)
-    XCTAssertEqual(rx.arm(), .invalid)
+    XCTAssertEqual(rx.pop(into: &row), .invalidPeer)
     write(Int(RingFormat.completionProducer), 0)
-    XCTAssertEqual(rx.arm(), .invalid)
+    XCTAssertEqual(rx.pop(into: &row), .invalidPeer)
   }
 }
