@@ -10,8 +10,10 @@ for target in aarch64-none-none-elf x86_64-unknown-none-elf riscv64-none-none-ea
     dir="$out/$target"
     mkdir "$dir"
     set -- -target "$target" -wmo -O -no-allocations -parse-as-library -enable-experimental-feature Embedded
-    "$compiler" "$@" -module-name TarwinSyscall -emit-module -emit-module-path "$dir/TarwinSyscall.swiftmodule" \
-        "$root"/tarwin-syscall/Sources/TarwinSyscall/*.swift
+    for module in TarwinABI TarwinSyscall; do
+        "$compiler" "$@" -I "$dir" -module-name "$module" -emit-module -emit-module-path "$dir/$module.swiftmodule" \
+            "$root/tarwin-syscall/Sources/$module"/*.swift
+    done
     for path in tarwin-hv/Sources/TarwinHV tarwin-probe/Sources/TarwinProbe tarwin-trace/Sources/TarwinTrace \
         tarwin-trace/debug-image/Sources/TarwinDebugImage; do
         module=${path##*/}
