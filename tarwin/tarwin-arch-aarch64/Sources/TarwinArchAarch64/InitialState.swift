@@ -17,8 +17,9 @@ public struct ArmInitialState {
     bootstrapChannel: UInt64, stack: Range<UInt64>, tcb: UInt64) {
     let page: UInt64 = 16384, guardBytes: UInt64 = 65536
     let ordinary: UInt64 = 1 << 43, limit: UInt64 = 1 << 46
-    guard bootstrapChannel != 0, entry & 3 == 0, imageRX.lowerBound >= 1 << 32,
+    guard bootstrapChannel != 0, entry & 15 == 0, imageRX.lowerBound >= 1 << 32,
       imageRX.upperBound <= ordinary, imageRX.contains(entry), imageRX.upperBound - entry >= 4,
+      entry - imageRX.lowerBound >= 4, tables.entryPage(entry - 4, is: .code),
       tables.entryPage(entry, is: .code),
       !stack.isEmpty, (stack.lowerBound | stack.upperBound) & (page - 1) == 0,
       stack.lowerBound >= ordinary + guardBytes, stack.upperBound < limit,
