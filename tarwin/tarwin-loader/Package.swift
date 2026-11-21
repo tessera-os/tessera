@@ -15,5 +15,6 @@ let package = Package(
     .executableTarget(
       name: "InspectUnsigned", dependencies: ["TarwinLoader"], path: "tests/InspectUnsigned"),
     .testTarget(
-      name: "TarwinLoaderTests", dependencies: ["TarwinLoader"], path: "tests/TarwinLoaderTests"),
+      name: "TarwinLoaderTests", dependencies: ["TarwinLoader"], path: "tests/TarwinLoaderTests",
+      resources: [.copy("Fixtures")]),
   ])

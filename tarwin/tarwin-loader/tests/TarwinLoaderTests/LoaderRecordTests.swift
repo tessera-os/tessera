@@ -29,9 +29,10 @@ private struct Records {
   }
 
   func serialized() -> [UInt8] {
-    let total = 144 + tables.reduce(0) { $0 + $1.count }
-    var b: [UInt8] = [84, 76, 68, 49, 1, 0, 8, 0] + le(UInt64(total), 4) + [0, 0, 0, 0]
-    var pos = 144
+    var pos = 16 + 16 * tables.count
+    let total = pos + tables.reduce(0) { $0 + $1.count }
+    var b: [UInt8] = [84, 76, 68, 49, tables.count == 9 ? 2 : 1, 0, UInt8(tables.count), 0]
+    b += le(UInt64(total), 4) + [0, 0, 0, 0]
     for (i, t) in tables.enumerated() {
       b += le(UInt64(pos), 4) + le(UInt64(t.count), 4) + le(UInt64(counts[i]), 4) + [0, 0, 0, 0]
       pos += t.count
@@ -101,7 +102,8 @@ final class LoaderRecordTests: XCTestCase {
         }
         let i = InspectedImage(
           entry: 0, notes: ImageNotes(), programHeaders: 64..<232, loaderRecords: s)
-        return r.validImportSlots(i, directory: dir, section: s, machine: m)
+        return r.validImportSlots(i, directory: dir, section: s, machine: m,
+          scratch: .init(start: nil, count: 0))
       }
     }
     XCTAssertTrue(check())
@@ -146,6 +148,170 @@ final class LoaderRecordTests: XCTestCase {
       empty.counts[i] = 0
     }
     XCTAssertEqual(readRecords(empty.serialized())?[.gpu].bytes, 144..<148)
+    XCTAssertEqual(readRecords(empty.serialized())?.hasDispatch, false)
+  }
+
+  func testV2RequiresNonemptyOrderedFieldPairs() {
+    var r = Records()
+    let ref = le(8, 8)
+    r.tables.append([])
+    r.counts.append(0)
+    XCTAssertNil(readRecords(r.serialized()))
+    r.counts[8] = 2
+    for (a, b, s): (UInt64, UInt64, UInt64) in [
+      (8, 8, 8), (16, 8, 8), (1, 24, 8), (8, 4096, 8), (8, 24, 1), (8, 24, 4096),
+    ] {
+      r.tables[8] = le(a, 8) + ref + le(b, 8) + le(s, 8)
+      XCTAssertNil(readRecords(r.serialized()))
+    }
+    r.tables[8] = le(8, 8) + ref + le(16, 8) + ref
+    XCTAssertEqual(readRecords(r.serialized())?[.dispatchFields].count, 2)
+    XCTAssertEqual(readRecords(r.serialized())?.hasDispatch, true)
+    var bytes = r.serialized()
+    bytes[4] = 1
+    XCTAssertNil(readRecords(bytes))
+    bytes = r.serialized()
+    bytes[6] = 8
+    XCTAssertNil(readRecords(bytes))
+    r.tables[8].removeLast()
+    XCTAssertNil(readRecords(r.serialized()))
+  }
+
+  func testUnsignedWriterDispatchFields() throws {
+    var file = Array(try Data(contentsOf: XCTUnwrap(Bundle.module.url(
+      forResource: "dispatch-fields-aarch64", withExtension: "elf", subdirectory: "Fixtures"))))
+    let arm = ElfMachine.aarch64
+    let zero = BlakeCv(w0: 0, w1: 0, w2: 0, w3: 0, w4: 0, w5: 0, w6: 0, w7: 0)
+    let capacity = try file.withUnsafeBytes {
+      try XCTUnwrap(unsignedInspectionScratchCount($0, machine: arm, addressLimit: 1 << 32,
+        finalized: false, requiresEntry: true))
+    }
+    var stack = [BlakeCv](repeating: zero, count: capacity)
+    let parsed = try file.withUnsafeBytes { b in
+      try stack.withUnsafeMutableBufferPointer {
+        try XCTUnwrap(parsedUnsignedArtifact(b, machine: arm, addressLimit: 1 << 32,
+          finalized: false, requiresEntry: true, scratch: $0))
+      }
+    }
+    let (image, dir, section, _) = parsed
+    var records = Records()
+    records.tables = (0..<9).map { i in
+      let t = dir[LoaderTableKind(rawValue: i)!]
+      return Array(file[section].dropFirst(t.bytes.lowerBound).prefix(t.bytes.count))
+    }
+    records.counts = (0..<9).map { dir[LoaderTableKind(rawValue: $0)!].count }
+    let field = le(0x8008, 8), slot = le(0x8028, 8), tag = le(0xabcd_0001, 4)
+    let candidate = le(0x4030, 8) + le(1, 2) + recordText(Array("sve2".utf8))
+    let base = le(0x4040, 8) + le(0, 2)
+    XCTAssertEqual(records.tables[4], slot + tag + le(2, 2) + candidate + base)
+    XCTAssertEqual(records.tables[8], field + slot)
+    let pristine = records
+    // Exercise semantic refusals independently of the file's build ID.
+    func accepts(_ scratchBytes: Int = 8) -> Bool {
+      let bytes = file + records.serialized()
+      return bytes.withUnsafeBytes { b in
+        let s = file.count..<b.count
+        guard let d = inspectLoaderRecords(.init(rebasing: b[s]), addressLimit: 1 << 32) else { return false }
+        var work = [UInt8](repeating: 0, count: scratchBytes)
+        return work.withUnsafeMutableBytes {
+          ELFReader(bytes: b).validImportSlots(image, directory: d, section: s, machine: arm, scratch: $0)
+        }
+      }
+    }
+    XCTAssertTrue(accepts())
+    XCTAssertFalse(accepts(7))
+    // In v1 the set still needs a default, despite there being no fields.
+    records.tables.removeLast()
+    records.counts.removeLast()
+    XCTAssertTrue(accepts(0))
+    records.tables[4] = slot + tag + le(1, 2) + candidate
+    XCTAssertFalse(accepts(0))
+    records = pristine
+    // Convert the data-import slot into a second, unreferenced dispatch set.
+    file[0x8014] = 0
+    file[0x801c] = 2
+    records.tables[2].removeLast(49)
+    records.counts[2] = 1
+    records.tables[4] += le(0x8030, 8) + tag + le(1, 2) + base
+    records.counts[4] = 2
+    XCTAssertTrue(accepts(16))
+    records.tables[4].removeLast(base.count)
+    records.tables[4] += candidate
+    XCTAssertFalse(accepts(16))
+    file[0x8014] = 1
+    file[0x801c] = 1
+    records = pristine
+    // Turn the fixture's separate writable segment into a TLS template
+    // aliasing the field. The import and dispatch slot remain untouched.
+    let tls = try file.withUnsafeBytes { b in
+      let r = ELFReader(bytes: b)
+      return try XCTUnwrap(stride(from: image.programHeaders.lowerBound,
+        to: image.programHeaders.upperBound, by: 56).first { r.u32($0) == 1 && r.u64($0 + 16) == 0xc000 })
+    }
+    let originalHeader = Array(file[tls..<tls + 56])
+    file[tls..<tls + 4] = le(7, 4)[...]
+    file[tls + 16..<tls + 24] = field[...]
+    XCTAssertFalse(accepts())
+    file[tls..<tls + 56] = originalHeader[...]
+    for (table, bytes): (Int, [UInt8]) in [
+      (0, field), (0, le(0x8000, 8) + le(3, 8)), (1, field + tag),
+      (5, field + le(0, 8)), (7, le(0x800f, 8) + recordText([65])),
+    ] {
+      records.tables[table] = bytes
+      records.counts[table] = table == 0 ? UInt32(bytes.count / 8) : 1
+      XCTAssertFalse(accepts(), "overlap from table \(table)")
+      records = pristine
+    }
+    for dest: UInt64 in [0x4000, 0x8010, 0x8028, 0xc000] {
+      records.tables[8] = le(dest, 8) + slot
+      XCTAssertFalse(accepts())
+    }
+    for source: UInt64 in [0x8020, 0x8030, 0xc000] {
+      records.tables[8] = field + le(source, 8)
+      XCTAssertFalse(accepts())
+    }
+    records = pristine
+    records.tables[4] = slot + tag + le(1, 2) + candidate
+    XCTAssertFalse(accepts())
+    records.tables[4] = slot + tag + le(2, 2) + le(0x4030, 8) + le(0, 2) + base
+    XCTAssertFalse(accepts(), "first featureless candidate is required")
+    file[0x8008] = 0x30
+    XCTAssertTrue(accepts())
+    records = pristine
+    XCTAssertFalse(accepts(), "preferred candidate is not the file preimage")
+    file[0x8008] = 0x40
+    // Two different fields can refer to the same dispatch set.
+    file[0x8000..<0x8008] = le(0x4040, 8)[...]
+    records.tables[8] = le(0x8000, 8) + slot + field + slot
+    records.counts[8] = 2
+    XCTAssertTrue(accepts())
+    records = pristine
+    file[0x4040] ^= 1
+    XCTAssertFalse(accepts(), "invalid local landing pad")
+  }
+
+  func testKernelProfileRefusesV2EvenWithMatchingBuildID() throws {
+    var file = Array(try Data(contentsOf: XCTUnwrap(Bundle.module.url(
+      forResource: "dispatch-fields-aarch64", withExtension: "elf", subdirectory: "Fixtures"))))
+    let arm = ElfMachine.aarch64
+    let image = try file.withUnsafeBytes {
+      try XCTUnwrap(inspectLayout($0, target: arm, addressLimit: 1 << 32,
+        finalized: false, requiresEntry: true, requiresLoaderRecords: true))
+    }
+    let profile = try XCTUnwrap(image.notes.profile)
+    let id = try XCTUnwrap(image.notes.buildID)
+    file[profile] = [3, 4]
+    let zero = BlakeCv(w0: 0, w1: 0, w2: 0, w3: 0, w4: 0, w5: 0, w6: 0, w7: 0)
+    var stack = [BlakeCv](repeating: zero, count: 54)
+    let digest = try file.withUnsafeBytes { b in
+      try stack.withUnsafeMutableBufferPointer { try XCTUnwrap(unsignedBuildID(b, descriptor: id, scratch: $0)) }
+    }
+    file[id] = [digest.w0, digest.w1, digest.w2, digest.w3, digest.w4, digest.w5, digest.w6, digest.w7]
+      .flatMap { le(UInt64($0), 4) }[...]
+    XCTAssertNil(file.withUnsafeBytes { b in stack.withUnsafeMutableBufferPointer {
+      inspectUnsignedArtifact(b, machine: arm, addressLimit: 1 << 32,
+        finalized: false, requiresEntry: true, scratch: $0)
+    } })
   }
 
   func testTruncatedOrExtendedRecords() {

@@ -68,6 +68,16 @@ Carry UUIDs, module kinds and function tags from the source metadata through the
 
 For v1, `.tirimport` follows TVISA A.2: four u32 counts (function imports, data imports, runtime entries, dispatch sets), then initially zero contiguous u64 slots for function imports, runtime entries, dispatch sets, and finally data imports. Its file extent and RVA must correspond in both a writable non-executable PT_LOAD and PT_GNU_RELRO. Each descriptor class is in ascending slot order; function import records precede data import records. No other record may patch the header or slots. Dispatch candidates are 16-byte-aligned file-backed local RX entries with the set's tag and the ISA landing pad per TVISA §17.2. These checks do not prove a callee's semantic type or resolve a remote import.
 
+### TLD1 version 2: DISPATCH64 data fields
+
+In both versions, every Dispatch record must contain a featureless default member (TVISA §16.2), even if no data field references it.
+
+Use version 2 **only** when a nonempty ninth table, **Dispatch fields**, follows Feature bytes. The magic and the first eight table encodings are unchanged; tableCount is 9 and the first payload starts at 160. Without dispatch fields emit the original v1/8 layout byte-for-byte. Reject unknown or mixed version/count pairs and empty v2 field tables. This versions the directory, not the native-image signing transcript.
+
+Each record is two little-endian u64s: field RVA, dispatch slot RVA. Field RVAs are strictly increasing. The entire aligned 8-byte destination is in `.data.rel.ro`, file-backed by a writable, non-executable PT_LOAD and PT_GNU_RELRO at the same file offset, outside TLS and the entire `.tirimport` section. Fields may share a dispatch slot but must not overlap one another or any other relocation write, including decoded RELR slots and individual feature bytes. The source relocation has zero addend and no explicit tag. Reject unsupported writable/TLS placements; do not relocate such objects into RELRO or drop their fixups.
+
+The referenced slot must be a Dispatch record in this image. The file word at the field is the RVA of that record's **first** candidate with an empty feature set; reject a missing fallback or mismatched word. It is neither a selected address nor authority to use the fallback. Validate the entire immutable image and all typed candidate entries first. For each set, select the first eligible candidate in preference order using trusted CPU features, once. Write the same selected virtual address into its slot and all referring fields. On AArch64 sign each separately with the process IA key, the set's tag and that destination's final address (TVISA §17.4); never copy a signed slot word. On x64/RV64 write the plain selected address. Seal private RELRO before execution. Kernel images and the restricted W1 intake continue to refuse dispatch.
+
 ## Producer/consumer check
 
 From the loader package run `swift run inspect-unsigned aarch64 path/to/output.elf` (also `x64`, `rv64`; add `--finalized` if note 6 is present and `--no-entry` for a library). This checks an actual producer artifact without a signing key: notes, TLD1 record structure, and BLAKE3 over the whole file with the ID field zeroed. It never executes the file and is not an alternate launch path.

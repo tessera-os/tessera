@@ -44,7 +44,7 @@ public func inspectEarlyUserImage(
     let grants = n.entitlements, r.nameEquals(grants, "[]"), let versions = n.train,
     let target = n.target, matchesW0Baseline(.init(rebasing: file[target]), machine: machine),
     d[.imports].count == (entryTag == nil ? 0 : 1), d[.relative].count == 0,
-    d[.authenticated].count == 0, d[.runtime].count == 0, d[.dispatch].count == 0,
+    d[.authenticated].count == 0, d[.runtime].count == 0, !d.hasDispatch,
     d[.tls].count == 0, d[.features].count == 0,
     r.u32(section.lowerBound + d[.gpu].bytes.lowerBound) == 0
   else { return nil }

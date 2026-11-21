@@ -6,7 +6,7 @@ public struct LoaderTable {
 }
 
 public enum LoaderTableKind: Int {
-  case relative, authenticated, imports, runtime, dispatch, tls, gpu, features
+  case relative, authenticated, imports, runtime, dispatch, tls, gpu, features, dispatchFields
 }
 
 public struct LoaderDirectory {
@@ -15,8 +15,10 @@ public struct LoaderDirectory {
       LoaderTable, LoaderTable, LoaderTable, LoaderTable,
       LoaderTable, LoaderTable, LoaderTable, LoaderTable
     )
+  private let fields: LoaderTable
 
   fileprivate init(_ r: ELFReader) {
+    fields = r.u16(6) == 9 ? r.table(8) : LoaderTable(bytes: r.bytes.count..<r.bytes.count, count: 0)
     tables = (
       r.table(0), r.table(1), r.table(2), r.table(3),
       r.table(4), r.table(5), r.table(6), r.table(7)
@@ -33,8 +35,11 @@ public struct LoaderDirectory {
     case .tls: return tables.5
     case .gpu: return tables.6
     case .features: return tables.7
+    case .dispatchFields: return fields
     }
   }
+
+  var hasDispatch: Bool { self[.dispatch].count != 0 || self[.dispatchFields].count != 0 }
 }
 
 extension ELFReader {
@@ -129,6 +134,7 @@ struct WireCursor {
   mutating func validate(_ kind: LoaderTableKind, count: UInt32, limit: UInt64) -> Bool {
     var relr = RelativeCursor(anchorSeen: false, nextBase: 0, bits: 0, at: 0, imageSize: limit)
     if kind == .gpu && count != 1 { return false }
+    var previousField: UInt64?
     for _ in 0..<count {
       switch kind {
       case .relative:
@@ -163,6 +169,12 @@ struct WireCursor {
         guard take(4) != nil else { return false }
       case .features:
         guard slot(limit, width: 1), text() != nil else { return false }
+      case .dispatchFields:
+        let field = pos
+        guard slot(limit), slot(limit) else { return false }
+        let rva = reader.u64(field)
+        if let previousField, previousField >= rva { return false }
+        previousField = rva
       }
     }
     return pos == end
@@ -174,18 +186,22 @@ public func inspectLoaderRecords(_ section: UnsafeRawBufferPointer, addressLimit
   -> LoaderDirectory?
 {
   let r = ELFReader(bytes: section)
-  guard section.count >= 144, r.u32(0) == 0x3144_4c54, r.u16(4) == 1, r.u16(6) == 8,
+  guard section.count >= 144, r.u32(0) == 0x3144_4c54,
     Int(r.u32(8)) == section.count, r.u32(12) == 0
   else { return nil }
-  var end = 144
-  for i in 0..<8 {
+  let n = Int(r.u16(6))
+  guard (r.u16(4) == 1 && n == 8) || (r.u16(4) == 2 && n == 9),
+    section.count >= 16 + 16 * n else { return nil }
+  var end = 16 + 16 * n
+  for i in 0..<n {
     let t = r.table(i)
     guard r.u32(28 + i * 16) == 0, t.bytes.lowerBound == end, t.bytes.upperBound <= section.count,
       let kind = LoaderTableKind(rawValue: i)
     else { return nil }
     end = t.bytes.upperBound
     var c = WireCursor(reader: r, pos: t.bytes.lowerBound, end: end)
-    guard c.validate(kind, count: t.count, limit: addressLimit) else { return nil }
+    guard kind != .dispatchFields || t.count > 0,
+      c.validate(kind, count: t.count, limit: addressLimit) else { return nil }
   }
   return end == section.count ? LoaderDirectory(r) : nil
 }

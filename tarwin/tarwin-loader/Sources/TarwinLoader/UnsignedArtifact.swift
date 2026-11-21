@@ -142,6 +142,24 @@ extension ELFReader {
   }
 }
 
+/// Size the caller's hash/dispatch workspace in BlakeCv elements. This
+/// checks the directory's bounds, not the file's ID or semantic validity.
+public func unsignedInspectionScratchCount(
+  _ bytes: UnsafeRawBufferPointer, machine: UInt16, addressLimit: UInt64,
+  finalized: Bool, requiresEntry: Bool
+) -> Int? {
+  guard let image = inspectLayout(bytes, target: machine, addressLimit: addressLimit,
+    finalized: finalized, requiresEntry: requiresEntry, requiresLoaderRecords: true),
+    image.notes.signature == nil, let section = image.loaderRecords,
+    let dir = inspectLoaderRecords(.init(rebasing: bytes[section]), addressLimit: addressLimit)
+  else { return nil }
+  let size = dir[.dispatchFields].count == 0 ? 0 : 8 * Int(dir[.dispatch].count)
+  let stride = MemoryLayout<BlakeCv>.stride
+  return max(54, (size + stride - 1) / stride)
+}
+
+/// Scratch must be disjoint from the immutable file and sufficient for the
+/// image hash and, in TLD1 v2, one UInt64 per Dispatch record (reused).
 public func inspectUnsignedArtifact(
   _ bytes: UnsafeRawBufferPointer, machine: UInt16, addressLimit: UInt64,
   finalized: Bool, requiresEntry: Bool, scratch: UnsafeMutableBufferPointer<BlakeCv>
@@ -167,14 +185,14 @@ func parsedUnsignedArtifact(
     let root = unsignedBuildID(bytes, descriptor: id, scratch: scratch),
     let parsed = validatedMetadata(
       bytes, image: image, machine: machine, addressLimit: addressLimit, finalized: finalized,
-      root: root)
+      root: root, scratch: UnsafeMutableRawBufferPointer(scratch))
   else { return nil }
   return (image, parsed.0, parsed.1, root)
 }
 
 func validatedMetadata(
   _ bytes: UnsafeRawBufferPointer, image: InspectedImage, machine: UInt16, addressLimit: UInt64,
-  finalized: Bool, root: BlakeCv
+  finalized: Bool, root: BlakeCv, scratch: UnsafeMutableRawBufferPointer
 ) -> (LoaderDirectory, Range<Int>)? {
   guard let id = image.notes.buildID, let section = image.loaderRecords,
     let ent = image.notes.entitlements, let train = image.notes.train,
@@ -208,7 +226,9 @@ func validatedMetadata(
     let records = inspectLoaderRecords(
       UnsafeRawBufferPointer(rebasing: bytes[section]), addressLimit: addressLimit)
   else { return nil }
-  guard r.validImportSlots(image, directory: records, section: section, machine: machine) else {
+  guard !(p == 3 && records.hasDispatch),
+    r.validImportSlots(image, directory: records, section: section, machine: machine, scratch: scratch)
+  else {
     return nil
   }
   let count = r.u32(section.lowerBound + records[.gpu].bytes.lowerBound)

@@ -15,13 +15,19 @@ else { fail("usage: inspect-unsigned <aarch64|x64|rv64> <image> [--finalized] [-
 
 let file = try Data(contentsOf: URL(fileURLWithPath: args[1]))
 let zero = BlakeCv(w0: 0, w1: 0, w2: 0, w3: 0, w4: 0, w5: 0, w6: 0, w7: 0)
-var stack = [BlakeCv](repeating: zero, count: 54)
+let finalized = args.contains("--finalized")
+let requiresEntry = !args.contains("--no-entry")
+guard let capacity = file.withUnsafeBytes({
+  unsignedInspectionScratchCount($0, machine: machine, addressLimit: .max,
+    finalized: finalized, requiresEntry: requiresEntry)
+}) else { fail("invalid Tarwin loader directory") }
+var stack = [BlakeCv](repeating: zero, count: capacity)
 guard
   let artifact = file.withUnsafeBytes({ bytes in
     stack.withUnsafeMutableBufferPointer {
       inspectUnsignedArtifact(
         bytes, machine: machine, addressLimit: UInt64.max,
-        finalized: args.contains("--finalized"), requiresEntry: !args.contains("--no-entry"),
+        finalized: finalized, requiresEntry: requiresEntry,
         scratch: $0)
     }
   })

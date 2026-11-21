@@ -58,7 +58,7 @@ public func inspectW0SigningCandidate(
     matchesW0Baseline(UnsafeRawBufferPointer(rebasing: b[target]), machine: machine),
     d[.relative].count == 0, d[.authenticated].count == 0, d[.imports].count == 0,
     d[.runtime].count == 0,
-    d[.dispatch].count == 0, d[.tls].count == 0, d[.features].count == 0,
+    !d.hasDispatch, d[.tls].count == 0, d[.features].count == 0,
     r.u32(section.lowerBound + d[.gpu].bytes.lowerBound) == 0,
     r.validW0Entry(image.entry, machine: machine, programs: image.programHeaders)
   else { return nil }

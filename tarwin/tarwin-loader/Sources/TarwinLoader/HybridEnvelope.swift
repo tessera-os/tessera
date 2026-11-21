@@ -73,6 +73,7 @@ public func nativeSigningMessage(
 /// Validates structural metadata, page separation, all loader records and
 /// the canonical ID. Do not map, bind, or execute without authenticating both
 /// signatures, the identity chain, platform policy, train and actual CPU.
+/// For TLD1 v2 the hash workspace also needs eight bytes per dispatch set.
 public func inspectSigningCandidate(
   _ bytes: UnsafeRawBufferPointer, machine: UInt16, addressLimit: UInt64, finalized: Bool,
   requiresEntry: Bool, scratch: UnsafeMutableBufferPointer<BlakeCv>
@@ -93,7 +94,7 @@ func parsedSigningCandidate(
     let root = nativeSigningID(bytes, image: image, scratch: scratch),
     let (directory, section) = validatedMetadata(
       bytes, image: image, machine: machine, addressLimit: addressLimit, finalized: finalized,
-      root: root)
+      root: root, scratch: UnsafeMutableRawBufferPointer(scratch))
   else { return nil }
   return (image, directory, section)
 }
