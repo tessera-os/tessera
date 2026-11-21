@@ -1,0 +1,59 @@
+import Foundation
+import Build
+
+// The `mac-hosted` target (TarwinHosted.md section 11): Tessera.app, which
+// runs Tarwin as ordinary macOS processes with no virtual machine. SwiftPM
+// builds the app, the tarwind XPC service and tessera-mac-test from
+// apps/tessera-mac; its scripts assemble and sign the bundle. Only a macOS
+// build host on Apple silicon can make it (HS-016).
+
+function hostedAppDirectory(root: borrow String) -> String {
+    return root + "/../../apps/tessera-mac"
+}
+
+// Describes `mac-hosted`, which makes Tessera.app, and `mac-hosted-test`,
+// which boots it headless and waits for tessera.init to report ready.
+function describeHosted(graph: borrow mut Graph, host: borrow Host) {
+    if !host.darwin || host.architecture != .Aarch64 { return }
+    let directory = hostedAppDirectory(graph.root)
+    let app = graph.command(
+        CommandAction {
+            label: "Tessera.app",
+            tool: host.find("bash"),
+            arguments: [
+                .Text(directory + "/scripts/build-app.sh"),
+                .Text("--output"),
+                .Output("Tessera.app")
+            ],
+            outputs: [Output { name: "Tessera.app" }]
+        }
+    )[0]
+    graph.step(
+        Step {
+            name: "mac-hosted",
+            summary: "Tessera.app for Apple silicon Macs: Tarwin in macOS user space, no virtual machine",
+            produces: [copy app]
+        }
+    )
+    let report = graph.command(
+        CommandAction {
+            label: "tessera-mac-test",
+            tool: host.find("bash"),
+            arguments: [
+                .Text(directory + "/scripts/test.sh"),
+                .Text("--app"),
+                .Input(app),
+                .Text("--report"),
+                .Output("tessera-mac-test.txt")
+            ],
+            outputs: [Output { name: "tessera-mac-test.txt" }]
+        }
+    )[0]
+    graph.step(
+        Step {
+            name: "mac-hosted-test",
+            summary: "boots Tessera.app headless and runs tessera-mac-test",
+            produces: [report]
+        }
+    )
+}

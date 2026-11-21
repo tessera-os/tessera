@@ -177,6 +177,7 @@ function main() -> Number {
     describeCapture(graph, release, host, architecture)
     describeTests(graph, context, release)
     describeContainer(graph, host, architecture)
+    describeHosted(graph, host)
     // Last: it reads its arguments, which are what no option declared before
     // it took.
     describeDevRoot(graph, release, host, architecture)
