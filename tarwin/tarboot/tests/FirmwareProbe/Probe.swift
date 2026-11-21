@@ -14,6 +14,14 @@ nonisolated(unsafe) private var storage = InlineArray<4096, UInt64>(repeating: 0
 nonisolated(unsafe) private var records = InlineArray<512, FirmwareRegion>(repeating: .empty)
 nonisolated(unsafe) private var cpu = BootCPU()
 
+#if TARBOOT_TEST_FLOOR
+  // The independently provisioned debug TPM counter's SHA-256 Name.
+  var counterName: InlineArray<32, UInt8> {
+    [153,36,237,96,117,77,224,179,204,215,111,177,106,104,33,94,
+     62,216,121,131,3,130,95,107,144,89,201,29,0,141,121,15]
+  }
+#endif
+
 func writeDiagnostic(_ message: StaticString, console: UnsafeRawPointer, output: Output) {
   for i in 0..<message.utf8CodeUnitCount {
     var character = (UInt16(message.utf8Start[i]), UInt16(0))
@@ -59,8 +67,7 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
       #if TARBOOT_TEST_FLOOR
         // Public SHA-256 Name of this fixture's WRITTEN NV public area.
         // ProvisionCounter runs offline before QEMU; the ESP cannot select it.
-        var name:InlineArray<32,UInt8>=[153,36,237,96,117,77,224,179,204,215,111,177,106,104,33,94,
-          62,216,121,131,3,130,95,107,144,89,201,29,0,141,121,15]
+        var name = counterName
         let observedFloor = withUnsafeBytes(of:&name,{boot.securityVersionFloor(index:0x0180f001,name:$0)})
         guard observedFloor == 1
         else {

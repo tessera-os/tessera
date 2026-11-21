@@ -98,8 +98,16 @@
     let label: StaticString = "Tarwin FIFO diagnostic"
     return withUnsafeMutableBytes(of: &command) { raw in
       var sample = InlineArray<32, UInt8>(repeating: 0)
-      guard var port = TPMFIFO(registers: VirtFIFO(), scratch: raw, pollLimit: 500000),
-        readTPMEntropy32(&port, into: &sample),
+      guard var port = TPMFIFO(registers: VirtFIFO(), scratch: raw, pollLimit: 500000) else { return nil }
+      #if TARBOOT_TEST_FLOOR
+        var name = counterName
+        guard withUnsafeBytes(of: &name, { readTPMSecurityFloor(&port, index: 0x0180_f001, name: $0) }) == 1
+        else { return nil }
+        name[0] ^= 1
+        guard withUnsafeBytes(of: &name, { readTPMSecurityFloor(&port, index: 0x0180_f001, name: $0) }) == nil
+        else { return nil }
+      #endif
+      guard readTPMEntropy32(&port, into: &sample),
         measureEarlyProcess(
           fixture,
           expected: PCR10Expectation(
