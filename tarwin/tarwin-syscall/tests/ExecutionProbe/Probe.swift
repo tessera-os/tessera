@@ -8,29 +8,6 @@ import TarwinSync
 import TarwinSyncObjects
 import TarwinSyscall
 
-// LLVM may lower a channel copy to memmove. The compiler supplies two valid
-// byte ranges; the direction matters for overlapping input and output.
-@_cdecl("memmove")
-@_optimize(none)
-public func probeMove(_ dest: UnsafeMutableRawPointer, _ source: UnsafeRawPointer, _ size: UInt)
-  -> UnsafeMutableRawPointer
-{
-  if UInt(bitPattern: dest) <= UInt(bitPattern: source) {
-    for i in 0..<Int(size) {
-      dest.storeBytes(
-        of: source.load(fromByteOffset: i, as: UInt8.self), toByteOffset: i, as: UInt8.self)
-    }
-  } else {
-    var i = Int(size)
-    while i > 0 {
-      i -= 1
-      dest.storeBytes(
-        of: source.load(fromByteOffset: i, as: UInt8.self), toByteOffset: i, as: UInt8.self)
-    }
-  }
-  return dest
-}
-
 private struct Arena {
   var remaining: UnsafeMutableRawBufferPointer
   // The caller exclusively owns uninitialized, page-aligned firmware pages.
@@ -94,8 +71,38 @@ private struct RegisterGate: NativeGate {
   }
 }
 
+private func jobQuota(_ arena: inout Arena, _ limit: UInt64) -> Bool {
+  let jobs = arena.take(JobNode.self, count: 2)
+  let members = arena.take(JobMember.self, count: 1)
+  jobs.initialize(repeating: JobNode())
+  members.initialize(repeating: JobMember())
+  defer {
+    jobs.deinitialize()
+    members.deinitialize()
+  }
+  let ids = KoidSource()
+  let policy = JobLimits(
+    processes: 1, threadsPerProcess: 4, handlesPerProcess: 8, footprint: limit,
+    cpuShare: 1, maxQos: 2, jetsamBand: 2, ioRank: 0, entitlements: 0, denials: 0,
+    killOnClose: false)
+  guard let root = ObjectHeader(source: ids, ownerJob: 0, kind: TarwinKind.job, maximumRights: 0),
+    let tree = JobTree(jobs: jobs, members: members, root: root, limits: policy),
+    let child = ObjectHeader(
+      source: ids, ownerJob: root.koid, kind: TarwinKind.job, maximumRights: 0),
+    let branch = tree.create(child, under: tree.root, policy: policy),
+    let process = ObjectHeader(
+      source: ids, ownerJob: child.koid, kind: TarwinKind.process, maximumRights: 0),
+    let member = tree.attach(process, to: branch), tree.resizeFootprint(member, to: limit),
+    !tree.resizeFootprint(member, to: limit + 1), tree.usage(tree.root)?.footprint == limit,
+    tree.setFrozen(true, job: tree.root), tree.returnGate(member) == .frozen,
+    tree.kill(branch), tree.returnGate(member) == .terminate, tree.detach(member)
+  else { return false }
+  return tree.remove(branch) && tree.usage(tree.root)?.footprint == 0
+}
+
 private func exercise(_ bytes: UnsafeMutableRawBufferPointer, _ challenge: UInt64) -> Bool {
   var arena = Arena(remaining: bytes)
+  guard jobQuota(&arena, challenge >> 1) else { return false }
   let cells = arena.take(HandleCell.self, count: 4)
   let receiverCells = arena.take(HandleCell.self, count: 4)
   let hdr = arena.take(ObjectHeader.self, count: 1).baseAddress!
