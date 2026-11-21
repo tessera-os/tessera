@@ -61,9 +61,7 @@ func testNetwork(_ q: QTest, _ machine: Machine) throws {
   let route = UdpRoute(
     family: .v4, source: [192, 0, 2, 1], destination: [192, 0, 2, 2], sourcePort: 10001,
     destinationPort: 10002, hops: 64, mtu: 1500)
-  guard case .packet(let ip) = udpOutput(route, payload) else {
-    throw Failure("UDP output rejected")
-  }
+  let ip = try sendDatagram(route: route, payload: payload)
   let frame = macRight + macLeft + [0x08, 0x00] + ip
   let hex = "0x" + frame.map { String(format: "%02x", $0) }.joined()
   let base = machine.ram + 0x300000

@@ -136,6 +136,15 @@ func checkDatagram(
   XCTAssertEqual(s?.result0, 2)
   XCTAssertEqual(s?.aux, 0)
   XCTAssertEqual(mailbox.count, 0)
+  checkBatch(
+    caller: &caller, name: name, port: port, ports: &ports, object: object, mailbox: mailbox,
+    expectedPeer: expected,
+    makePacket: { payload in
+      udpOutput(
+        UdpRoute(
+          family: binding.family, source: src, destination: dst, sourcePort: binding.peerPort,
+          destinationPort: 9, hops: 64, mtu: 1500), payload)
+    })
   fill()
   guard case .ready(var pending) = begin(name, 0, dest, peer) else { return XCTFail() }
   mailbox.close()

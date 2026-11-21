@@ -28,7 +28,7 @@ A separate q35 run adds the Intel IOMMU model (legacy translation, no ATS). The 
 
 The two-NIC check now generates IPv4/UDP with the kernel network package. The interface posts RX and paced TX on separate A.4 channels; the virtio user-driver adapter checks the queue, epoch, maximum frame and direction-specific DMA grant before creating descriptors. The independent second NIC returns the actual frame, which must pass checksum and endpoint matching and fill a registered client receive with exactly the payload. The test leaves an adjacent sentinel intact. This path has no network access outside QEMU.
 
-The same received packet also completes a hosted Endpoint.receiveFrom on a typed UDP endpoint: the fixture checks the sender address and port, two noncontiguous payload spans, guard bytes and the Net completion.
+The packet originates from a hosted Endpoint.sendTo on an unconnected UDP handle. Its authorized, checksummed output crosses the isolated NICs and completes Endpoint.receiveFrom on the destination: the fixture checks the sender address and port, two noncontiguous payload spans, guard bytes and both Net completions.
 
 In the translated q35 run, the host harness reads the model's ACPI files via fw_cfg before enabling translation. Since no BIOS runs in qtest, it applies the model's firmware-linker checksum command for DMAR. It resolves the enumerated disk requester against that table and independently checks the register page against the private q35 aperture. This exercises model firmware data, not a Tarwin ACPI boot.
 

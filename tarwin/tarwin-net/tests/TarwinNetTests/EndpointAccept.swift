@@ -28,7 +28,8 @@ struct AcceptPorts: IoPorts, ~Copyable {
   }
 }
 private enum Outcome {
-  case accepted, receive, send, shutdown, datagram, cancelled, closed, reset, quota, denied,
+  case accepted, receive, send, shutdown, datagram, datagramTx, cancelled, closed, reset, quota,
+    denied,
     withdrawn
 }
 private func acceptScenario(_ outcome: Outcome, v6: Bool = false) {
@@ -94,10 +95,16 @@ private func acceptScenario(_ outcome: Outcome, v6: Bool = false) {
     }
     return n
   }
-  let rights: UInt64 = outcome == .send || outcome == .shutdown ? 12 : 4
+  let rights: UInt64 = outcome == .send || outcome == .shutdown || outcome == .datagramTx ? 12 : 4
   let e = install(.init(listener), rights: rights)
   let p = install(.init(sink), rights: 8)
   let denied = install(.init(listener), rights: 0)
+  if outcome == .datagramTx {
+    checkDatagramSend(
+      caller: &caller, name: e, denied: denied, port: p, ports: &ports, object: .init(listener),
+      v6: v6)
+    return
+  }
   if outcome == .datagram {
     checkDatagram(
       caller: &caller, name: e, denied: denied, port: p, ports: &ports, object: .init(listener),
@@ -287,6 +294,10 @@ final class EndpointAcceptTests: XCTestCase {
   func testDatagramReadsThroughTypedHandles() {
     acceptScenario(.datagram)
     acceptScenario(.datagram, v6: true)
+  }
+  func testDatagramSingleAndBatchSends() {
+    acceptScenario(.datagramTx)
+    acceptScenario(.datagramTx, v6: true)
   }
   func testCancellationAndClosedPortNeverPublish() {
     for o in [Outcome.cancelled, .withdrawn, .closed] { acceptScenario(o) }

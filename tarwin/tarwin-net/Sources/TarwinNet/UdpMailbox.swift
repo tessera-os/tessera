@@ -8,7 +8,9 @@ struct UdpMessage {
 /// is bound to one authorized interface generation, not just an address.
 public final class UdpMailbox: EndpointPayload {
   public let koid: UInt64, epoch: UInt64, interface: UInt32
-  private let binding: UdpEndpoint, byteLimit: Int
+  let binding: UdpEndpoint
+  private let byteLimit: Int
+  var egress: DatagramEgress
   public var receiveTimestamps = false
   public private(set) var closed = false, count = 0, bytesQueued = 0
   private var slots: [UdpMessage?], head = 0
@@ -28,10 +30,14 @@ public final class UdpMailbox: EndpointPayload {
     self.interface = interface
     self.epoch = epoch
     byteLimit = bytes
+    egress = DatagramEgress(packets: packets, bytes: bytes)
     slots = .init(repeating: nil, count: packets)
   }
   func acceptsIo(object: UInt64) -> Bool { object == koid && !closed }
-  var first: UdpMessage? { slots[head] }
+  func message(at offset: Int) -> UdpMessage {
+    precondition(offset >= 0 && offset < count)
+    return slots[(head + offset) % slots.count]!
+  }
   func dequeue() {
     precondition(count > 0)
     bytesQueued -= slots[head]!.bytes.count
@@ -42,6 +48,7 @@ public final class UdpMailbox: EndpointPayload {
   public func close() {
     closed = true
     while count != 0 { dequeue() }
+    egress.clear()
   }
   /// Admit only whole, validated messages; a zero-length payload still costs
   /// one queue slot. Never retain padding or the input driver's frame storage.
