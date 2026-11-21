@@ -6,7 +6,7 @@ public enum TaskCommandTransport {
     _ command: TaskCommand, on port: mach_port_t, memoryEntry: mach_port_t = 0,
     timeout: mach_msg_timeout_t = 5_000
   ) -> Result<TaskCommandReply, TaskTransportError> {
-    let ports = command.opcode.carriesMemoryEntry ? 1 : 0
+    let ports = command.carriesMemoryEntry ? 1 : 0
     guard (ports == 1) == (memoryEntry != 0) else { return .failure(.invalidMessage) }
     var reply: mach_port_t = 0
     let allocated = TaskMachMessage.newReceive(&reply)
@@ -14,12 +14,12 @@ public enum TaskCommandTransport {
     defer { TaskMachMessage.releaseReceive(reply) }
     return TaskMachMessage.withPacket { packet in
       TaskMachMessage.prepare(
-        packet, id: TaskCommand.messageID, payloadBytes: command.opcode.byteCount,
+        packet, id: TaskCommand.messageID, payloadBytes: command.payloadByteCount,
         descriptors: ports, destination: port, disposition: MACH_MSG_TYPE_COPY_SEND, reply: reply)
       if ports != 0 { TaskMachMessage.putPort(packet, 0, memoryEntry, MACH_MSG_TYPE_COPY_SEND) }
       let offset = TaskMachMessage.payloadOffset(descriptors: ports)
       guard command.encode(into: UnsafeMutableRawBufferPointer(
-        rebasing: packet[offset..<(offset + command.opcode.byteCount)]))
+        rebasing: packet[offset..<(offset + command.payloadByteCount)]))
       else { return .failure(.invalidMessage) }
       let head = TaskMachMessage.header(packet)
       let status = mach_msg(
@@ -32,7 +32,8 @@ public enum TaskCommandTransport {
         packet, id: TaskCommandReply.messageID, descriptors: descriptors),
         let reply = TaskCommandReply(decoding: bytes),
         (command.opcode == .snapshot && reply.status == KERN_SUCCESS) == (descriptors == 1),
-        (command.opcode == .threadIdentity && reply.status == KERN_SUCCESS) == (reply.kernelThreadID != nil)
+        (command.opcode == .threadIdentity && reply.status == KERN_SUCCESS) == (reply.kernelThreadID != nil),
+        reply.data?.count == inlineReadSize(command, status: reply.status)
       else {
         mach_msg_destroy(head)
         return .failure(.invalidMessage)
@@ -71,7 +72,7 @@ public enum TaskCommandTransport {
         packet, id: TaskCommand.messageID, descriptors: ports,
         replyDisposition: UInt32(MACH_MSG_TYPE_PORT_SEND_ONCE)),
         let command = TaskCommand(decoding: bytes),
-        command.opcode.carriesMemoryEntry == (ports == 1),
+        command.carriesMemoryEntry == (ports == 1),
         let entry = ports == 0 ? mach_port_t(0) : TaskMachMessage.port(packet, 0, MACH_MSG_TYPE_PORT_SEND)
       else {
         mach_msg_destroy(head)
@@ -83,7 +84,8 @@ public enum TaskCommandTransport {
       let expectedEntry = command.opcode == .snapshot && result.status == KERN_SUCCESS
       let expectedThreadID = command.opcode == .threadIdentity && result.status == KERN_SUCCESS
       if expectedEntry != (result.memoryEntry != nil)
-        || expectedThreadID != (result.kernelThreadID != nil) || result.kernelThreadID == 0 {
+        || expectedThreadID != (result.kernelThreadID != nil) || result.kernelThreadID == 0
+        || result.data?.count != inlineReadSize(command, status: result.status) {
         if let unexpected = result.memoryEntry { TaskMachMessage.releaseSend(unexpected) }
         result = TaskCommandReply(status: KERN_FAILURE)
       }
@@ -103,5 +105,11 @@ public enum TaskCommandTransport {
       if let output = result.memoryEntry { TaskMachMessage.releaseSend(output) }
       return .success(command.opcode)
     }
+  }
+
+  private static func inlineReadSize(_ command: TaskCommand, status: kern_return_t) -> Int? {
+    guard status == KERN_SUCCESS, case .readMemory(_, let size) = command,
+      size <= TaskMemoryTransfer.inlineLimit else { return nil }
+    return Int(size)
   }
 }

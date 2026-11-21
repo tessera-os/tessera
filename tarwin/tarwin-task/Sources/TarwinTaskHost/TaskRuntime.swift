@@ -128,7 +128,7 @@ struct TaskRuntime {
       return thread_resume(threads[index].port)
     case .terminate:
       return KERN_SUCCESS
-    case .snapshot, .threadIdentity:
+    case .snapshot, .threadIdentity, .readMemory, .writeMemory:
       return KERN_NOT_SUPPORTED
     }
   }

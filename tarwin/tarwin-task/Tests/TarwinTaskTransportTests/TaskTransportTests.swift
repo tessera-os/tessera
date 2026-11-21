@@ -259,6 +259,74 @@ import Testing
   #expect(try task.threadIdentity(id: 2).get() == second)
 }
 
+@Test func liveMemoryTransfersHonorCopyOnWriteAndReturnRangeErrors() throws {
+  let task = try TaskSpawner.spawn(executable: builtExecutable("tarwin-task"))
+  defer { terminateAndReap(task) }
+  let length = TaskMemoryTransfer.maximumSize
+  let page = TaskWindow.pageSize
+  let base = TaskWindow.base
+  let snapshotBase = base + length + page
+  let rw = VM_PROT_READ | VM_PROT_WRITE
+  var backing: UInt64 = 0
+  try #require(mach_vm_allocate(mach_task_self_, &backing, length, VM_FLAGS_ANYWHERE) == KERN_SUCCESS)
+  defer { _ = mach_vm_deallocate(mach_task_self_, backing, length) }
+  var original: mach_port_t = 0
+  var entrySize = length
+  try #require(mach_make_memory_entry_64(
+    mach_task_self_, &entrySize, backing, rw, &original, 0) == KERN_SUCCESS)
+  defer { TaskMachMessage.releaseSend(original) }
+  try #require(try task.command(.map(TaskMapping(address: base, length: length, offset: 0,
+    protection: UInt32(rw), copy: true)), memoryEntry: original).get().status == KERN_SUCCESS)
+
+  func write(_ address: UInt64, _ bytes: [UInt8]) -> Result<Void, TaskTransportError> {
+    bytes.withUnsafeBytes { task.writeMemory(address: address, data: $0) }
+  }
+  func read(_ address: UInt64, _ count: Int) throws -> [UInt8] {
+    var bytes = [UInt8](repeating: 0xff, count: count)
+    try bytes.withUnsafeMutableBytes { try task.readMemory(address: address, into: $0).get() }
+    return bytes
+  }
+  let bulk = (0..<Int(length)).map { UInt8(truncatingIfNeeded: ($0 ^ ($0 >> 10)) * 13) }
+  try write(base, bulk).get()
+  #expect(try read(base, bulk.count) == bulk)
+  let unaligned = base + page - 3
+  let crossing = [UInt8](repeating: 0x6e, count: TaskMemoryTransfer.inlineLimit + 1)
+  try write(unaligned, crossing).get()
+  #expect(try read(unaligned, crossing.count) == crossing)
+  let address = base + 7
+  let first: [UInt8] = [42, 18, 7]
+  let later: [UInt8] = [12, 13, 14]
+  try write(address, first).get()
+  #expect(try read(address, 3) == first)
+  let snapshot = try task.command(.snapshot(address: base, size: page)).get()
+  try #require(snapshot.status == KERN_SUCCESS)
+  let saved = try #require(snapshot.memoryEntry)
+  defer { TaskMachMessage.releaseSend(saved) }
+  try write(address, later).get()
+  #expect(try read(address, 3) == later)
+  #expect(UnsafePointer<UInt8>(bitPattern: UInt(backing + 7))?.pointee == 0)
+  try #require(try task.command(.map(TaskMapping(address: snapshotBase, length: page, offset: 0,
+    protection: UInt32(rw), copy: true)), memoryEntry: saved).get().status == KERN_SUCCESS)
+  #expect(try read(snapshotBase + 7, 3) == first)
+
+  let outOfWindow = try task.command(.readMemory(address: base - 1, size: 1)).get()
+  #expect(outOfWindow.status == KERN_INVALID_ARGUMENT)
+  #expect(outOfWindow.data == nil)
+  let gate = try task.command(.readMemory(address: TaskGatePage.address, size: 1)).get()
+  #expect(gate.status == KERN_INVALID_ARGUMENT)
+  #expect(throws: TaskTransportError.self) { try read(base + length - 1, 2) }
+  #expect(throws: TaskTransportError.self) { try write(base + length, [1]).get() }
+  #expect(throws: TaskTransportError.mach(KERN_INVALID_ARGUMENT)) { try read(base, Int(length) + 1) }
+  try #require(try task.command(.protect(address: base, length: page,
+    protection: UInt32(VM_PROT_READ))).get().status == KERN_SUCCESS)
+  #expect(throws: TaskTransportError.self) { try write(address, first).get() }
+  #expect(try read(address, 3) == later)
+  try #require(try task.command(.protect(address: base, length: page,
+    protection: UInt32(VM_PROT_NONE))).get().status == KERN_SUCCESS)
+  #expect(throws: TaskTransportError.self) { try read(address, 3) }
+  #expect(try read(snapshotBase + 7, 3) == first)
+}
+
 private func terminateAndReap(_ task: SpawnedTask) {
   if (try? task.command(.terminate, timeout: 1_000).get().status) != KERN_SUCCESS {
     kill(task.pid, SIGKILL)

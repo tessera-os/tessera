@@ -15,13 +15,18 @@ guard TaskSandbox.install() else { _exit(74) }
 var runtime = TaskRuntime(gate: gate)
 while true {
   let result = TaskCommandTransport.serveOneReply(on: ports.commandReceive) { command, entry in
-    if case .snapshot(let address, let size) = command {
+    switch command {
+    case .snapshot(let address, let size):
       return TaskRuntime.snapshot(address: address, size: size)
-    }
-    if case .threadIdentity(let id) = command {
+    case .threadIdentity(let id):
       return runtime.threadIdentity(id: id)
+    case .readMemory(let address, let size):
+      return TaskLiveMemory.read(address: address, size: size, entry: entry)
+    case .writeMemory(let address, let data):
+      return TaskLiveMemory.write(address: address, data: data, entry: entry)
+    default:
+      return TaskCommandReply(status: runtime.handle(command, memoryEntry: entry))
     }
-    return TaskCommandReply(status: runtime.handle(command, memoryEntry: entry))
   }
   switch result {
   case .success(.terminate): _exit(0)

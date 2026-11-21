@@ -18,6 +18,11 @@ import Testing
     (.terminate, header(8)),
     (.snapshot(address: 19, size: 20), header(9) + word(19) + word(20)),
     (.threadIdentity(id: 21), header(10) + word(21)),
+    (.readMemory(address: 22, size: 3), header(11) + word(22) + word(3)),
+    (.readMemory(address: 22, size: 257), header(11) + word(22) + word(257)),
+    (.writeMemory(address: 23, data: .inline(([4, 5, 6] as [UInt8]).withUnsafeBytes { TaskMemoryBytes($0)! })),
+      header(12) + word(23) + word(3) + [4, 5, 6, 0]),
+    (.writeMemory(address: 23, data: .staged(size: 257)), header(12) + word(23) + word(257)),
   ]
   for (command, expected) in cases {
     var bytes = [UInt8](repeating: 0xff, count: expected.count + 1)
@@ -34,6 +39,10 @@ import Testing
     #expect(encoded.withUnsafeMutableBytes { decoded?.encode(into: $0) == true })
     #expect(encoded == expected)
   }
+  #expect(tryDecode(header(11) + word(22) + word(3))?.carriesMemoryEntry == false)
+  #expect(tryDecode(header(11) + word(22) + word(257))?.carriesMemoryEntry == true)
+  #expect(tryDecode(header(12) + word(23) + word(3) + [4, 5, 6, 0])?.carriesMemoryEntry == false)
+  #expect(tryDecode(header(12) + word(23) + word(257))?.carriesMemoryEntry == true)
 }
 
 @Test func rejectsMalformedCommandPayloads() {
@@ -43,6 +52,10 @@ import Testing
   #expect(tryDecode(header(9)) == nil)
   #expect(tryDecode(header(1) + word(1) + word(2) + word(3) + [1, 0, 0, 0, 2, 0, 0, 0]) == nil)
   #expect(tryDecode(header(2) + word(1) + word(2) + [1, 0, 0, 0, 1, 0, 0, 0]) == nil)
+  #expect(tryDecode(header(11) + word(1) + word(0)) == nil)
+  #expect(tryDecode(header(11) + word(1) + word(TaskMemoryTransfer.maximumSize + 1)) == nil)
+  #expect(tryDecode(header(12) + word(1) + word(3)) == nil)
+  #expect(tryDecode(header(12) + word(1) + word(3) + [1, 2, 3, 4]) == nil)
 }
 
 @Test func signedStatusWireBytes() {
@@ -63,6 +76,18 @@ import Testing
   #expect(bytes.withUnsafeBytes { TaskCommandReply(decoding: $0)?.kernelThreadID } == identity)
   #expect((header(0) + word(0)).withUnsafeBytes { TaskCommandReply(decoding: $0) } == nil)
   #expect((header(1) + word(identity)).withUnsafeBytes { TaskCommandReply(decoding: $0) } == nil)
+}
+
+@Test func liveReadReplyWireBytes() {
+  let original: [UInt8] = [4, 5, 6]
+  let reply = TaskCommandReply(status: 0, data: original.withUnsafeBytes { TaskMemoryBytes($0) })
+  var bytes = [UInt8](repeating: 0xff, count: reply.payloadByteCount)
+  #expect(bytes.withUnsafeMutableBytes { reply.encode(into: $0) })
+  #expect(bytes == header(0) + word(3) + original + [0])
+  let data = bytes.withUnsafeBytes { TaskCommandReply(decoding: $0)?.data }
+  #expect(data?.withBytes { Array($0) } == original)
+  bytes[19] = 1
+  #expect(bytes.withUnsafeBytes { TaskCommandReply(decoding: $0) } == nil)
 }
 
 private func tryDecode(_ bytes: [UInt8]) -> TaskCommand? {

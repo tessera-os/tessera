@@ -1,4 +1,4 @@
-/// The Mach header and (for map) the memory-entry descriptor precede this payload.
+/// The Mach header and any memory-entry descriptor precede this payload.
 public enum TaskCommand: Sendable {
   case map(TaskMapping)
   case protect(address: UInt64, length: UInt64, protection: UInt32)
@@ -10,6 +10,8 @@ public enum TaskCommand: Sendable {
   case terminate
   case snapshot(address: UInt64, size: UInt64)
   case threadIdentity(id: UInt64)
+  case readMemory(address: UInt64, size: UInt64)
+  case writeMemory(address: UInt64, data: TaskMemoryWrite)
 
   public enum Opcode: UInt32, Sendable {
     case map = 1
@@ -22,12 +24,15 @@ public enum TaskCommand: Sendable {
     case terminate = 8
     case snapshot = 9
     case threadIdentity = 10
+    case readMemory = 11
+    case writeMemory = 12
 
+    /// Fixed prefix size; inline write data follows this prefix.
     public var byteCount: Int {
       switch self {
       case .map: 40
       case .protect: 32
-      case .unmap, .snapshot: 24
+      case .unmap, .snapshot, .readMemory, .writeMemory: 24
       case .createThread: 48
       case .setThreadState: 288
       case .suspendThread, .resumeThread, .threadIdentity: 16
@@ -54,12 +59,30 @@ public enum TaskCommand: Sendable {
     case .terminate: .terminate
     case .snapshot: .snapshot
     case .threadIdentity: .threadIdentity
+    case .readMemory: .readMemory
+    case .writeMemory: .writeMemory
+    }
+  }
+
+  public var payloadByteCount: Int {
+    if case .writeMemory(_, .inline(let data)) = self {
+      return opcode.byteCount + TaskMemoryBytes.paddedCount(data.count)
+    }
+    return opcode.byteCount
+  }
+
+  public var carriesMemoryEntry: Bool {
+    switch self {
+    case .readMemory(_, let size): size > TaskMemoryTransfer.inlineLimit
+    case .writeMemory(_, .staged): true
+    default: opcode.carriesMemoryEntry
     }
   }
 
   public init?(decoding bytes: UnsafeRawBufferPointer) {
     guard bytes.count >= 8, read32(bytes, 0) == Self.version,
-      let opcode = Opcode(rawValue: read32(bytes, 4)), bytes.count == opcode.byteCount
+      let opcode = Opcode(rawValue: read32(bytes, 4)), bytes.count >= opcode.byteCount,
+      opcode == .writeMemory || bytes.count == opcode.byteCount
     else { return nil }
 
     switch opcode {
@@ -97,13 +120,29 @@ public enum TaskCommand: Sendable {
       self = .snapshot(address: read64(bytes, 8), size: read64(bytes, 16))
     case .threadIdentity:
       self = .threadIdentity(id: read64(bytes, 8))
+    case .readMemory:
+      let size = read64(bytes, 16)
+      guard size > 0, size <= TaskMemoryTransfer.maximumSize else { return nil }
+      self = .readMemory(address: read64(bytes, 8), size: size)
+    case .writeMemory:
+      let address = read64(bytes, 8)
+      let size = read64(bytes, 16)
+      if size > TaskMemoryTransfer.inlineLimit {
+        guard size <= TaskMemoryTransfer.maximumSize, bytes.count == opcode.byteCount else { return nil }
+        self = .writeMemory(address: address, data: .staged(size: size))
+      } else {
+        guard let data = TaskMemoryBytes(
+          decoding: UnsafeRawBufferPointer(rebasing: bytes.dropFirst(opcode.byteCount)), count: size)
+        else { return nil }
+        self = .writeMemory(address: address, data: .inline(data))
+      }
     }
   }
 
   /// Encodes into the exact payload slice; no Mach padding or trailer is included.
   public func encode(into bytes: UnsafeMutableRawBufferPointer) -> Bool {
     let opcode = self.opcode
-    guard bytes.count == opcode.byteCount else { return false }
+    guard bytes.count == payloadByteCount else { return false }
     write(Self.version, bytes, 0)
     write(opcode.rawValue, bytes, 4)
 
@@ -137,6 +176,16 @@ public enum TaskCommand: Sendable {
       write(UInt32(0), bytes, 284)
     case .suspendThread(let id), .resumeThread(let id), .threadIdentity(let id):
       write(id, bytes, 8)
+    case .readMemory(let address, let size), .writeMemory(let address, .staged(let size)):
+      guard size > 0, size <= TaskMemoryTransfer.maximumSize,
+        opcode == .readMemory || size > TaskMemoryTransfer.inlineLimit
+      else { return false }
+      write(address, bytes, 8)
+      write(size, bytes, 16)
+    case .writeMemory(let address, .inline(let data)):
+      write(address, bytes, 8)
+      write(UInt64(data.count), bytes, 16)
+      data.encode(into: UnsafeMutableRawBufferPointer(rebasing: bytes.dropFirst(opcode.byteCount)))
     case .terminate:
       break
     }
@@ -179,18 +228,32 @@ public struct TaskCommandReply: Sendable {
   /// An owned send right on a successful snapshot reply. The caller deallocates it.
   public let memoryEntry: UInt32?
   public let kernelThreadID: UInt64?
-  public var payloadByteCount: Int { kernelThreadID == nil ? Self.byteCount : Self.threadIdentityByteCount }
+  public let data: TaskMemoryBytes?
+  public var payloadByteCount: Int {
+    if let data { return 16 + TaskMemoryBytes.paddedCount(data.count) }
+    return kernelThreadID == nil ? Self.byteCount : Self.threadIdentityByteCount
+  }
 
-  public init(status: Int32, memoryEntry: UInt32? = nil, kernelThreadID: UInt64? = nil) {
+  public init(status: Int32, memoryEntry: UInt32? = nil, kernelThreadID: UInt64? = nil,
+    data: TaskMemoryBytes? = nil
+  ) {
     self.status = status
     self.memoryEntry = memoryEntry
     self.kernelThreadID = kernelThreadID
+    self.data = data
   }
 
   public init?(decoding bytes: UnsafeRawBufferPointer) {
-    guard bytes.count == Self.byteCount || bytes.count == Self.threadIdentityByteCount,
-      read32(bytes, 0) == TaskCommand.version else { return nil }
+    guard bytes.count >= Self.byteCount, read32(bytes, 0) == TaskCommand.version else { return nil }
     let status = Int32(bitPattern: read32(bytes, 4))
+    if bytes.count > Self.threadIdentityByteCount {
+      guard status == 0, let data = TaskMemoryBytes(
+        decoding: UnsafeRawBufferPointer(rebasing: bytes.dropFirst(16)), count: read64(bytes, 8))
+      else { return nil }
+      self.init(status: status, data: data)
+      return
+    }
+    guard bytes.count == Self.byteCount || bytes.count == Self.threadIdentityByteCount else { return nil }
     let thread = bytes.count == Self.threadIdentityByteCount ? read64(bytes, 8) : nil
     guard thread == nil || (status == 0 && thread != 0) else { return nil }
     self.init(status: status, kernelThreadID: thread)
@@ -198,11 +261,16 @@ public struct TaskCommandReply: Sendable {
 
   public func encode(into bytes: UnsafeMutableRawBufferPointer) -> Bool {
     guard bytes.count == payloadByteCount,
-      kernelThreadID == nil || (status == 0 && kernelThreadID != 0 && memoryEntry == nil)
+      kernelThreadID == nil || (status == 0 && kernelThreadID != 0 && memoryEntry == nil && data == nil),
+      data == nil || (status == 0 && memoryEntry == nil)
     else { return false }
     write(TaskCommand.version, bytes, 0)
     write(UInt32(bitPattern: status), bytes, 4)
     if let kernelThreadID { write(kernelThreadID, bytes, 8) }
+    if let data {
+      write(UInt64(data.count), bytes, 8)
+      data.encode(into: UnsafeMutableRawBufferPointer(rebasing: bytes.dropFirst(16)))
+    }
     return true
   }
 }

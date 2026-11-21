@@ -3,7 +3,7 @@
 `TarwinTaskProtocol` is shared between the hosted kernel and the task host.
 Each request is one Mach message (`TaskCommand.messageID`) with a
 `COPY_SEND` destination on the command port and a `MAKE_SEND_ONCE` reply
-right in the header. Only the `map` request is complex: a Mach message body with one
+right in the header. `map` and staged live-memory requests are complex: a Mach message body with one
 `MACH_MSG_PORT_DESCRIPTOR` (`COPY_SEND` memory-entry right) precedes its
 payload. The payload starts after that descriptor, or immediately after the
 Mach header for simple messages. The receive trailer is not part of it.
@@ -24,6 +24,8 @@ Tarwin thread IDs and register values are u64 unless otherwise noted.
 | 8 | Terminate | none |
 | 9 | Snapshot | address, size |
 | 10 | Thread identity | thread ID |
+| 11 | Read memory | address, size |
+| 12 | Write memory | address, size, inline bytes (if not staged) |
 
 The TLS field is a Tarwin virtual address, not a host register selector.
 On macOS 26.6.2, the task-side probe could write `TPIDR_EL0` but did not
@@ -47,6 +49,24 @@ thread ID (u64); failures have only the status payload. Pass the logical
 Tarwin thread ID to `SpawnedTask.threadIdentity(id:)` after creating the
 thread and before its first resume.
 `terminate` acknowledges before exiting; process exit is observed separately.
+
+Live-memory transfers accept byte-aligned ranges of 1–1,048,576 bytes below
+the gate page in the task window. They follow the task map's current
+protections and write through to its live mapping, including private COW
+pages. Unmapped or inaccessible ranges return a Mach error. A failed write
+is not a rollback guarantee; the caller must resolve faults and pin the
+whole range before the command.
+
+Up to 256 bytes travel inline. A successful inline read appends a u64 byte
+count and the bytes to the reply; `TaskCommandReply.data` exposes them.
+Inline write requests carry the bytes after the size. Inline bytes are
+zero-padded to a multiple of four. Larger reads and writes carry one
+`COPY_SEND` staging memory-entry descriptor in the request, at offset zero.
+The task writes the staged read result into that entry or reads the staged
+write source from it; both replies contain only the status. Use
+`SpawnedTask.readMemory(address:into:)` and
+`SpawnedTask.writeMemory(address:data:)` to choose the transport and
+manage staging automatically.
 
 The Swift codecs take exact payload slices and do not allocate or require
 aligned pointers. Mach header, descriptor and trailer validation is the
