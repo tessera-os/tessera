@@ -13,7 +13,7 @@ import TesseraHostKit
     init(send: @escaping (Data) -> Void) {
         channels = (0..<3).map { _ in DeviceFrameChannel(send: send) }
         hid = HIDEventTranslator(channel: channels[0])
-        audio = MacAudioHost(channel: channels[1], playback: nil, capture: nil)
+        audio = MacAudioHost(channel: channels[1])
         power = MacPowerHost(channel: channels[2], observe: false)
         channels[0].onReceive = { [weak hid] bytes in
             let data = Data(bytes)
@@ -30,4 +30,5 @@ import TesseraHostKit
     func close() {
         hid.setFocused(false); audio.shutdown(); power.stop(); channels.forEach { $0.close() }
     }
+    func attach(_ link: AudioLinkEnvelope) throws { _ = try audio.attach(link.object) }
 }

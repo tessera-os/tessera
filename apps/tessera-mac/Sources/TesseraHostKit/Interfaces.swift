@@ -23,8 +23,9 @@ public struct HostEvent: Codable {
     public var x: Double, y: Double
     public var text: String
     public var keyCode: UInt16
-    public init(kind: String, x: Double = 0, y: Double = 0, text: String = "", keyCode: UInt16 = 0) {
-        self.kind = kind; self.x = x; self.y = y; self.text = text; self.keyCode = keyCode
+    public var report: Data?
+    public init(kind: String, x: Double = 0, y: Double = 0, text: String = "", keyCode: UInt16 = 0, report: Data? = nil) {
+        self.kind = kind; self.x = x; self.y = y; self.text = text; self.keyCode = keyCode; self.report = report
     }
 }
 public protocol KernelHost: AnyObject {
@@ -72,6 +73,7 @@ public enum KernelFactory {
     func audio(_ payload: Data)
     func power(_ payload: Data)
     func deviceFrame(_ dictionary: [String: Data])
+    func audioLink(_ link: AudioLinkEnvelope, reply: @escaping (Bool) -> Void)
 }
 public enum XPCInterfaces {
     public static func host() -> NSXPCInterface {

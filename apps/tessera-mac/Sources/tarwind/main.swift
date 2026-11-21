@@ -52,10 +52,8 @@ final class Service: NSObject, NSXPCListenerDelegate, TarwindControl, KernelHost
                 timer.schedule(deadline: .now(), repeating: 1.0 / 60)
                 timer.setEventHandler { [weak self] in
                     guard let self else { return }
-                    let value = self.deviceDrivers?.nextCharacter() ?? 0
-                    if value != 0, let scalar = UnicodeScalar(UInt32(value)) {
-                        self.devices.hid?.deliver(HostEvent(kind: "keyDown", text: String(scalar)))
-                    }
+                    let output = self.config?.outputs.first ?? DisplayOutput()
+                    self.deviceDrivers?.inputEvents(output: output).forEach { self.devices.hid?.deliver($0) }
                 }
                 self.inputTimer = timer; timer.resume()
                 panicFD = Darwin.open(config.panicRecordPath, O_WRONLY | O_CREAT | O_TRUNC, 0o600)
@@ -69,6 +67,7 @@ final class Service: NSObject, NSXPCListenerDelegate, TarwindControl, KernelHost
         launcher?.shutdown(); launcher = nil
         inputTimer?.cancel(); inputTimer = nil
         kernel?.shutdown(); kernel = nil; state = "stopped"
+        deviceDrivers = nil
         if panicFD >= 0 { close(panicFD); panicFD = -1 }
     }
     func deviceFrame(_ dictionary: [String: Data]) {
@@ -87,6 +86,7 @@ final class Service: NSObject, NSXPCListenerDelegate, TarwindControl, KernelHost
     func resize(_ data: Data) {
         DispatchQueue.main.async {
             guard let output = try? JSONDecoder().decode(DisplayOutput.self, from: data) else { return }
+            if let index = self.config?.outputs.firstIndex(where: { $0.id == output.id }) { self.config?.outputs[index] = output }
             (self.kernel as? StubKernel)?.resize(output)
             (self.kernel as? TarwindKernelAdapter)?.resize(output)
         }
@@ -100,6 +100,10 @@ final class Service: NSObject, NSXPCListenerDelegate, TarwindControl, KernelHost
             try launcher.launch(executable: config!.taskExecutablePath)
             console("TASK COMMAND protect: success")
             state = "ready"; remote?.ready()
+            try deviceDrivers?.startAudio(sendLink: { [weak self] link, reply in
+                guard let remote = self?.remote else { reply(false); return }
+                remote.audioLink(link, reply: reply)
+            }, status: { [weak self] in self?.console($0) })
         } catch { panic(record: Array("Task launch failed: \(error)".utf8)) }
     }
     func console(_ line: String) { remote?.console(line) }

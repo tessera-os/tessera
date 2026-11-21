@@ -22,7 +22,7 @@ final class DeviceTests: XCTestCase {
                 if FrameView(bytes)?.kind == Wire.pong { pong.fulfill() }
             }
         }
-        XCTAssertEqual(devices.nextCharacter(), 0)
+        XCTAssertTrue(devices.inputEvents(output: DisplayOutput()).isEmpty)
         XCTAssertThrowsError(try devices.receive(Data()))
         XCTAssertThrowsError(try devices.receive(Data(repeating: 0, count: 32)))
         for (family, kind) in [(1, "hid"), (2, "audio"), (3, "power")] {

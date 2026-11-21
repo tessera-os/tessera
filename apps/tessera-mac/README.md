@@ -26,15 +26,26 @@ H6's mac-hid, mac-audio and mac-power packages are relative SwiftPM dependencies
 Raw focused-window NSEvents go through HIDEventTranslator; focus loss emits releases.
 TWHD frames cross the existing NSXPC connection in a `tw.frame` Data dictionary.
 The service registers MacHIDDeviceProvider, MacAudioDeviceProvider and
-MacPowerDeviceProvider in HostDeviceRegistry and delivers inbound frames through
-their Mach inboxes. Returned frames are demultiplexed to the app-side hosts.
-MacPowerHost observes real host state; MacAudioHost runs its control/timing layer
-but endpoints remain idle: PCM shared-memory ring negotiation is not implemented.
-No microphone is opened and no audio playback is claimed.
+MacPowerDeviceProvider in HostDeviceRegistry. Inbound frames are serialized on
+the service main queue and delivered once through their driver channels.
+Returned frames are demultiplexed to the app-side hosts. MacPowerHost observes
+real host state.
+At ready, the service creates playback/capture links and sends their complete libxpc
+dictionaries through NSXPCCoder.encodeXPCObject (never Data). The app attaches
+them before acknowledging; the service waits for each successful 0x102 status
+before advancing open/configure/start. Frame delivery uses the channel callback
+once. Restart creates fresh driver mappings and app hosts. Microphone access is
+subject to macOS permission and the selected hardware; audio errors are logged.
+The audio test transfers links through an anonymous XPC connection and starts
+both endpoints with HAL disabled; it does not claim physical audio loopback.
 
 The stub desktop consumes HID keyboard reports with a minimal US letters/digits
-mapping, not a text-input service. Pointer motion still uses the existing stub
-HostEvent path as well as reaching H6. No H5 graphics drivers are integrated yet.
+mapping, not a text-input service. The report consumer forwards all report kinds,
+including gestures and tablets; driver absolute pointer reports drive the cursor.
+The view forwards each raw event once without a second legacy pointer path.
+Pressure events use a tablet-point adapter because H6's translator does not yet
+handle the pressure event type directly. The console cannot intercept clicks or
+keyboard focus. No H5 graphics drivers are integrated yet.
 The cross-process check-in/gate test uses H2's fix for unrelated bootstrap traffic.
 Its test child checks in before clearing and releasing the bootstrap port.
 

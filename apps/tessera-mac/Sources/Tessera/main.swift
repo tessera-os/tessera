@@ -61,7 +61,7 @@ final class App: NSObject, NSApplicationDelegate, TesseraHost, NSWindowDelegate 
         self.deviceHosts = AppDevices { [weak self] data in self?.remote?.deviceFrame(["tw.frame": data]) }
         self.deviceHosts?.hid.setFocused(self.windows.values.contains { $0.isKeyWindow })
         self.isReady = true; print("TESSERA READY"); fflush(stdout)
-        self.views.values.forEach { $0.console.isHidden = !self.bootFailed }; self.finishIfNeeded()
+        self.views.values.forEach { $0.console.isHidden = !self.bootFailed; $0.window?.makeFirstResponder($0) }; self.finishIfNeeded()
     } }
     func finishIfNeeded() { if headless && exitReady && didFrame && isReady { quitting = true; remote?.shutdown(); exit(0) } }
     func console(_ line: String) { DispatchQueue.main.async {
@@ -74,14 +74,17 @@ final class App: NSObject, NSApplicationDelegate, TesseraHost, NSWindowDelegate 
         guard !self.headless, let output = try? JSONDecoder().decode(DisplayOutput.self, from: data) else { return }
         if self.windows[output.id] != nil { return }
         let view = DisplayView(output: output)
-        view.rawEvent = { [weak self] event, size in self?.deviceHosts?.hid.translate(event, windowSize: size) }
-        view.send = { [weak self] event in if let data = try? JSONEncoder().encode(event) { self?.remote?.deliver(data) } }
+        view.rawEvent = { [weak self] event, size in
+            guard let hid = self?.deviceHosts?.hid else { return }
+            InputEvents.translate(event, using: hid, windowSize: size)
+        }
         view.resized = { [weak self] output in if let data = try? JSONEncoder().encode(output) { self?.remote?.resize(data) } }
         let window = NSWindow(contentRect: view.frame, styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
         window.title = "Tessera"; window.contentView = view; window.delegate = self
         window.collectionBehavior = [.fullScreenPrimary]; window.acceptsMouseMovedEvents = true
         window.center(); window.makeKeyAndOrderFront(nil); window.makeFirstResponder(view)
         self.windows[output.id] = window; self.views[output.id] = view
+        view.console.isHidden = self.isReady && !self.bootFailed
         NSApp.activate(ignoringOtherApps: true)
     } }
     func present(_ surface: IOSurface, output: Int, frame: UInt64) { DispatchQueue.main.async {
@@ -89,6 +92,13 @@ final class App: NSObject, NSApplicationDelegate, TesseraHost, NSWindowDelegate 
         if !self.headless { self.views[output]?.present(surface) }; self.finishIfNeeded()
     } }
     func audio(_ payload: Data) {}
+    func audioLink(_ link: AudioLinkEnvelope, reply: @escaping (Bool) -> Void) {
+        DispatchQueue.main.async {
+            guard let hosts = self.deviceHosts else { reply(false); return }
+            do { try hosts.attach(link); reply(true) }
+            catch { self.console("AUDIO attach failed: \(error)"); reply(false) }
+        }
+    }
     func power(_ payload: Data) {}
     func deviceFrame(_ dictionary: [String: Data]) {
         guard let data = dictionary["tw.frame"] else { return }

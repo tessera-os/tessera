@@ -22,6 +22,7 @@ let package = Package(name: "TesseraMac", platforms: [.macOS(.v26)], products: [
         .product(name: "TarwinHostedGate", package: "hosted"),
         .product(name: "TarwinABI", package: "tarwin-syscall"),
         .product(name: "HostedDeviceWire", package: "mac-hid"),
+        .product(name: "MacHIDCapture", package: "mac-hid"),
         .product(name: "MacHIDDriver", package: "mac-hid"),
         .product(name: "MacAudioDriver", package: "mac-audio"),
         .product(name: "MacPowerDriver", package: "mac-power"),
@@ -34,5 +35,6 @@ let package = Package(name: "TesseraMac", platforms: [.macOS(.v26)], products: [
         .product(name: "MacAudioHost", package: "mac-audio"),
         .product(name: "MacPowerHost", package: "mac-power")]),
     .executableTarget(name: "tessera-mac-test", dependencies: ["TesseraHostKit"]),
-    .testTarget(name: "TesseraHostKitTests", dependencies: ["TesseraHostKit"])
+    .testTarget(name: "TesseraHostKitTests", dependencies: ["TesseraHostKit",
+        .product(name: "MacAudioHost", package: "mac-audio")])
 ], swiftLanguageModes: [.v5])
