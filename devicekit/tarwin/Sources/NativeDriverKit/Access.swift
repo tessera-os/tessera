@@ -9,14 +9,36 @@ public enum DmaDirection: Equatable {
 public enum BufferOwner: Equatable {
   case cpu
   case device
+  case retiring
   case retired
 }
-public struct NativeDmaBuffer: Equatable {
+public struct DmaSegment: Equatable {
+  public let iova: UInt64, bytes: UInt64
+}
+public struct DmaSegmentLimits {
+  public let granularity: UInt64, maximumBytes: UInt64, boundary: UInt64, count: Int
+  public init?(granularity: UInt64, maximumBytes: UInt64, boundary: UInt64 = 0, count: Int) {
+    guard granularity.nonzeroBitCount == 1, maximumBytes >= granularity,
+      (1...65536).contains(count),
+      boundary == 0 || boundary.nonzeroBitCount == 1 && boundary >= granularity
+    else { return nil }
+    self.granularity = granularity
+    self.maximumBytes = maximumBytes
+    self.boundary = boundary
+    self.count = count
+  }
+}
+/// Adopt each kernel grant once. References to it share one ownership state.
+/// Access on the driver's serial executor; not Sendable across workers.
+public final class NativeDmaBuffer: Equatable {
   public let handle: UInt64
   public let iova: UInt64
   public let length: UInt64
   public let direction: DmaDirection
-  public internal(set) var owner: BufferOwner = .cpu
+  public private(set) var owner: BufferOwner = .cpu
+  private var transitioning = false
+
+  public static func == (lhs: NativeDmaBuffer, rhs: NativeDmaBuffer) -> Bool { lhs === rhs }
 
   public func suitable(_ alignment: UInt64, _ boundary: UInt64) -> Bool {
     if handle == 0 || length == 0 || length - 1 > 0xffff_ffff_ffff_ffff - iova || alignment == 0
@@ -29,19 +51,57 @@ public struct NativeDmaBuffer: Equatable {
     return length <= boundary - iova % boundary
   }
 
-  public mutating func prepareForDevice(_ syncForDevice: (UInt64, DmaDirection) -> Bool) -> Bool {
-    if owner != .cpu || !suitable(1, 0) || !syncForDevice(handle, direction) { return false }
+  public func prepareForDevice(_ syncForDevice: (UInt64, DmaDirection) -> Bool) -> Bool {
+    guard !transitioning, owner == .cpu, suitable(1, 0) else { return false }
+    transitioning = true
+    defer { transitioning = false }
+    guard syncForDevice(handle, direction) else { return false }
     owner = .device
     return true
   }
-  public mutating func completeFromDevice(_ syncForCpu: (UInt64, DmaDirection) -> Bool) -> Bool {
-    if owner != .device || !syncForCpu(handle, direction) { return false }
+  public func completeFromDevice(_ syncForCpu: (UInt64, DmaDirection) -> Bool) -> Bool {
+    guard !transitioning, owner == .device else { return false }
+    transitioning = true
+    defer { transitioning = false }
+    guard syncForCpu(handle, direction) else { return false }
     owner = .cpu
     return true
   }
-  public mutating func retire(_ closeAndDrain: (UInt64) -> Bool) -> Bool {
+  /// Offer a complete descriptor list for a subrange of this prepared grant.
+  /// On success retain device ownership until the queue confirms completion.
+  public func withDeviceSegments(
+    offset: UInt64, bytes: UInt64, access: DmaDirection,
+    limits: DmaSegmentLimits, publish: (UnsafeBufferPointer<DmaSegment>) -> Bool
+  ) -> Bool {
+    guard !transitioning, owner == .device, direction == .bidirectional || direction == access,
+      bytes > 0, offset < length, bytes <= length - offset
+    else { return false }
+    var a = iova + offset
+    var left = bytes
+    let mask = limits.granularity - 1
+    guard (a | bytes) & mask == 0 else { return false }
+    var segments = [DmaSegment]()
+    while left > 0 {
+      guard segments.count < limits.count else { return false }
+      var n = min(left, limits.maximumBytes & ~mask)
+      if limits.boundary != 0 { n = min(n, limits.boundary - (a & (limits.boundary - 1))) }
+      segments.append(DmaSegment(iova: a, bytes: n))
+      left -= n
+      if left > 0 { a += n }
+    }
+    transitioning = true
+    defer { transitioning = false }
+    return segments.withUnsafeBufferPointer(publish)
+  }
+  /// Callback is idempotent for this grant: a partial close or invalidation
+  /// can only be retried, never undone by handing it back to the device.
+  public func retire(_ closeAndDrain: (UInt64) -> Bool) -> Bool {
     if owner == .retired { return true }
-    if owner != .cpu || !closeAndDrain(handle) { return false }
+    guard !transitioning, owner == .cpu || owner == .retiring else { return false }
+    transitioning = true
+    defer { transitioning = false }
+    owner = .retiring
+    guard closeAndDrain(handle) else { return false }
     owner = .retired
     return true
   }
