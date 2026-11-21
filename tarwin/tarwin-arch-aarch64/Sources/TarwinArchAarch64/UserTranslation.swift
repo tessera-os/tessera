@@ -84,6 +84,11 @@ private struct ArmPrivateRoot: ~Copyable {
     return words[cell] & 0x0000_ffff_ffff_c000
   }
 
+  func mapsKernelData(_ va: UInt64, physical: UInt64) -> Bool {
+    guard let cell = leafCell(va), cell >= 0 else { return false }
+    return words[cell] == physical | 0x703 | (1 << 53) | (1 << 54)
+  }
+
   func canSeal(_ range: Range<UInt64>) -> Bool {
     let lo = range.lowerBound, hi = range.upperBound
     guard lo < hi, lo >= 1 << 32, hi <= 1 << 47, (lo | hi) & 16383 == 0,
@@ -148,6 +153,11 @@ public struct ArmUserTranslation: ~Copyable {
     va >= 1 << 32 && va < 1 << 47 && root.hasLeaf(va, role)
   }
 
+  public func mapsPrivateDataPage(_ va: UInt64, physical: UInt64) -> Bool {
+    va >= 1 << 32 && va < 1 << 47 && (va | physical) & 16383 == 0
+      && root.privateWritableFrame(va) == physical
+  }
+
   /// Install one process-key-signed pointer, then seal the complete RELRO
   /// segment. `frame` is the kernel's exclusive writable mapping of precisely
   /// `physical` (no aliases to the rest of the process, page tables, or DMA).
@@ -179,6 +189,11 @@ public struct ArmKernelTranslation: ~Copyable {
   private var root: ArmPrivateRoot
   public var physicalRoot: UInt64 { root.physicalRoot }
   public var usedPages: Int { root.usedPages }
+
+  public func mapsPrivateDataPage(_ va: UInt64, physical: UInt64) -> Bool {
+    va >= 0xffff_8000_0000_0000 && physical > 0 && physical < 1 << 48
+      && (va | physical) & 16383 == 0 && root.mapsKernelData(va, physical: physical)
+  }
 
   public consuming func finish() -> ArmFinishedKernelRoot? {
     guard usedPages > 1 else { return nil }

@@ -1,12 +1,16 @@
 import TarwinIPCChannels
 import TarwinObject
-import TarwinW1Bootstrap
 import Testing
 
+@testable import TarwinW1Bootstrap
+
 // A real private endpoint and a fresh child table, but no launched process.
-func checkStartupFrame(_ images: borrowing W1PrivateImages, root: UInt64, accepted: Bool) throws {
+func checkStartupFrame(
+  _ images: borrowing W1PrivateImages, root: UInt64, accepted: Bool,
+  stack: UnsafeMutableRawBufferPointer
+) throws {
   let src = KoidSource()
-  let heads = UnsafeMutableBufferPointer<ObjectHeader>.allocate(capacity: 4)
+  let heads = UnsafeMutableBufferPointer<ObjectHeader>.allocate(capacity: 5)
   let jobs = UnsafeMutableBufferPointer<JobNode>.allocate(capacity: 1)
   let members = UnsafeMutableBufferPointer<JobMember>.allocate(capacity: 1)
   let slots = UnsafeMutableBufferPointer<ThreadSlot>.allocate(capacity: 1)
@@ -30,7 +34,9 @@ func checkStartupFrame(_ images: borrowing W1PrivateImages, root: UInt64, accept
   sizes.initialize(repeating: ChannelSize())
   let h = heads.baseAddress!
   h.initialize(to: ObjectHeader(source: src, ownerJob: 0, kind: TarwinKind.job, maximumRights: 0)!)
-  for (i, k) in [TarwinKind.process, TarwinKind.channel, TarwinKind.channel].enumerated() {
+  for (i, k) in [TarwinKind.process, TarwinKind.channel, TarwinKind.channel, TarwinKind.event]
+    .enumerated()
+  {
     (h + i + 1).initialize(
       to: ObjectHeader(source: src, ownerJob: h.pointee.koid, kind: k, maximumRights: 7)!)
   }
@@ -66,6 +72,7 @@ func checkStartupFrame(_ images: borrowing W1PrivateImages, root: UInt64, accept
     return
   }
   defer {
+    staging.drain { _ in }
     _ = child.withHandles(tree: tree) { $0.drain { _ in } }
     cells.deinitialize()
   }
@@ -78,10 +85,19 @@ func checkStartupFrame(_ images: borrowing W1PrivateImages, root: UInt64, accept
   defer { pair.close(.b) { _ in } }
   let scratch = UnsafeMutableRawBufferPointer(rebasing: bytes[128...])
   let none = UnsafeBufferPointer<UInt64>(start: nil, count: 0)
-  let ticket = images.preloadStartup(
-    child: &child, tree: tree, channel: &pair, app: 1, flags: 0,
-    tags: .init(start: nil, count: 0), names: none, staging: &staging, scratch: scratch,
-    invalidate: { _ in }, retire: { _ in })
+  guard case .installed(let event) = staging.install(.init(h + 4), rights: 2) else {
+    Issue.record("missing transferable startup handle")
+    return
+  }
+  let ticket = withUnsafePointer(to: event) { name in
+    withUnsafePointer(to: UInt32(13)) { tag in
+      images.preloadStartup(
+        child: &child, tree: tree, channel: &pair, app: 1, flags: 0,
+        tags: .init(start: tag, count: 1), names: .init(start: name, count: 1), staging: &staging,
+        scratch: scratch,
+        invalidate: { _ in }, retire: { _ in })
+    }
+  }
   #expect((ticket != nil) == accepted)
   let token: ChildBootstrap?
   if accepted {
@@ -103,12 +119,7 @@ func checkStartupFrame(_ images: borrowing W1PrivateImages, root: UInt64, accept
     frame.elr == images.processEntry && frame.tpidr == thread.tcb
       && frame.sp == thread.stack.upperBound)
   #expect(frame.gpr[0] == pair.entryName(boot, child: child, tree: tree, initialMap: root))
-  var size = ChannelSize()
-  let status = child.withHandles(tree: tree) { table in
-    pair.receive(
-      at: .b, into: scratch, names: .init(start: nil, count: 0), table: &table, size: &size)
-  }
-  #expect(status == .ok && size.bytes == 48)
+  try checkPinnedReceive(images, stack: stack, child: &child, pair: &pair, tree: tree)
   let consumed = images.initialFrame(boot, child: child, tree: tree, channel: pair)
   #expect(consumed == nil)
 }

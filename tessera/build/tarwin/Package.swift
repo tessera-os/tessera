@@ -21,6 +21,7 @@ let package = Package(
     .package(path: "../../../tarwin/tarwin-syscall"),
     .package(path: "../../../tarwin/tarwin-security/random"),
     .package(path: "../../../tarwin/tarwin-syscall/first-entry"),
+    .package(path: "../../../tarwin/tarwin-syscall/channel-calls"),
     .package(path: "../../../tarwin/tarwin-object"),
     .package(path: "../../../tarwin/tarwin-ipc"),
   ],
@@ -42,6 +43,8 @@ let package = Package(
     .testTarget(name: "TarbootPreflightTests", dependencies: ["TarbootPreflight"]),
     .target(
       name: "TarwinW1Bootstrap", dependencies: [
+        .product(name: "TarwinChannelCalls", package: "channel-calls"),
+        .product(name: "TarwinABI", package: "tarwin-syscall"),
         .product(name: "TarwinArmBootstrap", package: "first-entry"),
         .product(name: "TarwinObject", package: "tarwin-object"),
         .product(name: "TarwinIPCChannels", package: "tarwin-ipc"),

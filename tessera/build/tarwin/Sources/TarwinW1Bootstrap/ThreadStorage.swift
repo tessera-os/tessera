@@ -48,7 +48,7 @@ public struct W1ThreadPlacement: ~Copyable {
 /// no ordinary writable mapping; GCS permissions/GCSPR are a separate gate.
 public struct W1ThreadStorage {
   public let stack, shadow: Range<UInt64>
-  public let tcb, shadowPhysical: UInt64
+  public let tcb, stackPhysical, shadowPhysical: UInt64
 }
 
 extension W1FramePool {
@@ -81,6 +81,7 @@ extension W1FramePool {
     ptr.storeBytes(of: t.shadow.lowerBound.littleEndian, toByteOffset: 40, as: UInt64.self)
     used += bytes
     return W1ThreadStorage(
-      stack: t.stack, shadow: t.shadow, tcb: t.tcb, shadowPhysical: physical + UInt64(block + page))
+      stack: t.stack, shadow: t.shadow, tcb: t.tcb, stackPhysical: physical + UInt64(start),
+      shadowPhysical: physical + UInt64(block + page))
   }
 }

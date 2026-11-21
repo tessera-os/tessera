@@ -29,7 +29,7 @@ import Testing
   let poly = UnsafeMutableBufferPointer<Int32>.allocate(capacity: 2048)
   let temp = UnsafeMutableRawBufferPointer.allocate(byteCount: 16 * 54 * 32, alignment: 16)
   let page = 16384
-  let slots = 20
+  let slots = 24
   let tableBytes = 10 * 16384
   let ram = UnsafeMutableRawBufferPointer.allocate(byteCount: slots * page, alignment: page)
   defer {
@@ -59,7 +59,7 @@ import Testing
   var calls = 0
   func build(_ size: Int) -> W1PrivateImages? {
     calls = 0
-    let thread = W1ThreadPlacement(stackBytes: 32768, draw: { .max })
+    let thread = W1ThreadPlacement(stackBytes: 81920, draw: { .max })
     return preparePrivateW1Images(
       set, plan: plan, archive: archive, storage: .init(rebasing: ram[..<size]),
       physical: base, tableBytes: tableBytes, nodes: nodes, witnesses: temp,
@@ -89,7 +89,7 @@ import Testing
     return
   }
   #expect(
-    calls == 2 && images.tables.physicalRoot == base && images.usedBytes == tableBytes + 7 * page)
+    calls == 2 && images.tables.physicalRoot == base && images.usedBytes == tableBytes + 10 * page)
   #expect(images.libraryCode == plan.libraryCode && images.processEntry == plan.processEntry)
   // Walk the descriptors independently, including the image reservation holes.
   func leaf(_ va: UInt64) -> UInt64 {
@@ -119,7 +119,7 @@ import Testing
   let stagedThread = images.initialThread
   let thread = try #require(stagedThread)
   let start = tableBytes + 3 * page
-  let tcb = start + 2 * page
+  let tcb = start + 5 * page
   let expectedTCB: [UInt64] = [
     thread.tcb, .max, thread.stack.lowerBound, 0, 0, thread.shadow.lowerBound, 0, 0,
   ]
@@ -133,6 +133,7 @@ import Testing
   #expect(leaf(thread.shadow.lowerBound) == 0)
   #expect(
     leaf(thread.tcb) == armUserPage(base + UInt64(tcb), write: true, execute: false, lpa2: false))
-  try checkStartupFrame(images, root: base + 16384, accepted: false)
-  try checkStartupFrame(images, root: base, accepted: true)
+  let stack = UnsafeMutableRawBufferPointer(rebasing: ram[start..<tcb])
+  try checkStartupFrame(images, root: base + 16384, accepted: false, stack: stack)
+  try checkStartupFrame(images, root: base, accepted: true, stack: stack)
 }
