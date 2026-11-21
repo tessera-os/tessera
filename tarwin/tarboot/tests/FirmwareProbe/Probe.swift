@@ -210,8 +210,36 @@ private func checkPage(base: UInt64, length: UInt64, pageSize: UInt64) -> Bool {
   let correct = pageMatches(UnsafePointer(words), count: Int(pageSize / 8), value: page.address)
   for i in 0..<Int(pageSize / 8) { words[i] = 0 }
   words.deinitialize(count: Int(pageSize / 8))
-  return correct && givePages(&arena, address: page.address, order: 0)
-    && !givePages(&arena, address: page.address, order: 0)
+  guard correct, givePages(&arena, address: page.address, order: 0),
+    !givePages(&arena, address: page.address, order: 0)
+  else { return false }
+  let heapPage = takePages(&arena, order: 0)
+  guard heapPage.ok, let p = UnsafeMutableRawPointer(bitPattern: UInt(heapPage.address)) else {
+    return false
+  }
+  // QEMU's selected Arm CPU is Cortex-A72 (no MTE). Keep this page dedicated
+  // until shutdown; don't recycle a typed virtual range into the page allocator.
+  var metadata = InlineArray<2, HeapSlab>(repeating: HeapSlab())
+  return withUnsafeMutableBytes(of: &metadata) { m in
+    guard
+      var heap = HeapArena(
+        storage: .init(start: p, count: Int(pageSize)),
+        metadata: m.bindMemory(to: HeapSlab.self), policy: .noHardwareTags),
+      heap.provision(typeID: 0x11, sizeClass: 32, slots: 1),
+      heap.provision(typeID: 0x22, sizeClass: 32, slots: 1),
+      let a = heap.allocate(size: 27, alignment: 16, typeID: 0x11),
+      let b = heap.allocate(size: 27, alignment: 16, typeID: 0x22), a != b
+    else { return false }
+    a.storeBytes(of: UInt64.max, as: UInt64.self)
+    b.storeBytes(of: UInt64(19), as: UInt64.self)
+    guard heap.free(a), !heap.free(a), let pending = heap.beginQuarantine(),
+      heap.allocate(size: 27, alignment: 16, typeID: 0x11) == nil,
+      heap.completeQuarantine(pending),
+      let reused = heap.allocate(size: 27, alignment: 16, typeID: 0x11), reused == a,
+      reused.load(as: UInt64.self) == 0, b.load(as: UInt64.self) == 19
+    else { return false }
+    return true
+  }
 }
 
 @inline(never)

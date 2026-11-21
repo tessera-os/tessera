@@ -12,7 +12,7 @@ Set `SWTPM_REPLAY=1` (requires swtpm) and `QEMU_TREES=1` (requires QEMU aarch64/
 | tarboot | Slot choice, counter transition calculation, version floor, TIRA members, UEFI table CRCs, descriptor ordering, exit retry semantics | Writing firmware variables, verifying member hashes or release signatures, recovery entry |
 | tarwin-boot | Little-endian TBIB revision 1 encoder, streaming decoder, sorted memory map validation, SHA-256 TPM extend and TCG Event2 bytes, flattened device tree RAM and static reservations | Physical address ownership, train history validation, live CRB/TIS or DICE, CPU entry |
 | arch packages | Stage-one user leaf descriptors and walk indices for the ordinary page granule on each ISA | Live page tables, TLB maintenance, trap/interrupt handling or an instruction executed on that ISA |
-| tarwin-mm | Physical page arenas, mapping restrictions, A.2 regions, zero/copy/tag restoration, LZ4 blocks, file-cache leases, footprint, purge and jetsam selection | Live page faults, a running reclamation thread, TRFS backing, swap, zstd compaction or a kernel heap |
+| tarwin-mm | Physical page arenas, type-isolated small-object slabs with quarantine, mapping restrictions, A.2 regions, zero/copy/tag restoration, LZ4 blocks, file-cache leases, footprint, purge and jetsam selection | TIR heap entry points, MTE heap, live page faults, a running reclamation thread, TRFS backing, swap or zstd compaction |
 | tarwin-time | Integer counter conversion, slew and coalescence arithmetic, watchdog thresholds | Clock sampling, timer delivery, wake sources, or a watchdog interrupt |
 
 ### Integration constraints
