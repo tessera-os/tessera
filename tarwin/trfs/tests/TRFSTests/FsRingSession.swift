@@ -25,7 +25,11 @@ final class FsRingSessionTests: XCTestCase {
         s.submit(
           .read, node: node, other: none, offset: 1024, input: 0, inputBytes: 0, output: share,
           outputBytes: 4096,
-          validateShare: { v, g, n, w in v == 11 && g == share && n == 4096 && w })
+          resolveShare: { id in
+            id == share
+              ? FsShare(volume: 11, id: id, backing: id, offset: 0, length: 4096, writable: true)
+              : nil
+          })
       }
       for i: UInt64 in 1...64 {
         XCTAssertEqual(read(&s, i), .ring(.transferred(notifyPeer: false)))
@@ -69,7 +73,12 @@ final class FsRingSessionTests: XCTestCase {
       XCTAssertEqual(
         s.submit(
           .write, node: node, other: none, offset: 0, input: 5, inputBytes: 12, output: 0,
-          outputBytes: 0, validateShare: { _, g, n, w in g == 5 && n == 12 && !w }),
+          outputBytes: 0,
+          resolveShare: { id in
+            id == 5
+              ? FsShare(volume: 11, id: id, backing: 95, offset: 10, length: 12, writable: false)
+              : nil
+          }),
         .ring(.transferred(notifyPeer: false)))
       var r = RingRecord()
       _ = server.pop(into: &r)

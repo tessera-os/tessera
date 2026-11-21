@@ -28,12 +28,12 @@ public struct FsRingSession: ~Copyable {
   public mutating func submit(
     _ op: FsOp, node: VolumeNode, other: VolumeNode, offset: UInt64, input: UInt64,
     inputBytes: UInt32, output: UInt64, outputBytes: UInt32,
-    validateShare: (UInt64, UInt64, UInt32, Bool) -> Bool
+    resolveShare: (UInt64) -> FsShare?
   ) -> FsPublish {
     guard !failed else { return .rejected }
     var outcome: FsPublish = .rejected
     _ = channel.begin(
-      op, node, other, offset, input, inputBytes, output, outputBytes, validateShare
+      op, node, other, offset, input, inputBytes, output, outputBytes, resolveShare
     ) { r in
       let step = requests.push(r.record())
       outcome = .ring(step)
@@ -65,8 +65,8 @@ public struct FsRingSession: ~Copyable {
         return .invalidReply
       }
       guard let done = FsReply(record: r), done.epoch == channel.epoch,
-        let p = channel.pending.prefix(channel.live).first(where: { $0.id == done.id }),
-        done.produced <= p.outputBytes
+        let p = channel.pending.prefix(channel.live).first(where: { $0.record.id == done.id }),
+        done.produced <= p.record.outputBytes
       else {
         failed = true
         return .invalidReply
