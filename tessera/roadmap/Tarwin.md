@@ -11,7 +11,7 @@ Contents
 5. Hardware requirements
 6. Boot
 7. Images and the loader
-8. The Kira kernel profile
+8. Swift build profiles
 9. Objects, handles and rights
 10. System calls
 11. Processes, jobs and threads
@@ -74,7 +74,7 @@ Tarwin is the kernel only. It contains no user interface, no policy that belongs
 ### 1.4 Rules for implementing agents
 
 1. Implement behavior exactly as written. Where the document is silent, choose the behavior that is safest first and fastest second, and record the choice in `docs/decisions.md` in the format of Appendix B.
-2. Tarwin is written entirely in Kira, compiled through TIR's kernel profile. Assembly appears only in `[privileged]` assembly inside variant bodies under the all-three rule (TIR.md section 20.3). No other language is used.
+2. Tarwin is written entirely in Swift. Section 8.1 assigns non-allocating Embedded Swift, Embedded Swift and regular Swift to their execution environments. The KLF Swift compiler lowers kernel code under TIR's kernel profile. Privileged instructions appear only in `[privileged]` assembly inside architecture variant bodies under the all-three rule (TIR.md section 20.3); there is no separate assembly or C implementation.
 3. No placeholder, stub or hardcoded success counts as an implementation. A section is implemented when its conformance tests (section 34) pass on aarch64, x64 and rv64.
 4. Every kernel subsystem has a performance budget (section 34.2). A change that regresses a budget is not merged.
 5. No compromise: a feature that cannot meet this document's security and isolation rules on some hardware is not offered on that hardware, rather than offered weakened.
@@ -111,7 +111,7 @@ Tarwin is the kernel only. It contains no user interface, no policy that belongs
 3. A modern hybrid design: the performance-critical subsystems (scheduling, memory, IPC, file system, network stack) are in the kernel; device drivers are restartable user-space processes.
 4. Completion-based I/O everywhere, with shared rings so that steady-state I/O needs no system calls.
 5. One kernel for phones, tablets, laptops, desktops, consoles, servers and virtual machines, on aarch64, x64 and rv64.
-6. Memory safety by construction: Kira's ownership model, TIR's verification, and hardware tagging where present.
+6. Memory safety by construction: Swift ownership, lifetime and exclusivity checks, TIR verification, and hardware tagging where present.
 
 ### 3.2 Non-goals
 
@@ -123,7 +123,7 @@ Tarwin is the kernel only. It contains no user interface, no policy that belongs
 
 | System | What Tarwin shares | Where Tarwin differs |
 | --- | --- | --- |
-| XNU | Hybrid design, QoS scheduling, compressed memory, jetsam, code signing, pointer authentication | User-space drivers; capability handles instead of Mach ports and BSD identities; written in Kira |
+| XNU | Hybrid design, QoS scheduling, compressed memory, jetsam, code signing, pointer authentication | User-space drivers; capability handles instead of Mach ports and BSD identities; written in Swift |
 | Zircon (Fuchsia) | Objects, handles and rights, ports, jobs, no ambient authority | File system and network stack in the kernel for performance |
 | seL4 and L4 | Fast synchronous IPC with scheduling-context donation | Not a microkernel; no formal proof requirement in 1.0 |
 | Linux | EEVDF, io_uring-style rings, eBPF-style verified extensions, KVM-style hypervisor | No POSIX; capability security; drivers in user space |
@@ -222,7 +222,7 @@ firmware (UEFI Secure Boot, or SoC verified boot)
 
 ### 6.2 tarboot
 
-1. `tarboot` is Tarwin's boot loader, written in Kira under the kernel profile, built for each architecture as a PE32+ UEFI application and as a raw payload for SoC boot chains.
+1. `tarboot` is Tarwin's boot loader, written in freestanding Embedded Swift under the kernel profile, built for each architecture as a PE32+ UEFI application and as a raw payload for SoC boot chains. Its pre-allocator and final handoff paths are non-allocating.
 2. It reads the boot configuration, selects a slot (section 6.5), loads the slot's boot set into memory, verifies its signature against the platform key chain (section 25.5), measures it (section 6.4), applies kernel address randomization (section 7.6), exits boot services, and jumps to the kernel entry with the boot information block.
 3. It offers recovery when a key combination, a failed-boot counter or a recovery request selects it; it never offers a shell.
 
@@ -323,13 +323,21 @@ The kernel is an image of profile `kernel`, linked for Tarwin's kernel code mode
 
 ---
 
-## 8. The Kira kernel profile
+## 8. Swift build profiles
 
 ### 8.1 Language
 
-Tarwin's code is Kira compiled under TIR's kernel profile (TIR.md section 31.1) with these rules:
+Choose the Swift profile by the context in which the code actually runs, not just by its package:
 
-1. `unsafe` blocks are the only place where raw pointers are dereferenced, MMIO is accessed, privileged assembly is called, or page tables are edited. Every `unsafe` block carries a comment stating the invariant it relies on; review rejects one without it.
+| Swift profile | Where it runs | Storage and dependencies |
+| --- | --- | --- |
+| Non-allocating Embedded Swift | Early boot before the allocator, final boot handoff, architecture entry and interrupt handlers, context switch, allocator internals and other no-allocation critical sections | Fixed-size values, per-CPU memory and caller-provided buffers. No heap allocation, including implicit allocation by closures, boxing, collections or runtime helpers, anywhere on the reachable path. Verify with the compiler's no-allocation check. |
+| Embedded Swift | Freestanding boot and kernel subsystems, including sleepable object, VM, loader, IPC, device and filesystem paths; low-level native LibTessera entry glue before a user runtime is available | No hosted runtime. Once an allocator exists, kernel allocation is explicit through section 14 and respects the caller's execution context. Code reached from a non-allocating path inherits the stricter profile. |
+| Regular Swift | Hosted user-space components such as `tvmm`, services and driver processes after runtime startup; host generators, tests and benchmarks | May use the user or host runtime. Never link regular Swift, Foundation or host shims into boot, the kernel or pre-runtime entry code. |
+
+Kernel-profile builds use the pure Swift compiler on KLF (`languages/swift`) and retain TIR's verification and hardening (TIR.md section 31.1). Host `swiftc`/SwiftPM builds can check Swift behavior and allocation restrictions; they are not kernel images or section 34 target results. The following rules apply to all kernel paths:
+
+1. Raw-pointer dereferences, MMIO, privileged assembly and page-table edits are isolated in explicitly unsafe Swift operations. Document the lifetime, isolation or hardware invariant at each unsafe boundary; review rejects an undocumented one.
 2. Floating-point and vector types appear only in functions marked `@KernelFloatingPoint` (TIR's `kernel.fp`), which bracket their use with the scheduler's lazy state save (section 12.10). Everything else is compiled with `no_fp_regs`.
 3. Every function declares its context: `@AnyContext` (callable with interrupts disabled and while holding spinlocks), `@Sleepable` (may block). The default is `@Sleepable`. The compiler checks that `@AnyContext` code calls only `@AnyContext` code and never allocates with sleeping allocation flags (`TARWIN-K0001`).
 4. No unwinding: every kernel function is `nounwind`. Recoverable errors are `Result` values; unrecoverable ones panic (section 30).
@@ -337,7 +345,7 @@ Tarwin's code is Kira compiled under TIR's kernel profile (TIR.md section 31.1) 
 
 ### 8.2 The kernel standard library
 
-The kernel's `std` replacement, `kcore`, provides collections that never allocate implicitly (callers pass allocation contexts), intrusive lists and trees, lock types (section 15), atomic types, per-CPU variables, bit manipulation, checked arithmetic, and the kernel allocator interface (section 14). Kira's general `std` is not linked into the kernel.
+The freestanding Swift core, `kcore`, provides collections that never allocate implicitly (callers pass allocation contexts), intrusive lists and trees, lock types (section 15), atomic types, per-CPU variables, bit manipulation, checked arithmetic, and the kernel allocator interface (section 14). It uses only the supported Embedded Swift subset.
 
 ### 8.3 Stacks
 
@@ -987,7 +995,7 @@ Tarwin detects hypervisors and uses paravirtual devices (virtio and the paravirt
 
 ### 24.1 tvmm
 
-`tvmm` is Tessera's reference VMM, a system program written in Kira over the hypervisor API. It is what Tessera uses for the Android subsystem, development virtual machines, Tessera guests in Tessera Cloud Services, and other operating systems a user runs.
+`tvmm` is Tessera's reference VMM, a regular Swift system program over the hypervisor API. It is what Tessera uses for the Android subsystem, development virtual machines, Tessera guests in Tessera Cloud Services, and other operating systems a user runs.
 
 ### 24.2 Machine
 
@@ -1360,7 +1368,7 @@ Codes have the form `TARWIN-<AREA><NNNN>`.
 | --- | --- |
 | `TARWIN-K0001` | Kernel code in `@AnyContext` calls sleeping code or allocates with sleeping flags (build error) |
 | `TARWIN-K0002` | A kernel path's stack depth exceeds 80% of its stack (build error) |
-| `TARWIN-K0003` | `unsafe` block without an invariant comment (build error) |
+| `TARWIN-K0003` | Unsafe Swift operation without a documented invariant (build error) |
 | `TARWIN-S0001` | System call from outside LibTessera's code (process terminated) |
 | `TARWIN-S0002` | Code-signature failure at page-in (process terminated) |
 | `TARWIN-S0003` | Attempt to create a writable-and-executable mapping (refused) |
@@ -1390,7 +1398,7 @@ User-space faults are reported with TIR runtime codes (section 11.4).
 
 ### 36.1 Packages
 
-Tarwin is one Kira package tree, layered so that no package depends on a higher layer:
+Tarwin is one Swift package tree, layered so that no package depends on a higher layer:
 
 | Layer | Packages |
 | --- | --- |
@@ -1486,7 +1494,7 @@ User-space file-system servers (section 20.5) receive requests and return comple
 | Id | Decision | Reason |
 | --- | --- | --- |
 | TW-001 | Hybrid kernel: scheduler, memory, IPC, file system, network stack and hypervisor in the kernel; every device driver in user space | Linux-class performance for the hot paths, isolation and restartability for drivers |
-| TW-002 | Written only in Kira, compiled through TIR's kernel profile | One language for the whole system; TIR's verification and hardening apply to the kernel |
+| TW-002 | Pure Swift: non-allocating Embedded Swift for critical paths, Embedded Swift for freestanding code, regular Swift for hosted code (section 8.1) | One source language without a hosted runtime or implicit allocation in paths that cannot support them; TIR's kernel verification and hardening remain mandatory |
 | TW-003 | Capability handles are the only authority; no user identities in the kernel | No ambient authority; matches LibTessera |
 | TW-004 | QoS classes with EEVDF inside, a deadline class with admission control, work intervals, energy-aware placement | Interactive responsiveness and battery life together |
 | TW-005 | 16 KiB pages on aarch64, 4 KiB on x64 and rv64, transparent large pages | Fewer TLB misses on aarch64; Tessera's long-term architecture |
@@ -1507,4 +1515,3 @@ User-space file-system servers (section 20.5) receive requests and return comple
 | TW-020 | Transparent driver restart with request replay | Driver crashes are invisible to applications |
 | TW-021 | ELF64 as the image container under the Tessera profile, with kernel-processed loader records | Standard tooling for debugging and symbols; no dynamic-linker semantics |
 | TW-022 | Performance gates against mainline Linux block a train | The 5% goal is enforced, not aspirational |
-
