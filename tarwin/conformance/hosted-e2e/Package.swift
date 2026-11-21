@@ -12,6 +12,7 @@ let package = Package(
   ],
   targets: [
     .target(name: "HostedIOChecks", dependencies: [
+      .product(name: "TarwindKernel", package: "tarwin-hosted"),
       .product(name: "TRFS", package: "trfs"), .product(name: "TRFSHosted", package: "trfs-hosted"),
       .product(name: "TarwinBlockHosted", package: "tarwin-block-hosted"),
       .product(name: "TarwinNetHosted", package: "tarwin-net-hosted"),
@@ -21,6 +22,7 @@ let package = Package(
       .product(name: "TarwinTaskTransport", package: "tarwin-task"),
     ]),
     .testTarget(name: "HostedIOChecksTests", dependencies: [
+      .product(name: "TarwindKernel", package: "tarwin-hosted"),
       "HostedIOChecks", .product(name: "TRFSHosted", package: "trfs-hosted"),
       .product(name: "TarwinNetHosted", package: "tarwin-net-hosted"),
     ]),

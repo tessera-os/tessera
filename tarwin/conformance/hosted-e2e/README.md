@@ -45,7 +45,8 @@ volume write, ambient file descriptor or unscoped network grant.
    before launch, generates a private 32-byte nonce and names a new data disk
    inside a private directory. Busy ports fail the run; there is no fallback.
 2. Boot tarwind with that disk and the authenticated system image, then launch
-   the signed test application through H1/H2. After the main thread resumes,
+   the signed test application through H1/H2 with `RunProof.launchGrants()`.
+   After the main thread resumes,
    call `exchangeWhileRunning()`. The app connects to 127.0.0.1:43871, reads
    the nonce, writes and syncs `hosted-io-proof`, closes and reopens the file,
    reads exactly 32 bytes and EOF, and sends the reread bytes back. The runner
@@ -57,7 +58,13 @@ volume write, ambient file descriptor or unscoped network grant.
    for this process, verified app, outbound TCP destination and policy denial,
    with `socketCreated == false`; the denied listener must remain untouched.
 4. Require normal zero exit within a bounded time; any fault, killed task,
-   timeout, nonzero exit or unverified identity fails. Shut tarwind down before
+   timeout, nonzero exit or unverified identity fails. Call
+   `captureSocketDecisions(kernel:process:)` for that launch before shutdown.
+   It requires exactly the allowed socket and the policy denial in order.
+   At sequence 4485 the journal has no direction or terminal snapshot; a live
+   sample cannot prove the final outbound decision. Keep guest acceptance
+   unavailable until the terminal outbound records can be checked.
+   Shut tarwind down before
    `verifyAfterShutdown(normalExit:)`. It checks the sentinel has no queued connection
    and takes a read-only lock on the existing data image, mounts TRFS, checks
    exact filename, length and authenticated bytes. It never formats or repairs

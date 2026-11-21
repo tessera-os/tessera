@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
-import HostedIOChecks
+@testable import HostedIOChecks
+import TarwindKernel
 import TRFSHosted
 import TarwinNetHosted
 import XCTest
@@ -97,7 +98,10 @@ final class ProofTests: XCTestCase {
   }
 
   func testPolicyGrantsOnlyTheFixtureOutboundPeer() {
-    let policy = RunProof.networkPolicy()
+    let grants = RunProof.launchGrants()
+    guard grants.count == 2, case .namespace(.data, "/", let rights) = grants[0],
+      case .network(let policy) = grants[1] else { return XCTFail("unexpected launch grants") }
+    XCTAssertEqual(rights, [.read, .write, .create])
     let app = RunProof.appID
     func verdict(_ id: String, _ host: String, _ port: UInt16, _ proto: NetProtocol = .tcp,
       _ direction: NetDirection = .outbound) -> NetVerdict {
@@ -109,5 +113,31 @@ final class ProofTests: XCTestCase {
     XCTAssertEqual(verdict(app, "127.0.0.2", 43871), .deny("rule"))
     XCTAssertEqual(verdict(app, "127.0.0.1", 43871, .udp), .deny("rule"))
     XCTAssertEqual(verdict(app, "127.0.0.1", 43871, .tcp, .listen), .deny("rule"))
+  }
+
+  func testOrderedSocketEvidenceForVerifiedClient() {
+    // Model controls only; production records come from the per-process kernel journal.
+    func record(_ port: UInt16, _ verdict: NetVerdict, _ created: Bool,
+      id: String? = RunProof.appID, proto: NetProtocol = .tcp, reason: String = "rule",
+      host: String = "127.0.0.1") -> SocketObservation {
+      SocketObservation(appID: id, proto: proto, endpoint: NetAddress(host, port: port)!,
+        verdict: verdict, reason: reason, socketCreated: created)
+    }
+    let allow = record(43871, .allow, true, reason: "policy")
+    let deny = record(43872, .deny("rule"), false)
+    XCTAssertTrue(RunProof.matchesSockets([allow, deny]))
+    for invalid in [[], [allow], [deny, allow], [allow, deny, deny],
+      [record(43871, .allow, false), deny],
+      [allow, record(43872, .deny("rule"), true)],
+      [allow, record(43872, .allow, false, reason: "host failure")],
+      [allow, record(43872, .deny("rule"), false, id: nil)],
+      [allow, record(43872, .deny("rule"), false, id: "another-app")],
+      [allow, record(43872, .deny("rule"), false, proto: .udp)],
+      [allow, record(43872, .deny("unknown app"), false)],
+      [allow, record(43872, .deny("rule"), false, reason: "unknown app")],
+      [allow, record(43872, .deny("rule"), false, host: "127.0.0.2")],
+      [allow, record(43871, .deny("rule"), false)]] {
+      XCTAssertFalse(RunProof.matchesSockets(invalid))
+    }
   }
 }

@@ -4,7 +4,7 @@ import TarwinBlockHosted
 
 public enum ProofError: Error, Equatable {
   case invalidChallenge, badVolume, missingFile, wrongFile, wrongReply, deniedConnection
-  case timeout, disconnected, system(Int32), appExit(Int32)
+  case timeout, disconnected, system(Int32), appExit(Int32), networkDecisions
 }
 
 public enum DiskProof {
