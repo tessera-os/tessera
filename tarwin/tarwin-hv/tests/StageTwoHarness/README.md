@@ -36,6 +36,17 @@ are not part of this set. The test calls the kernel component with private
 buffers, not through a user-mode syscall; it does not establish a complete
 context switch, migration, physical execution or multicore exclusion.
 
+The separate `TarwinHVCalls` provider implements the private §23.3 four-word
+register ABI. Run `swift test --package-path tarwin-hv` from the Tarwin root
+for dispatcher tests with a real handle table and a test user mapping.
+They check guest layout independently of caller ISA, rights, a page boundary,
+closure of an in-flight handle, and a run starting during the buffer pin.
+`sh conformance/check-embedded.sh` compiles a concrete dispatcher and
+provider for all three targets with allocations disabled. A live syscall
+still requires a caller read epoch, whole-range pin and the vCPU run lock
+from the kernel composition layer; these are not supplied by the emulator
+register checks. This is not a public LibTessera SDK binding.
+
 **Boundary:** each image has a dedicated core, one ASID/VMID, private linker
 frames and a trusted instruction fixture. These are not kernel-profile builds,
 physical hardware, Linux/Android/Tarwin guest boots, or §34 suite results.
