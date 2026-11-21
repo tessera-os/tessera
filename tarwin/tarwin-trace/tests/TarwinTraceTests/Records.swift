@@ -32,8 +32,8 @@ func headRelease(_ head: UInt64) { lastHead = head }
 @Test
 func invalidSharedTailCannotAdvancePrivateRingHead() {
   var producer = TraceProducer(capacity: 64)
-  producer.produced = 64
   let event = TraceRecord(monotonicNanos: 3, kind: .contextSwitch, subject: 1, value: 4)
+  for _ in 0..<64 { _ = producer.push(event, 0, storeRecord, headRelease) }
   #expect(producer.push(event, 0, storeRecord, headRelease) == false)
   #expect(producer.push(event, 65, storeRecord, headRelease) == false)
   #expect(producer.push(event, 1, storeRecord, headRelease) == true)

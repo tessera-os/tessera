@@ -37,7 +37,7 @@ public struct PanicWriter {
     sealed = false
     return true
   }
-  public mutating func byte(_ data: UInt8, _ put: (UInt64, UInt8) -> Void) {
+  private mutating func byte(_ data: UInt8, _ put: (UInt64, UInt8) -> Void) {
     put(cursor, data)
     crc = crcByte(crc, data)
     cursor += 1

@@ -3,6 +3,7 @@ import PackageDescription
 
 let package = Package(
   name: "TarwinTrace",
+  platforms: [.macOS("26.0")],
   products: [.library(name: "TarwinTrace", targets: ["TarwinTrace"])],
   dependencies: [.package(path: "../tarwin-syscall")],
   targets: [

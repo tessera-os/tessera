@@ -1,4 +1,4 @@
-public enum KernelCategory {
+public enum KernelCategory: UInt8 {
   case boot, sched, vm, alloc, ipc, loader, security, device, block, trfs, net, gpu, hypervisor,
     power, thermal, probe, panic
 }
@@ -25,28 +25,40 @@ public func logEnabled(_ level: UInt64, _ minimum: UInt64) -> Bool { return leve
 // One writer per ring (kernel CPU or user thread). The ring owner keeps 'produced'
 // private. Accessors supply acquire/release and write the whole record before publication.
 // The reader's ticket is untrusted: invalid cursors must not yield a writable pointer.
-public struct TraceProducer {
-  public let capacity: UInt64
-  public internal(set) var produced: UInt64 = 0
-  public internal(set) var dropped: UInt64 = 0
+struct RingCursor {
+  let capacity: UInt64
+  var produced: UInt64 = 0
+  var dropped: UInt64 = 0
 
-  public init(capacity: UInt64) {
-    self.capacity = capacity
+  mutating func reserve(_ consumed: UInt64) -> UInt64? {
+    if capacity < 64 || capacity > 65536 || (capacity & (capacity - 1)) != 0 || consumed > produced
+      || produced - consumed >= capacity || produced == 0xffff_ffff_ffff_ffff
+    {
+      if dropped < 0xffff_ffff_ffff_ffff { dropped += 1 }
+      return nil
+    }
+    return produced & (capacity - 1)
   }
+  mutating func commit(_ releaseHead: (UInt64) -> Void) {
+    produced += 1
+    releaseHead(produced)
+  }
+}
+
+public struct TraceProducer {
+  private var cursor: RingCursor
+  public var capacity: UInt64 { cursor.capacity }
+  public var produced: UInt64 { cursor.produced }
+  public var dropped: UInt64 { cursor.dropped }
+  public init(capacity: UInt64) { cursor = RingCursor(capacity: capacity) }
 
   public mutating func push(
     _ record: TraceRecord, _ consumed: UInt64,
     _ store: (UInt64, TraceRecord) -> Void, _ releaseHead: (UInt64) -> Void
   ) -> Bool {
-    if capacity < 64 || capacity > 65536 || (capacity & (capacity - 1)) != 0 || consumed > produced
-      || produced - consumed >= capacity || produced == 0xffff_ffff_ffff_ffff
-    {
-      if dropped < 0xffff_ffff_ffff_ffff { dropped += 1 }
-      return false
-    }
-    store(produced & (capacity - 1), record)
-    produced += 1
-    releaseHead(produced)
+    guard let slot = cursor.reserve(consumed) else { return false }
+    store(slot, record)
+    cursor.commit(releaseHead)
     return true
   }
 }
