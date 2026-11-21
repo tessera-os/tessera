@@ -1,0 +1,47 @@
+import Foundation
+
+@Test
+function watchdogRejectsStalePongsAndWaitsForRevocationBeforeRestart() {
+    var s = DriverSupervisor { apiYear: 26, apiMonth: 11, pingInterval: 10 }
+    let launch: (U64) -> Bool = { e in return true }
+    let stalled: (U64,Bool) -> Bool = { e,r in return false }
+    let reset: (U64,Bool) -> Bool = { e,r in return e == 1 && !r }
+    let detach: (U64,Bool) -> Bool = { e,r in return e == 2 && r }
+    var ping: U64 = 0
+    let send: (U64,U64) -> Void = { e,c in ping = c }
+    expect!(s.start(0,26,11,launch))
+    expect!(s.ready(0,1))
+    s.watchdog(10,send)
+    s.watchdog(20,send)
+    expect!((ping == 20 && !s.pong(1,10)))
+    s.watchdog(30,send)
+    expect!((s.state == DriverState.Quiescing && !s.start(30,26,11,launch)))
+    expect!(!s.quiesce(stalled))
+    expect!(s.quiesce(reset))
+    expect!(s.start(30,26,11,launch))
+    expect!(!s.ready(30,1))
+    expect!(s.ready(30,2))
+    expect!(!s.failed(31,1,false))
+    s.remove()
+    expect!(s.quiesce(detach))
+    expect!((s.state == DriverState.Removed && !s.start(40,26,11,launch)))
+}
+
+@Test
+function fifthFailureInSlidingWindowStopsLaunching() {
+    var s = DriverSupervisor { apiYear: 26, apiMonth: 11, pingInterval: 10 }
+    let launch: (U64) -> Bool = { e in return true }
+    let delay: [U64] = [0,100000000,1000000000,10000000000]
+    var now: U64 = 1
+    for i in 0..5 {
+        expect!(s.start(now,26,11,launch))
+        expect!(s.failed(now,s.epoch,false))
+        expect!(s.quiesce({ e,r in return true }))
+        if i < 4 {
+            expect!((s.resumeAt == now + delay[i]))
+            if delay[i] > 0 { expect!(!s.start(s.resumeAt - 1,26,11,launch)) }
+            now = s.resumeAt
+        }
+    }
+    expect!((s.state == DriverState.Failed && !s.start(999999999999,26,11,launch)))
+}

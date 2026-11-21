@@ -1,0 +1,90 @@
+import NativeDriverKit
+
+public enum DriverState { Discovered Starting Running Quiescing Backoff Failed Removed }
+
+public struct DriverSupervisor {
+    let apiYear: U32
+    let apiMonth: U32
+    let pingInterval: U64
+    var state: DriverState = .Discovered
+    var failures: [U64] = []
+    var retained: Int = 0
+    var epoch: U64 = 0
+    var resumeAt: U64 = 0
+    var pingAt: U64 = 0
+    var unanswered: U32 = 0
+    var gone: Bool = false
+    var exhausted: Bool = false
+
+    function start(borrow mut self, now: U64, trainYear: U32, trainMonth: U32,
+                   launch: borrow (U64) -> Bool) -> Bool {
+        if state != .Discovered && state != .Backoff { return false }
+        if gone || now < resumeAt || epoch == 0xffffffffffffffff || pingInterval == 0 ||
+            !compatibleDriver(trainYear,trainMonth,apiYear,apiMonth) { return false }
+        epoch += 1
+        state = .Starting
+        if !launch(epoch) { absorb failed(now,epoch,false)
+            return false }
+        return true
+    }
+
+    function ready(borrow mut self, now: U64, generation: U64) -> Bool {
+        if state != .Starting || generation != epoch { return false }
+        unanswered = 0
+        pingAt = now
+        state = .Running
+        return true
+    }
+
+    function pong(borrow mut self, generation: U64, challenge: U64) -> Bool {
+        if state != .Running || epoch != generation || unanswered == 0 || challenge != pingAt { return false }
+        unanswered = 0
+        return true
+    }
+
+    function watchdog(borrow mut self, now: U64, sendPing: borrow (U64,U64) -> Void) {
+        if state != .Running || now < pingAt || now - pingAt < pingInterval { return }
+        if unanswered == 2 { absorb failed(now,epoch,false)
+            return }
+        unanswered += 1
+        pingAt = now
+        sendPing(epoch,now)
+    }
+
+    // Sliding ten-minute budget. Five failures disable this personality,
+    // not the kernel objects its clients hold. Old epochs cannot affect it.
+    function failed(borrow mut self, now: U64, generation: U64, removed: Bool) -> Bool {
+        if (state != .Running && state != .Starting) || generation != epoch { return false }
+        gone = removed
+        state = .Quiescing
+        if removed { return true }
+        var keep: Int = 0
+        for i in 0..retained {
+            let time = failures[i]
+            if now < time || now - time < 600000000000 { failures[keep] = time
+                keep += 1 }
+        }
+        if keep == failures.count { failures.append(now) } else { failures[keep] = now }
+        retained = keep + 1
+        exhausted = retained >= 5
+        var delay: U64 = 0
+        if retained == 2 { delay = 100000000 }
+        if retained == 3 { delay = 1000000000 }
+        if retained >= 4 { delay = 10000000000 }
+        resumeAt = delay > 0xffffffffffffffff - now ? 0xffffffffffffffff : now + delay
+        return true
+    }
+
+    // The manager's removal path can run even while waiting for reset.
+    function remove(borrow mut self) {
+        gone = true
+        if state == .Backoff || state == .Discovered || state == .Failed { state = .Removed }
+        else if state != .Removed { state = .Quiescing }
+    }
+
+    function quiesce(borrow mut self, revokeAndDrain: borrow (U64,Bool) -> Bool) -> Bool {
+        if state != .Quiescing || !revokeAndDrain(epoch,gone) { return false }
+        if gone { state = .Removed } else if exhausted { state = .Failed } else { state = .Backoff }
+        return true
+    }
+}
