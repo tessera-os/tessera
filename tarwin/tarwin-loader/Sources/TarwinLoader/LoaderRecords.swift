@@ -116,7 +116,7 @@ struct WireCursor {
     return rva % width == 0 && imageContains(limit, rva, width)
   }
 
-  private func functionTag(_ tag: UInt32) -> Bool {
+  static func functionTag(_ tag: UInt32) -> Bool {
     if tag & 0xfffff == 0 || tag & 0xfff == 0x017 { return false }
     switch tag {
     case 0xfa1e_0ff3, 0 &- 0xfa1e_0ff3, 0xd503_241f, 0xd503_245f, 0xd503_249f,
@@ -135,7 +135,7 @@ struct WireCursor {
         guard let h = take(8), relr.accept(reader.u64(h)) else { return false }
         while relr.bits != 0 { _ = relr.take() }
       case .authenticated:
-        guard slot(limit), let h = take(4), functionTag(reader.u32(h)) else { return false }
+        guard slot(limit), let h = take(4), Self.functionTag(reader.u32(h)) else { return false }
       case .imports:
         guard slot(limit), let h = take(22) else { return false }
         let sym = reader.bytes[h]
@@ -143,13 +143,13 @@ struct WireCursor {
         let uuid = reader.u64(h + 2) | reader.u64(h + 10)
         let tag = reader.u32(h + 18)
         guard sym <= 1, module <= 1, (uuid != 0) == (module == 0),
-          sym == 0 ? functionTag(tag) : tag == 0,
+          sym == 0 ? Self.functionTag(tag) : tag == 0,
           text() != nil, text() != nil
         else { return false }
       case .runtime:
         guard slot(limit), take(2) != nil else { return false }
       case .dispatch:
-        guard slot(limit), let h = take(6), functionTag(reader.u32(h)) else { return false }
+        guard slot(limit), let h = take(6), Self.functionTag(reader.u32(h)) else { return false }
         let n = reader.u16(h + 4)
         guard n > 0 else { return false }
         for _ in 0..<n {

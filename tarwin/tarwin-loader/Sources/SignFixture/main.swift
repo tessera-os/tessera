@@ -70,22 +70,37 @@ func main() throws {
       try id.verify(msg, envelope: try input(args[3]), chain: chain)
     }
   } else {
-    let signing = args[0] == "sign-image"
+    let isUser = args[0] == "sign-user" || args[0] == "verify-user"
+    let signing = args[0] == "sign-image" || args[0] == "sign-user"
     try require(
-      (signing || args[0] == "verify-image") && args.count == (signing ? 7 : 6),
-      "expected identity machine train tir input [output]")
+      (isUser || signing || args[0] == "verify-image")
+        && args.count == (signing ? 7 : 6) + (isUser ? 1 : 0),
+      "expected identity machine train tir [framework|init:HEX] input [output]")
     guard
       let machine = [
         "aarch64": ElfMachine.aarch64, "x64": ElfMachine.x64, "rv64": ElfMachine.rv64,
       ][args[2]]
     else { throw Failure.invalid("machine") }
-    var file = try input(args[5])
-    if signing { file = try addEnvelope(file, chain, machine: machine) }
+    var user: EarlyUserRole?
+    if isUser {
+      if args[5] == "framework" {
+        user = .systemLibrary
+      } else if args[5].hasPrefix("init:"), let tag = UInt32(args[5].dropFirst(5), radix: 16) {
+        user = .initialProcess(entryTag: tag)
+      } else {
+        throw Failure.invalid("expected framework or init:HEX")
+      }
+    }
+    let i = isUser ? 6 : 5
+    var file = try input(args[i])
+    if signing { file = try addEnvelope(file, chain, machine: machine, user: user) }
     let (msg, env, signatures) = try signingParts(
-      file, machine: machine, train: version(args[3]), tir: version(args[4]))
+      file, machine: machine, train: version(args[3]), tir: version(args[4]), user: user)
     if signing { file.replaceSubrange(signatures, with: try id.signatures(msg)) }
     try id.verify(msg, envelope: Data(file[env]), chain: chain)
-    if signing { try file.write(to: URL(fileURLWithPath: args[6]), options: .withoutOverwriting) }
+    if signing {
+      try file.write(to: URL(fileURLWithPath: args[i + 1]), options: .withoutOverwriting)
+    }
   }
   print("QEMU development fixture: both signatures verified on host; no guest launch")
 }

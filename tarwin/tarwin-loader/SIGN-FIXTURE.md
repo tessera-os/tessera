@@ -26,4 +26,22 @@ handoff has no confirmed tagged native image yet and is not enabled.
 
 For QEMU only, the detached archive envelope has exactly the TSG1 shape and signs ASCII `Tarwin boot set v1`, one NUL and 32 raw BLAKE3 bytes of the **entire final archive**, not an image ID or a member digest. A valid signature does not imply valid member hashes, allowed options, security version, or an authorized native kernel. Verify both layers on the same pinned bytes before placement.
 
+For W1 verifier interoperability, use a fresh disposable identity for the
+system-role images. Never enroll the test corpus in a boot harness:
+
+```sh
+sign-fixture init "$work/test-system"
+sign-fixture enroll "$work/test-system" "$work/system-pin"
+sign-fixture sign-user "$work/test-system" aarch64 26.11.1 26.11.2 "init:$ENTRY_TAG_HEX" unsigned-init.elf "$work/init.elf"
+sign-fixture sign-user "$work/test-system" aarch64 26.11.1 26.11.2 framework unsigned-framework.elf "$work/lib.elf"
+Stage0Image w1-bootset "$work/kernel.elf" "$work/init.elf" "$work/lib.elf" "$work/set.tir"
+sign-fixture sign-set "$work/QEMU-ONLY" "$work/set.tir" "$work/set.sig"
+```
+
+`verify-user` takes the same role, train and TIR arguments, the signed ELF
+as input and no output path. The init entry tag must come independently from
+the compiled process entry signature; the boot kernel tag is not its ABI.
+Signing checks each image structure, not the pair's SDK identity. See
+`w0/README.md` for the kernel-side contract and remaining launch gates.
+
 The public enrollment format is `TQE1`, u64le earliest allowed UTC Unix second, u64le last allowed second (intersection of both leaves and root), BLAKE3-256 of the exact canonical enrolled chain JSON, raw Ed25519 key (32), raw ML-DSA-65 key (1952). Pin the **entire** enrollment independently in the emulator-only trust boundary. An attacker-selected enrollment, clock or platform state is not a trust source. Regenerate to rotate; removing the trust record revokes the identity. The host checks X.509 signatures, times, code-signing purpose and the root self-signature at enrollment. No PKI parser or private key belongs in a W0 guest.

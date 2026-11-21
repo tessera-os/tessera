@@ -39,7 +39,7 @@ private struct Source: ByteSource {
   func byteCount() -> UInt64 { UInt64(raw.count) }
   func byteAt(_ offset: UInt64) -> UInt8 { raw[Int(offset)] }
 }
-private func view(_ b: UnsafeRawBufferPointer, _ r: Range<Int>) -> UnsafeRawBufferPointer {
+func view(_ b: UnsafeRawBufferPointer, _ r: Range<Int>) -> UnsafeRawBufferPointer {
   UnsafeRawBufferPointer(rebasing: b[r])
 }
 private func literal(_ s: StaticString) -> UnsafeRawBufferPointer {
@@ -84,7 +84,7 @@ private func authenticated(
       context: UnsafeRawBufferPointer(start: nil, count: 0), signature: view(envelope, e.mldsa65),
       work: work)
 }
-private func member(
+func member(
   _ a: UnsafeRawBufferPointer, _ name: StaticString, _ stack: UnsafeMutableBufferPointer<BlakeCv>
 ) -> Range<Int>? {
   let m = findBootMember(Source(raw: a), name: Source(raw: literal(name)))
@@ -102,12 +102,39 @@ public func authorizeQEMUStage0(
   enrollment: UnsafeRawBufferPointer, policy: W0Policy, hashes: UnsafeMutableBufferPointer<BlakeCv>,
   polynomials: UnsafeMutableBufferPointer<Int32>, message: UnsafeMutableRawBufferPointer
 ) -> W0Kernel? {
+  authorizedKernel(
+    archive: archive, signature: signature, enrollment: enrollment, policy: policy,
+    hashes: hashes, polynomials: polynomials, message: message, members: 2)?.0
+}
+
+func validPin(_ enrollment: UnsafeRawBufferPointer, utc: UInt64) -> Bool {
+  enrollment.count == 2036 && word(enrollment, 0) == 0x3145_5154 && utc >= wide(enrollment, 4)
+    && utc <= wide(enrollment, 12)
+}
+
+func authenticatedImage(
+  _ file: UnsafeRawBufferPointer, _ image: InspectedImage,
+  enrollment: UnsafeRawBufferPointer, hashes: UnsafeMutableBufferPointer<BlakeCv>,
+  polynomials: UnsafeMutableBufferPointer<Int32>, message: UnsafeMutableRawBufferPointer
+) -> Bool {
+  guard let sig = image.notes.signature,
+    let n = nativeSigningMessage(file, notes: image.notes, into: message)
+  else { return false }
+  return authenticated(
+    view(file, sig), enrollment, view(.init(message), 0..<n), hashes, polynomials)
+}
+
+func authorizedKernel(
+  archive: UnsafeRawBufferPointer, signature: UnsafeRawBufferPointer,
+  enrollment: UnsafeRawBufferPointer, policy: W0Policy, hashes: UnsafeMutableBufferPointer<BlakeCv>,
+  polynomials: UnsafeMutableBufferPointer<Int32>, message: UnsafeMutableRawBufferPointer,
+  members: UInt32
+) -> (W0Kernel, Range<Int>)? {
   guard policy.debugEmulator, policy.baselineSupported, policy.slot <= 1,
     let utc = policy.trustedUTC, let floor = policy.securityFloor,
-    enrollment.count == 2036, word(enrollment, 0) == 0x3145_5154, utc >= wide(enrollment, 4),
-    utc <= wide(enrollment, 12),
+    validPin(enrollment, utc: utc),
     hashes.count >= 54, polynomials.count >= 2048, message.count >= 1024,
-    archive.count >= 24, archive.count <= 64 * 1024 * 1024, word(archive, 8) == 2,
+    archive.count >= 24, archive.count <= 64 * 1024 * 1024, word(archive, 8) == members,
     let digest = bootSetDigest(archive, scratch: hashes)
   else { return nil }
   let domain = literal("Tarwin boot set v1")
@@ -125,10 +152,13 @@ public func authorizeQEMUStage0(
   guard
     let image = inspectW0SigningCandidate(
       kernel, machine: policy.machine, train: policy.train, tir: policy.tir,
-      addressLimit: policy.addressLimit, scratch: hashes), let sig = image.notes.signature,
-    let n = nativeSigningMessage(kernel, notes: image.notes, into: message),
-    authenticated(view(kernel, sig), enrollment, view(msg, 0..<n), hashes, polynomials)
+      addressLimit: policy.addressLimit, scratch: hashes),
+    authenticatedImage(
+      kernel, image, enrollment: enrollment, hashes: hashes,
+      polynomials: polynomials, message: message)
   else { return nil }
-  return W0Kernel(
-    bytes: kernel, range: range, image: image, securityVersion: settings.securityVersion)
+  return (
+    W0Kernel(
+      bytes: kernel, range: range, image: image, securityVersion: settings.securityVersion), conf
+  )
 }

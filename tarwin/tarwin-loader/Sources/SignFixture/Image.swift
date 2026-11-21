@@ -23,17 +23,28 @@ func makeEnvelope(_ chain: Data) -> Data {
 /// Keep every LOAD and every other section in place. Append a new file-only
 /// note stream; point PT_NOTE and its SHT_NOTE there before computing the ID.
 /// The original stream is now ordinary, fully hashed, unreferenced bytes.
-func addEnvelope(_ file: Data, _ chain: Data, machine: UInt16) throws -> Data {
+func addEnvelope(_ file: Data, _ chain: Data, machine: UInt16, user: EarlyUserRole? = nil) throws
+  -> Data
+{
   var s = stack()
+  let profileBytes: [UInt8]
+  switch user {
+  case nil: profileBytes = [3, 4]
+  case .initialProcess: profileBytes = [1, 0]
+  case .systemLibrary: profileBytes = [1, 1]
+  }
+  let requiresEntry = profileBytes != [1, 1]
   let unsigned = file.withUnsafeBytes { b in
     s.withUnsafeMutableBufferPointer {
       inspectUnsignedArtifact(
-        b, machine: machine, addressLimit: UInt64.max, finalized: false, requiresEntry: true,
+        b, machine: machine, addressLimit: UInt64.max, finalized: false,
+        requiresEntry: requiresEntry,
         scratch: $0)
     }
   }
-  guard let unsigned, let profile = unsigned.notes.profile, file[profile].elementsEqual([3, 4])
-  else { throw Failure.invalid("expected unsigned W0 ELF") }
+  guard let unsigned, let profile = unsigned.notes.profile,
+    file[profile].elementsEqual(profileBytes)
+  else { throw Failure.invalid("expected unsigned ELF of the requested role") }
   let ph = Int(try file.uint(32, UInt64.self))
   let sh = Int(try file.uint(40, UInt64.self))
   let programs = Int(try file.uint(56, UInt16.self))
@@ -69,7 +80,7 @@ func addEnvelope(_ file: Data, _ chain: Data, machine: UInt16) throws -> Data {
   guard
     let image = out.withUnsafeBytes({
       inspectELF(
-        $0, target: machine, addressLimit: .max, finalized: false, requiresEntry: true,
+        $0, target: machine, addressLimit: .max, finalized: false, requiresEntry: requiresEntry,
         requiresLoaderRecords: true)
     }),
     let id = image.notes.buildID,
@@ -80,26 +91,34 @@ func addEnvelope(_ file: Data, _ chain: Data, machine: UInt16) throws -> Data {
   out.replaceSubrange(id, with: words(cv))
   return out
 }
-func signingParts(_ file: Data, machine: UInt16, train: [UInt8], tir: [UInt8]) throws -> (
+func signingParts(
+  _ file: Data, machine: UInt16, train: [UInt8], tir: [UInt8], user: EarlyUserRole? = nil
+) throws -> (
   Data, Range<Int>, Range<Int>
 ) {
   var s = stack()
   guard train.count == 3, tir.count == 3,
-    let kernel = file.withUnsafeBytes({ b in
-      s.withUnsafeMutableBufferPointer {
-        inspectW0SigningCandidate(
+    let image = file.withUnsafeBytes({ b in
+      s.withUnsafeMutableBufferPointer { scratch -> InspectedImage? in
+        if let user {
+          return inspectEarlyUserImage(
+            b, role: user, machine: machine,
+            train: (train[0], train[1], train[2]), tir: (tir[0], tir[1], tir[2]),
+            addressLimit: .max, scratch: scratch)?.image
+        }
+        return inspectW0SigningCandidate(
           b, machine: machine, train: (train[0], train[1], train[2]),
-          tir: (tir[0], tir[1], tir[2]), addressLimit: .max, scratch: $0)
+          tir: (tir[0], tir[1], tir[2]), addressLimit: .max, scratch: scratch)
       }
-    }), let sig = kernel.notes.signature,
+    }), let sig = image.notes.signature,
     let env = file.withUnsafeBytes({ HybridEnvelope($0, descriptor: sig) })
   else {
-    throw Failure.invalid("not a W0 kernel with the required tagged entry, train and baseline")
+    throw Failure.invalid("image does not meet expected role, entry, layout, train and baseline")
   }
   var msg = Data(repeating: 0, count: 1024)
   guard
     let count = file.withUnsafeBytes({ b in
-      msg.withUnsafeMutableBytes { nativeSigningMessage(b, notes: kernel.notes, into: $0) }
+      msg.withUnsafeMutableBytes { nativeSigningMessage(b, notes: image.notes, into: $0) }
     })
   else { throw Failure.invalid("message too large") }
   return (Data(msg.prefix(count)), sig, env.ed25519.lowerBound..<env.mldsa65.upperBound)

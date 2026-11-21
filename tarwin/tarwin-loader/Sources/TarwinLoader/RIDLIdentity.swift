@@ -24,7 +24,7 @@ struct RIDLMetadata {
   let bytes: UnsafeRawBufferPointer
 
   /// W1 uses strict binding: a retired UUID cannot satisfy an early import.
-  func supports(_ expected: RIDLIdentity) -> Bool {
+  func supports(_ expected: RIDLIdentity, textSHA256: UnsafeRawBufferPointer? = nil) -> Bool {
     let r = ELFReader(bytes: bytes)
     var c = WireCursor(reader: r, pos: 0, end: bytes.count)
     guard expected.uuid.count == 16, let h = c.take(8), r.u32(h) == 0x4c44_4952,
@@ -48,7 +48,10 @@ struct RIDLMetadata {
       guard c.metadataString() != nil, let p = c.take(16), r.u64(p) | r.u64(p + 8) != 0
       else { return false }
     }
-    guard c.take(32) != nil, let unmanaged = c.take(4) else { return false }
+    guard let digest = c.take(32), let unmanaged = c.take(4) else { return false }
+    if let textSHA256, !bytesMatch(.init(rebasing: bytes[digest..<digest + 32]), textSHA256) {
+      return false
+    }
     for _ in 0..<r.u32(unmanaged) {
       guard c.metadataString() != nil else { return false }
     }

@@ -1,5 +1,5 @@
 // FIPS 180-4, SHA-512 for public Ed25519 verification transcripts.
-private let roundConstants: InlineArray<80, UInt64> = [
+let roundConstants: InlineArray<80, UInt64> = [
   0x428a_2f98_d728_ae22, 0x7137_4491_23ef_65cd, 0xb5c0_fbcf_ec4d_3b2f, 0xe9b5_dba5_8189_dbbc,
   0x3956_c25b_f348_b538, 0x59f1_11f1_b605_d019, 0x923f_82a4_af19_4f9b, 0xab1c_5ed5_da6d_8118,
   0xd807_aa98_a303_0242, 0x1283_5b01_4570_6fbe, 0x2431_85be_4ee4_b28c, 0x550c_7dc3_d5ff_b4e2,

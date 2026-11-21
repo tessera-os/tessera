@@ -6,6 +6,22 @@ public struct NativeFunctionBinding {
   public let typeTag: UInt32
 }
 
+/// Independently installed train SDK contract, never extracted from either ELF.
+/// All slices must remain immutable for the duration of inspection.
+public struct EarlyRIDLContract {
+  public let uuid, symbol, textSHA256: UnsafeRawBufferPointer
+  public let typeTag: UInt32
+  public init(
+    uuid: UnsafeRawBufferPointer, symbol: UnsafeRawBufferPointer,
+    textSHA256: UnsafeRawBufferPointer, typeTag: UInt32
+  ) {
+    self.uuid = uuid
+    self.symbol = symbol
+    self.textSHA256 = textSHA256
+    self.typeTag = typeTag
+  }
+}
+
 extension ELFReader {
   // The caller has validated this file's program and section tables.
   func exportedFunction(
@@ -89,7 +105,8 @@ extension ELFReader {
 /// never from a path, a guessed RVA or the platform's symbol resolver.
 public func inspectEarlyRIDLBinding(
   executable: UnsafeRawBufferPointer, framework: UnsafeRawBufferPointer,
-  machine: UInt16, addressLimit: UInt64, scratch: UnsafeMutableBufferPointer<BlakeCv>
+  machine: UInt16, addressLimit: UInt64, scratch: UnsafeMutableBufferPointer<BlakeCv>,
+  contract: EarlyRIDLContract? = nil
 ) -> NativeFunctionBinding? {
   guard
     let (caller, dir, section) = parsedSigningCandidate(
@@ -116,9 +133,17 @@ public func inspectEarlyRIDLBinding(
   let identity = RIDLIdentity(
     name: .init(rebasing: executable[module]), uuid: .init(rebasing: executable[h + 10..<h + 26]))
   let tag = a.u32(h + 26)
-  guard RIDLMetadata(bytes: .init(rebasing: framework[metadata])).supports(identity),
+  let symbol = UnsafeRawBufferPointer(rebasing: executable[name])
+  if let contract {
+    guard tag == contract.typeTag, bytesMatch(symbol, contract.symbol),
+      bytesMatch(identity.uuid, contract.uuid)
+    else { return nil }
+  }
+  guard
+    RIDLMetadata(bytes: .init(rebasing: framework[metadata])).supports(
+      identity, textSHA256: contract?.textSHA256),
     let entry = b.exportedFunction(
-      .init(rebasing: executable[name]), tag: tag, machine: machine, programs: lib.programHeaders)
+      symbol, tag: tag, machine: machine, programs: lib.programHeaders)
   else { return nil }
   return NativeFunctionBinding(slotRVA: a.u64(h), entryRVA: entry, typeTag: tag)
 }
