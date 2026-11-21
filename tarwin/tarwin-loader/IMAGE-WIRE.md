@@ -1,6 +1,6 @@
-# Tarwin native image v1 — proposed producer/consumer contract
+# Tarwin native image v1 — producer, signer and loader contract
 
-The linker and loader use v1 for **unsigned interoperability**. Note 2 and the signature transcript still require signer and train agreement; this is not a signing policy or evidence of verified launch. Existing TVISA A.2 tables retain their encodings. No producer may emit a dummy signature, drop an unsupported relocation, or mark an unsigned artifact executable.
+The linker emits an unsigned intermediate; a separate signer writes note 2. The envelope and transcript below define v1, not which identities a particular train trusts. Existing TVISA A.2 tables retain their encodings. No producer may emit a dummy signature, drop an unsupported relocation, or mark an unsigned artifact executable.
 
 ## Common encodings
 
@@ -14,7 +14,7 @@ For unsigned interchange omit note 2. Carry 3/4/5/7 as explicit image metadata; 
 
 Each PT_LOAD starts on a target page boundary in the file and in memory; nonempty file ranges occur in segment order and never share a file page. ELF p_align congruence alone is insufficient. A zero-file-size BSS-only segment consumes no file pages.
 
-| Type | Proposed descriptor bytes |
+| Type | Descriptor bytes |
 | --- | --- |
 | 1 | 32 raw BLAKE3 bytes. No prefix. |
 | 2 | ASCII `TSG1`, u32 chainBytes, chainBytes bytes of RFC 8785 JSON for the two cert chains (the `chain` object, not the package signature, of TIR §29.4), raw 64-byte Ed25519 signature then raw 3309-byte ML-DSA-65 signature. No embedded private keys. |
@@ -24,13 +24,17 @@ Each PT_LOAD starts on a target page boundary in the file and in memory; nonempt
 | 6 | TVISA hash then finalizer build identifier: 32 raw bytes each. Take target, features and svec from 5, not a duplicate. |
 | 7 | u8 profile (app/system/driver/kernel = 0/1/2/3), u8 image kind (executable/framework/plug-in/driver/kernel = 0/1/2/3/4); combinations per TVISA §6.6. |
 
-### Digest and signing boundary (requires signer agreement)
+### Digest and signing boundary
 
 The authorized signer finalizes the ELF layout, including the actual chain and final descriptor sizes, before hashing. For ID calculation, hash the whole file in file order, substituting 32 zeros for note 1's descriptor and omitting **only** the two raw signature byte ranges in note 2. Thus the chain, header offsets, lengths, padding and every other byte are covered. No GNU/TIR secondary ID is patched on the Tarwin path. The hash before the signer adds the envelope is not the signed artifact's ID.
 
 Place notes 1 and 2 after the end of **all** PT_LOAD file ranges rounded up to the target page size, in non-loaded file pages. Then canonical offsets and bytes of all executable pages are identical to the file's; proof tree length is final file length minus 3373 bytes. No change to an executable page can hide in an omitted or substituted range. BSS/padding needs separate segment handling; do not map adjacent file contents as executable padding.
 
 The hybrid transcript is ASCII `Tarwin native image v1`, one NUL, raw build ID, then for each note in order **4, 5, 3**: u32 descriptor byte length and exact descriptor bytes. Sign those bytes (not a package/delivery digest). Both proofs must verify with the authorized identity; local trust anchors, revocation, purpose, expiry and installation policy still apply. Release signing belongs to the pipeline, development signing to the developer identity, finalization to the device signing service. A different hardware envelope needs an agreed version, not a single-signature fallback.
+
+Use pure Ed25519 (RFC 8032) and pure ML-DSA-65 (FIPS 204) with the empty context, not prehashed variants. Their raw signatures are adjacent, in that order. Reject extra bytes. The TSG1 chain length counts only the exact canonical JSON bytes.
+
+**W0 emulator development identity.** Generate a fresh QEMU-only CA and two code-signing leaves, with the same leaf subject and one common self-signed root. Never ship private key material, trust a root supplied by the image, or put this CA in the release or developer trust stores. For a disposable QEMU standard-installation guest, the harness explicitly enrolls this identity as its platform key. That authorization is scoped to a debug W0 kernel (kernel/kernel, no user entitlements), the intended train and CPU, and the validity of both leaves. Certified installations, release builds, general developer certificates and unenrolled machines must reject it. Revoking or replacing the enrolled identity invalidates its old images. Do not translate a hosted signature check into an unconditional in-guest success.
 
 ## .tirload directory
 
