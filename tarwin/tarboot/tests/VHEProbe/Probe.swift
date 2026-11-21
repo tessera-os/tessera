@@ -114,7 +114,13 @@ public func switchRoot(_ context: UInt64, _ second: UInt32) -> UInt32 {
 // This diagnostic captures no task. It exercises only the checked stack
 // selection and pivot, with a synthetic trap frame on the outgoing stack.
 @_cdecl("tarwin_w1_stop_stack_top")
-public func destination(_ context: UInt64, _ frame: UInt64, _ root: UInt64) -> UInt64 {
+public func destination(_ context: UInt64, _ frame: UInt64, _ root: UInt64, _ captured: UInt32) -> UInt64 {
+  #if TEST_PROCESS
+    if captured == 1, let p = UnsafeMutableRawPointer(bitPattern: UInt(context)) {
+      return exitStack(p, frame, root)
+    }
+  #endif
+  guard captured == 0 else { return 0 }
   guard let storage = UnsafePointer<ArmStopStacks>(bitPattern: UInt(context + 64)) else { return 0 }
   return storage.pointee.destination(frame: frame, hostRoot: root) ?? 0
 }

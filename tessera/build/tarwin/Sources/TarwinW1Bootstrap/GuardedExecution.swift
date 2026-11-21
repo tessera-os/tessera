@@ -20,7 +20,7 @@ import TarwinSyscall
 /// kernel-only mapping, never user-addressable or exposed to DMA. All
 /// methods run under exclusive task/CPU ownership on a stationary boot CPU.
 public struct W1GuardedExecution: ~Copyable {
-  fileprivate enum Phase { case ready, captured, stopped }
+  fileprivate enum Phase { case ready, captured(ArmStopStacks), exiting(ArmStopStacks), stopped }
   fileprivate let user: ArmFinishedUserRoot
   fileprivate let roots: W1ArmDispatchRoots
   fileprivate let task, thread: UnsafePointer<ObjectHeader>
@@ -39,7 +39,7 @@ public struct W1GuardedExecution: ~Copyable {
     generation: W1KernelGeneration,
     host: borrowing ArmFinishedKernelRoot, stacks: ArmStopStacks
   ) -> Bool {
-    guard phase == .ready, child.header == task, selected.header == thread,
+    guard case .ready = phase, child.header == task, selected.header == thread,
       stacks.root == host.physical, roots.restored(user: user, host: host),
       shadow.contains(cursor), cursor & 7 == 0, let p = frame.baseAddress
     else { return false }
@@ -58,7 +58,7 @@ public struct W1GuardedExecution: ~Copyable {
     }
     guard ran else { return false }
     guard roots.restored(user: user, host: host) else { phase = .stopped; return false }
-    phase = .captured
+    phase = .captured(stacks)
     return true
   }
 
@@ -69,11 +69,27 @@ public struct W1GuardedExecution: ~Copyable {
   @unsafe public mutating func dispatch<P: CallProvider>(
     host: borrowing ArmFinishedKernelRoot, provider: inout P
   ) -> Arm64TrapOutcome {
-    guard phase == .captured else { return .invalidKernelFrame }
+    guard case .captured(let stacks) = phase else { return .invalidKernelFrame }
     phase = .stopped
     let outcome = roots.dispatch(user: user, host: host, frame: frame, library: library, provider: &provider)
-    if w1ArmVectorAction(outcome) == 1 { phase = .ready }
+    switch outcome {
+    case .resumeEL0: phase = .ready
+    case .stopCaller: phase = .exiting(stacks)
+    default: break
+    }
     return outcome
+  }
+
+  /// Move this record into pinned per-CPU storage before leaving the outgoing
+  /// stack. A failed dispatch, mismatched thread or repeated take cannot stop
+  /// another caller. Nothing re-enters this thread after an accepted exit.
+  public mutating func takeStoppedCaller(child: borrowing ProcessExecution,
+    selected: borrowing ThreadExecution, host: borrowing ArmFinishedKernelRoot) -> W1StoppedCaller? {
+    guard case .exiting(let stacks) = phase else { return nil }
+    phase = .stopped
+    guard child.header == task, selected.header == thread, roots.restored(user: user, host: host)
+    else { return nil }
+    return W1StoppedCaller(outcome: .stopCaller, child: child, thread: selected, stacks: stacks, capture: roots)
   }
 }
 

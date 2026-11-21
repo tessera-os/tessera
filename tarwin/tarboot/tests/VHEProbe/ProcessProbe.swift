@@ -34,7 +34,7 @@ private struct SingleCaller: CurrentProcessContext {
 /// the unused last 12 KiB of the pinned host-only context page, not in EL0.
 @_cdecl("tarwin_test_process_current") public func processProbe(
   _ context: UnsafeMutableRawPointer, _ root: UInt64, _ host: UInt64,
-  _ low: UInt64, _ top: UInt64, _ librarySize: UInt64
+  _ low: UInt64, _ top: UInt64, _ librarySize: UInt64, _ exits: UInt32
 ) -> UInt32 {
   let lib: UInt64 = 0x1_0001_4000
   guard (4...16384).contains(librarySize) else { return 0 }
@@ -95,6 +95,11 @@ private struct SingleCaller: CurrentProcessContext {
       library: lib..<lib + librarySize, provider: &provider) == .invalidKernelFrame,
     provider.context.services == 0, lowerRoot() == root else { return 0 }
   retireRoot(before, root, host)
+  if exits == 1 {
+    guard slice(root, host, bank, frame, cursor, low, top) == 1,
+      frame.load(fromByteOffset: 16 * 8, as: UInt64.self) == TarwinCall.processExit else { return 0 }
+    return queueExit(context, dispatch, saved, lib..<lib + librarySize, before, p, .init(t), .init(tree))
+  }
   var returned: UInt64 = 0
   for interval in 0..<2 {
     guard activeHost(host) == 1, activeHost(root) == 0,

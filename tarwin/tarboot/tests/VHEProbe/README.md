@@ -119,3 +119,8 @@ invoking the provider again. The provider reads a known word through the
 captured child root. Both dispatches restore the original lower root;
 dispatch from an already installed child root refuses without a provider call.
 This is not signed init staging.
+
+A second unsigned guest calls the real exit provider from a small diagnostic
+veneer, not LibTessera. The QEMU trace must show one user entry and one SVC.
+The thread stays charged until the CPU switches to the scheduler stack;
+there the kernel acknowledges its exit code and observes one notification.

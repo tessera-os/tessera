@@ -125,9 +125,9 @@ LD
     "$bin/swiftc" "${flags[@]}" -module-name TarwinObject -emit-module -emit-module-path "$d/TarwinObject.swiftmodule" \
       "$pkgs/tarwin/tarwin-object/Sources/TarwinObject"/*.swift
     "$bin/swiftc" "${flags[@]}" -D TEST_GCS -D TEST_PROCESS -emit-ir \
-      "$here/"{Probe,ProcessProbe}.swift "$here/../FirmwareProbe/Memory.swift" \
-      "$pkgs/tessera/build/tarwin/Sources/TarwinW1Bootstrap/"{TrapDispatch,TrapFramePage}.swift \
-      "$pkgs/tarwin/tarwin-syscall/providers/Sources/TarwinObjectCalls/ProcessCurrentCalls.swift" -o "$d/process.ll"
+      "$here/"{Probe,ProcessProbe,ExitProbe}.swift "$here/../FirmwareProbe/Memory.swift" \
+      "$pkgs/tessera/build/tarwin/Sources/TarwinW1Bootstrap/"{TrapDispatch,TrapFramePage,StopCaller}.swift \
+      "$pkgs/tarwin/tarwin-syscall/providers/Sources/TarwinObjectCalls/"{ProcessCurrentCalls,ProcessExitCalls}.swift -o "$d/process.ll"
     "$bin/clang" -target aarch64-none-none-elf -mno-outline-atomics -ffunction-sections -fdata-sections -Oz \
       -c "$d/process.ll" -o "$d/process.o"
     "$bin/clang" -target aarch64-none-none-elf -march=armv9.4-a+gcs -DTEST_GCS -DTEST_PROCESS -DTEST_SLICE \
@@ -138,6 +138,14 @@ LD
     [[ $(grep -Fc 'Exception return from AArch64 EL2 to AArch64 EL0 PC ' "$d/exceptions") == 2 &&
        $(grep -Fc '...from EL0 to EL2' "$d/exceptions") == 2 &&
        $(grep -Fc '...with ESR 0x15/0x56000000' "$d/exceptions") == 2 ]]
+    "$bin/clang" -target aarch64-none-none-elf -march=armv9.4-a+gcs -DTEST_GCS -DTEST_PROCESS -DTEST_EXIT -DTEST_SLICE \
+      -I "$d" -c "$d/start.S" -o "$d/exit-start.o"
+    "$bin/ld.lld" --gc-sections -T "$d/sections" "$d/exit-start.o" "$d/host.o" "$d/process.o" -o "$d/exit.elf"
+    run_guest exit
+    grep -Fx 'VHE-EL0-EXIT-ACKNOWLEDGED-ON-SCHEDULER-STACK' "$d/log"
+    [[ $(grep -Fc 'Exception return from AArch64 EL2 to AArch64 EL0 PC ' "$d/exceptions") == 1 &&
+       $(grep -Fc '...from EL0 to EL2' "$d/exceptions") == 1 &&
+       $(grep -Fc '...with ESR 0x15/0x56000000' "$d/exceptions") == 1 ]]
   fi
   if [[ ${TARBOOT_TEST_TIME_PAGE:-0} == 1 ]]; then
     timepkg="$pkgs/tarwin/tarwin-time"

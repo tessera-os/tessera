@@ -9,21 +9,37 @@ public struct W1StoppedCaller: ~Copyable {
   private let process: ProcessKey
   private let id: UInt64
   private let stacks: ArmStopStacks
+  private let capture: W1ArmDispatchRoots?
 
   public init?(
     outcome: Arm64TrapOutcome, child: borrowing ProcessExecution,
     thread: borrowing ThreadExecution, stacks: ArmStopStacks
   ) {
-    guard outcome == .stopCaller, child.phase == .stopping, child.member == thread.process,
+    self.init(outcome: outcome, child: child, thread: thread, stacks: stacks, capture: nil)
+  }
+
+  init?(outcome: Arm64TrapOutcome, child: borrowing ProcessExecution,
+    thread: borrowing ThreadExecution, stacks: ArmStopStacks, capture: W1ArmDispatchRoots?) {
+    guard capture?.onOriginalRoots(host: stacks.root) != false,
+      outcome == .stopCaller, child.phase == .stopping, child.member == thread.process,
       thread.phase == .runnable
     else { return nil }
     self.process = child.member
     self.id = thread.header.pointee.koid
     self.stacks = stacks
+    self.capture = capture
   }
 
   public func destination(frame: UInt64, hostRoot: UInt64) -> UInt64? {
-    stacks.destination(frame: frame, hostRoot: hostRoot)
+    capture == nil ? stacks.destination(frame: frame, hostRoot: hostRoot) : nil
+  }
+
+  /// The guarded interval already saved the registers to a pinned page and
+  /// unwound the capture stack. Use the CPU's live SP, not a pretend frame.
+  public func destinationAfterCapture(sp: UInt64, hostRoot: UInt64) -> UInt64? {
+    guard capture?.onOriginalRoots(host: hostRoot) == true, hostRoot == stacks.root, sp & 15 == 0,
+      sp > stacks.outgoing.lowerBound, sp <= stacks.outgoing.upperBound else { return nil }
+    return stacks.scheduler.upperBound
   }
 
   /// Only from the assembly continuation on the new stack: sp/hostRoot
@@ -35,7 +51,7 @@ public struct W1StoppedCaller: ~Copyable {
     tree: borrowing JobTree, notify: (UnsafePointer<ObjectHeader>) -> Void,
     retire: (UnsafePointer<ObjectHeader>) -> Void
   ) -> Bool {
-    guard hostRoot == stacks.root, sp & 15 == 0,
+    guard capture?.onOriginalRoots(host: hostRoot) != false, hostRoot == stacks.root, sp & 15 == 0,
       sp > stacks.scheduler.lowerBound, sp <= stacks.scheduler.upperBound,
       child.member == process, child.phase == .stopping, let cause = child.exit
     else { return false }

@@ -102,6 +102,14 @@ print("""
   add x3, x3, x20
   add x4, x3, #8, lsl #12
   ldr x5, =lib_end-lib_start
+  #ifdef TEST_EXIT
+  mov w6, #1
+  bl tarwin_test_process_current
+  cmp w0, #2
+  b.ne failed
+  b tarwin_w1_finish_captured_stop
+  #else
+  mov w6, #0
   bl tarwin_test_process_current
   cbz w0, failed
   adr x1, .Lprocess_ok
@@ -111,6 +119,7 @@ print("""
   b exit_host
   .Lprocess_ok: .asciz "VHE-EL0-LIBTESSERA-SELF-HANDLE-BAD-ORIGIN-STOPPED\\n"
   .p2align 2
+  #endif
   #else
   mov x26, #0
   .Ltest_slice:

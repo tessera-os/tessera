@@ -49,6 +49,14 @@
     b.eq .Lresume
     cmp w0, #2
     b.ne .Lhalt
+    mov w3, #0 // hardware frame still on outgoing stack
+    b .Lswitch_after_stop
+    .global tarwin_w1_finish_captured_stop
+    .hidden tarwin_w1_finish_captured_stop
+    tarwin_w1_finish_captured_stop:
+    bti c
+    mov w3, #1 // capture unwound; per-CPU stopped caller owns the transition
+    .Lswitch_after_stop:
     // Look up the captured caller in per-CPU state. Return a checked top
     // in the same TTBR1; zero means there is no safe scheduler stack.
     msr daifset, #15

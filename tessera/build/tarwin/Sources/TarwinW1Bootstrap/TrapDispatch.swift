@@ -27,13 +27,16 @@ struct W1ArmDispatchRoots {
     #endif
   }
 
-  func restored(user: borrowing ArmFinishedUserRoot, host: borrowing ArmFinishedKernelRoot) -> Bool {
+  func onOriginalRoots(host: UInt64) -> Bool {
     #if hasFeature(Embedded) && hasFeature(Extern) && arch(arm64) && os(none)
-      return user.physical == child && host.physical == kernel &&
-        user.layout == .guarded && host.layout == .guarded && activeHost(kernel) == 1 && lowerRoot() == prior
+      return host == kernel && activeHost(kernel) == 1 && lowerRoot() == prior
     #else
       return false
     #endif
+  }
+
+  func restored(user: borrowing ArmFinishedUserRoot, host: borrowing ArmFinishedKernelRoot) -> Bool {
+    user.physical == child && user.layout == .guarded && host.layout == .guarded && onOriginalRoots(host: host.physical)
   }
 
   @unsafe func dispatch<P: CallProvider>(

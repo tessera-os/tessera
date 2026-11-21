@@ -71,6 +71,7 @@ func checkStopAcknowledgment(
     #expect(stopped.destination(frame: frame, hostRoot: root) == dest + 2 * page)
     #expect(stopped.destination(frame: frame + 16, hostRoot: root) == nil)
     #expect(stopped.destination(frame: frame, hostRoot: root + page) == nil)
+    #expect(stopped.destinationAfterCapture(sp: va + 2 * page, hostRoot: root) == nil)
     return stopped.acknowledge(
       sp: sp, hostRoot: root, child: &child, tree: tree,
       notify: { h in

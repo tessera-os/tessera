@@ -440,7 +440,13 @@ tarwin_w1_stopped_private:
   b.ne failed
   cmp x7, x1
   b.ne failed
+  #ifdef TEST_EXIT
+  bl tarwin_test_ack_exit
+  cbz w0, failed
+  adr x1, exited
+  #else
   adr x1, stopped
+  #endif
   mov x0, #4
   hlt #0xf000
   adr x1, exit_ok
@@ -479,6 +485,7 @@ gcs_ok: .asciz "VHE-GCS-STORE-ORDINARY-WRITE-DENIED\\nVHE-PRIVATE-PIE-RELRO-GUAR
 wrong_ok: .asciz "VHE-REFUSED-MISMATCHED-PIE-BANK\\n"
 pac_ok: .asciz "VHE-IMPORT-IA-HOST-KEY-RESTORED\\n"
 stopped: .asciz "VHE-STOP-ON-SEPARATE-SCHEDULER-STACK\\n"
+exited: .asciz "VHE-EL0-EXIT-ACKNOWLEDGED-ON-SCHEDULER-STACK\\n"
 genid_ok: .asciz "VHE-VMGEN-KERNEL-READONLY-NO-IDENTITY-OR-USER-ACCESS\\n"
 time_ro: .asciz "VHE-TIME-PAGE-EL0-RO\\n"
 .p2align 3
@@ -598,7 +605,15 @@ slice_after_second:
   .space 32768
   #ifdef TEST_PROCESS
   lib_start:
+  #ifdef TEST_EXIT
+  bti c
+  mov x0, #-71
+  mov x16, #89
+  svc #0
+  brk #0 // accepted exit must never resume here
+  #else
   .incbin "process-body.bin"
+  #endif
   lib_end:
   .p2align 14
   .space 16384 // separate privileged register frame
