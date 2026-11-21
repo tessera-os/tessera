@@ -5,11 +5,7 @@ import TarwinMM
 // tarboot hands this single CPU a private stack and physical addresses, with
 // interrupts masked. The loader owns the contiguous 24 KiB TBIB + map and
 // pins the aperture until a display driver takes over. There are no EFI calls.
-#if arch(x86_64)
 @_cdecl("tarwin_start_body")
-#else
-@_cdecl("tarwin_start")
-#endif
 public func kernelEntry(_ handoff: UnsafeRawPointer) -> Never {
   _ = selfTest(handoff)
   while true {}

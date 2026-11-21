@@ -3,11 +3,11 @@
 The AArch64 W0 target note includes the 17 names implied by the full
 `aarch64.base` baseline, not just optional extras. The x64 kernel body is
 built with `bash kernel-object.sh NEW-BODY.o x86_64`: its 4 KiB page test
-uses the Tarwin §6.6 physical handoff in RDI. Link with a tagged §17.2
+uses the Tarwin §6.6 physical handoff in RDI. Stage0Image links a tagged §17.2
 entry veneer, the full `x64.v3` feature closure and fixed vscale 2; an
 object alone does not prove that a guest CPU satisfies this baseline.
 
-# Stage-0 aarch64 W0 kernel image
+## Build a W0 kernel image
 
 From this directory in a full Cairn checkout on a Mac:
 
@@ -15,6 +15,8 @@ From this directory in a full Cairn checkout on a Mac:
     work=$(mktemp -d)
     bash kernel-object.sh "$work/kernel.o"
     swift run --scratch-path "$work/tools" Stage0Image "$work/kernel.o" "$work/kernel.unsigned.elf"
+    bash kernel-object.sh "$work/x64.o" x86_64
+    swift run --scratch-path "$work/tools" Stage0Image "$work/x64.o" "$work/x64.unsigned.elf"
     swift test --scratch-path "$work/tools"
 
 The cross compiler identifies itself as Apple Swift 6.3.3 (swift-6.3.3-RELEASE).
@@ -25,17 +27,17 @@ Swift with no allocations, no hosted runtime, and general-purpose registers.
 This is the stage-0 compiler exception, **not** evidence that the self-hosted
 Swift compiler generated or verified kernel-profile TIR.
 
-The hosted bridge imports live AArch64 ET_REL code, constants and supported
+The hosted bridge imports live AArch64 or x64 ET_REL code, constants and supported
 local relocations into A12's ObjectFile model. Unknown allocated sections,
 writable data, external references and unsupported relocations fail the build.
 A12 applies the link relocations and writes the Tarwin ET_DYN; the loader's
 unsigned interoperability check validates its build ID, notes and directory.
 The output has no signature, grants or finalizer note. Its profile/kind are
-kernel/kernel, target aarch64.base, build and expiry both 26.11.1. This
+kernel/kernel, target aarch64.base or x64.v3, build and expiry both 26.11.1. This
 short-lived debug candidate must not enter a release boot.
 
-The separate kernel entry `tarwin_start` expects the physical TBIB in x0,
-a private 32 KiB boot stack, and the §6.6 EL2 entry state. For this W0
+On AArch64 the separate kernel entry `tarwin_start` expects the physical TBIB in x0,
+a private boot stack and the §6.6 EL2 entry state. For this W0
 composition the producer pins 24 KiB (aligned TBIB followed immediately by
 up to 20 KiB of map), protects the image and stack as reserved, and supplies
 a verified debug GOP aperture. The single CPU consumes the validated usable

@@ -6,7 +6,7 @@ struct InputError: Error, CustomStringConvertible {
   init(_ reason: String) { description = reason }
 }
 
-// Narrow stage-0 bridge: accept only the live, read-only AArch64 ET_REL
+// Narrow stage-0 bridge: accept only the live, read-only AArch64 or x64 ET_REL
 // produced by kernel-object.sh. A12, not this importer, lays out the image
 // and resolves its relocations. Never ignore an unknown allocated section.
 private struct Input {
@@ -36,9 +36,10 @@ func readKernelObject(_ bytes: [UInt8]) throws -> ObjectFile {
   let f = Input(bytes: bytes)
   guard bytes.count >= 64, bytes.count <= 8 << 20,
     Array(bytes.prefix(7)) == [127, 69, 76, 70, 2, 1, 1],
-    f.number(16, 2) == 1, f.number(18, 2) == 183, f.number(20, 4) == 1, f.number(52, 2) == 64,
+    f.number(16, 2) == 1, [62, 183].contains(f.number(18, 2)), f.number(20, 4) == 1, f.number(52, 2) == 64,
     f.number(56, 2) == 0, f.number(58, 2) == 64
-  else { throw InputError("expected little-endian AArch64 ELF64 ET_REL") }
+  else { throw InputError("expected little-endian AArch64 or x64 ELF64 ET_REL") }
+  let arm = f.number(18, 2) == 183
   let count = Int(f.number(60, 2))
   let names = Int(f.number(62, 2))
   guard count > 1, names > 0, names < count else { throw InputError("invalid section directory") }
@@ -92,21 +93,21 @@ func readKernelObject(_ bytes: [UInt8]) throws -> ObjectFile {
   let sn = try body(str)
   var entry = false
   for at in stride(from: sym.lowerBound, to: sym.upperBound, by: 24) {
-    guard try f.string(f.number(at, 4), in: sn) == "tarwin_start" else { continue }
+    guard try f.string(f.number(at, 4), in: sn) == "tarwin_start_body" else { continue }
     let section = Int(f.number(at + 6, 2))
     let offset = f.number(at + 8, 8)
     let size = f.number(at + 16, 8)
     guard !entry, bytes[at + 4] == 0x12, let index = mapped[section], sections[index].kind.isCode,
-      offset & 3 == 0, offset < sections[index].size, size > 0,
+      !arm || offset & 3 == 0, offset < sections[index].size, size > 0,
       size <= UInt64(sections[index].size) - offset
     else { throw InputError("invalid entry function") }
     entry = true
     symbols.append(
       .init(
-        name: "tarwin_start", section: index, offset: Int(offset), size: Int(size),
+        name: "tarwin_start_body", section: index, offset: Int(offset), size: Int(size),
         binding: .exported))
   }
-  guard entry else { throw InputError("no tarwin_start") }
+  guard entry else { throw InputError("no tarwin_start_body") }
   for i in 1..<count where field(i, 4, 4) == 4 || field(i, 4, 4) == 9 {
     guard let destination = mapped[Int(field(i, 44, 4))], field(i, 4, 4) == 4,
       field(i, 56, 8) == 24,
@@ -118,7 +119,7 @@ func readKernelObject(_ bytes: [UInt8]) throws -> ObjectFile {
       let off = f.number(at, 8)
       let info = f.number(at + 8, 8)
       let s = info >> 32
-      guard sections[destination].kind.isCode, off & 3 == 0, off <= sections[destination].size,
+      guard !arm || (sections[destination].kind.isCode && off & 3 == 0), off <= sections[destination].size,
         UInt64(sections[destination].size) - off >= 4, s < sym.count / 24
       else { throw InputError("bad relocation extent") }
       let source = sym.lowerBound + Int(s) * 24
@@ -127,7 +128,24 @@ func readKernelObject(_ bytes: [UInt8]) throws -> ObjectFile {
       else { throw InputError("unresolved relocation") }
       let (addend, overflow) = value.addingReportingOverflow(
         Int64(bitPattern: f.number(at + 16, 8)))
-      guard !overflow, addend >= 0, addend < sections[target].size else {
+      guard !overflow else { throw InputError("relocation addend overflow") }
+      if !arm {
+        // x64 RIP-relative instruction operands use a -4 PC bias. Relative
+        // jump-table words use S+A-P (with a cell-relative bias in A).
+        let type = UInt32(truncatingIfNeeded: info)
+        guard type == 2 || (type == 4 && sections[destination].kind.isCode) else {
+          throw InputError("unsupported x64 relocation")
+        }
+        let bias = sections[destination].kind.isCode ? Int64(4) : -Int64(off)
+        let (actual, wraps) = addend.addingReportingOverflow(bias)
+        guard !wraps, actual >= 0, actual < sections[target].size else {
+          throw InputError("x64 relocation outside target")
+        }
+        sections[destination].relocations.append(.init(offset: Int(off),
+          kind: type == 2 ? .x64PCRelative32 : .x64Branch32, symbol: "section.\(referenced)", addend: addend))
+        continue
+      }
+      guard addend >= 0, addend < sections[target].size else {
         throw InputError("relocation outside target")
       }
       let kind: RelocationKind
@@ -145,5 +163,5 @@ func readKernelObject(_ bytes: [UInt8]) throws -> ObjectFile {
         .init(offset: Int(off), kind: kind, symbol: "section.\(referenced)", addend: addend))
     }
   }
-  return .init(name: "stage0-w0", architecture: .aarch64, sections: sections, symbols: symbols)
+  return .init(name: "body", architecture: arm ? .aarch64 : .x64, sections: sections, symbols: symbols)
 }

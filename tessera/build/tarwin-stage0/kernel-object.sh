@@ -6,7 +6,7 @@ root=$(cd "$here/../../.." && pwd)
 bin=$(dirname "${EMBEDDED_SWIFTC:?set to swiftc from a macOS Embedded Swift toolchain}")
 out=${1:?usage: kernel-object.sh NEW-OUTPUT.o [aarch64|x86_64]}
 case ${2:-aarch64} in
-    aarch64) triple=aarch64-none-none-elf; entry=tarwin_start; cpu=(-mgeneral-regs-only);;
+    aarch64) triple=aarch64-none-none-elf; entry=tarwin_start_body; cpu=(-mgeneral-regs-only);;
     x86_64) triple=x86_64-unknown-none-elf; entry=tarwin_start_body; cpu=(-mno-sse -mno-sse2 -mno-mmx -mno-red-zone);;
     *) exit 2;;
 esac
@@ -25,7 +25,7 @@ for src in "$root"/tarwin/{kcore,tarwin-boot,tarwin-mm,tarwin-time,tarwin-sched}
 done
 "$bin/swiftc" "${flags[@]}" -module-name Stage0Kernel -emit-ir "$here/Kernel/Entry.swift" \
     "$root/tarwin/tarboot/tests/FirmwareProbe/Memory.swift" -o "$d/kernel.ll"
-if [[ $entry == tarwin_start_body ]]; then
+if [[ $triple == x86_64-unknown-none-elf ]]; then
     # IR input already has per-function target attributes. Clang's C frontend
     # red-zone switch alone does not change an existing IR function.
     sed -E '/^attributes #[0-9]+ = \{/ { /noredzone/!s/ = \{/ = { noredzone/; }' "$d/kernel.ll" > "$d/no-red-zone.ll"
