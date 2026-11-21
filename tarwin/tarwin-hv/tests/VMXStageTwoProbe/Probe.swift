@@ -8,6 +8,7 @@ import TarwinSyscall
 @_silgen_name("vmx_get") private func get(_ field: UInt64) -> UInt64
 @_silgen_name("vmx_flush") private func invalidate(_ eptp: UInt64) -> UInt32
 @_silgen_name("vmx_enter") private func enterVMX(_ resume: UInt32) -> UInt32
+@_silgen_name("x64_spills") private func spills() -> UnsafeMutablePointer<UInt64>
 @_silgen_name("vmx_table_base") private func table(_ which: UInt32) -> UInt64
 @_silgen_name("npt_next") private func nextPC(_ pc: UInt64) -> UInt64
 
@@ -109,6 +110,17 @@ public func runVMXProbe(
       return false
     }
     guard run(&state, &cpu, 18), data.pointee == 0x5347, get(0x440c) == 3,
+      get(0x681c) == 0, write(0x681e, get(0x681e) + 3) else { return false }
+    let gpr = spills(), rsp = gpr + 15  // private shadow of guest RSP in the VMCS
+    rsp.pointee = 0
+    guard let ints = GuestIntegerRegisters.x64(
+      spills: .init(start: gpr + 1, count: 14), rax: gpr, rsp: rsp)
+    else { return false }
+    var check = IntegerCheck(ints, stack: 4, ram: d)
+    guard check.stage(cpu), write(0x681c, rsp.pointee), run(&state, &cpu, 18),
+      get(0x440c) == 3 else { return false }
+    rsp.pointee = get(0x681c)
+    guard check.restore(cpu, sum: 11, lhs: 6, rhs: 15), write(0x681c, rsp.pointee),
       write(0x681e, get(0x681e) + 3), retire(&ept, &ram), map(&ept, &ram, 1), run(&state, &cpu, 48),
       get(0x6400) & 7 == 2,
       data.pointee == 0x5347, retire(&ept, &ram)

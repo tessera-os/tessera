@@ -26,6 +26,16 @@ scalar MMIO fault decoding and load completion. The results are functional
 TCG executions, not timing measurements. SVM retains every pin for the whole
 test: TLB_CONTROL on VMRUN is not a synchronous unpin acknowledgement.
 
+On Arm, RV64, AMD SVM and Intel VMX, the stopped-vCPU register check saves
+the integer set, replaces every writable register (including the guest stack
+pointer), runs a guest addition and checks every returned register before
+restoring the original set. RV x0 must remain zero. Arm transfers X0–X30
+and SP_EL1, RV transfers X0–X31, and x64 uses the architectural integer
+register order. PC, flags, privilege controls, exception and vector state
+are not part of this set. The test calls the kernel component with private
+buffers, not through a user-mode syscall; it does not establish a complete
+context switch, migration, physical execution or multicore exclusion.
+
 **Boundary:** each image has a dedicated core, one ASID/VMID, private linker
 frames and a trusted instruction fixture. These are not kernel-profile builds,
 physical hardware, Linux/Android/Tarwin guest boots, or §34 suite results.

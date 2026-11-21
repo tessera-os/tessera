@@ -62,7 +62,7 @@ if [ "$profile" = kernel ] || [ "$profile" = metal ] || [ "$profile" = storage ]
 if [ "$profile" = metal ]; then set -- "$@" -D METAL_GUEST; fi
 if [ "$profile" = storage ]; then set -- "$@" -D STORAGE_GUEST "$hv/../tvmm/Sources/TVMM/ReadOnlyBlockGrant.swift"; fi
 if [ "${mode:-}" = vmx-build ]; then probe="$hv/tests/VMXStageTwoProbe/Probe.swift"; fi
-"$tc/swiftc" "$@" -module-name GuestStageTwoProbe -I "$out" -c "$hv/Sources/TarwinHV/"*.swift "$support/Memory.swift" "$support/SVM.swift" "$support/WriteTracking.swift" "$probe" -o "$out/probe.o"
+"$tc/swiftc" "$@" -module-name GuestStageTwoProbe -I "$out" -c "$hv/Sources/TarwinHV/"*.swift "$support/Memory.swift" "$support/SVM.swift" "$support/WriteTracking.swift" "$support/IntegerCheck.swift" "$probe" -o "$out/probe.o"
 "$tc/ld.lld" -T "$here/probe.ld" --gc-sections -o "$out/probe.elf" "$out/"*.o
 if [ "${mode:-}" = vmx-build ]; then
   if [ -n "${VMX_IMAGE:-}" ]; then cp "$out/probe.elf" "$VMX_IMAGE"; fi

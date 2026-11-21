@@ -146,6 +146,8 @@ print(
     mov x2, #0x5347
     str x2, [x1]
     hvc #0x42
+    add x13, x6, x30
+    hvc #0x46
     // Host revoked write; an L3 permission abort must precede the store.
     mov x2, #0xdead
     str x2, [x1]

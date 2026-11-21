@@ -67,6 +67,12 @@ public func runProbe(
     bank[32] = 0x3c5
     guard run()?.reason == .hypercall, bank[33] >> 26 == 0x16, bank[33] & 0xffff == 0x42,
       bank[0] == 4, bank[1] == dataIPA, data.pointee == 0x5347,
+      let ints = GuestIntegerRegisters.arm64(
+        x0Through30: .init(start: bank, count: 31), spEL1: bank + 36)
+    else { return 0 }
+    var check = IntegerCheck(ints, stack: 31, ram: dataIPA)
+    guard check.stage(cpu), run()?.reason == .hypercall, bank[33] & 0xffff == 0x46,
+      check.restore(cpu, sum: 13, lhs: 6, rhs: 30),
       retire(), map(&ram, dataIPA, dataPA, 1)
     else { return 0 }
     guard run()?.reason == .exception, bank[33] >> 26 == 0x24, bank[33] & 0x7f == 0x4f,

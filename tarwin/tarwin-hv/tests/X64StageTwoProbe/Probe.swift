@@ -1,6 +1,7 @@
 import TarwinSyscall
 
 @_silgen_name("npt_enter") private func enter()
+@_silgen_name("x64_spills") private func spills() -> UnsafeMutablePointer<UInt64>
 @_silgen_name("npt_next") private func nextPC(_ pc: UInt64) -> UInt64
 
 // One dedicated ASID. The VMCB, HSAVE and software bank are private,
@@ -70,6 +71,14 @@ public func runNPTProbe(
   // shootdown to GuestExtent.retire or release real backing on a queued flush.
   guard run(0x81), data.pointee == 0x5347 else { return 0 }
   put(0x578, get(0x578) + 3)  // the controlled VMMCALL encoding
+  guard let ints = GuestIntegerRegisters.x64(
+    spills: .init(start: spills(), count: 14),
+    rax: (vmcb + 0x5f8).assumingMemoryBound(to: UInt64.self),
+    rsp: (vmcb + 0x5d8).assumingMemoryBound(to: UInt64.self))
+  else { return 0 }
+  var check = IntegerCheck(ints, stack: 4, ram: dataIPA)
+  guard check.stage(cpu), run(0x81), check.restore(cpu, sum: 11, lhs: 6, rhs: 15) else { return 0 }
+  put(0x578, get(0x578) + 3)
   guard tables.detach(ipa: dataIPA, bytes: 4096),
     tables.install(ipa: dataIPA, bytes: 4096, pinnedPA: dataPA, permissions: 1),
     run(0x400), get(0x78) & 3 == 3, data.pointee == 0x5347

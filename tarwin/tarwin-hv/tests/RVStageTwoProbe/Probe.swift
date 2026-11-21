@@ -78,7 +78,13 @@ public func runRVProbe(
     for i in 0..<37 { bank[i] = 0 }
     bank[32] = textIPA
     guard map(&text, textIPA, code, 5), map(&ram, dataIPA, dataPA, 3), run(10),
-      data.pointee == 0x5347, bank[11] == dataIPA, retire(), map(&ram, dataIPA, dataPA, 1)
+      data.pointee == 0x5347, bank[11] == dataIPA,
+      let ints = GuestIntegerRegisters.rv64(x0Through31: .init(start: bank, count: 32))
+    else { return 0 }
+    bank[32] += 4
+    var check = IntegerCheck(ints, stack: 2, ram: dataIPA, zero: true)
+    guard check.stage(cpu), run(10), check.restore(cpu, sum: 13, lhs: 6, rhs: 30),
+      retire(), map(&ram, dataIPA, dataPA, 1)
     else { return 0 }
     bank[32] += 4
     guard run(23), data.pointee == 0x5347, retire() else { return 0 }

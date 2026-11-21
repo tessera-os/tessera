@@ -111,6 +111,10 @@ print(
   fail_string: .asciz "TARWIN X64 \(intel ? "EPT" : "NPT") FAIL\\n"
 
   .global npt_enter
+  .global x64_spills
+  x64_spills:
+    lea bank(%rip),%rax
+    ret
   npt_enter:
     // RAX, RIP, RSP, RFLAGS and control state travel in VMCB/HSAVE;
     // the remaining guest GPRs use this private per-vCPU spill bank.
@@ -131,6 +135,8 @@ print(
     mov $0x200000,%ebx
     mov $0x5347,%eax
     mov %rax,(%rbx)
+    \(intel ? "vmcall" : "vmmcall")
+    lea (%rsi,%r15),%r11
     \(intel ? "vmcall" : "vmmcall")
     mov $0xdead,%eax
   guest_write:
@@ -176,7 +182,7 @@ print(
   data_page: .skip 4096
   vmcb: .skip 4096
   hsave: .skip 4096
-  bank: .skip 120
+  bank: .skip 128
   test_tss: .skip 104
   .balign 16
   .skip 32768

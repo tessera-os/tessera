@@ -130,6 +130,8 @@ print(
     li a2, 0x5347
     sd a2, 0(a1)
     ecall
+    add x13, x6, x30
+    ecall
     li a2, 0xdead
     sd a2, 0(a1)
     ld a3, 0(a1)
