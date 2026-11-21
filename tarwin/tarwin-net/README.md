@@ -28,7 +28,14 @@ Mac tests include a thousand reordered/overlapping segments checked against a fi
 
 Window scaling is offered independently in each direction. SYN/SYN-ACK windows are never shifted; lack of peer support caps the receive buffer at 65535 bytes. With scaling, receive storage is bounded at 1 MiB. Supply a private per-connection `timestampOffset` to offer RFC 7323 timestamps. When negotiated, non-reset segments must carry timestamps; PAWS rejects stale values using serial arithmetic and a 24-day validity limit. Echo updates follow the last *published* cumulative ACK rather than unacknowledged out-of-order data. An echo matching the last transmission can supply an RTT sample after a retry. Data and padded options share the path and peer MSS budgets.
 
-The caller reserves the tuple, generates a private unpredictable ISS, serializes events and invokes `pump` on timers, writable notifications and input. The caller checks network grants, interface/epoch and egress pacing (including challenge-ACK rate limits) before every publication. Removal cancels the connection rather than rerouting queued bytes across a new grant. An application-level deadline or explicit abort remains necessary if a peer never lifts a zero window or never sends FIN. There is no simultaneous open, ECN, MPTCP, packetdrill conformance or native socket syscall binding here.
+If two active opens cross, each connection keeps its original SYN sequence
+and responds with SYN-ACK, without entering a listener backlog. A full TX ring
+leaves the reply pending. A matching crossed SYN-ACK, or the final ACK after
+publishing a SYN-ACK, establishes the stream. Host tests exchange data in both
+directions over IPv4 and IPv6 and cover a lost SYN-ACK. The libslirp tests
+exercise ordinary active and passive opens, not simultaneous open.
+
+The caller reserves the tuple, generates a private unpredictable ISS, serializes events and invokes `pump` on timers, writable notifications and input. The caller checks network grants, interface/epoch and egress pacing (including challenge-ACK rate limits) before every publication. Removal cancels the connection rather than rerouting queued bytes across a new grant. An application-level deadline or explicit abort remains necessary if a peer never lifts a zero window or never sends FIN. There is no SYN-data support, ECN, MPTCP, packetdrill conformance or native socket syscall binding here.
 
 A write against a zero window can retain one new byte; a write-side close can retain FIN instead. Neither occupies sequence space before its first publication. If an existing flight encounters a window shrink, probes resend only the first unacknowledged byte. The persist timer starts at the RTO and backs off independently to 60 seconds. Valid zero-window replies keep the connection alive without postponing the next probe; unanswered probes are bounded by the configured retry budget. A Mac test drops the reopening update after draining a full receive ring and verifies that the original stream arrives exactly once.
 

@@ -13,7 +13,7 @@ protocol EndpointPayload {
 }
 extension TcpAcceptedStream: EndpointPayload {
   func acceptsIo(object: UInt64) -> Bool {
-    connection.state != .idle && connection.state != .synSent
+    connection.state != .idle && connection.state != .synSent && connection.state != .synReceived
   }
 }
 typealias StreamGrant = EndpointGrant<TcpAcceptedStream>

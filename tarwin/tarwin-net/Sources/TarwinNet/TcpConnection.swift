@@ -97,7 +97,8 @@ func tcpSynOptions(_ path: TcpPath, sack: Bool, shift: UInt8?, timestamp: UInt32
 }
 
 public enum TcpState: Equatable {
-  case idle, synSent, established, closeWait, finWait1, finWait2, closing, lastAck, timeWait,
+  case idle, synSent, synReceived, established, closeWait, finWait1, finWait2, closing, lastAck,
+    timeWait,
     closed, reset, timedOut
 }
 private struct Flight {
@@ -135,6 +136,7 @@ public struct TcpConnection: ~Copyable {
     expires: UInt64 = 0
   private var rto: UInt64 = 1_000_000_000, srtt: UInt64?, rttvar: UInt64 = 0
   private var deferred: DeferredSend?, persist: PersistTimer?
+  private var crossed: TcpPeerSyn?
   private var output: ArraySlice<UInt8> = [], corkUntil: UInt64?
   private var readShut = false
   private(set) var writeShut = false
@@ -206,6 +208,7 @@ public struct TcpConnection: ~Copyable {
     output = []
     corkUntil = nil
     flight = nil
+    crossed = nil
     deferred = nil
     persist = nil
     ackPending = false
@@ -218,6 +221,9 @@ public struct TcpConnection: ~Copyable {
     return true
   }
   private func packet(_ seq: UInt32, _ flags: UInt8, _ data: [UInt8]) -> [UInt8] {
+    if flags == 18, let peer = crossed {
+      return peer.reply(path: path, sequence: seq, capacity: capacity, stamp: localTimestamp)
+    }
     if flags == 2 {
       return path.encode(
         seq, 0, 2, UInt32(min(65535, capacity)),
@@ -333,6 +339,16 @@ public struct TcpConnection: ~Copyable {
       sample(now - f.first)
     }
   }
+  private mutating func establish(_ p: TcpSegment) {
+    if let f = flight, f.retries > 0 { rto = max(rto, 3_000_000_000) }
+    una = next
+    wl1 = p.sequence
+    wl2 = p.ack
+    flight = nil
+    crossed = nil
+    state = .established
+    ackPending = p.flags & 2 != 0
+  }
   /// Process one already checksum-validated segment. ACK output is scheduled
   /// through pump; a full transmit ring never loses the obligation to ACK.
   public mutating func input(_ p: TcpSegment, at now: UInt64, admit: (TcpSegment) -> Bool) -> Bool {
@@ -340,12 +356,14 @@ public struct TcpConnection: ~Copyable {
       admit(p), stamp(now)
     else { return false }
     if state == .synSent {
-      guard p.flags & 16 != 0, p.ack == next else { return false }
+      let ack = p.flags & 16 != 0
+      guard !ack || p.ack == next else { return false }
       if p.flags & 4 != 0 {
+        guard ack else { return false }
         abort()
         return true
       }
-      guard p.flags & 0x37 == 0x12, p.payload.isEmpty, let f = flight,
+      guard p.flags & 0x3f == (ack ? 18 : 2), p.payload.isEmpty, let f = flight,
         let w = TcpReceiveWindow(
           next: p.sequence &+ 1, capacity: p.options.scale == nil ? min(capacity, 65535) : capacity,
           sackNegotiated: p.options.sackPermitted)
@@ -363,15 +381,50 @@ public struct TcpConnection: ~Copyable {
         recentAt = now
       }
       lastAckSent = p.sequence
-      acknowledged(f, p.options.timestampEcho, now)
-      if f.retries > 0 { rto = max(rto, 3_000_000_000) }
-      una = next
-      wl1 = p.sequence
-      wl2 = p.ack
-      flight = nil
-      state = .established
-      ackPending = true
+      if ack {
+        acknowledged(f, p.options.timestampEcho, now)
+        establish(p)
+      } else {
+        crossed = TcpPeerSyn(p)
+        state = .synReceived
+      }
       return true
+    }
+    if state == .synReceived {
+      guard let peer = crossed, let f = flight else { return false }
+      let seq = peer.sequence &+ 1
+      if p.flags & 4 != 0 {
+        guard p.sequence == seq, p.flags & 16 == 0 || p.ack == next else { return false }
+        abort()
+        return true
+      }
+      if p.flags & 0x3f == 2 {
+        // Keep the original deadline and receive state on a duplicate SYN.
+        return p.sequence == peer.sequence && p.payload.isEmpty
+      }
+      guard p.flags & 16 != 0, p.ack == next else { return false }
+      if let ts = recent {
+        guard let stamp = p.options.timestamp, delta(stamp, ts) >= 0 else { return false }
+      }
+      if p.flags & 2 != 0 {
+        guard p.flags & 0x3f == 18, p.sequence == peer.sequence, p.payload.isEmpty else {
+          return false
+        }
+        peerWindow = Int(p.window)  // SYN windows never use the scale factor.
+        maxPeerWindow = max(maxPeerWindow, peerWindow)
+        if recent != nil {
+          recent = p.options.timestamp
+          recentAt = now
+        }
+        establish(p)
+        return true
+      }
+      guard f.flags == 18, p.flags & 0x30 == 16, p.sequence == seq,
+        p.payload.count + (p.flags & 1 != 0 ? 1 : 0) <= min(capacity, 65535)
+      else { return false }
+      // The peer may have established on our SYN-ACK. Its final ACK can
+      // carry data and FIN; process those below in synchronized state.
+      establish(p)
     }
     let rc = rx.acknowledgement
     let offset = delta(p.sequence, rc.next)
@@ -519,6 +572,15 @@ public struct TcpConnection: ~Copyable {
     if state == .timeWait, now >= expires {
       state = .closed
       ackPending = false
+    }
+    if state == .synReceived, var f = flight, f.flags == 2 {
+      // A crossed SYN changes the response, not SND.NXT. Keep the same
+      // outstanding sequence position even if publication has to retry.
+      guard publish(f.sequence, 18, [], emit) else { return false }
+      f.flags = 18
+      f.deadline = tcpLater(now, rto)
+      flight = f
+      return true
     }
     if var timer = persist, now >= timer.deadline {
       if timer.unanswered >= retryLimit {

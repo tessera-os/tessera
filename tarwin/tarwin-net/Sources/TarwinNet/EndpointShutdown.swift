@@ -42,7 +42,7 @@ public struct EndpointShutdown<C: StreamShutdownContext>: CallProvider {
     case .found(let grant):
       let result = context.withStream(grant.header) { stream in
         switch stream.connection.state {
-        case .idle, .synSent, .closed: return error(23)
+        case .idle, .synSent, .synReceived, .closed: return error(23)
         case .reset: return error(61)
         case .timedOut: return error(25)
         default:

@@ -8,17 +8,20 @@ struct TcpPeerSyn {
     timestamp = p.options.timestamp
     sack = p.options.sackPermitted
   }
+  func reply(path: TcpPath, sequence local: UInt32, capacity: Int, stamp: UInt32?) -> [UInt8] {
+    path.encode(
+      local, sequence &+ 1, 18, UInt32(min(capacity, 65535)),
+      tcpSynOptions(
+        path, sack: sack, shift: scale == nil ? nil : tcpWindowShift(capacity),
+        timestamp: timestamp == nil ? nil : stamp, echo: timestamp ?? 0), [])
+  }
 }
 private struct HalfOpen {
   let path: TcpPath, peer: TcpPeerSyn, sequence: UInt32, offset: UInt32?, expires: UInt64
   var retryAt: UInt64, rto: UInt64 = 1_000_000_000, sent = false
   func response(_ capacity: Int, now: UInt64) -> [UInt8] {
     let ts = offset.map { $0 &+ UInt32(truncatingIfNeeded: now / 1_000_000) }
-    return path.encode(
-      sequence, peer.sequence &+ 1, 18, UInt32(min(capacity, 65535)),
-      tcpSynOptions(
-        path, sack: peer.sack, shift: peer.scale == nil ? nil : tcpWindowShift(capacity),
-        timestamp: ts, echo: peer.timestamp ?? 0), [])
+    return peer.reply(path: path, sequence: sequence, capacity: capacity, stamp: ts)
   }
 }
 public enum TcpListenInput: ~Copyable {
