@@ -1,0 +1,28 @@
+# Tarwin-only operations, not additions to the LibTessera public ABI.
+# §9–12, §16: execution
+Job.freeze
+Job.thaw
+Object.wait
+Port.enter
+Service.receive
+Service.reply
+Thread.create
+Thread.start
+# §23.3: VirtualMachine and VirtualCpu
+VirtualMachine.create
+VirtualMachine.map
+VirtualMachine.unmap
+VirtualMachine.dirtyLog
+VirtualMachine.injectInterrupt
+VirtualMachine.assignDevice
+VirtualCpu.create
+VirtualCpu.getRegisters
+VirtualCpu.setRegisters
+VirtualCpu.run
+VirtualCpu.requestExit
+# §27–28: attach returns a Probe handle; closing the last handle detaches.
+Probe.attach
+PerformanceSession.create
+PerformanceSession.start
+PerformanceSession.stop
+PerformanceSession.read
