@@ -19,6 +19,10 @@ public enum HostedTrapRewrite {
   private static let svc0: UInt32 = 0xd400_0001
   private static let nop: UInt32 = 0xd503_201f
 
+  public static func isSyscallInstruction(_ word: UInt32) -> Bool {
+    word == svc0
+  }
+
   /// Words and syscall sites come from the verified image before sealing.
   /// The task host publishes the native entry points on its read-only gate page.
   public static func rewrite(
@@ -33,7 +37,7 @@ public enum HostedTrapRewrite {
     var seen = Set<UInt64>()
     for address in listedTraps {
       guard address >= base, address < end, address & 3 == 0,
-        seen.insert(address).inserted, text[Int((address - base) / 4)] == svc0
+        seen.insert(address).inserted, isSyscallInstruction(text[Int((address - base) / 4)])
       else { throw HostedRewriteError.invalidTrapSite(address) }
     }
 
