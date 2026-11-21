@@ -47,6 +47,7 @@ func exerciseFile(
       let config = UnsafeRawBufferPointer(rebasing: bytes[configRange])
       guard let parsed = DebugBootConfig(config), parsed.slot == 0, parsed.securityVersion == 1
       else { return nil }
+      #if !TARBOOT_TEST_SIGNED
       guard
         let artifact = withUnsafeMutableBytes(
           of: &frontier,
@@ -60,6 +61,7 @@ func exerciseFile(
           bytes, path: name, target: target, addressLimit: 1 << 30, scratch: &digest)
       else { return nil }
       writeDiagnostic("TARWIN-STAGE0-UNSIGNED-NOT-LAUNCHABLE\r\n", console: console, output: output)
+      #endif
     #else
       guard
         case .inspected(let extent, let info) = inspectBootKernel(

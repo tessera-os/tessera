@@ -110,3 +110,28 @@ the exact NV public area, and checks both TPM responses. The guest reads the
 persisted value and rejects a different Name. A missing or malformed response
 is not floor zero. This does not enroll a physical TPM, authenticate a boot
 set, or advance the counter after a confirmed install.
+
+### QEMU-only signed W0 admission
+
+Use a separately enrolled disposable signing identity (see the loader's
+SignFixture and w0 package). Keep its public TQE1 off the ESP. Supply an
+archive with a signed kernel and a matching detached TSG1 from that signer:
+
+    TARBOOT_QEMU_ENROLLMENT=/trusted/qemu.pub TARBOOT_TEST_SIGNATURE=/fixtures/BOOT.SIG \
+    TARBOOT_TEST_STAGE0_ARCHIVE=/fixtures/BOOT.TIR TARBOOT_TEST_CPU=1 \
+    TARBOOT_TEST_FLOOR=1 TARBOOT_TEST_TPM=1 bash run.sh aarch64
+
+Both signatures over each of the archive and native image are checked **in
+the guest**. Only the test loader contains the public enrollment. The guest
+reads the TPM floor, EFI RTC (QEMU configured for UTC) and Arm ID registers;
+no clock, enrollment, CPU assertion or floor is loaded from the archive.
+The accepted kernel view borrows bytes in the same held archive allocation.
+Repeat with `TARBOOT_BAD_SIGNATURE=1` to flip one bit on the ESP: the run
+requires explicit refusal. This admission diagnostic does not enter the ELF.
+
+`TARBOOT_TEST_CPU=1` enables guest register snapshots. The AArch64
+diagnostic requires the 17 named features, current EL2, VHE, 16 KiB granule,
+PAN2, GIC system registers and an implemented counter frequency. On aarch64
+`TARBOOT_TEST_CPU=refusal` uses Cortex-A72 and requires a negative result.
+The x64 CPUID and RV64 SBI snapshots are *not* complete baseline checks.
+None of these tests establishes release trust or physical hardware support.

@@ -25,9 +25,16 @@ enum WriteFixture {
     func hex(_ bytes: Data) -> String {
       SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
     }
-    try """
+    var source = """
     let fixtureArchiveHash: StaticString = "\(hex(fixture))"
     let fixtureConfigHash: StaticString = "\(hex(config))"
-    """.write(toFile: args[3], atomically: true, encoding: .utf8)
+    """
+    if let file = ProcessInfo.processInfo.environment["TARBOOT_QEMU_ENROLLMENT"] {
+      let bytes = try Data(contentsOf: URL(fileURLWithPath: file))
+      guard bytes.count == 2036, bytes.prefix(4).elementsEqual("TQE1".utf8) else { throw CocoaError(.fileReadCorruptFile) }
+      source += "\n#if TARBOOT_TEST_SIGNED\nnonisolated(unsafe) var qemuEnrollment: InlineArray<2036,UInt8> = ["
+        + bytes.map(String.init).joined(separator: ",") + "]\n#endif\n"
+    }
+    try source.write(toFile: args[3], atomically: true, encoding: .utf8)
   }
 }

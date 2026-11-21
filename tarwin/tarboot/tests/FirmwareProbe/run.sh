@@ -24,9 +24,32 @@ for isa in "${@:-all}"; do
         flags=(-target "$triple" -enable-experimental-feature Embedded -no-allocations -wmo -O
                -Xfrontend -disable-stack-protector -parse-as-library -I "$d")
         if [[ $arch == x86_64 ]]; then flags+=(-D TARBOOT_EFI_PE_COFF); fi
+        extra=()
+        if [[ ${TARBOOT_TEST_CPU:-0} != 0 ]]; then
+            flags+=(-D TARBOOT_TEST_CPU -enable-experimental-feature Extern)
+            if [[ ${TARBOOT_TEST_CPU:-0} == refusal ]]; then
+                [[ $arch == aarch64 ]] || exit 2
+                flags+=(-D TARBOOT_TEST_CPU_REFUSAL)
+            fi
+            swift "$composition-stage0/ProcessorVariants.swift" "$arch" > "$d/processor.ll"
+            if [[ $arch == riscv64 ]]; then machine="$triple"; else machine="$arch-unknown-windows-msvc"; fi
+            "$bin/clang" -target "$machine" -O2 -Wno-override-module -c "$d/processor.ll" -o "$d/processor.o"
+            extra+=("$d/processor.o")
+        fi
         if [[ -n ${TARBOOT_TEST_STAGE0_ARCHIVE:-} ]]; then
             [[ $arch == aarch64 ]] || { echo 'stage-0 intake requires aarch64' >&2; exit 2; }
             flags+=(-D TARBOOT_TEST_STAGE0)
+        fi
+        modules=()
+        if [[ -n ${TARBOOT_TEST_SIGNATURE:-} ]]; then
+            [[ $arch == aarch64 && ${TARBOOT_TEST_CPU:-0} == 1 && ${TARBOOT_TEST_FLOOR:-0} == 1 && -n ${TARBOOT_TEST_STAGE0_ARCHIVE:-} && -f ${TARBOOT_QEMU_ENROLLMENT:-} ]] || exit 2
+            flags+=(-D TARBOOT_TEST_SIGNED)
+            modules+=("$root/tarwin-loader/w0/Sources/TarwinW0Verify")
+            cp "$TARBOOT_TEST_SIGNATURE" "$d/esp/BOOT.SIG"
+            if [[ ${TARBOOT_BAD_SIGNATURE:-0} == 1 ]]; then
+                flags+=(-D TARBOOT_BAD_SIGNATURE)
+                swift -e 'import Foundation; let u=URL(fileURLWithPath:CommandLine.arguments[1]); var b=try Data(contentsOf:u); guard !b.isEmpty else { exit(2) }; b[b.count-1] ^= 1; try b.write(to:u)' "$d/esp/BOOT.SIG"
+            fi
         fi
         if [[ ${TARBOOT_TEST_TPM:-0} == 1 ]]; then flags+=(-D TARBOOT_TEST_TPM); fi
         if [[ ${TARBOOT_TEST_FLOOR:-0} == 1 ]]; then
@@ -42,23 +65,23 @@ for isa in "${@:-all}"; do
         if [[ ${TARBOOT_TEST_SMP_TABLES:-0} == 1 ]]; then flags+=(-D TARBOOT_TEST_SMP_TABLES); fi
         "$out/write-fixture" "$arch" "$d/esp/BOOT.TIR" "$d/FixtureHashes.swift"
         for src in "$root"/{kcore/Sources/KCore,tarwin-boot/Sources/TarwinBoot,tarboot/Sources/Tarboot,tarwin-mm/Sources/TarwinMM,tarwin-time/Sources/TarwinTime,tarwin-sched/Sources/TarwinSched,tarwin-loader/Sources/TarwinLoader} \
-                   "$composition"/Sources/{TarbootPreflight,TarwinBootstrap}; do
+                   "$root"/tarwin-arch-aarch64/Sources/TarwinArchAarch64 "$composition"/Sources/{TarbootPreflight,TarwinBootstrap} ${modules[@]+"${modules[@]}"}; do
                 mod=$(basename "$src")
                 "$bin/swiftc" "${flags[@]}" -module-name "$mod" -emit-module -emit-module-path "$d/$mod.swiftmodule" "$src"/*.swift
         done
-        "$bin/swiftc" "${flags[@]}" -module-name Probe -emit-ir -o "$d/probe.ll" "$here/Probe.swift" "$here/Memory.swift" "$here/BootFileProbe.swift" "$here/MeasurementProbe.swift" "$d/FixtureHashes.swift"
+        "$bin/swiftc" "${flags[@]}" -module-name Probe -emit-ir -o "$d/probe.ll" "$here/Probe.swift" "$here/Memory.swift" "$here/BootFileProbe.swift" "$here/MeasurementProbe.swift" "$here/ProcessorProbe.swift" "$here/SignedArchive.swift" "$d/FixtureHashes.swift"
         if [[ $arch == riscv64 ]]; then
             edk=${EDK_BASETOOLS:?set EDK_BASETOOLS to built edk2 BaseTools for riscv64}
             "$bin/clang" -target "$triple" -mcmodel=medany -msmall-data-limit=0 -mno-relax -flto -O2 -c "$d/probe.ll" -o "$d/main.o"
             "$bin/ld.lld" -m elf64lriscv -pie --no-dynamic-linker --emit-relocs --no-relax --gc-sections -e efi_main \
-                -T "$edk/Scripts/GccBase.lds" --defsym=PECOFF_HEADER_SIZE=0x240 "$d/main.o" -o "$d/probe.elf"
+                -T "$edk/Scripts/GccBase.lds" --defsym=PECOFF_HEADER_SIZE=0x240 "$d/main.o" ${extra[@]+"${extra[@]}"} -o "$d/probe.elf"
             "$edk/Source/C/bin/GenFw" -e UEFI_APPLICATION -o "$image" "$d/probe.elf"
             code=riscv
         else
             # Use the PE target ABI for all foreign calls; the Swift frontend uses a
             # bare-metal triple because this distribution has no embedded UEFI stdlib.
             "$bin/clang" -target "$arch-unknown-windows-msvc" -mno-stack-arg-probe -flto -Wno-override-module -O2 -c "$d/probe.ll" -o "$d/main.obj"
-            "$bin/lld-link" /subsystem:efi_application /entry:efi_main /nodefaultlib /opt:ref "/out:$image" "$d/main.obj"
+            "$bin/lld-link" /subsystem:efi_application /entry:efi_main /nodefaultlib /opt:ref "/out:$image" "$d/main.obj" ${extra[@]+"${extra[@]}"}
             code=$arch
         fi
         if [[ ${TARBOOT_TEST_SECURE_FIRMWARE:-0} == 1 ]]; then

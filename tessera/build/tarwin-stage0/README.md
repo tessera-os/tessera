@@ -1,3 +1,12 @@
+# Stage-0 targets
+
+The AArch64 W0 target note includes the 17 names implied by the full
+`aarch64.base` baseline, not just optional extras. The x64 kernel body is
+built with `bash kernel-object.sh NEW-BODY.o x86_64`: its 4 KiB page test
+uses the Tarwin §6.6 physical handoff in RDI. Link with a tagged §17.2
+entry veneer, the full `x64.v3` feature closure and fixed vscale 2; an
+object alone does not prove that a guest CPU satisfies this baseline.
+
 # Stage-0 aarch64 W0 kernel image
 
 From this directory in a full Cairn checkout on a Mac:

@@ -4,6 +4,9 @@ import Tarboot
 import TarwinBoot
 import TarwinBootstrap
 import TarwinMM
+#if TARBOOT_TEST_SIGNED
+import TarwinW0Verify
+#endif
 
 typealias Output = @convention(c) (UnsafeRawPointer, UnsafePointer<UInt16>) -> UInt
 private typealias Reset = @convention(c) (UInt32, UInt, UInt, UnsafeRawPointer?) -> Void
@@ -45,12 +48,21 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
       guard var boot = FirmwareBootServices(image: image, system: system),
         let tables = boot.locateTables()
       else { return false }
+      #if TARBOOT_TEST_CPU
+        let snapshotOK=processorEvidence(console:console,output:output)
+        #if TARBOOT_TEST_CPU_REFUSAL
+        guard !snapshotOK else { return false }
+        #else
+        guard snapshotOK else { return false }
+        #endif
+      #endif
       #if TARBOOT_TEST_FLOOR
         // Public SHA-256 Name of this fixture's WRITTEN NV public area.
         // ProvisionCounter runs offline before QEMU; the ESP cannot select it.
         var name:InlineArray<32,UInt8>=[153,36,237,96,117,77,224,179,204,215,111,177,106,104,33,94,
           62,216,121,131,3,130,95,107,144,89,201,29,0,141,121,15]
-        guard withUnsafeBytes(of:&name,{boot.securityVersionFloor(index:0x0180f001,name:$0)})==1
+        let observedFloor = withUnsafeBytes(of:&name,{boot.securityVersionFloor(index:0x0180f001,name:$0)})
+        guard observedFloor == 1
         else {
           writeDiagnostic("TARWIN-NV-READ-FAILED\r\n",console:console,output:output)
           return false
@@ -86,6 +98,23 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
           &boot, system: system, console: console, output: output,
           into: UnsafeMutableRawBufferPointer(start: archiveBase, count: Int(archive.length)))
       else { return false }
+      #if TARBOOT_TEST_SIGNED
+        let immutable = UnsafeRawBufferPointer(start: archiveBase, count: size)
+        let candidate = verifyBootSet(immutable, services: &boot, system: system, floor: observedFloor, baseline: snapshotOK)
+        #if TARBOOT_BAD_SIGNATURE
+          guard candidate == nil else { return false }
+          writeDiagnostic("TARWIN-SIGNATURE-REJECTED\r\n",console:console,output:output)
+          return true
+        #else
+          guard let kernel = candidate, kernel.range.lowerBound >= 0, kernel.range.upperBound <= size,
+            kernel.bytes.baseAddress == immutable.baseAddress?.advanced(by:kernel.range.lowerBound),
+            kernel.bytes.count == kernel.range.count, kernel.securityVersion >= observedFloor! else {
+              writeDiagnostic("TARWIN-SIGNED-VERIFICATION-FAILED\r\n",console:console,output:output)
+              return false
+            }
+          writeDiagnostic("TARWIN-SIGNED-ARCHIVE-AND-KERNEL-VERIFIED\r\n",console:console,output:output)
+        #endif
+      #endif
       #if TARBOOT_TEST_RNG
         var seed = InlineArray<64, UInt8>(repeating: 0)
         guard withUnsafeMutableBytes(of: &seed, { boot.readBootSeed(into: $0) }) else {

@@ -61,11 +61,14 @@ func check() throws {
   fm.createFile(atPath: monitor, contents: nil)
   let qmp = try FileHandle(forWritingTo: URL(fileURLWithPath: monitor))
   defer { try? qmp.close() }
+  let cpuCheck=ProcessInfo.processInfo.environment["TARBOOT_TEST_CPU"]
+  let armMachine = cpuCheck == "1" ? ["-machine","virt,gic-version=3,virtualization=on","-cpu","max"]
+    : ["-machine","virt,gic-version=3","-cpu","cortex-a72"]
   let machine =
     a == "x86_64"
     ? (secure ? ["-machine","q35,smm=on","-global","driver=cfi.pflash01,property=secure,value=on"] : ["-machine", "q35"])
     : (a == "aarch64"
-      ? ["-machine", "virt,gic-version=3", "-cpu", "cortex-a72"] : ["-machine", "virt"])
+      ? armMachine : ["-machine", "virt"])
   let process = Process()
   let multiple = ProcessInfo.processInfo.environment["TARBOOT_TEST_SMP_TABLES"] == "1"
   let displayEnabled = ProcessInfo.processInfo.environment["TARBOOT_TEST_DISPLAY"] == "1"
@@ -117,7 +120,7 @@ func check() throws {
   process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
   process.arguments =
     ["qemu-system-" + a] + machine + tpmArgs + displayArgs + rngArgs + [
-      "-m", "512", "-smp", multiple ? "4" : "1", "-display", "none",
+      "-m", "512", "-smp", multiple ? "4" : "1", "-display", "none", "-rtc", "base=utc",
       "-serial", "file:" + serial, "-monitor", "none", "-qmp", "stdio", "-nic", "none",
       "-drive", "if=pflash,format=raw,readonly=on,file=" + code, "-drive",
       "if=pflash,format=raw,file=" + d + "/vars.fd",
@@ -136,6 +139,10 @@ func check() throws {
   let deadline = ContinuousClock.now.advanced(by: .seconds(60))
   var captured = false
   while process.isRunning && ContinuousClock.now < deadline {
+    if let bytes = try? Data(contentsOf: URL(fileURLWithPath:serial)),
+      bytes.range(of:Data("TARWIN-SIGNED-VERIFICATION-FAILED".utf8)) != nil {
+      throw Failure("guest rejected signed archive or native image")
+    }
     if secure, let data = try? Data(contentsOf:URL(fileURLWithPath:serial)) {
       let log = String(decoding:data,as:UTF8.self)
       if log.contains("TARWIN-SECURE-MODE-FAILED") { throw Failure("SecureBoot and SetupMode do not confirm enforcement") }
@@ -182,13 +189,28 @@ func check() throws {
   }
   let uart = try Data(contentsOf: URL(fileURLWithPath: serial))
   guard !denied else { throw Failure("no explicit unsigned boot rejection") }
+  if let cpuCheck,cpuCheck != "0" {
+    let expected = a == "aarch64" ? (cpuCheck=="refusal" ? "TARWIN-CPU-AARCH64-INSUFFICIENT" : "TARWIN-CPU-AARCH64-BASE-EL2") :
+      (a == "x86_64" ? "TARWIN-CPU-CPUID-SNAPSHOT" : "TARWIN-CPU-SBI-SNAPSHOT")
+    guard uart.range(of:Data(expected.utf8)) != nil else {throw Failure("missing CPU snapshot")}
+    print("\(a): \(expected)")
+  }
   if ProcessInfo.processInfo.environment["TARBOOT_TEST_FLOOR"] == "1" {
     guard uart.range(of:Data("TARWIN-NV-FLOOR-ONE".utf8)) != nil else {
       throw Failure("missing provisioned security version floor")
     }
     print("\(a): matched the provisioned TPM counter Name and read its persisted floor of 1")
   }
-  if ProcessInfo.processInfo.environment["TARBOOT_TEST_STAGE0_ARCHIVE"] != nil {
+  if ProcessInfo.processInfo.environment["TARBOOT_TEST_SIGNATURE"] != nil {
+    let negative = ProcessInfo.processInfo.environment["TARBOOT_BAD_SIGNATURE"] == "1"
+    let marker = negative ? "TARWIN-SIGNATURE-REJECTED" : "TARWIN-SIGNED-ARCHIVE-AND-KERNEL-VERIFIED"
+    guard uart.range(of:Data(marker.utf8)) != nil else { throw Failure("missing verifier verdict") }
+    print("\(a): \(marker)")
+    if negative {
+      guard guestShutdown(try Data(contentsOf: URL(fileURLWithPath: monitor))) else {throw Failure("missing negative-control shutdown")}
+      return
+    }
+  } else if ProcessInfo.processInfo.environment["TARBOOT_TEST_STAGE0_ARCHIVE"] != nil {
     guard uart.range(of:Data("TARWIN-STAGE0-UNSIGNED-NOT-LAUNCHABLE".utf8)) != nil
     else { throw Failure("missing explicit unsigned kernel rejection") }
     print("\(a): read the stage-0 archive; unsigned kernel passed integrity checks but was refused launch preflight")

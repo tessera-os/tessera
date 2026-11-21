@@ -7,7 +7,11 @@ func packageKernel(_ object: ObjectFile) throws -> NativeImage {
   let train = TIRVersion(year: 26, month: 11, week: 1)
   let metadata = TarwinImageMetadata(
     buildTrain: train, expiryTrain: train,
-    target: "aarch64.base", vectorMode: .fixed(vscale: 1), profile: .kernel, kind: .kernel)
+    target: "aarch64.base",
+    features: [
+      "bti", "crc", "dotprod", "fcma", "flagm", "flagm2", "fp16", "frintts", "jscvt",
+      "lse", "lse2", "pauth", "rcpc", "rcpc2", "rdm", "sb", "ssbs",
+    ], vectorMode: .fixed(vscale: 1), profile: .kernel, kind: .kernel)
   let image = try ImageLinker.link(
     [object],
     options: .init(
