@@ -37,18 +37,59 @@ private struct ImageFixture {
     put(UInt64(pos - 512), at: 152, width: 8)
     bytes.removeSubrange(pos...)
   }
-  func inspect(_ machine: UInt16, finalized: Bool = false, requiresEntry: Bool = true)
+  mutating func addSections() {
+    bytes += [UInt8](repeating: 0, count: 1536 - bytes.count)
+    put(1024, at: 40, width: 8)
+    put(64, at: 58, width: 2)
+    put(4, at: 60, width: 2)
+    put(1, at: 62, width: 2)
+    let names = Array("\0.shstrtab\0.tirload\0.other\0".utf8)
+    bytes[1344..<(1344 + names.count)] = names[...]
+    put(1, at: 1088, width: 4)
+    put(3, at: 1092, width: 4)
+    put(1344, at: 1112, width: 8)
+    put(UInt64(names.count), at: 1120, width: 8)
+    put(11, at: 1152, width: 4)
+    put(1, at: 1156, width: 4)
+    put(1440, at: 1176, width: 8)
+    put(24, at: 1184, width: 8)
+    put(20, at: 1216, width: 4)
+  }
+  func inspect(
+    _ machine: UInt16, finalized: Bool = false, requiresEntry: Bool = true,
+    records: Bool = false
+  )
     -> InspectedImage?
   {
     bytes.withUnsafeBytes {
       inspectELF(
         $0, target: machine, addressLimit: 0x10000, finalized: finalized,
-        requiresEntry: requiresEntry)
+        requiresEntry: requiresEntry, requiresLoaderRecords: records)
     }
   }
 }
 
 final class ELFTests: XCTestCase {
+  func testLoaderSectionDiscovery() {
+    var good = ImageFixture(ElfMachine.x64, finalizer: false)
+    XCTAssertNil(good.inspect(ElfMachine.x64, records: true))
+    good.addSections()
+    XCTAssertEqual(good.inspect(ElfMachine.x64, records: true)?.loaderRecords, 1440..<1464)
+    for (at, value, width): (Int, UInt64, Int) in [
+      (40, .max, 8), (58, 0, 2), (60, 0xffff, 2), (62, 4, 2),
+      (1092, 1, 4), (1112, .max, 8), (1120, .max, 8),
+      (1152, 0xffff_ffff, 4), (1156, 8, 4), (1160, 1, 8),
+      (1176, 160, 8), (1176, 256, 8), (1176, 512, 8), (1176, 1024, 8),
+      (1176, 1344, 8), (1176, .max, 8), (1184, .max, 8), (1216, 11, 4),
+    ] {
+      var bad = good
+      bad.put(value, at: at, width: width)
+      XCTAssertNil(bad.inspect(ElfMachine.x64, records: true), "offset \(at)")
+    }
+    good.bytes[1344 + 19] = 120  // .tirloadx is not .tirload
+    XCTAssertNil(good.inspect(ElfMachine.x64, records: true))
+    XCTAssertNotNil(good.inspect(ElfMachine.x64))
+  }
   func testNotesAndEntryOnSupportedMachines() throws {
     for machine in [ElfMachine.aarch64, ElfMachine.x64, ElfMachine.rv64] {
       var image = ImageFixture(machine, finalizer: false)

@@ -29,9 +29,10 @@ public struct InspectedImage {
   public let entry: UInt64
   public let notes: ImageNotes
   public let programHeaders: Range<Int>
+  public let loaderRecords: Range<Int>?
 }
 
-private struct ELFReader {
+struct ELFReader {
   let bytes: UnsafeRawBufferPointer
   // Every access below lies within a previously bounded header, segment
   // or note. ELF records need not be machine-aligned in the capture.
@@ -71,7 +72,7 @@ private struct ELFReader {
 /// verifying the returned notes and page contents against the trust store.
 public func inspectELF(
   _ bytes: UnsafeRawBufferPointer, target: UInt16, addressLimit: UInt64,
-  finalized: Bool, requiresEntry: Bool
+  finalized: Bool, requiresEntry: Bool, requiresLoaderRecords: Bool = false
 ) -> InspectedImage? {
   guard bytes.count >= 64 else { return nil }
   let r = ELFReader(bytes: bytes)
@@ -116,5 +117,14 @@ public func inspectELF(
     notes.entitlements != nil, notes.train != nil, notes.target != nil, notes.profile != nil,
     !finalized || notes.finalizer != nil
   else { return nil }
-  return InspectedImage(entry: entry, notes: notes, programHeaders: start..<end)
+  let programs = start..<end
+  switch r.findLoaderRecords(programs: programs) {
+  case .invalid: return nil
+  case .absent:
+    guard !requiresLoaderRecords else { return nil }
+    return InspectedImage(entry: entry, notes: notes, programHeaders: programs, loaderRecords: nil)
+  case .found(let extent):
+    return InspectedImage(
+      entry: entry, notes: notes, programHeaders: programs, loaderRecords: extent)
+  }
 }
