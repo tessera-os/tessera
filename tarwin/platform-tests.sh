@@ -9,3 +9,6 @@ for pkg in kcore tarboot tarwin-boot tarwin-arch-aarch64 tarwin-arch-x64 tarwin-
     "$out/$pkg"
     echo "host: $pkg passed"
 done
+if [ "${SWTPM_REPLAY:-0}" = 1 ]; then
+    python3 "$root/tarwin-boot/tests/swtpm_replay.py" "$out/tarwin-boot"
+fi

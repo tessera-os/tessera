@@ -2,6 +2,7 @@ import Tarboot
 
 @Main
 function main() -> I32 {
+    if !archiveTests() { return 9 }
     var a = SlotState { tries: 3, confirmed: false }
     var b = SlotState { tries: 0, confirmed: true }
     while a.tries != 0 {

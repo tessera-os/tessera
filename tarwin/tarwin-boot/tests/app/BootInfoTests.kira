@@ -2,6 +2,7 @@ import TarwinBoot
 
 @Main
 function main() -> I32 {
+    if !measurementTests() { return 30 }
     var info = emptyBootInfo()
     info.year = 26
     info.month = 11

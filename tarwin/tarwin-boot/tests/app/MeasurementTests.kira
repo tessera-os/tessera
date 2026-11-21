@@ -1,0 +1,90 @@
+import KCore
+import TarwinBoot
+
+struct Bytes: ByteSource, ByteBuffer, TpmPort {
+    var data: RawPtr
+    var size: U64
+    var submits: U64
+    var respond: Bool
+    function byteCount(borrow self) -> U64 { return self.size }
+    function byteAt(borrow self, offset: U64) -> U8 {
+        if offset >= self.size { runtimeTrap() }
+        return heapLoad<U8>(self.data, Int(offset))
+    }
+    function putByte(borrow mut self, offset: U64, value: U8) {
+        if offset >= self.size { runtimeTrap() }
+        heapStore<U8>(self.data, Int(offset), value)
+    }
+    function submit(borrow mut self, commandSize: U64) -> U64 {
+        if commandSize != 65 || self.byteAt(9) != 130 { runtimeTrap() }
+        self.submits += 1
+        if !self.respond { return 0 }
+        heapFillBytes(self.data, U8(0), 19)
+        self.putByte(0, 128)
+        self.putByte(1, 2)
+        self.putByte(5, 19)
+        self.putByte(16, 1)
+        return 19
+    }
+}
+
+function bytes(n: U64) -> Bytes {
+    let data = heapAllocateRaw(Int(n), 8)
+    heapFillBytes(data, U8(0), Int(n))
+    return Bytes { data: data, size: n, submits: 0, respond: true }
+}
+
+@Service("klfsvc_process_argument_count")
+function hostArgCount() -> Int
+@Service("klfsvc_io_write")
+function hostWrite(data: RawPtr, count: Int) -> Int
+
+function measurementTests() -> Bool {
+    var digest = bytes(32)
+    var event = bytes(3)
+    var command = bytes(65)
+    var logBytes = bytes(54)
+    var reply = bytes(19)
+    var i: U64 = 0
+    while i < 32 {
+        digest.putByte(i, U8(i))
+        i += 1
+    }
+    event.putByte(0, 97)
+    event.putByte(1, 98)
+    event.putByte(2, 99)
+    var ok = encodePcrExtend(8, digest, command) == 65 && stagePcrEvent(8, digest, event, logBytes, 1) == 54
+    // Optional host interop path: send exactly the packet and staged event.
+    if hostArgCount() > 0 {
+        if hostWrite(command.data, 65) != 65 || hostWrite(logBytes.data, 54) != 54 { ok = false }
+    }
+    if command.byteAt(0) != 128 || command.byteAt(9) != 130 || command.byteAt(13) != 8 || command.byteAt(64) != 31 { ok = false }
+    if logBytes.byteAt(0) != 0 || logBytes.byteAt(1) != 8 || logBytes.byteAt(46) != 31 || logBytes.byteAt(47) != 3 || logBytes.byteAt(53) != 99 { ok = false }
+    if stagePcrEvent(9, digest, event, logBytes, 2) != 0 || stagePcrEvent(7, digest, event, logBytes, 0) != 0 { ok = false }
+    command.size = 64
+    if encodePcrExtend(12, digest, command) != 0 { ok = false }
+    reply.putByte(0, 128)
+    reply.putByte(1, 2)
+    reply.putByte(5, 19)
+    reply.putByte(16, 1)
+    if !pcrExtendSucceeded(reply) { ok = false }
+    reply.putByte(8, 1)
+    if pcrExtendSucceeded(reply) { ok = false }
+    command.size = 65
+    var state = MeasurementLog { used: 1, stopped: false }
+    if !extendAndRecord(command, state, logBytes, 8, digest, event) || state.used != 54 || state.stopped { ok = false }
+    if extendAndRecord(command, state, logBytes, 9, digest, event) || !state.stopped || command.submits != 1 { ok = false }
+    var fresh = MeasurementLog { used: 0, stopped: false }
+    command.respond = false
+    if extendAndRecord(command, fresh, logBytes, 9, digest, event) || fresh.used != 0 || !fresh.stopped { ok = false }
+    command.respond = true
+    if extendAndRecord(command, fresh, logBytes, 9, digest, event) || command.submits != 2 { ok = false }
+    reply.size = 10
+    if pcrExtendSucceeded(reply) { ok = false }
+    heapFreeRaw(command.data)
+    heapFreeRaw(event.data)
+    heapFreeRaw(digest.data)
+    heapFreeRaw(logBytes.data)
+    heapFreeRaw(reply.data)
+    return ok
+}

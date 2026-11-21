@@ -1,4 +1,4 @@
 construct TarbootTests extends Package {
     let kind: PackageKind = .App
-    let dependencies: [Dependency] = [Dependency { name: "Tarboot", path: ".." }]
+    let dependencies: [Dependency] = [Dependency { name: "Tarboot", path: ".." }, Dependency { name: "KCore", path: "../../kcore" }]
 }
