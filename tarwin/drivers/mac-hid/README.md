@@ -38,11 +38,22 @@ grant Accessibility to the responsible terminal/test runner in System Settings
 → Privacy & Security → Accessibility, then relaunch it. Input Monitoring is not
 needed by this test: it receives events in its own view, not a global event tap.
 
-The installed public CoreGraphics SDK exposes no CGEvent gesture type,
-magnification field, or supported magnify/rotate/swipe constructor. This live
-test does not invent undocumented numeric event fields or substitute a directly
-constructed NSEvent for a posted gesture. Live trackpad gesture synthesis is
-therefore not exercised; the translator's gesture reports retain offline coverage.
+The live test also attempts magnify, rotate and swipe using **undocumented,
+test-only** CGEvent fields: type 29 (with type 30 as a delivery fallback), field
+110 for subtypes 8/5/16, field 113 for magnification, field 114 for rotation,
+field 115 for swipe direction, and field 132 for began/changed/ended phases
+(1/2/4). It checks delivered NSEvent types and the gesture reports' subtype,
+16.16 values, phases and timestamps through the same Mach path. No direct
+NSEvent construction substitutes for posting. These numeric fields are not
+supported public API and must not be copied into production event capture.
+The public SDK has no equivalent gesture constructor.
+
+Without field 132, magnify/rotate reached the app's event monitor but were not
+dispatched to the focused view on this Mac. Explicit phases enabled view
+delivery. The test posts a zero-valued begin, a nonzero change, and a zero-valued
+end. Fields 113 and 114 alias the same stored value on this Mac, so the test
+writes only the field for the active subtype. Missing gesture delivery fails with per-attempt
+NSEvent diagnostics instead of skipping or claiming success.
 
 ## Hosted platform registry
 
