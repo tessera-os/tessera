@@ -2,6 +2,13 @@ public enum DmaAccess: Equatable {
   case deviceRead
   case deviceWrite
   case both
+  var memoryRights: UInt64 {
+    switch self {
+    case .deviceRead: 4
+    case .deviceWrite: 8
+    case .both: 12
+    }
+  }
 }
 public struct DmaSpan: Equatable {
   public let offset: UInt64
@@ -31,6 +38,7 @@ public enum MapDma: Equatable {
 }
 public struct DomainEntry {
   let id: UInt64
+  var buffer: UInt64 = 0
   var retirement: DmaRetirement
 
   public static var vacant: Self {
@@ -52,6 +60,21 @@ public struct SlotDomain: ~Copyable {
   public internal(set) var count: Int = 0
   private let entries: UnsafeMutableBufferPointer<DomainEntry>
 
+  var hasCapacity: Bool { count < entries.count && serial < .max }
+
+  /// Under the domain lock, before installing the new buffer handle.
+  mutating func bindLastMapping(_ id: UInt64, buffer: UInt64) {
+    precondition(
+      count > 0 && entries[count - 1].id == id && entries[count - 1].buffer == 0 && buffer != 0)
+    entries[count - 1].buffer = buffer
+  }
+
+  func mapping(forBuffer buffer: UInt64) -> UInt64? {
+    guard buffer != 0 else { return nil }
+    for i in 0..<count where entries[i].buffer == buffer { return entries[i].id }
+    return nil
+  }
+
   public mutating func create(
     _ domain: borrowing PinnedIoHandle, _ memory: borrowing PinnedIoHandle, _ slot: DeviceSlotState,
     _ process: UInt64,
@@ -59,16 +82,14 @@ public struct SlotDomain: ~Copyable {
     _ mapPinned: (UInt64, UInt64, UInt64, DmaSpan) -> Bool
   ) -> MapDma {
     if !domain.permits(.dmaBufferCreate, koid) || slot.group != group || !slot.owns(process, epoch)
-      || count >= entries.count || serial == 0xffff_ffff_ffff_ffff
+      || !hasCapacity
       || !deviceAligned(span.offset, page)
       || span.bytes == 0 || !deviceAligned(span.bytes, page) || span.offset >= memorySize
       || span.bytes > memorySize - span.offset
     {
       return .refused
     }
-    var required: UInt64 = 4
-    if span.access == .deviceWrite { required = 8 }
-    if span.access == .both { required = 12 }
+    let required = span.access.memoryRights
     if memory.koid == 0 || memory.kind != .memory || memory.rights & required != required {
       return .refused
     }

@@ -214,10 +214,14 @@ public struct HardwareRegistry: ~Copyable {
     return GroupLease(node: node, group: g, process: process, epoch: slot.epoch)
   }
   public func permits(_ lease: GroupLease, process: UInt64, node: UInt64) -> Bool {
-    !frozen && process == lease.process
-      && nodes.contains(where: { $0.id == lease.node && $0.device.group == lease.group })
-      && nodes.contains(where: { $0.id == node && $0.device.group == lease.group })
-      && slots.contains(where: { $0.group == lease.group && $0.owns(process, lease.epoch) })
+    activeSlot(lease, process: process, node: node) != nil
+  }
+  func activeSlot(_ lease: GroupLease, process: UInt64, node: UInt64) -> DeviceSlotState? {
+    guard !frozen, process == lease.process,
+      nodes.contains(where: { $0.id == lease.node && $0.device.group == lease.group }),
+      nodes.contains(where: { $0.id == node && $0.device.group == lease.group })
+    else { return nil }
+    return slots.first { $0.group == lease.group && $0.owns(process, lease.epoch) }
   }
   public mutating func revoke<P: GroupTeardown & ~Copyable>(
     _ lease: GroupLease, deviceRoot: Bool, provider: inout P

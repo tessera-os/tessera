@@ -44,6 +44,22 @@ or mismatched binding cannot issue a domain handle. The call does not attach
 devices or enable bus mastering; DMA creation must still validate the live
 slot epoch on every mapping.
 
+`DmaCreateCall` takes five register words: domain handle, Memory handle,
+byte offset, byte length, and device access (1 = read, 2 = write, 3 = both).
+It rechecks the live slot lease and Memory rights under the caller and
+registry locks. Success returns a Manage-only DmaBuffer handle and the
+kernel-selected IOVA in the first and second result words. Failure returns
+neither. Sixteen rejected random samples yield ShouldWait, not identity DMA.
+
+Composition supplies the locked VM extent and pin, kernel entropy, fresh
+object storage and permission-limited IOMMU installation. Failed installation
+must queue the private mapping for recovery. On final buffer release, retain
+the original domain and payload until `retireBuffer` has detached the mapping,
+completed IOTLB and device ATC invalidation, and released the pin. Coordinate
+this with slot-wide teardown; a handle close by itself is not a DMA drain.
+The device suite exercises the register dispatcher, process table and registry
+with host pin/map callbacks, not a native VM, trap or physical device.
+
 ## Driver rings
 
 A fresh pinned, cache-coherent Memory mapping contains the A.4 ring pair. Initialize it before sharing, then open exactly one lane per direction and role. The mapping is initialized as atomic words and attaches TarwinIPC RingEndpoint directly: that shared implementation owns geometry validation, private cursors, record snapshots and the idle handshake. Use a latched Event so a notification just before sleeping is retained. Any impossible peer cursor poisons the lane. Reattach only to a **new**, quiesced epoch, never reset a live ring. Device-specific records, object grants and process mappings remain the subsystem's responsibility.

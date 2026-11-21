@@ -5,8 +5,8 @@ import TarwinSyscall
 /// A registry record, created after isolation succeeds. The registry owns live
 /// references to both headers until the last locked lookup has finished.
 public struct SlotDomainBinding {
-  fileprivate let slot: UnsafePointer<ObjectHeader>, domain: UnsafePointer<ObjectHeader>
-  fileprivate let lease: GroupLease
+  let slot: UnsafePointer<ObjectHeader>, domain: UnsafePointer<ObjectHeader>
+  let lease: GroupLease
   public init?(
     slot: UnsafePointer<ObjectHeader>, domain: UnsafePointer<ObjectHeader>,
     lease: GroupLease, backing: borrowing SlotDomain
