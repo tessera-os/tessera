@@ -40,8 +40,16 @@ final class TranslatedDisk {
   let bias: UInt64
   private(set) var retired = 0
 
-  init(_ q: QTest) throws {
-    requester = try q.requester(type: 2)
+  convenience init(_ q: QTest) throws {
+    try self.init(
+      q, requester: q.requester(type: 2),
+      queues: [
+        (0x100000, .deviceRead), (0x101000, .deviceRead), (0x102000, .both),
+        (0x110000, .deviceRead), (0x112000, .deviceWrite),
+      ])
+  }
+  init(_ q: QTest, requester: UInt16, queues: [(UInt64, DmaAccess)]) throws {
+    self.requester = requester
     for rid in [requester, try q.requester(type: 1), try q.requester(type: 1, instance: 1)] {
       _ = q.send("outl 0xcf8 \(0x8000_0004 + Int(rid) * 0x100)")
       let response = q.send("inw 0xcfc")
@@ -68,10 +76,7 @@ final class TranslatedDisk {
       }
     }
     bias = selected!
-    for (physical, access): (UInt64, DmaAccess) in [
-      (0x100000, .deviceRead), (0x101000, .deviceRead), (0x102000, .both),
-      (0x110000, .deviceRead), (0x112000, .deviceWrite),
-    ] {
+    for (physical, access) in queues {
       guard d.mapPage(iova: bias + physical, frame: physical, access: access, memory: &mem) else {
         throw Failure("Cannot map disk queue")
       }
@@ -98,16 +103,16 @@ final class TranslatedDisk {
         requesterStoppedAndDrained: true, unit: unit, memory: &tables, registers: &registers)
     else { throw Failure("Requester context not drained") }
   }
-  func mapData(frame: UInt64, access: DmaAccess) throws {
+  func mapData(page: UInt64 = 0x111000, frame: UInt64, access: DmaAccess) throws {
     registers.deadline = .now + .seconds(3)
-    guard domain.mapPage(iova: bias + 0x111000, frame: frame, access: access, memory: &tables),
+    guard domain.mapPage(iova: bias + page, frame: frame, access: access, memory: &tables),
       unit.flushTranslations(registers: &registers)
     else { throw Failure("Data-map publication failed") }
   }
-  func retireData(frame: UInt64) -> Bool {
+  func retireData(page: UInt64 = 0x111000, frame: UInt64) -> Bool {
     registers.deadline = .now + .seconds(3)
     var mapping = DmaRetirement(
-      domain: 1, pin: frame, base: bias + 0x111000, bytes: 4096, phase: .mapped)
+      domain: 1, pin: frame, base: bias + page, bytes: 4096, phase: .mapped)
     return mapping.retire(
       { _, addr, _ in self.domain.detach(iova: addr, frame: frame, memory: &self.tables) },
       { _, addr, _ in

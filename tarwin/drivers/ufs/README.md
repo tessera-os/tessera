@@ -40,5 +40,13 @@ swift run -c release --package-path ../virtio/Tools/BlockQTest BlockQTest "$(com
 The host-side driver discovers two LUs on q35, selects one and checks its geometry. The fixture
 tests ordinary and FUA writes through three DMA segments, flush, readback,
 guard bytes and four client port completions. After shutdown it compares the
-entire backing file and the untouched second disk. This does not boot Tarwin, perform IOMMU translation,
-simulate power loss or test a physical flash controller.
+entire backing file and the untouched second disk.
+
+Replace `--ufs` with `--ufs-vtd` for q35's VT-d model. Before enabling bus
+mastering, the harness binds the UFS requester from PCI enumeration to a
+private domain identified through firmware DMAR. The controller uses
+non-identity addresses for its two queue pages; data pages have directional
+permissions for one command only. All three data mappings are drained before
+the client gets its completion. The read reuses the write IOVAs with different
+frames and verifies the retired frames stay untouched. ATS is off. Neither
+mode boots Tarwin, simulates power loss or tests a physical flash controller.

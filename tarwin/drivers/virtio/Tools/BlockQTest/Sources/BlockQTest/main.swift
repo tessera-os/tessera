@@ -433,7 +433,8 @@ func run() throws {
   let listen = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--tcp-listen"
   let intx = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--intx"
   let nvme = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--nvme"
-  let ufs = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--ufs"
+  let ufs =
+    CommandLine.arguments.count == 3 && ["--ufs", "--ufs-vtd"].contains(CommandLine.arguments[2])
   guard
     CommandLine.arguments.count == 2 || translated || neighbors || streams || tcp || listen || intx
       || nvme || ufs,
@@ -451,7 +452,9 @@ func run() throws {
   try Data(repeating: 0x6c, count: 1 << 20).write(to: disk, options: .withoutOverwriting)
   defer { try? FileManager.default.removeItem(at: disk) }
   if ufs {
-    try testUFS(binary: CommandLine.arguments[1], disk: disk)
+    try testUFS(
+      binary: CommandLine.arguments[1], disk: disk,
+      translated: CommandLine.arguments[2] == "--ufs-vtd")
     return
   }
   if nvme {
@@ -527,25 +530,27 @@ func run() throws {
 do {
   try run()
   print(
-    CommandLine.arguments.last == "--ufs"
-      ? "PASS: q35 UFS discovered LUs 1 and 2, stopped on invalid selection, verified LU 2 scatter write/FUA/flush/read and unchanged LU 1"
-      : CommandLine.arguments.last == "--nvme"
-        ? "PASS: discovered NVMe namespace, split-PRP FUA write, flush, readback, shutdown and backing-byte check on q35"
-        : CommandLine.arguments.last == "--intx"
-          ? "PASS: observed disk INTx, IOAPIC masking, Device notifications and handle-authorized rearm on q35"
-          : CommandLine.arguments.last == "--tcp-receive"
-            ? "PASS: TCP active open, bidirectional stream, lost-segment retransmit and acknowledged FIN against isolated libslirp"
-            : CommandLine.arguments.last == "--tcp-listen"
-              ? "PASS: passive TCP handshake and bidirectional stream against restricted libslirp via a private Unix socket"
-              : CommandLine.arguments.last == "--byte-streams"
-                ? "PASS: bidirectional single-port virtio-console and short uncredited virtio-rng input"
-                : CommandLine.arguments.last == "--vtd-xts"
-                  ? "PASS: AES-256-XTS known-answer sector over q35 VT-d, retired before decryption"
-                  : CommandLine.arguments.last == "--vtd"
-                    ? "PASS: q35 VT-d translated disk DMA, IOTLB drain and same-IOVA remap"
-                    : CommandLine.arguments.last == "--neighbors"
-                      ? "PASS: router advertisement, SLAAC/DAD, ARP and IPv6 neighbor discovery against restricted libslirp"
-                      : "PASS: QEMU virtio-blk scatter/gather write/flush/readback, zero/discard extents and paced UDP delivery across isolated NICs"
+    CommandLine.arguments.last == "--ufs-vtd"
+      ? "PASS: q35 UFS translated command pages and directional scatter DMA; nine page drains, read remap, both backing files verified"
+      : CommandLine.arguments.last == "--ufs"
+        ? "PASS: q35 UFS discovered LUs 1 and 2, stopped on invalid selection, verified LU 2 scatter write/FUA/flush/read and unchanged LU 1"
+        : CommandLine.arguments.last == "--nvme"
+          ? "PASS: discovered NVMe namespace, split-PRP FUA write, flush, readback, shutdown and backing-byte check on q35"
+          : CommandLine.arguments.last == "--intx"
+            ? "PASS: observed disk INTx, IOAPIC masking, Device notifications and handle-authorized rearm on q35"
+            : CommandLine.arguments.last == "--tcp-receive"
+              ? "PASS: TCP active open, bidirectional stream, lost-segment retransmit and acknowledged FIN against isolated libslirp"
+              : CommandLine.arguments.last == "--tcp-listen"
+                ? "PASS: passive TCP handshake and bidirectional stream against restricted libslirp via a private Unix socket"
+                : CommandLine.arguments.last == "--byte-streams"
+                  ? "PASS: bidirectional single-port virtio-console and short uncredited virtio-rng input"
+                  : CommandLine.arguments.last == "--vtd-xts"
+                    ? "PASS: AES-256-XTS known-answer sector over q35 VT-d, retired before decryption"
+                    : CommandLine.arguments.last == "--vtd"
+                      ? "PASS: q35 VT-d translated disk DMA, IOTLB drain and same-IOVA remap"
+                      : CommandLine.arguments.last == "--neighbors"
+                        ? "PASS: router advertisement, SLAAC/DAD, ARP and IPv6 neighbor discovery against restricted libslirp"
+                        : "PASS: QEMU virtio-blk scatter/gather write/flush/readback, zero/discard extents and paced UDP delivery across isolated NICs"
   )
 } catch {
   FileHandle.standardError.write(Data("\(error)\n".utf8))
