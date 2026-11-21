@@ -999,6 +999,19 @@ VirtualCpu.run() -> Exit
 VirtualCpu.requestExit()
 ```
 
+The train-private `VirtualCpu.getRegisters` and `VirtualCpu.setRegisters` calls are synchronous. Each takes four 64-bit words in §10.2 argument order: **vCPU handle, set selector, caller buffer address, word count**. Selector 0 means integer registers; other selectors return `Unsupported`. The count is in words, not bytes. Each word is a little-endian `u64`; the address must be 8-byte aligned and the count must match the **guest** architecture exactly.
+
+| Guest | Words | Buffer order for selector 0 |
+| --- | ---: | --- |
+| aarch64 | 32 | X0 through X30, then guest SP_EL1 |
+| x64 | 16 | RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8 through R15 |
+| rv64 | 32 | X0 through X31. X0 reads as zero; a nonzero X0 on set rejects the entire write. |
+
+1. Resolve and retain the caller's live `VirtualCpu` handle before touching its buffer. Get requires **Read** on the vCPU and a **writable** caller buffer. Set requires **Manage** on the vCPU and a **readable** caller buffer. Return `InvalidHandle`, `WrongType`, or `AccessDenied` for the corresponding handle failure.
+2. Transfer only the integer words above, never PC, flags, floating-point/vector registers or privileged controls. Validate the entire user range without address wrap and use §10.3 user access checks. Bad alignment, count, range, copy fault or invalid integer value returns `InvalidArgument`. Stage set input in bounded private storage before validating and committing it; a refused set changes no registers.
+3. Take a get snapshot or commit a set only while the vCPU is stopped, under the same lock used by run; return `Busy` if running. For get, ensure the whole output range can be written before publishing the snapshot. Do not hold the vCPU state lock across a faulting user copy.
+4. Return only §10.2 status (zero on success; Kernel subsystem on error); detail and both value words are zero. This is a kernel/LibTessera wire contract, not a public RIDL declaration.
+
 `Exit` reports one of: MMIO access (address, width, direction, data, the target register, decoded by the kernel on x64), port I/O (x64), hypercall (HVC, VMCALL or VMMCALL, SBI `ecall` from VS-mode), system-register or CSR access the kernel does not handle, wait-for-interrupt with no pending interrupt, guest exception the VMM asked to see, debug event, shutdown or reset request, and canceled run.
 
 ### 23.4 In-kernel devices
