@@ -9,6 +9,42 @@ import Testing
   nonisolated(unsafe) private var failAt: UInt8 = 0
   nonisolated(unsafe) private var calls: [UInt8] = []
 
+  @Test func truncatedOrInvalidLogIsRejected() {
+    let truncated: FirmwareTCG.GetLog = { _, format, base, last, flag in
+      precondition(format == 2)
+      base.pointee = 0x4000
+      last.pointee = 0x4100
+      flag.pointee = 1
+      return 0
+    }
+    let invalid: FirmwareTCG.GetLog = { _, _, base, last, flag in
+      base.pointee = 0x8000
+      last.pointee = 0x7000
+      flag.pointee = 0
+      return 0
+    }
+    let failed: FirmwareTCG.GetLog = { _, _, _, _, _ in 1 }
+    let valid: FirmwareTCG.GetLog = { _, _, base, last, flag in
+      base.pointee = 0x4000
+      last.pointee = 0x4100
+      flag.pointee = 0
+      return 0
+    }
+    let extend: HashLogExtend = { _, _, _, _, _ in
+      preconditionFailure("readback cannot extend PCRs")
+    }
+    var table = [UInt64](repeating: 0, count: 3)
+    table.withUnsafeMutableBytes { b in
+      let tcg = FirmwareTCG(instance: b.baseAddress!, extend: extend)
+      for method in [truncated, invalid, failed] {
+        b.storeBytes(of: method, toByteOffset: 8, as: FirmwareTCG.GetLog.self)
+        #expect(tcg.logExtent() == nil)
+      }
+      b.storeBytes(of: valid, toByteOffset: 8, as: FirmwareTCG.GetLog.self)
+      #expect(tcg.logExtent()?.1 == 0x4100)
+    }
+  }
+
   @Test func measuredBootStopsOnAmbiguousStatus() {
     let capability: Capability = { _, raw in
       precondition(raw.load(as: UInt8.self) == 36)

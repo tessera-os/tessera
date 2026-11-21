@@ -81,7 +81,23 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
           return false
         }
       #endif
+      #if TARBOOT_TEST_TPM
+        guard let logPages = boot.reserveLoaderPages(64),
+          let pending = boot.captureEventLog(storage: logPages, map: raw, into: &buffer)
+        else {
+          writeDiagnostic("TARWIN-LOG-CAPTURE-FAILED\r\n", console: console, output: output)
+          return false
+        }
+      #endif
       guard case .exited(let n) = boot.finish(map: raw, into: &buffer) else { return false }
+      #if TARBOOT_TEST_TPM
+        guard
+          let logSize = pending.finish(
+            in: logPages, regions: UnsafeBufferPointer(rebasing: buffer[..<n])),
+          let logBase = UnsafeRawPointer(bitPattern: UInt(logPages.base)),
+          checkEventLog(UnsafeRawBufferPointer(start: logBase, count: logSize))
+        else { return false }
+      #endif
       guard
         let inspected = inspectFirmwareTables(
           tables, in: UnsafeBufferPointer(rebasing: buffer[..<n])),
@@ -98,6 +114,10 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
         info.uefiTable = UInt64(UInt(bitPattern: system))
         info.kernelVirtual = virtual
         info.kernelPhysical = owned.base
+        #if TARBOOT_TEST_TPM
+          info.logAddress = logPages.base
+          info.logSize = UInt64(logSize)
+        #endif
         withUnsafeBytes(of: &seed) { s in
           func word(_ i: Int) -> UInt64 { s.loadUnaligned(fromByteOffset: i * 8, as: UInt64.self) }
           info.entropy0 = word(0)
@@ -128,6 +148,7 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
             at: storage.base + 4096), received.bootSet == archive.base,
           received.bootSetSize == UInt64(size),
           received.kernelVirtual == virtual, received.kernelPhysical == owned.base,
+          received.logAddress == info.logAddress, received.logSize == info.logSize,
           received.rsdp == inspected.rsdp, received.deviceTree == inspected.deviceTree,
           received.entropy0 == info.entropy0 && received.entropy1 == info.entropy1
             && received.entropy2 == info.entropy2 && received.entropy3 == info.entropy3

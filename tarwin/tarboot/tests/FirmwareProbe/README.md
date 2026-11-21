@@ -47,7 +47,16 @@ reclamation authority from this map. The reader checks all 32-byte records and
 coverage of the actual TBIB, map and archive before returning the decoded block.
 GOP is included when requested. The image bases name a test reservation, not
 executable code. The train and slot are fixture values. The block reports a debug
-image, not Secure Boot, and does not yet contain the measured firmware event log.
+image, not Secure Boot. With TPM enabled it includes the captured event log.
+
+The measured diagnostic requests the crypto-agile log with GetEventLog, refuses
+firmware-reported truncation, and copies through the *end* of the reported last
+record. It recognizes the SHA-1, SHA-256, SHA-384, SHA-512 and SM3-256 bank
+sizes and requires SHA-256. After exit it appends new Event2 records from the
+final-events table, never duplicating the prefix from an earlier firmware reader.
+The guest checks the archive and configuration SHA-256 digests against the host
+fixture and requires the successful exit event. This is log framing and selected
+event verification, not replay or attestation of the rest of the firmware chain.
 
 With `swtpm` installed, run `TARBOOT_TEST_TPM=1 bash run.sh aarch64 x86_64`. This starts a fresh software TPM for each guest. Before exit, the probe reads SHA-256 PCRs 8 and 9, uses UEFI TCG2 to hash, log and extend the archive and a fixed canonical config, then reads both PCRs again. The host independently hashes each payload and checks the resulting PCR against the previous PCR and that hash. A partially logged/extended pair is terminal; the guest never retries or treats a skipped measurement as success. This verifies PCR values, not the complete firmware event log or signer provenance. The bundled RV64 EDK II firmware returns `EFI_NOT_FOUND` for TCG2 with a TPM device attached, so measured boot on RV64 is **not verified**.
 

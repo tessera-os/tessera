@@ -22,6 +22,7 @@ import KCore
   var blockCovered = false
   var mapCovered = false
   var archiveCovered = false
+  var logCovered = info.logAddress == 0 && info.logSize == 0
   for i in 0..<Int(info.mapCount) {
     func word(_ offset: Int) -> UInt64 {
       UInt64(littleEndian: map.loadUnaligned(fromByteOffset: i * 32 + offset, as: UInt64.self))
@@ -37,6 +38,8 @@ import KCore
       base >= start && base - start <= length && bytes <= length - (base - start)
     }
     switch UInt32(truncatingIfNeeded: flags) {
+    case 1, 4, 5:
+      if info.logSize > 0 && covers(info.logAddress,info.logSize) { logCovered = true }
     case 7: archiveCovered = archiveCovered || covers(info.bootSet, info.bootSetSize)
     case 8:
       blockCovered = blockCovered || covers(address, 4096)
@@ -44,5 +47,5 @@ import KCore
     default: break
     }
   }
-  return completeMemoryMap(cursor) && blockCovered && mapCovered && archiveCovered ? info : nil
+  return completeMemoryMap(cursor) && blockCovered && mapCovered && archiveCovered && logCovered ? info : nil
 }

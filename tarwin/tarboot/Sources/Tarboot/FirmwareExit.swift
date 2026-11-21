@@ -38,7 +38,7 @@ public enum FirmwareExit {
     private let system: UnsafeRawPointer
     private let protocolFor: HandleProtocol?
     private let locate: LocateProtocol?
-    private enum Measurement { case notAttempted, stopped, complete }
+    private enum Measurement { case notAttempted, stopped, complete, captured }
     private var measurement: Measurement = .notAttempted
     private let allocate: Allocate?
     private let release: Release?
@@ -144,6 +144,22 @@ public enum FirmwareExit {
       else { return false }
       measurement = .complete
       return true
+    }
+
+    /// Take an immutable copy of the primary TCG2 log after both extensions.
+    /// Capture failure is terminal. The caller pins these dedicated pages
+    /// through exit and publication; the final table may grow until exit.
+    @unsafe public mutating func captureEventLog(storage: borrowing LoaderPages,
+      map: UnsafeMutableRawBufferPointer, into regions: inout UnsafeMutableBufferPointer<FirmwareRegion>
+    ) -> PendingFirmwareLog? {
+      guard measurement == .complete else { return nil }
+      measurement = .stopped
+      guard let locate, let tables = tableLocations(system), let tcg = FirmwareTCG.open(locate),
+        let (base,last) = tcg.logExtent(), let (count,_) = snapshot(map:map,into:&regions),
+        let result = PendingFirmwareLog(base:base,last:last,final:tables.finalEvents,
+          storage:storage,regions:UnsafeBufferPointer(rebasing:regions[..<count])) else { return nil }
+      measurement = .captured
+      return result
     }
 
     /// Read and close a nonempty regular file on the original loaded image's

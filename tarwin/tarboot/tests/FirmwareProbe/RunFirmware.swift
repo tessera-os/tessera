@@ -124,6 +124,10 @@ func check() throws {
   let deadline = ContinuousClock.now.advanced(by: .seconds(60))
   var captured = false
   while process.isRunning && ContinuousClock.now < deadline {
+    if tpmEnabled, let log = try? Data(contentsOf:URL(fileURLWithPath:serial)),
+      log.range(of:Data("TARWIN-LOG-CAPTURE-FAILED".utf8)) != nil {
+      throw Failure("\(a): failed to capture primary firmware log")
+    }
     if rngEnabled, let log = try? Data(contentsOf: URL(fileURLWithPath: serial)) {
       for marker in ["TARWIN-RNG-UNAVAILABLE", "TARWIN-PLACEMENT-FAILED"] where log.range(of: Data(marker.utf8)) != nil {
         throw Failure("\(a): " + marker)
@@ -191,6 +195,7 @@ func check() throws {
       else { throw Failure("SHA-256 replay failed at PCR \(i)") }
     }
     print("\(a): firmware TCG2 PCR 8 and PCR 9 match independent host replay")
+    print("\(a): captured log contains both expected SHA-256 measurements and the final firmware exit event")
   }
   print(
     "\(a): ESP file read, TIRA member and ELF preflight, EFI exit, page, boot queue and shutdown passed"

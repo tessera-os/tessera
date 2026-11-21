@@ -15,6 +15,17 @@
     let instance: UnsafeRawPointer
     let extend: HashLogExtend
 
+    typealias GetLog = @convention(c) (UnsafeRawPointer, UInt32, UnsafeMutablePointer<UInt64>,
+      UnsafeMutablePointer<UInt64>, UnsafeMutablePointer<UInt8>) -> UInt
+
+    func logExtent() -> (UInt64,UInt64)? {
+      var base: UInt64 = 0, last: UInt64 = 0, truncated: UInt8 = 1
+      guard let get = instance.load(fromByteOffset:8, as:GetLog?.self),
+        get(instance,2,&base,&last,&truncated) == 0, truncated == 0,
+        base > 0, last > base else { return nil }
+      return (base,last)
+    }
+
     static func open(_ locate: LocateProtocol) -> FirmwareTCG? {
       var guid = (UInt64(0x42be_7455_607f_766c), UInt64(0x0f72_b26d_d7e4_0b93))
       var protocolPtr: UnsafeRawPointer?

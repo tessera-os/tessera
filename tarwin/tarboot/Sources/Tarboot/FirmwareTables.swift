@@ -6,6 +6,7 @@ import TarwinBoot
 public struct FirmwareTableLocations {
   public let rsdp: UInt64
   public let deviceTree: UInt64
+  let finalEvents: UInt64
 }
 
 public struct InspectedFirmwareTables {
@@ -102,6 +103,7 @@ func validXSDT<S: ByteSource>(_ bytes: S) -> Bool {
     else { return nil }
     var acpi: UInt64 = 0
     var fdt: UInt64 = 0
+    var finalEvents: UInt64 = 0
     for i in 0..<Int(count) {
       let entry = tables.advanced(by: i * 24)
       let head = entry.load(as: UInt64.self)
@@ -115,7 +117,11 @@ func validXSDT<S: ByteSource>(_ bytes: S) -> Bool {
         guard fdt == 0, addr != 0 else { return nil }
         fdt = addr
       }
+      if head == 0x4254_30e2_1e2e_d096 && tail == 0x2523_f8be_3b86_89bd {
+        guard finalEvents == 0, addr != 0 else { return nil }
+        finalEvents = addr
+      }
     }
-    return acpi == 0 && fdt == 0 ? nil : FirmwareTableLocations(rsdp: acpi, deviceTree: fdt)
+    return acpi == 0 && fdt == 0 ? nil : FirmwareTableLocations(rsdp: acpi, deviceTree: fdt, finalEvents:finalEvents)
   }
 #endif

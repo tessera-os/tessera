@@ -1,5 +1,43 @@
 #if TARBOOT_TEST_TPM
   import Tarboot
+  import TarwinBoot
+
+  func checkEventLog(_ bytes: UnsafeRawBufferPointer) -> Bool {
+    guard let fmt = EventLogFormat(bytes) else { return false }
+    var i = fmt.firstEvent
+    var stage = 0
+    while i < bytes.count {
+      guard let entry = fmt.event(bytes, at: i) else { return false }
+      func matches(_ label: StaticString) -> Bool {
+        guard entry.payload.count == label.utf8CodeUnitCount else { return false }
+        for j in 0..<entry.payload.count
+        where bytes[entry.payload.lowerBound + j] != label.utf8Start[j] { return false }
+        return true
+      }
+      if entry.type == 13 && (matches("Tarwin boot set") || matches("Tarwin boot configuration")) {
+        guard stage < 2, entry.pcr == 8 + UInt32(stage),
+          matches(stage == 0 ? "Tarwin boot set" : "Tarwin boot configuration")
+        else { return false }
+        let expected = stage == 0 ? fixtureArchiveHash : fixtureConfigHash
+        let hex: StaticString = "0123456789abcdef"
+        for j in 0..<32 {
+          let value = bytes[entry.sha256 + j]
+          guard expected.utf8Start[2 * j] == hex.utf8Start[Int(value >> 4)],
+            expected.utf8Start[2 * j + 1] == hex.utf8Start[Int(value & 15)]
+          else { return false }
+        }
+        stage += 1
+      }
+      if entry.type == 0x8000_0007 && entry.pcr == 5
+        && matches("Exit Boot Services Returned with Success")
+      {
+        guard stage == 2 else { return false }
+        stage = 3
+      }
+      i = entry.payload.upperBound
+    }
+    return stage == 3
+  }
 
   private typealias Submit =
     @convention(c) (UnsafeRawPointer, UInt32, UnsafeRawPointer, UInt32, UnsafeMutableRawPointer) ->
