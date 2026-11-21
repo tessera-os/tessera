@@ -3,6 +3,14 @@ import XCTest
 @testable import TarwinSyscall
 
 final class TarwinSyscallTests: XCTestCase {
+  func testOnlyAssignedNumbersCanDispatch() {
+    for ordinal in [0, 136, 65535, 65791, 65807, UInt64.max] {
+      XCTAssertFalse(TarwinCall.isAssigned(ordinal))
+    }
+    for ordinal in [1, 135, 65536, 65792, 65806] {
+      XCTAssertTrue(TarwinCall.isAssigned(UInt64(ordinal)))
+    }
+  }
   func testDomainContracts() {
     XCTAssertTrue(syscallOriginAllowed(124, 4, 100, 128))
     XCTAssertFalse(syscallOriginAllowed(126, 4, 100, 128))

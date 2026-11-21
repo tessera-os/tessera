@@ -174,4 +174,7 @@ public enum TarwinCall {
     public static let interruptComplete: UInt64 = 65804
     public static let mmioRangeGrantDoorbell: UInt64 = 65805
     public static let mmioRangeMap: UInt64 = 65806
+    public static func isAssigned(_ number: UInt64) -> Bool {
+        (number >= 1 && number <= 135) || (number >= 65536 && number <= 65559) || (number >= 65792 && number <= 65806)
+    }
 }

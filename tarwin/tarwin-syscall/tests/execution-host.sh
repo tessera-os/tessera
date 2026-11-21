@@ -5,16 +5,29 @@ set -eu
 tarwin=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
+native="$tarwin/../libtessera/app/Backend/Tarwin"
+compile() {
+    module=$1; target=$2; shift 2
+    dir="$out/$target"
+    mkdir -p "$dir"
+    "$EMBEDDED_SWIFTC" -enable-experimental-feature Embedded -no-allocations -wmo -O \
+        -target "$target" -parse-as-library -module-name "$module" -I "$dir" \
+        -emit-module -emit-module-path "$dir/$module.swiftmodule" -emit-object -o "$dir/$module.o" "$@"
+    echo "Embedded compile only: $module ($target)"
+}
 for pkg in object syscall sched sync ipc loader security; do
     "${SWIFT:-swift}" test --package-path "$tarwin/tarwin-$pkg" --scratch-path "${SWIFT_TEST_CACHE:-$out}/build-$pkg"
     if [ -n "${EMBEDDED_SWIFTC:-}" ]; then
         for src in "$tarwin/tarwin-$pkg"/Sources/Tarwin*; do
             for target in aarch64-none-none-elf x86_64-unknown-none-elf riscv64-none-none-eabi; do
-                "$EMBEDDED_SWIFTC" -enable-experimental-feature Embedded -no-allocations -wmo -O \
-                    -target "$target" -parse-as-library -module-name "$(basename "$src")" \
-                    -c "$src"/*.swift -o "$out/$pkg-$target.o"
-                echo "Embedded compile only: $pkg ($target)"
+                compile "$(basename "$src")" "$target" "$src"/*.swift
             done
         done
     fi
 done
+"${SWIFT:-swift}" test --package-path "$native" --scratch-path "${SWIFT_TEST_CACHE:-$out}/build-native"
+if [ -n "${EMBEDDED_SWIFTC:-}" ]; then
+    for target in aarch64-none-none-elf x86_64-unknown-none-elf riscv64-none-none-eabi; do
+        compile LibTesseraTarwin "$target" "$native"/CallNumbers.swift "$native"/NativeEntry.swift
+    done
+fi
