@@ -81,9 +81,12 @@ public struct CompletionPort: ~Copyable {
   private var free: Int, head = -1, tail = -1
   private var ringHead = -1, ringTail = -1
   private var mapping: UInt?
+  private var publishedThrough: UInt32 = 0, consumedThrough: UInt32 = 0
   private var serial: UInt64 = 0
   public private(set) var available = 0
   public private(set) var closed = false
+  /// A published packet stays readable until the mapped consumer advances.
+  public var readable: Bool { !closed && (available > 0 || publishedThrough > consumedThrough) }
 
   public init?(storage: UnsafeMutableBufferPointer<PortSlot>) {
     guard (1...65536).contains(storage.count) else { return nil }
@@ -342,11 +345,15 @@ public struct CompletionPort: ~Copyable {
   /// One bound, pinned completion ring per port. Retain a subscription's
   /// unread credit until the *consumer* acknowledges its sequence.
   public mutating func acknowledgeConsumed(
-    from ring: inout RingEndpoint, rearm: (PortOperation) -> Void
+    from ring: inout RingEndpoint, armNotification: Bool = false, rearm: (PortOperation) -> Void
   ) -> RingStep? {
-    guard ring.isPortCompletionProducer, mapping == nil || mapping == ring.completionMapping
+    guard ring.isPortCompletionProducer, mapping == nil || mapping == ring.completionMapping,
+      ring.publishedThrough == publishedThrough
     else { return .wrongSide }
-    guard let seen = ring.consumedThrough() else { return .invalidPeer }
+    guard let seen = ring.consumedThrough(armNotification: armNotification) else {
+      return .invalidPeer
+    }
+    consumedThrough = seen
     while ringHead >= 0 && slots[ringHead].published <= seen {
       let i = ringHead
       ringHead = slots[i].list
@@ -360,15 +367,18 @@ public struct CompletionPort: ~Copyable {
   public mutating func publishNext(
     to ring: inout RingEndpoint, rearm: (PortOperation) -> Void = { _ in }
   ) -> RingStep? {
-    if let error = acknowledgeConsumed(from: &ring, rearm: rearm) { return error }
+    if let error = acknowledgeConsumed(from: &ring, armNotification: head < 0, rearm: rearm) {
+      return error
+    }
     guard head >= 0 else { return nil }
     let result = ring.push(slots[head].packet.record())
     if case .transferred = result {
       mapping = ring.completionMapping
+      publishedThrough = ring.publishedThrough
       let i = unlinkHead()
       if slots[i].subscription >= 0 {
         slots[i].state = .inRing
-        slots[i].published = ring.publishedThrough
+        slots[i].published = publishedThrough
         slots[i].list = -1
         if ringTail == -1 { ringHead = i } else { slots[ringTail].list = i }
         ringTail = i

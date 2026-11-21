@@ -55,14 +55,21 @@ public struct RingEndpoint: ~Copyable {
 
   /// Even after the last producer cursor was published, consumption may
   /// advance up to it, but cannot move backwards or acknowledge future data.
-  mutating func consumedThrough() -> UInt32? {
+  mutating func consumedThrough(armNotification: Bool) -> UInt32? {
     guard isPortCompletionProducer, !failed else { return nil }
+    // Publish idle before sampling the peer. Either this read sees its
+    // advance, or its post-publication idle check observes the request.
+    if armNotification && lastPeer < local {
+      words[idle].store(1, ordering: .sequentiallyConsistent)
+    }
     let seen = words[peerCursor].load(ordering: .sequentiallyConsistent)
     guard ringConsumerValid(lastPeer, seen, local) else {
       failed = true
+      words[idle].store(0, ordering: .releasing)
       return nil
     }
     lastPeer = seen
+    if seen == local { words[idle].store(0, ordering: .releasing) }
     return seen
   }
 

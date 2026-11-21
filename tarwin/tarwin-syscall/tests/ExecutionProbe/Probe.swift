@@ -559,7 +559,7 @@ private struct ProbePort: SignalPorts {
   let entry: UnsafeMutablePointer<PortObject>
   var wakes = 0
   mutating func withPort<R>(_ id: UInt64, _ body: (inout CompletionPort) -> R) -> R? {
-    id == self.id ? body(&entry.pointee.queue) : nil
+    id == self.id ? entry.pointee.withQueue(changed: { _, _ in }, body) : nil
   }
   mutating func wake(port: UInt64, count: Int) { if port == id { wakes += count } }
 }
@@ -569,6 +569,7 @@ private struct ProbePortWork: PortNotifications {
   var wakes = 0
   var cancel: PortOperation?
   var source: UInt64 = 0
+  mutating func readinessChanged(port: UInt64, signals: UInt32) {}
   mutating func wakeOne(port: UInt64) { if port == id { wakes += 1 } }
   mutating func scheduleCancel(port: UInt64, source: UInt64, operation: PortOperation) {
     if port == id {
@@ -653,7 +654,9 @@ private func observePeer(
         let name = created.first
         defer { _ = table.pointee.close(name, retire: { _ in preconditionFailure() }) }
         guard NativePorts.post(name, packet: input, gate: &pg).code == 0,
-          pg.calls.context.work.wakes == 1, let userPacket = p.pointee.queue.take(),
+          pg.calls.context.work.wakes == 1, h.pointee.signals == 1,
+          let userPacket = p.pointee.withQueue(changed: { _, _ in }, { $0.take() }),
+          h.pointee.signals == 0,
           userPacket.key == 91, userPacket.kind == 0, userPacket.timestamp == 16
         else { return false }
         return
@@ -668,7 +671,7 @@ private func observePeer(
               NativeObject.waitAsync(
                 peer, signals: bit, mode: .edge, port: name, key: 27,
                 gate: &gate
-              ).code == 0, p.pointee.queue.available == 0
+              ).code == 0, h.pointee.signals == 0
             else { return false }
             var ports = gate.calls.context.ports
             return withUnsafeMutablePointer(to: &ports) { router in
@@ -678,7 +681,9 @@ private func observePeer(
               guard
                 ends.signal(name: source, set: bit, clear: 0, in: table.pointee, notify: notify)
                   == .ok,
-                let packet = p.pointee.queue.take(), packet.kind == 1, packet.key == 27,
+                h.pointee.signals == 1,
+                let packet = p.pointee.withQueue(changed: { _, _ in }, { $0.take() }),
+                h.pointee.signals == 0, packet.kind == 1, packet.key == 27,
                 packet.flags == 1, packet.result0 == UInt64(bit), packet.timestamp == 21,
                 router.pointee.wakes == 1,
                 ends.signal(name: source, set: 0, clear: bit, in: table.pointee, notify: notify)
@@ -690,7 +695,10 @@ private func observePeer(
                 pg.calls.context.work.source == header.pointee.koid
               else { return false }
               l.pointee.cancelled(cancelling, port: h.pointee.koid, at: 22, ports: &router.pointee)
-              guard let final = p.pointee.queue.take() else { return false }
+              guard h.pointee.signals == 1,
+                let final = p.pointee.withQueue(changed: { _, _ in }, { $0.take() }),
+                h.pointee.signals == 0
+              else { return false }
               return final.flags == 0 && final.error == 26 && final.key == 27
                 && l.pointee.count == 0
             }

@@ -7,7 +7,7 @@ import TarwinSyscall
 /// final destruction and the last reader epoch; never rebind either one.
 public struct PortObject: ~Copyable {
   public let header: UnsafePointer<ObjectHeader>
-  public var queue: CompletionPort
+  fileprivate var queue: CompletionPort
   private var published = false
   public static var initialRights: UInt64 { 0x7cf }
 
@@ -42,10 +42,27 @@ public struct PortObject: ~Copyable {
       return matches ? 0 : 2
     }
   }
+
+  /// Serialize with arming and signal delivery. Record a transition in FIFO
+  /// order; do not run an observer that locks a destination port here (the
+  /// observer may target this same port). One logical operation per body.
+  public mutating func withQueue<R>(
+    changed: (UInt64, UInt32) -> Void, _ body: (inout CompletionPort) -> R
+  ) -> R {
+    let result = body(&queue)
+    let old = header.pointee.signals
+    let new = queue.readable ? old | 1 : old & ~1
+    if new != old {
+      _ = header.pointee.updateSignals(clear: 1, set: new & 1)
+      changed(header.pointee.koid, new)
+    }
+    return result
+  }
 }
 
 /// Queue scheduler/provider work; neither callback may re-enter the port.
 public protocol PortNotifications {
+  mutating func readinessChanged(port: UInt64, signals: UInt32)
   mutating func wakeOne(port: UInt64)
   mutating func scheduleCancel(port: UInt64, source: UInt64, operation: PortOperation)
 }
@@ -121,7 +138,11 @@ public struct PortCalls<C: PortNamespace>: CallProvider {
       let id = entry.header.pointee.koid
       if post {
         packet.timestamp = now
-        guard entry.queue.post(packet) else { return portError(24) }
+        guard
+          entry.withQueue(
+            changed: { work.readinessChanged(port: $0, signals: $1) },
+            { $0.post(packet) })
+        else { return portError(24) }
         work.wakeOne(port: id)
         return CallResult()
       }

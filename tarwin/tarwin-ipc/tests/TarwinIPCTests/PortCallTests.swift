@@ -6,6 +6,8 @@ import TarwinSyscall
 import XCTest
 
 private struct Notifications: PortNotifications {
+  var changes: [UInt32] = []
+  mutating func readinessChanged(port: UInt64, signals: UInt32) { changes.append(signals) }
   var wake: [UInt64] = []
   var jobs: [(UInt64, UInt64, PortOperation)] = []
   mutating func wakeOne(port: UInt64) { wake.append(port) }
@@ -72,9 +74,45 @@ private final class PortFixture: PortNamespace {
     var calls = PortCalls(context: self)
     return words.withUnsafeBufferPointer { calls.invoke(number: number, words: $0) }
   }
+  func queue<R>(_ body: (inout CompletionPort) -> R) -> R {
+    entry.withQueue(changed: { work.readinessChanged(port: $0, signals: $1) }, body)
+  }
 }
 
 final class PortCallTests: XCTestCase {
+  func testReadableFollowsValidatedRingConsumptionNotPublication() {
+    let f = PortFixture()
+    let m = SharedMemory(stride: 64)
+    let other = SharedMemory(stride: 64)
+    defer { withExtendedLifetime((m, other)) {} }
+    var p = RingEndpoint(fresh: m.view, completion: true, producer: true)!
+    var second = RingEndpoint(fresh: m.view, completion: true, producer: true)!
+    var wrong = RingEndpoint(fresh: other.view, completion: true, producer: true)!
+    var c = RingEndpoint(fresh: m.view, completion: true, producer: false)!
+    let name = f.call(TarwinCall.portCreate, 0).first
+    XCTAssertEqual(f.call(TarwinCall.portPost, name, 0x2000).code, 0)
+    XCTAssertEqual(f.queue { $0.publishNext(to: &p) }, .transferred(notifyPeer: false))
+    XCTAssertNil(f.queue { $0.take() })
+    // The idle publisher must hear about progress even when the ring isn't full.
+    XCTAssertNil(f.queue { $0.publishNext(to: &p) })
+    XCTAssertNil(f.queue { $0.acknowledgeConsumed(from: &p) { _ in XCTFail() } })
+    XCTAssertEqual(f.queue { $0.acknowledgeConsumed(from: &second) { _ in XCTFail() } }, .wrongSide)
+    XCTAssertEqual(f.queue { $0.acknowledgeConsumed(from: &wrong) { _ in XCTFail() } }, .wrongSide)
+    XCTAssertEqual(f.headers[0].signals, 1)
+    var record = RingRecord()
+    XCTAssertEqual(c.pop(into: &record), .transferred(notifyPeer: true))
+    XCTAssertNil(f.queue { $0.acknowledgeConsumed(from: &p) { _ in XCTFail() } })
+    XCTAssertEqual(f.work.changes, [1, 0])
+    for _ in 0..<2 { XCTAssertEqual(f.call(TarwinCall.portPost, name, 0x2000).code, 0) }
+    XCTAssertEqual(f.queue { $0.publishNext(to: &p) }, .transferred(notifyPeer: false))
+    XCTAssertEqual(c.pop(into: &record), .transferred(notifyPeer: false))
+    XCTAssertNil(f.queue { $0.acknowledgeConsumed(from: &p) { _ in XCTFail() } })
+    XCTAssertEqual(f.headers[0].signals, 1)  // A second record remains in the kernel.
+    f.queue { $0.close() }
+    f.queue { $0.close() }
+    XCTAssertEqual(f.work.changes, [1, 0, 1, 0])
+    XCTAssertEqual(f.call(TarwinCall.portPost, name, 0x2000).code, 2)
+  }
   func testCheckedPublicationAndUntrustedPost() {
     let f = PortFixture()
     XCTAssertEqual(f.call(TarwinCall.portCreate, 1).code, 1)
@@ -99,12 +137,18 @@ final class PortCallTests: XCTestCase {
     for (handle, code): (UInt64, UInt32) in [(other, 2), (wrong, 3), (reduced, 4)] {
       XCTAssertEqual(f.call(TarwinCall.portPost, handle, addr).code, code)
     }
-    XCTAssertEqual(f.entry.queue.available, 0)
+    XCTAssertEqual(f.queue { $0.available }, 0)
     XCTAssertTrue(f.work.wake.isEmpty)
     for _ in 0..<2 { XCTAssertEqual(f.call(TarwinCall.portPost, name, addr).code, 0) }
     XCTAssertEqual(f.call(TarwinCall.portPost, name, addr).code, 24)
     XCTAssertEqual(f.work.wake, [f.headers[0].koid, f.headers[0].koid])
-    let packet = f.entry.queue.take()!
+    XCTAssertEqual(f.work.changes, [1])
+    XCTAssertEqual(f.headers[0].signals, 1)
+    let packet = f.queue { $0.take()! }
+    XCTAssertEqual(f.headers[0].signals, 1)
+    XCTAssertNotNil(f.queue { $0.take() })
+    XCTAssertEqual(f.headers[0].signals, 0)
+    XCTAssertEqual(f.work.changes, [1, 0])
     XCTAssertEqual(
       [packet.key, UInt64(packet.kind), UInt64(packet.flags), packet.timestamp],
       [13, 0, 0x41, 0xbeef])
@@ -119,8 +163,8 @@ final class PortCallTests: XCTestCase {
     let f = PortFixture()
     let name = f.call(TarwinCall.portCreate, 0).first
     guard case .installed(let reduced) = f.table.derive(name, rights: 0, duplicate: true),
-      let a = f.entry.queue.reserve(object: 99, key: 4, kind: 1),
-      let b = f.entry.queue.reserve(object: 100, key: 4, kind: 2)
+      let a = f.queue({ $0.reserve(object: 99, key: 4, kind: 1) }),
+      let b = f.queue({ $0.reserve(object: 100, key: 4, kind: 2) })
     else { return XCTFail() }
     XCTAssertEqual(f.call(TarwinCall.portCancel, reduced, 9).first, 0)
     let result = f.call(TarwinCall.portCancel, reduced, 4)
@@ -130,10 +174,10 @@ final class PortCallTests: XCTestCase {
     XCTAssertEqual(f.work.jobs.map { $0.0 }, [f.headers[0].koid, f.headers[0].koid])
     XCTAssertEqual(f.work.jobs.map { $0.1 }, [99, 100])
     XCTAssertEqual(f.work.jobs.map { $0.2 }, [a, b])
-    XCTAssertNil(f.entry.queue.take())
+    XCTAssertNil(f.queue { $0.take() })
     for job in f.work.jobs {
-      XCTAssertEqual(f.entry.queue.finishCancellation(job.2, at: 101), 1)
-      XCTAssertEqual(f.entry.queue.take()?.error, 26)
+      XCTAssertEqual(f.queue { $0.finishCancellation(job.2, at: 101) }, 1)
+      XCTAssertEqual(f.queue { $0.take()?.error }, 26)
     }
   }
 }
