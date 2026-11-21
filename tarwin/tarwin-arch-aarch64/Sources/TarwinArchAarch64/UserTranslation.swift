@@ -236,10 +236,11 @@ public struct ArmKernelTranslation: ~Copyable {
   public mutating func insert(virtual: UInt64, physical: UInt64, write: Bool, execute: Bool) -> Bool
   {
     guard virtual >= 0xffff_8000_0000_0000, physical & 16383 == 0, physical < 1 << 48,
-      !(write && execute), layout == .direct || write || execute
+      !(write && execute)
     else { return false }
     let ap: UInt64 = write ? 0 : 0x80
-    let fetch = UInt64(1) << (execute ? 50 : 53)  // guarded code or PXN
+    // Under PIE, PIIndex 10 is privileged R, not executable at either EL.
+    let fetch = UInt64(1) << (execute ? 50 : (!write && layout == .guarded ? 51 : 53))
     let leaf = physical | 0x703 | ap | fetch | (1 << 54)
     return root.insert(virtual: virtual, physical: physical, leaf: leaf)
   }
