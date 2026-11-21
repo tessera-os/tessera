@@ -5,6 +5,11 @@ public enum ProcessorFamily { case arm64, x64, rv64 }
 public struct FirmwareProcessor {
   public let hardwareID: UInt64
   public let acpiUID: UInt32?
+  /// Frequency only when firmware describes both time and Sstc on this hart.
+  /// M-mode must still have delegated timer access and the STIP interrupt.
+  public internal(set) var sstcFrequency: UInt32? = nil
+  public internal(set) var usesPSCI = false
+  public internal(set) var supervisorAIA = false
   public static var empty: Self { .init(hardwareID: 0, acpiUID: nil) }
 }
 
@@ -84,7 +89,7 @@ public func madtProcessors<S: ByteSource>(
   return cpus.count == 0 ? nil : cpus.count
 }
 
-private func matches<S: ByteSource>(
+func matches<S: ByteSource>(
   _ s: S, at: UInt64, length: UInt64,
   _ name: StaticString, cstring: Bool = false
 ) -> Bool {
@@ -113,6 +118,10 @@ public func treeProcessors<S: ByteSource>(
   var status = false
   var deviceType = false
   var parentStatus = false
+  var timebase: UInt32?
+  var timerExtensions: Bool?
+  var ssaia = false
+  var psci: Bool?
   while !c.ended {
     let x = nextItem(s, c: &c)
     guard !c.failed else { return nil }
@@ -132,6 +141,9 @@ public func treeProcessors<S: ByteSource>(
         status = false
         deviceType = false
         enabled = true
+        timerExtensions = nil
+        ssaia = false
+        psci = nil
       }
     }
     if x.token == 3 {
@@ -139,7 +151,12 @@ public func treeProcessors<S: ByteSource>(
         matches(s, at: x.nameAt, length: x.nameLength, name)
       }
       if c.depth == 2 {
-        if prop("#address-cells") {
+        if family == .rv64 && prop("timebase-frequency") {
+          guard timebase == nil, x.valueLength == 4 else { return nil }
+          let hz = UInt32(big(s, p: x.valueAt, n: 4))
+          guard hz != 0 else { return nil }
+          timebase = hz
+        } else if prop("#address-cells") {
           guard x.valueLength == 4, addressCells == 0 else { return nil }
           addressCells = big(s, p: x.valueAt, n: 4)
           guard addressCells == 1 || addressCells == 2 else { return nil }
@@ -153,7 +170,30 @@ public func treeProcessors<S: ByteSource>(
           parentStatus = true
         }
       } else if c.depth == 3 && cpu {
-        if prop("reg") {
+        if family == .arm64 && prop("enable-method") {
+          guard psci == nil else { return nil }
+          psci = matches(s, at: x.valueAt, length: x.valueLength, "psci", cstring: true)
+        } else if family == .rv64 && prop("riscv,isa-extensions") {
+          guard timerExtensions == nil, x.valueLength != 0 else { return nil }
+          let end = x.valueAt + x.valueLength
+          var at = x.valueAt, sstc = false, counter = false
+          while at < end {
+            let stop = nul(s, p: at, limit: end)
+            guard stop < end, stop > at else { return nil }
+            if matches(s, at: at, length: stop - at, "sstc") {
+              guard !sstc else { return nil }
+              sstc = true
+            } else if matches(s, at: at, length: stop - at, "zicntr") {
+              guard !counter else { return nil }
+              counter = true
+            } else if matches(s, at: at, length: stop - at, "ssaia") {
+              guard !ssaia else { return nil }
+              ssaia = true
+            }
+            at = stop + 1
+          }
+          timerExtensions = sstc && counter
+        } else if prop("reg") {
           guard id == nil, x.valueLength == addressCells * 4 else { return nil }
           id = big(s, p: x.valueAt, n: x.valueLength)
         } else if prop("device_type") {
@@ -186,7 +226,12 @@ public func treeProcessors<S: ByteSource>(
     if x.token == 2 {
       if c.depth == 2 && cpu {
         guard let id, deviceType else { return nil }
-        if enabled && !cpus.append(id, uid: nil) { return nil }
+        if enabled {
+          guard cpus.append(id, uid: nil) else { return nil }
+          if timerExtensions == true { cpus.storage[cpus.count - 1].sstcFrequency = timebase }
+          cpus.storage[cpus.count - 1].usesPSCI = psci == true
+          cpus.storage[cpus.count - 1].supervisorAIA = ssaia
+        }
         cpu = false
       } else if c.depth == 1 {
         parent = false

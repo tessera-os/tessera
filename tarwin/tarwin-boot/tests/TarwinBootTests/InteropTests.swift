@@ -32,6 +32,39 @@ private func command(_ args: [String]) -> Process {
 }
 
 @Test(.enabled(if: ProcessInfo.processInfo.environment["QEMU_TREES"] == "1"))
+func rvSupervisorRTCRequiresTheEntireFirmwareRoute() throws {
+  let dir = try temporaryDirectory()
+  defer { try? FileManager.default.removeItem(at: dir) }
+  let dtb = dir.appendingPathComponent("aia.dtb")
+  func run(_ argv: [String]) throws {
+    let p = command(argv)
+    try p.run()
+    p.waitUntilExit()
+    try #require(p.terminationStatus == 0)
+  }
+  try run(["qemu-system-riscv64", "-machine", "virt,aia=aplic-imsic,dumpdtb=" + dtb.path,
+    "-m", "128M", "-smp", "1", "-nodefaults", "-display", "none"])
+  let original = try Data(contentsOf: dtb)
+  #expect(treeSupportsVirtSupervisorRTC(HostBytes(Array(original))))
+  let rtc = "/soc/rtc@101000", aplic = "/soc/interrupt-controller@d000000"
+  let imsic = "/soc/interrupt-controller@28000000"
+  for args in [
+    ["-t", "x", dtb.path, rtc, "interrupts", "b", "1"],
+    ["-t", "x", dtb.path, rtc, "interrupts-extended", "1", "b", "4"],
+    ["-t", "s", dtb.path, imsic, "status", "disabled"],
+    ["-t", "x", dtb.path, imsic, "interrupts-extended", "2", "b"],
+    ["-t", "x", dtb.path, aplic, "msi-parent", "0"],
+    ["-t", "x", dtb.path, imsic, "reg", "0", "24000000", "0", "1000"],
+    ["-t", "x", dtb.path, "/soc", "ranges", "0", "0", "0", "1000", "0", "1000"],
+  ] {
+    try original.write(to: dtb)
+    try run(["fdtput"] + args)
+    let changed = try Data(contentsOf: dtb)
+    #expect(treeSupportsVirtSupervisorRTC(HostBytes(Array(changed))) == false)
+  }
+}
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["QEMU_TREES"] == "1"))
 func qemuFirmwareMemoryBanks() throws {
   let dir = try temporaryDirectory()
   defer { try? FileManager.default.removeItem(at: dir) }
@@ -56,6 +89,13 @@ func qemuFirmwareMemoryBanks() throws {
       treeProcessors(bytes, family: isa == "aarch64" ? .arm64 : .rv64, into: $0)
     }
     #expect(enumerated == 4 && Set(ids.map(\.hardwareID)) == Set([0, 1, 2, 3]))
+    #expect(treeSupportsEL2PSCI(bytes) == (isa == "aarch64"))
+    #expect(ids.allSatisfy { $0.usesPSCI == (isa == "aarch64") })
+    if isa == "riscv64" {
+      #expect(ids.allSatisfy { $0.sstcFrequency == 10_000_000 })
+    } else {
+      #expect(ids.allSatisfy { $0.sstcFrequency == nil })
+    }
   }
   for (child, valid) in [
     ("carve@40010000 {reg=<0x40010000 0x10000>; no-map;};", true),

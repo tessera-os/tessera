@@ -8,6 +8,7 @@ public struct X64TargetFeatures {
   public let vectorCarrylessMultiply: Bool
   public let invariantCounter: Bool
   public let deadlineTimer: Bool
+  public let hasX2APICAndTSC: Bool
 
   public init?(_ v: UnsafeBufferPointer<UInt64>) {
     guard v.count >= 28, v[0] >= 13, v[4] >= 0x80000007 else { return nil }
@@ -17,6 +18,7 @@ public struct X64TargetFeatures {
     vectorCarrylessMultiply = has(14, 1 << 10)
     invariantCounter = has(23, 1 << 8)
     deadlineTimer = has(10, 1 << 24)
+    hasX2APICAndTSC = has(10, 1 << 21) && has(11, (1 << 4) | (1 << 5) | (1 << 9))
     // CPUID.1:ECX (SSE3,PCLMUL,SSSE3,FMA,CX16,SSE4.1/2,MOVBE,POPCNT,
     // AES,XSAVE,AVX,F16C,RDRAND). 7:EBX (BMI1/2,AVX2,ERMS,RDSEED).
     namedBaseline = has(10, 0x76d8_3203) && has(13, 0x0004_0328)

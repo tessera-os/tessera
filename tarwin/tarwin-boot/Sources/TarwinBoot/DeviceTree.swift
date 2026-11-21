@@ -144,6 +144,25 @@ public protocol MemoryBankSink {
   mutating func reserve(_ base: UInt64, length: UInt64) -> Bool
 }
 
+/// Cursor immediately following the node's BEGIN_NODE token in an already
+/// validated immutable tree. Reject duplicate or malformed direct properties.
+func treeProperty<S: ByteSource>(_ tree: S, node: FdtCursor?, _ key: StaticString,
+  optional: Bool = false, _ valid: (FdtItem) -> Bool) -> Bool
+{
+  guard var c = node else { return false }
+  var seen = false
+  while true {
+    let x = nextItem(tree, c: &c)
+    guard !c.failed else { return false }
+    if x.token == 4 { continue }
+    guard x.token == 3 else { return seen || optional }
+    if matches(tree, at: x.nameAt, length: x.nameLength, key) {
+      guard !seen, valid(x) else { return false }
+      seen = true
+    }
+  }
+}
+
 func field<S: ByteSource>(_ s: S, p: UInt64, n: UInt64, size: UInt64, head: UInt64, tail: UInt64)
   -> Bool
 {
