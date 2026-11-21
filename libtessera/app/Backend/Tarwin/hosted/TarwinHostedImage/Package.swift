@@ -10,11 +10,13 @@ let package = Package(
     .package(path: "../../../../../../tarwin/tarwin-arch-hosted"),
     .package(path: "../../../../../../tarwin/tarwin-syscall"),
     .package(name: "HostedGate", path: "../../../../../../tarwin/tarwin-syscall/hosted"),
+    .package(path: "../../../../../../tarwin/tarwin-syscall/hosted/trap-decode"),
     .package(path: "../../../../../../tessera/build/tarwin-hosted"),
   ],
   targets: [
     .target(name: "TarwinHostedImage", dependencies: [
       .product(name: "TarwinTaskProtocol", package: "tarwin-task"),
+      .product(name: "TarwinTrapDecode", package: "trap-decode"),
     ]),
     .testTarget(name: "TarwinHostedImageTests", dependencies: [
       "TarwinHostedImage",

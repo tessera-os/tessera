@@ -1,4 +1,5 @@
 import TarwinTaskProtocol
+import TarwinTrapDecode
 
 public enum HostedRewriteError: Error, Equatable {
   case invalidLayout
@@ -16,11 +17,10 @@ public struct HostedRewrittenText {
 public enum HostedTrapRewrite {
   public static let forbiddenTrap: UInt32 = 0xd42f_eae0
   public static let gateTrap: UInt32 = 0xd42f_eac0
-  private static let svc0: UInt32 = 0xd400_0001
   private static let nop: UInt32 = 0xd503_201f
 
   public static func isSyscallInstruction(_ word: UInt32) -> Bool {
-    word == svc0
+    AArch64TrapInstruction.isSyscallInstruction(word)
   }
 
   /// Words and syscall sites come from the verified image before sealing.
@@ -47,7 +47,8 @@ public enum HostedTrapRewrite {
     var gateSites: [UInt64: UInt64] = [:]
     for (index, word) in text.enumerated() {
       let address = base + UInt64(index) * 4
-      if word & 0xffe0_001f == svc0 {
+      switch AArch64TrapInstruction.decode(word) {
+      case .svc:
         guard sites.contains(address) else {
           rewritten[index] = forbiddenTrap
           fatal.append(address)
@@ -60,8 +61,7 @@ public enum HostedTrapRewrite {
         veneers.append(gateTrap)
         veneers += call
         veneers.append(try branch(from: veneer + UInt64(1 + call.count) * 4, to: address + 4))
-      } else if word & 0xffff_ffe0 == 0xd53b_d040 {
-        let destination = word & 31
+      case .readThreadPointer(let destination):
         if destination == 31 {
           rewritten[index] = nop
           continue
@@ -80,6 +80,8 @@ public enum HostedTrapRewrite {
         veneers += call
         veneers += [move, restore,
           try branch(from: veneer + UInt64(3 + call.count) * 4, to: address + 4)]
+      case .other:
+        break
       }
     }
     return HostedRewrittenText(

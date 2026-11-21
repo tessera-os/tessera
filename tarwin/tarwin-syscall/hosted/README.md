@@ -1,5 +1,8 @@
 # Hosted gate protocol, version 1
 
+[`trap-decode/`](trap-decode/) provides `TarwinTrapDecode`, the dependency-free
+AArch64 decoder shared by the hosted image signer and loader rewriter.
+
 The gate request is a simple Mach message (`GateRequest.messageID`). Its
 destination is the task's gate send right (`COPY_SEND`). It carries a
 `MAKE_SEND_ONCE` reply right in the header. The gate sends and receives with
