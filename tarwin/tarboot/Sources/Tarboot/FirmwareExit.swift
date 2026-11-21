@@ -35,6 +35,7 @@ public enum FirmwareExit {
       ) -> UInt
     private typealias Exit = @convention(c) (UnsafeRawPointer, UInt) -> UInt
     private let image: UnsafeRawPointer
+    private let protocolFor: HandleProtocol?
     private let allocate: Allocate?
     private let release: Release?
     private let getMap: GetMap
@@ -51,6 +52,7 @@ public enum FirmwareExit {
         let exit = boot.load(fromByteOffset: 232, as: Exit?.self)
       else { return nil }
       self.image = image
+      self.protocolFor = boot.load(fromByteOffset: 152, as: HandleProtocol?.self)
       self.allocate = boot.load(fromByteOffset: 40, as: Allocate?.self)
       self.release = boot.load(fromByteOffset: 48, as: Release?.self)
       self.getMap = map
@@ -65,6 +67,17 @@ public enum FirmwareExit {
         self.base = base
         self.count = count
       }
+    }
+
+    /// Read and close a nonempty regular file on the original loaded image's
+    /// volume before the first exit attempt. Discard all output on failure.
+    /// The caller owns both buffers and must keep a successful snapshot immutable.
+    @unsafe public func readBootFile(
+      path: UnsafeBufferPointer<UInt16>,
+      into output: UnsafeMutableRawBufferPointer
+    ) -> Int? {
+      guard let protocolFor else { return nil }
+      return readImageFile(image, protocolFor: protocolFor, path: path, into: output)
     }
 
     /// Reserve a private EfiLoaderData extent while boot services are live.

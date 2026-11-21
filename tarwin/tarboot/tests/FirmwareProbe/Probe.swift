@@ -39,6 +39,7 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
         let pageSize: UInt64 = 4096
       #endif
       guard let boot = FirmwareBootServices(image: image, system: system),
+        exerciseFile(boot),
         let owned = boot.reserveLoaderPages(UInt(2 * 64 * pageSize / 4096 - 1)),
         case .exited(let n) = boot.finish(map: raw, into: &buffer)
       else { return false }

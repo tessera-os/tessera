@@ -7,6 +7,8 @@ bin=$(dirname "${EMBEDDED_SWIFTC:?set EMBEDDED_SWIFTC to the swift.org toolchain
 fw=${QEMU_FIRMWARE:?set QEMU_FIRMWARE to the QEMU firmware data directory}
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
+composition="$root/../tessera/build/tarwin"
+swiftc "$composition/Tests/TarbootPreflightTests/Fixture.swift" "$here/WriteFixture.swift" -o "$out/write-fixture"
 for isa in "${@:-all}"; do
     if [[ $isa == all ]]; then targets=(aarch64 x86_64 riscv64); else targets=("$isa"); fi
     for arch in "${targets[@]}"; do
@@ -22,13 +24,13 @@ for isa in "${@:-all}"; do
         flags=(-target "$triple" -enable-experimental-feature Embedded -no-allocations -wmo -O
                -Xfrontend -disable-stack-protector -parse-as-library -I "$d")
         if [[ $arch == x86_64 ]]; then flags+=(-D TARBOOT_EFI_PE_COFF); fi
-        # Only the boot CPU composition participates in this unsigned firmware check.
-        for src in "$root"/{kcore,tarboot,tarwin-mm,tarwin-time,tarwin-sched}/Sources/* \
-                   "$root/../tessera/build/tarwin/Sources/TarwinBootstrap"; do
+        "$out/write-fixture" "$arch" "$d/esp/BOOT.TIR"
+        for src in "$root"/{kcore,tarboot,tarwin-mm,tarwin-time,tarwin-sched,tarwin-loader}/Sources/* \
+                   "$composition"/Sources/*; do
                 mod=$(basename "$src")
                 "$bin/swiftc" "${flags[@]}" -module-name "$mod" -emit-module -emit-module-path "$d/$mod.swiftmodule" "$src"/*.swift
         done
-        "$bin/swiftc" "${flags[@]}" -module-name Probe -emit-ir -o "$d/probe.ll" "$here/Probe.swift" "$here/Memory.swift"
+        "$bin/swiftc" "${flags[@]}" -module-name Probe -emit-ir -o "$d/probe.ll" "$here/Probe.swift" "$here/Memory.swift" "$here/BootFileProbe.swift"
         if [[ $arch == riscv64 ]]; then
             edk=${EDK_BASETOOLS:?set EDK_BASETOOLS to built edk2 BaseTools for riscv64}
             "$bin/clang" -target "$triple" -mcmodel=medany -msmall-data-limit=0 -mno-relax -flto -O2 -c "$d/probe.ll" -o "$d/main.o"
