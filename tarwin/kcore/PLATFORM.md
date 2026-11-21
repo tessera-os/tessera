@@ -22,6 +22,7 @@ Set `SWTPM_REPLAY=1` (requires swtpm) and `QEMU_TREES=1` (requires QEMU aarch64/
 3. `makeArena` consumes eligibility bits only from usable RAM after all permanent and temporary reservations. `takePages` returns physical ownership, not initialized user memory. No page is publishable without initialization and the gated page-table writer.
 4. Descriptors have no privileged side effect. Only the authorized writer may install them and must perform architecture-specific synchronization and invalidation. Unsupported translation formats fail closed.
 5. TRFS implements the `FilePager` lease on its unified file-cache frame. Pin through installation; release only after teardown and invalidation. These leases do not authorize executable mappings. Anonymous reclaim stores raw LZ4 blocks including packed allocation tags; do not evict on failure or unless storing the block saves memory. Restore into an unpublished frame and discard partial output on any error.
+6. [Boot kernel preflight](../../tessera/build/tarwin/Sources/TarbootPreflight/KernelMember.swift) validates the TIRA directory, verifies the selected raw member’s BLAKE3-256 digest, and passes just that member to the loader’s ELF64 preflight. ELF note offsets are member-relative and valid only on the same pinned bytes. Neither the digest nor a signature note authenticates the archive; boot-set certificate verification, note policy, anti-rollback and verified mapping remain mandatory. Zstd members are reported as compressed, not inspected or accepted.
 
 ### Firmware and TPM interop
 

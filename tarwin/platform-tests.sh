@@ -13,7 +13,7 @@ if [ -n "${EMBEDDED_SWIFTC:-}" ]; then
     for target in aarch64-none-none-elf x86_64-unknown-none-elf riscv64-none-none-eabi; do
         dest="$out/$target"
         mkdir "$dest"
-        for pkg in kcore tarboot tarwin-boot tarwin-arch-aarch64 tarwin-arch-x64 tarwin-arch-rv64 tarwin-mm tarwin-time; do
+        for pkg in kcore tarboot tarwin-boot tarwin-arch-aarch64 tarwin-arch-x64 tarwin-arch-rv64 tarwin-mm tarwin-time tarwin-sched tarwin-loader ../tessera/build/tarwin; do
             for src in "$root/$pkg"/Sources/*; do
                 module=$(basename "$src")
                 "$EMBEDDED_SWIFTC" -target "$target" -enable-experimental-feature Embedded \
@@ -22,6 +22,6 @@ if [ -n "${EMBEDDED_SWIFTC:-}" ]; then
                     -emit-object -o "$dest/$module.o" "$src"/*.swift
             done
         done
-        echo "$target: built eight non-allocating Embedded Swift modules"
+        echo "$target: built platform modules, bootstrap composition and boot member preflight without allocations"
     done
 fi

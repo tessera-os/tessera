@@ -22,11 +22,11 @@ for isa in "${@:-all}"; do
         flags=(-target "$triple" -enable-experimental-feature Embedded -no-allocations -wmo -O
                -Xfrontend -disable-stack-protector -parse-as-library -I "$d")
         if [[ $arch == x86_64 ]]; then flags+=(-D TARBOOT_EFI_PE_COFF); fi
-        for pkg in kcore tarboot tarwin-mm tarwin-time tarwin-sched ../tessera/build/tarwin; do
-            for src in "$root/$pkg"/Sources/*; do
+        # Only the boot CPU composition participates in this unsigned firmware check.
+        for src in "$root"/{kcore,tarboot,tarwin-mm,tarwin-time,tarwin-sched}/Sources/* \
+                   "$root/../tessera/build/tarwin/Sources/TarwinBootstrap"; do
                 mod=$(basename "$src")
                 "$bin/swiftc" "${flags[@]}" -module-name "$mod" -emit-module -emit-module-path "$d/$mod.swiftmodule" "$src"/*.swift
-            done
         done
         "$bin/swiftc" "${flags[@]}" -module-name Probe -emit-ir -o "$d/probe.ll" "$here/Probe.swift" "$here/Memory.swift"
         if [[ $arch == riscv64 ]]; then
