@@ -57,6 +57,7 @@ public enum KernelFactory {
     func deliver(_ event: Data)
     func resize(_ output: Data)
     func status(_ reply: @escaping (String) -> Void)
+    func deviceFrame(_ dictionary: [String: Data])
 }
 @objc public protocol TesseraHost {
     func bootStage(_ name: String)
@@ -67,6 +68,7 @@ public enum KernelFactory {
     func present(_ surface: IOSurface, output: Int, frame: UInt64)
     func audio(_ payload: Data)
     func power(_ payload: Data)
+    func deviceFrame(_ dictionary: [String: Data])
 }
 public enum XPCInterfaces {
     public static func host() -> NSXPCInterface {

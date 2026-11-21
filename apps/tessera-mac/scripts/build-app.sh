@@ -11,12 +11,15 @@ if [[ -n "$APP" && "$APP" != /* ]]; then APP="$PWD/$APP"; fi
 cd "$(dirname "$0")/.."
 swift build -c release --arch arm64
 BIN="$(swift build -c release --arch arm64 --show-bin-path)"
+TASK_PACKAGE="$PWD/../../tarwin/tarwin-task"
+swift build --package-path "$TASK_PACKAGE" -c release --arch arm64 --product tarwin-task
+TASK_BIN="$(swift build --package-path "$TASK_PACKAGE" -c release --arch arm64 --show-bin-path)"
 APP="${APP:-$PWD/build/Tessera.app}"
 SERVICE="$APP/Contents/XPCServices/com.tessera.tarwind.xpc"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$SERVICE/Contents/MacOS"
 cp "$BIN/Tessera" "$APP/Contents/MacOS/Tessera"
 cp "$BIN/tarwind" "$SERVICE/Contents/MacOS/tarwind"
-cp "$BIN/tarwin-task" "$SERVICE/Contents/MacOS/tarwin-task"
+cp "$TASK_BIN/tarwin-task" "$SERVICE/Contents/MacOS/tarwin-task"
 printf 'TESSERA SYSTEM IMAGE PLACEHOLDER\n' > "$APP/Contents/Resources/system.timg"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

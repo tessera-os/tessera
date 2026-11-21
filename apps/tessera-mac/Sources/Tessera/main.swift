@@ -6,6 +6,7 @@ final class App: NSObject, NSApplicationDelegate, TesseraHost, NSWindowDelegate 
     let headless = CommandLine.arguments.contains("--headless")
     let exitReady = CommandLine.arguments.contains("--exit-after-ready")
     var connection: NSXPCConnection?
+    var deviceHosts: AppDevices?
     var config: KernelConfig!
     var windows: [Int: NSWindow] = [:]
     var views: [Int: DisplayView] = [:]
@@ -27,31 +28,36 @@ final class App: NSObject, NSApplicationDelegate, TesseraHost, NSWindowDelegate 
             connect()
         } catch { print("ERROR \(error)"); fflush(stdout); exit(1) }
     }
-    func connect() {
+    @MainActor func connect() {
         let connection = NSXPCConnection(serviceName: "com.tessera.tarwind")
         connection.remoteObjectInterface = NSXPCInterface(with: TarwindControl.self)
         connection.exportedInterface = XPCInterfaces.host(); connection.exportedObject = self
         connection.interruptionHandler = { [weak self] in DispatchQueue.main.async { self?.interrupted() } }
         self.connection = connection; connection.resume(); start()
     }
-    func interrupted() {
+    @MainActor func interrupted() {
         guard !quitting else { return }
+        deviceHosts?.close(); deviceHosts = nil
         let record = (try? String(contentsOfFile: config.panicRecordPath, encoding: .utf8)) ?? "Kernel connection interrupted"
         console("PANIC: \(record)")
         for view in views.values { view.console.isHidden = false }
         connection?.interruptionHandler = nil; connection?.invalidate(); connection = nil
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.connect() }
     }
-    @objc func start() {
+    @MainActor @objc func start() {
+        deviceHosts?.close(); deviceHosts = nil
         didFrame = false; isReady = false
         views.values.forEach { $0.console.isHidden = false }
         if let data = try? JSONEncoder().encode(config) { remote?.start(data) }
     }
-    @objc func stop() { remote?.shutdown(); console("Kernel shut down"); views.values.forEach { $0.console.isHidden = false } }
+    @MainActor @objc func stop() { deviceHosts?.close(); deviceHosts = nil; remote?.shutdown(); console("Kernel shut down"); views.values.forEach { $0.console.isHidden = false } }
     @objc func restart() { views.values.forEach { $0.console.isHidden = false }; remote?.restart() }
     @objc func recovery() { remote?.recovery() }
     func bootStage(_ name: String) { console("Stage: \(name)") }
     func ready() { DispatchQueue.main.async {
+        self.deviceHosts?.close()
+        self.deviceHosts = AppDevices { [weak self] data in self?.remote?.deviceFrame(["tw.frame": data]) }
+        self.deviceHosts?.hid.setFocused(self.windows.values.contains { $0.isKeyWindow })
         self.isReady = true; print("TESSERA READY"); fflush(stdout)
         self.views.values.forEach { $0.console.isHidden = true }; self.finishIfNeeded()
     } }
@@ -65,6 +71,7 @@ final class App: NSObject, NSApplicationDelegate, TesseraHost, NSWindowDelegate 
         guard !self.headless, let output = try? JSONDecoder().decode(DisplayOutput.self, from: data) else { return }
         if self.windows[output.id] != nil { return }
         let view = DisplayView(output: output)
+        view.rawEvent = { [weak self] event, size in self?.deviceHosts?.hid.translate(event, windowSize: size) }
         view.send = { [weak self] event in if let data = try? JSONEncoder().encode(event) { self?.remote?.deliver(data) } }
         view.resized = { [weak self] output in if let data = try? JSONEncoder().encode(output) { self?.remote?.resize(data) } }
         let window = NSWindow(contentRect: view.frame, styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
@@ -80,8 +87,14 @@ final class App: NSObject, NSApplicationDelegate, TesseraHost, NSWindowDelegate 
     } }
     func audio(_ payload: Data) {}
     func power(_ payload: Data) {}
+    func deviceFrame(_ dictionary: [String: Data]) {
+        guard let data = dictionary["tw.frame"] else { return }
+        DispatchQueue.main.async { self.deviceHosts?.receive(data) }
+    }
+    func windowDidBecomeKey(_ notification: Notification) { deviceHosts?.hid.setFocused(true) }
+    func windowDidResignKey(_ notification: Notification) { deviceHosts?.hid.setFocused(false) }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { !headless }
-    func applicationWillTerminate(_ notification: Notification) { quitting = true; remote?.shutdown(); connection?.invalidate() }
+    func applicationWillTerminate(_ notification: Notification) { quitting = true; deviceHosts?.close(); remote?.shutdown(); connection?.invalidate() }
     func makeMenu() {
         let menu = NSMenu(); let appItem = NSMenuItem(); menu.addItem(appItem)
         let appMenu = NSMenu(); appItem.submenu = appMenu

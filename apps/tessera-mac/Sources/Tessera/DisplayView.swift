@@ -11,6 +11,7 @@ final class DisplayView: NSView {
     var output: DisplayOutput
     var send: ((HostEvent) -> Void)?
     var resized: ((DisplayOutput) -> Void)?
+    var rawEvent: ((NSEvent, CGSize) -> Void)?
     let console = NSTextField(wrappingLabelWithString: "Starting Tessera…")
     init(output: DisplayOutput) {
         self.output = output
@@ -45,10 +46,14 @@ final class DisplayView: NSView {
         blit.endEncoding(); command.addCompletedHandler { _ in _ = surface }
         command.present(drawable); command.commit()
     }
-    override func keyDown(with event: NSEvent) { send?(HostEvent(kind: "keyDown", text: event.characters ?? "", keyCode: event.keyCode)) }
-    override func keyUp(with event: NSEvent) { send?(HostEvent(kind: "keyUp", keyCode: event.keyCode)) }
-    override func flagsChanged(with event: NSEvent) { send?(HostEvent(kind: "modifiers", x: Double(event.modifierFlags.rawValue))) }
+    func forward(_ event: NSEvent) {
+        rawEvent?(event, bounds.size)
+    }
+    override func keyDown(with event: NSEvent) { forward(event) }
+    override func keyUp(with event: NSEvent) { forward(event) }
+    override func flagsChanged(with event: NSEvent) { forward(event) }
     private func pointer(_ event: NSEvent, kind: String) {
+        forward(event)
         let point = convert(event.locationInWindow, from: nil)
         send?(HostEvent(kind: kind, x: point.x, y: point.y))
     }
@@ -56,5 +61,5 @@ final class DisplayView: NSView {
     override func mouseDragged(with event: NSEvent) { pointer(event, kind: "pointer") }
     override func mouseDown(with event: NSEvent) { window?.makeFirstResponder(self); pointer(event, kind: "pointerDown") }
     override func mouseUp(with event: NSEvent) { pointer(event, kind: "pointerUp") }
-    override func scrollWheel(with event: NSEvent) { send?(HostEvent(kind: "scroll", x: event.scrollingDeltaX, y: event.scrollingDeltaY)) }
+    override func scrollWheel(with event: NSEvent) { forward(event) }
 }
