@@ -14,6 +14,11 @@ let package = Package(
     .target(name: "TarwinTaskTransport", dependencies: ["TarwinTaskProtocol"]),
     .executableTarget(
       name: "TarwinTaskHost", dependencies: ["TarwinTaskProtocol", "TarwinTaskTransport"]),
+    .executableTarget(
+      name: "TaskCheckInExample", dependencies: ["TarwinTaskTransport"],
+      path: "Tests/TaskCheckInExample"),
     .testTarget(name: "TarwinTaskProtocolTests", dependencies: ["TarwinTaskProtocol"]),
-    .testTarget(name: "TarwinTaskTransportTests", dependencies: ["TarwinTaskTransport", "TarwinTaskHost"]),
+    .testTarget(
+      name: "TarwinTaskTransportTests",
+      dependencies: ["TarwinTaskTransport", "TarwinTaskHost", "TaskCheckInExample"]),
   ])

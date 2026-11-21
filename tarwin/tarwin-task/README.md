@@ -56,6 +56,15 @@ PID, using the Mach audit trailer. It owns both returned rights until the
 `SpawnedTask` is released. The hosted kernel separately owns process exit
 observation and reaping.
 
+In the child, read `TASK_BOOTSTRAP_PORT` with `task_get_special_port` and pass
+that send right to `TaskCheckIn.send(bootstrap:)`. Do not look up a launchd
+service: there is no service name, environment variable, or extra argument.
+After check-in, clear the bootstrap special port and deallocate the retrieved
+send right; serve commands on `commandReceive` and send gate calls on
+`gateSend`. See [the example child](Tests/TaskCheckInExample/main.swift).
+The spawner discards unrelated bootstrap messages from the child (which system
+libraries can send before `main`) without restarting the check-in timeout.
+
 `tarwin-task` reserves the 64 GiB `TaskWindow` before checking in. Map,
 protect and unmap operate only in that window; unmap restores the address
 reservation. The main command thread clears its bootstrap port and installs

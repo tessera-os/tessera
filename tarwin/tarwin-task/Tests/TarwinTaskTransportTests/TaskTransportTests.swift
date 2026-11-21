@@ -85,16 +85,7 @@ import Testing
 }
 
 @Test func spawnedSandboxedTaskRunsLifecycleCommands() throws {
-  var image = Dl_info()
-  try #require(dladdr(#dsohandle, &image) != 0)
-  let imageName = try #require(image.dli_fname)
-  var dir = URL(fileURLWithPath: String(cString: imageName)).deletingLastPathComponent()
-  while dir.path != "/", !FileManager.default.isExecutableFile(
-    atPath: dir.appendingPathComponent("tarwin-task").path) {
-    dir.deleteLastPathComponent()
-  }
-  let executable = dir.appendingPathComponent("tarwin-task").path
-  try #require(FileManager.default.isExecutableFile(atPath: executable))
+  let executable = try builtExecutable("tarwin-task")
   let child = try TaskSpawner.spawn(executable: executable)
   var reaped = false
   defer {
@@ -151,6 +142,37 @@ import Testing
   #expect(try send(.suspendThread(id: 1)) == KERN_SUCCESS)
   #expect(try send(.unmap(address: data, length: length)) == KERN_SUCCESS)
   #expect(try send(.terminate) == KERN_SUCCESS)
+  var status: Int32 = -1
+  reaped = waitpid(child.pid, &status, 0) == child.pid
+  #expect(reaped)
+  #expect(status == 0)
+}
+
+private func builtExecutable(_ name: String) throws -> String {
+  var image = Dl_info()
+  try #require(dladdr(#dsohandle, &image) != 0)
+  let imageName = try #require(image.dli_fname)
+  var dir = URL(fileURLWithPath: String(cString: imageName)).deletingLastPathComponent()
+  while dir.path != "/", !FileManager.default.isExecutableFile(
+    atPath: dir.appendingPathComponent(name).path) {
+    dir.deleteLastPathComponent()
+  }
+  let executable = dir.appendingPathComponent(name).path
+  try #require(FileManager.default.isExecutableFile(atPath: executable))
+  return executable
+}
+
+@Test func spawnedTaskChecksInAfterBootstrapTraffic() throws {
+  let child = try TaskSpawner.spawn(executable: builtExecutable("TaskCheckInExample"))
+  var reaped = false
+  defer {
+    if !reaped {
+      kill(child.pid, SIGKILL)
+      _ = waitpid(child.pid, nil, 0)
+    }
+  }
+
+  #expect(try child.command(.terminate, timeout: 1_000).get().status == KERN_SUCCESS)
   var status: Int32 = -1
   reaped = waitpid(child.pid, &status, 0) == child.pid
   #expect(reaped)

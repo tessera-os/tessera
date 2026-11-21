@@ -48,19 +48,36 @@ public enum TaskCheckIn {
   static func receive(
     bootstrap: mach_port_t, pid: pid_t, timeout: mach_msg_timeout_t
   ) -> Result<KernelTaskPorts, TaskTransportError> {
-    TaskMachMessage.withPacket { packet in
-      let status = TaskMachMessage.receive(packet, on: bootstrap, timeout: timeout, audit: true)
-      guard status == KERN_SUCCESS else { return .failure(.mach(status)) }
-      guard let payload = TaskMachMessage.receivedPayload(packet, id: messageID, descriptors: 2),
-        payload.count == byteCount, TaskMachMessage.auditPID(packet) == pid,
-        UInt64(littleEndian: payload.loadUnaligned(as: UInt64.self)) == UInt64(TaskCommand.version),
-        let command = TaskMachMessage.port(packet, 0, MACH_MSG_TYPE_PORT_SEND),
-        let gate = TaskMachMessage.port(packet, 1, MACH_MSG_TYPE_PORT_RECEIVE)
-      else {
-        mach_msg_destroy(TaskMachMessage.header(packet))
-        return .failure(.invalidMessage)
+    let start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+    var remaining = timeout
+    return TaskMachMessage.withPacket { packet in
+      while true {
+        let status = TaskMachMessage.receive(packet, on: bootstrap, timeout: remaining, audit: true)
+        guard status == KERN_SUCCESS else { return .failure(.mach(status)) }
+        let header = TaskMachMessage.header(packet)
+        guard TaskMachMessage.auditPID(packet) == pid else {
+          mach_msg_destroy(header)
+          return .failure(.invalidMessage)
+        }
+        if header.pointee.msgh_id != messageID {
+          // System libraries may make bootstrap requests before the child reaches main.
+          mach_msg_destroy(header)
+          let elapsed = (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start) / 1_000_000
+          guard elapsed < UInt64(timeout) else { return .failure(.mach(MACH_RCV_TIMED_OUT)) }
+          remaining = timeout - mach_msg_timeout_t(elapsed)
+          continue
+        }
+        guard let payload = TaskMachMessage.receivedPayload(packet, id: messageID, descriptors: 2),
+          payload.count == byteCount,
+          UInt64(littleEndian: payload.loadUnaligned(as: UInt64.self)) == UInt64(TaskCommand.version),
+          let command = TaskMachMessage.port(packet, 0, MACH_MSG_TYPE_PORT_SEND),
+          let gate = TaskMachMessage.port(packet, 1, MACH_MSG_TYPE_PORT_RECEIVE)
+        else {
+          mach_msg_destroy(header)
+          return .failure(.invalidMessage)
+        }
+        return .success(KernelTaskPorts(commandSend: command, gateReceive: gate))
       }
-      return .success(KernelTaskPorts(commandSend: command, gateReceive: gate))
     }
   }
 }
