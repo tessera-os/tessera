@@ -48,6 +48,33 @@ final class NetHostedTests: XCTestCase {
     XCTAssertEqual(f("ghost", .outbound, "1.1.1.1"), .deny("unknown app"))
   }
 
+  /// The hosted client fixture grant: app-bound allow 43871, deny 43872, terminal deny-all.
+  func testClientFixtureGrant() throws {
+    let p = NetPolicy(rules: [
+      NetRule(.allow, app: "fixture", proto: .tcp, direction: .outbound, ports: 43871...43871),
+      NetRule(.deny, app: "fixture", ports: 43872...43872),
+      NetRule(.deny),
+    ])
+    p.setEntitlements(NetEntitlements(client: true), for: "fixture")
+    let n = HostedNetwork(policy: p)
+    let l = try HostedNetwork(policy: {
+      let q = NetPolicy(); q.setEntitlements(NetEntitlements(client: true), for: "x"); return q
+    }()).listen(app: "x", on: .loopback(.v4, port: 43871))
+    defer { l.close() }
+    let c = try n.connect(app: "fixture", to: .loopback(.v4, port: 43871))
+    wait(c.fd, write: true)
+    XCTAssertEqual(c.connectResult(), .some(nil))
+    c.close()
+    let before = openFDs()
+    for port: UInt16 in [43872, 80] {
+      XCTAssertThrowsError(try n.connect(app: "fixture", to: .loopback(.v4, port: port))) {
+        XCTAssertEqual($0 as? NetError, .denied("rule"))
+      }
+    }
+    XCTAssertThrowsError(try n.connect(app: "other", to: .loopback(.v4, port: 43871)))
+    XCTAssertEqual(openFDs(), before, "no socket before a denial")
+  }
+
   func testDeniedFlowNeverOpensASocket() throws {
     let n = net(client: false)
     let before = openFDs()
