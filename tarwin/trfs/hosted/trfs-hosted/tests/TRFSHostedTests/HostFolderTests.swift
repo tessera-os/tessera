@@ -152,4 +152,65 @@ final class HostFolderTests: XCTestCase {
     XCTAssertEqual(status, .ok)
     XCTAssertEqual(id(shares.output), lookup(1, "docs"))
   }
+
+  /// The fd crosses a socket with SCM_RIGHTS, as it does over XPC.
+  func testServesPassedDirectoryFD() throws {
+    var sv: [Int32] = [0, 0]
+    XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &sv), 0)
+    defer { close(sv[0]); close(sv[1]) }
+    let sent = open(dir, O_RDONLY | O_DIRECTORY)
+    XCTAssertTrue(sendFD(sent, on: sv[0]))
+    close(sent)
+    let got = try XCTUnwrap(receiveFD(on: sv[1]))
+    let vol = try XCTUnwrap(HostFolderVolume(directoryFD: got, readOnly: true))
+    let docs = try XCTUnwrap(lookupOn(vol, HostFolderVolume.root, "docs"))
+    XCTAssertNotNil(lookupOn(vol, docs, "a.txt"))
+    XCTAssertNil(lookupOn(vol, HostFolderVolume.root, "escape"))
+    XCTAssertEqual(call(.create, docs, offset: 1, input: Array("n".utf8), out: 8, on: vol).0, .readOnly)
+    let file = open(dir + "/docs/a.txt", O_RDONLY)
+    XCTAssertNil(HostFolderVolume(directoryFD: file))
+    XCTAssertEqual(fcntl(file, F_GETFD), -1, "refused fd is closed")
+  }
+  func lookupOn(_ vol: HostFolderVolume, _ parent: UInt64, _ name: String) -> UInt64? {
+    let (s, b) = call(.lookup, parent, input: Array(name.utf8), out: 8, on: vol)
+    return s == .ok ? id(b) : nil
+  }
+  func sendFD(_ fd: Int32, on sock: Int32) -> Bool {
+    var byte: UInt8 = 0
+    let space = Int(CMSG_SPACE_INT())
+    var control = [UInt8](repeating: 0, count: space)
+    return withUnsafeMutablePointer(to: &byte) { bp in
+      var iov = iovec(iov_base: bp, iov_len: 1)
+      return withUnsafeMutablePointer(to: &iov) { iovp in
+        control.withUnsafeMutableBytes { cb in
+          var m = msghdr(msg_name: nil, msg_namelen: 0, msg_iov: iovp, msg_iovlen: 1,
+            msg_control: cb.baseAddress, msg_controllen: socklen_t(space), msg_flags: 0)
+          let c = cb.baseAddress!.assumingMemoryBound(to: cmsghdr.self)
+          c.pointee = cmsghdr(cmsg_len: socklen_t(MemoryLayout<cmsghdr>.size + 4),
+            cmsg_level: SOL_SOCKET, cmsg_type: SCM_RIGHTS)
+          (cb.baseAddress! + MemoryLayout<cmsghdr>.size).storeBytes(of: fd, as: Int32.self)
+          return sendmsg(sock, &m, 0) == 1
+        }
+      }
+    }
+  }
+  func receiveFD(on sock: Int32) -> Int32? {
+    var byte: UInt8 = 0
+    let space = Int(CMSG_SPACE_INT())
+    var control = [UInt8](repeating: 0, count: space)
+    return withUnsafeMutablePointer(to: &byte) { bp in
+      var iov = iovec(iov_base: bp, iov_len: 1)
+      return withUnsafeMutablePointer(to: &iov) { iovp in
+        control.withUnsafeMutableBytes { cb -> Int32? in
+          var m = msghdr(msg_name: nil, msg_namelen: 0, msg_iov: iovp, msg_iovlen: 1,
+            msg_control: cb.baseAddress, msg_controllen: socklen_t(space), msg_flags: 0)
+          guard recvmsg(sock, &m, 0) == 1 else { return nil }
+          let c = cb.baseAddress!.assumingMemoryBound(to: cmsghdr.self)
+          guard c.pointee.cmsg_type == SCM_RIGHTS else { return nil }
+          return (cb.baseAddress! + MemoryLayout<cmsghdr>.size).load(as: Int32.self)
+        }
+      }
+    }
+  }
+  func CMSG_SPACE_INT() -> Int { (MemoryLayout<cmsghdr>.size + 4 + 7) & ~7 }
 }

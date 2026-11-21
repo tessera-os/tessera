@@ -18,6 +18,11 @@ public API.
   links and refuses `.`, `..` and `/` in names, so requests never leave the
   folder. Read-only grants refuse every change. `HostFolderServer` is the
   ring loop, with the same contract as `ReadOnlyServer`.
+- Shared-folder handoff (agreed with H1 and H7): Tessera.app keeps the
+  bookmark, opens the folder (`HostFolderGrant.directoryFD()`) and sends the
+  descriptor over XPC to `Tarwind.shareFolder(name:directoryFD:readOnly:)`;
+  tarwind serves it with `HostFolderVolume(directoryFD:readOnly:)`, which owns
+  the descriptor it is given.
 
 Beyond the read-only request set: `create` takes the name as input and the
 kind in `offset` (1 file, 2 directory) and returns the node; `remove` takes

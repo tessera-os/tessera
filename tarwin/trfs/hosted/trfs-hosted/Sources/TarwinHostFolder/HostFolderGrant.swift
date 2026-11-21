@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// A folder the user picked in Tessera.app, kept as a security-scoped
@@ -22,6 +23,12 @@ public final class HostFolderGrant: @unchecked Sendable {
       options: readOnly ? [.withSecurityScope, .securityScopeAllowOnlyReadAccess]
         : [.withSecurityScope],
       includingResourceValuesForKeys: nil, relativeTo: nil)
+  }
+  /// The granted folder opened as a directory, to send to tarwind over XPC.
+  /// The caller owns the descriptor; keep the grant open until unshare.
+  public func directoryFD() -> Int32? {
+    let fd = Darwin.open(url.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+    return fd >= 0 ? fd : nil
   }
   public func volume(readOnly: Bool) -> HostFolderVolume? {
     HostFolderVolume(path: url.path, readOnly: readOnly)

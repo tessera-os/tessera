@@ -24,9 +24,21 @@ public final class HostFolderVolume: @unchecked Sendable {
   }
   private let table = Mutex(Table())
 
-  public init?(path: String, readOnly: Bool = false) {
+  public convenience init?(path: String, readOnly: Bool = false) {
     let fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
     guard fd >= 0 else { return nil }
+    self.init(directoryFD: fd, readOnly: readOnly)
+  }
+  /// Serves the directory open at `fd`, as Tessera.app hands it to tarwind
+  /// over XPC. Takes ownership of `fd`, also when it fails (not a directory).
+  public init?(directoryFD fd: Int32, readOnly: Bool = false) {
+    var st = stat()
+    guard fd >= 0, fstat(fd, &st) == 0, st.st_mode & S_IFMT == S_IFDIR,
+      fcntl(fd, F_SETFD, FD_CLOEXEC) == 0
+    else {
+      if fd >= 0 { close(fd) }
+      return nil
+    }
     rootFD = fd
     self.readOnly = readOnly
   }
