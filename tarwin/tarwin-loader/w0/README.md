@@ -16,3 +16,25 @@ verification data only (key, context, message, signature) from
 
 Run `swift test -c release` here. Passing these host vectors does not
 authenticate an archive or constitute a guest boot.
+
+The EFI harness imports `TarwinW0Verify` after `KCore`, `TarwinBoot`,
+`Tarboot` and `TarwinLoader`. Pass independently established trusted UTC,
+security floor, slot, debug-emulator authorization, train/TIR, address limit
+and real CPU baseline support in `W0Policy`. Missing inputs must not be
+substituted from the signed file. Compile/link this package only in a
+disposable debug harness. Supply an independently provisioned TQE1 pin, the
+detached TSG1, the exact TIRA snapshot and private disjoint scratch (54 BlakeCv,
+2048 Int32, 1024 message bytes) to `authorizeQEMUStage0`. Keep the returned
+ELF slice pinned, DMA-inaccessible and immutable through placement; never
+reopen the ESP. The call neither maps pages nor transfers control.
+
+The W0 archive must have exactly two disjoint uncompressed members,
+`boot.json` and `kernel`. Their individual BLAKE3 digests, the canonical
+debug configuration, rollback floor, both layers' hybrid signatures and
+the kernel's identity, role, train, CPU and relocation-free R/RX subset
+all have to pass. Release mode and non-enrolled machines must not call this
+entry point. This is not a production trust-store or PKI implementation.
+
+To exercise an actual signed AArch64 fixture on the host, set
+`W0_TEST_ARCHIVE`, `W0_TEST_SIGNATURE`, `W0_TEST_ENROLLMENT` and
+`W0_TEST_UTC` (an independently supplied Unix time) for the test command.
