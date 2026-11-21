@@ -39,8 +39,45 @@
     mrs x1, tpidr_el2
     cbz x1, .Lhalt
     bl tarwin_w1_dispatch_private
+    .global tarwin_w1_finish_private
+    tarwin_w1_finish_private:
     cmp w0, #1
+    b.eq .Lresume
+    cmp w0, #2
     b.ne .Lhalt
+    // Look up the captured caller in per-CPU state. Return a checked top
+    // in the same TTBR1; zero means there is no safe scheduler stack.
+    msr daifset, #15
+    // Do not leave a supervisor control stack attached to the dying
+    // thread. Paired SP/GCSPR switching is not provided by this ABI.
+    mrs x9, id_aa64pfr1_el1
+    ubfx x9, x9, #44, #4
+    cbz x9, .Lno_supervisor_gcs
+    cmp x9, #1
+    b.ne .Lhalt
+    .arch_extension gcs
+    mrs x9, gcscr_el2
+    cbnz x9, .Lhalt
+    .Lno_supervisor_gcs:
+    mrs x0, tpidr_el2
+    mov x1, sp
+    mrs x2, ttbr1_el2
+    bl tarwin_w1_stop_stack_top
+    mov x9, #0xffff800000000000
+    cmp x0, x9
+    b.lo .Lhalt
+    tst x0, #15
+    b.ne .Lhalt
+    mov sp, x0
+    mov x29, xzr
+    mov x30, xzr
+    clrex
+    mrs x0, tpidr_el2
+    mov x1, sp
+    mrs x2, ttbr1_el2
+    bl tarwin_w1_stopped_private
+    b .Lhalt
+    .Lresume:
     """)
     for (reg, off) in banks where reg != "esr_el2" {
       print("ldr x9, [sp, #\(off)]\nmsr \(reg), x9")

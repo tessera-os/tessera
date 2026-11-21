@@ -195,6 +195,10 @@ public struct ArmKernelTranslation: ~Copyable {
       && (va | physical) & 16383 == 0 && root.mapsKernelData(va, physical: physical)
   }
 
+  func isGuard(_ va: UInt64) -> Bool {
+    va >= 0xffff_8000_0000_0000 && root.hasLeaf(va, .guardPage)
+  }
+
   public consuming func finish() -> ArmFinishedKernelRoot? {
     guard usedPages > 1 else { return nil }
     return ArmFinishedKernelRoot(physical: physicalRoot)

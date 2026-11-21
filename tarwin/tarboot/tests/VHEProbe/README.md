@@ -32,6 +32,15 @@ the CPU completes a GCSSTTR, rejects an ordinary STTR, and reads back the
 first word unchanged. Both instructions run at EL2 with EL0 access checks;
 no EL0 instructions run, and no thread's guarded stack is installed.
 
+The baseline guest then feeds the vector's post-dispatch continuation a
+stop action on a synthetic private frame. The checked upper root maps two
+physically disjoint, guarded 32 KiB stacks. The stop handler confirms it
+is running on the scheduler stack with the same TTBR1, interrupts masked
+and no outgoing frame chain. This is not a Process.exit syscall or a
+scheduler teardown: no exiting process exists in this guest.
+The current handoff refuses active EL2 GCS rather than changing SP alone
+while leaving the supervisor control stack attached to the outgoing thread.
+
 The lower-EL synchronous slot uses a separate private frame and requires a
 kernel-owned dispatcher. This test does **not** exercise that slot, any
 return to EL0, signed user code, process keys, GCS call/return, MTE tags, or interrupts.

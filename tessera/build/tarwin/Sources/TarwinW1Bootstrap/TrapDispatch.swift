@@ -5,8 +5,8 @@ import TarwinSyscall
 /// Get the active process and its *exact mapped and verified library code*
 /// from kernel per-CPU state. Frame and scratch are disjoint, kernel-only;
 /// retain the current context on this CPU until the vector restores it.
-/// Only resumeEL0 maps to the vector's return value 1. All other outcomes
-/// leave the frame stopped for exception handling or process termination.
+/// Only resumeEL0 can pass the return gate; an accepted exit selects the
+/// stop continuation. Neither stop nor exception paths restore this frame.
 @unsafe public func dispatchPrivateW1Trap<P: CallProvider>(
   frame: UnsafeMutableRawBufferPointer, libraryCode: Range<UInt64>, userRange: Range<UInt64>,
   scratch: UnsafeMutableBufferPointer<UInt64>, provider: inout P

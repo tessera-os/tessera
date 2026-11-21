@@ -35,6 +35,7 @@ _start:
   ldr x4, =context
   ldr x5, =_start
   ldr x6, =sample
+  ldr x7, =scheduler_base
   bl tarwin_vhe_build_roots
   cbnz w0, failed
   mov x0, #1
@@ -194,6 +195,43 @@ _start:
   adr x1, ok
   mov x0, #4
   hlt #0xf000
+  // Dispatch has already been tested separately. Use the vector's stop
+  // continuation with a synthetic private frame; do not enter EL0.
+  sub sp, sp, #816
+  mov w0, #2
+  b tarwin_w1_finish_private
+.globl tarwin_w1_stopped_private
+tarwin_w1_stopped_private:
+  mov x3, sp
+  cmp x3, x1
+  b.ne failed
+  ldr x4, =scheduler_top
+  mov x5, #0xffff800000000000
+  add x4, x4, x5
+  cmp x1, x4
+  b.ne failed
+  ldr x4, =context
+  add x4, x4, x5
+  cmp x0, x4
+  b.ne failed
+  ldr x4, =host_root
+  cmp x2, x4
+  b.ne failed
+  cbnz x29, failed
+  mrs x4, daif
+  and x4, x4, #0x3c0
+  cmp x4, #0x3c0
+  b.ne failed
+  // Verify this is writable stack space, not just the expected SP value.
+  stp x0, x1, [sp, #-16]!
+  ldp x6, x7, [sp], #16
+  cmp x6, x0
+  b.ne failed
+  cmp x7, x1
+  b.ne failed
+  adr x1, stopped
+  mov x0, #4
+  hlt #0xf000
   adr x1, exit_ok
   b exit_host
 .globl tarwin_w1_dispatch_private
@@ -217,6 +255,7 @@ hex_digit:
 ok: .asciz "VHE-COPY-READ-WRITE-ABORT-DENY\\nVHE-HIGH-HOST-PRIVATE-ROOT-SWITCH\\n"
 bad: .asciz "VHE-COPY-FAILED\\n"
 gcs_ok: .asciz "VHE-GCS-STORE-ORDINARY-WRITE-DENIED\\n"
+stopped: .asciz "VHE-STOP-ON-SEPARATE-SCHEDULER-STACK\\n"
 .p2align 3
 exit_ok: .quad 0x20026,0
 exit_bad: .quad 0x20026,1
@@ -259,6 +298,10 @@ context: .space 16384
 stack_base:
   .space 32768
 stack_top:
+  .space 16384
+scheduler_base:
+  .space 32768
+scheduler_top:
 .section .sample,"a"
 sample:
 .quad 0x1234,0x5678

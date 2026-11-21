@@ -122,4 +122,5 @@ func checkStartupFrame(
   try checkPinnedReceive(images, stack: stack, child: &child, pair: &pair, tree: tree)
   let consumed = images.initialFrame(boot, child: child, tree: tree, channel: pair)
   #expect(consumed == nil)
+  try checkStopAcknowledgment(child: &child, tree: tree, ids: src)
 }

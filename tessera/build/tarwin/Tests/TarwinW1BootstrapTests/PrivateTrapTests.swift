@@ -5,12 +5,13 @@ import TarwinW1Bootstrap
 import Testing
 
 private struct ProbeCalls: CallProvider {
+  var result = CallResult(status: 1, detail: 2, first: 3, second: 4)
   func argumentCount(for number: UInt64) -> UInt32? { 0 }
   mutating func copyUserWords(from: UInt64, into: UnsafeMutableBufferPointer<UInt64>) -> Bool {
     false
   }
   mutating func invoke(number: UInt64, words: UnsafeBufferPointer<UInt64>) -> CallResult {
-    CallResult(status: 1, detail: 2, first: 3, second: 4)
+    result
   }
 }
 
@@ -37,4 +38,14 @@ private struct ProbeCalls: CallProvider {
   let untouched = Array(bank.dropFirst(4))
   #expect(dispatch(frame) == .resumeEL0)
   #expect(Array(bank.prefix(4)) == [1, 2, 3, 4] && Array(bank.dropFirst(4)) == untouched)
+  calls.result = CallResult()
+  bank[16] = TarwinCall.processExit
+  let stopped = Array(bank)
+  #expect(w1ArmVectorAction(dispatch(frame)) == 2 && Array(bank) == stopped)
+  #expect(w1ArmVectorAction(.resumeEL0) == 1)
+  for outcome: Arm64TrapOutcome in [
+    .terminateBadOrigin, .otherSynchronousException, .invalidKernelFrame,
+  ] {
+    #expect(w1ArmVectorAction(outcome) == 0)
+  }
 }

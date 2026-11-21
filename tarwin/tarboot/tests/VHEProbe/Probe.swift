@@ -11,7 +11,7 @@ private func store(_ address: UInt64, _ word: UInt64) -> UInt32
 @_cdecl("tarwin_vhe_build_roots")
 public func buildRoots(
   _ kernel: UInt64, _ a: UInt64, _ b: UInt64, _ stack: UInt64,
-  _ context: UInt64, _ text: UInt64, _ sample: UInt64
+  _ context: UInt64, _ text: UInt64, _ sample: UInt64, _ scheduler: UInt64
 ) -> UInt32 {
   let high: UInt64 = 0xffff_8000_0000_0000
   let page: UInt64 = 16384
@@ -29,8 +29,18 @@ public func buildRoots(
   }
   for i: UInt64 in 0..<2 {
     let pa = stack + i * page
-    guard k.insert(virtual: high + pa, physical: pa, write: true, execute: false) else { return 3 }
+    let next = scheduler + i * page
+    guard k.insert(virtual: high + pa, physical: pa, write: true, execute: false),
+      k.insert(virtual: high + next, physical: next, write: true, execute: false)
+    else { return 3 }
   }
+  guard
+    let stacks = ArmStopStacks(
+      tables: k, outgoingVA: high + stack, outgoingPA: stack,
+      schedulerVA: high + scheduler, schedulerPA: scheduler),
+    let storage = UnsafeMutablePointer<ArmStopStacks>(bitPattern: UInt(context + 64))
+  else { return 3 }
+  storage.initialize(to: stacks)
   guard k.insert(virtual: high + context, physical: context, write: true, execute: false),
     p.insert(virtual: base, physical: sample, write: false, execute: false),
     q.insert(virtual: base, physical: sample + page, write: false, execute: false),
@@ -38,6 +48,14 @@ public func buildRoots(
     kr.physical == kernel, ar.physical == a, br.physical == b
   else { return 4 }
   return 0
+}
+
+// This diagnostic captures no task. It exercises only the checked stack
+// selection and pivot, with a synthetic trap frame on the outgoing stack.
+@_cdecl("tarwin_w1_stop_stack_top")
+public func destination(_ context: UInt64, _ frame: UInt64, _ root: UInt64) -> UInt64 {
+  guard let storage = UnsafePointer<ArmStopStacks>(bitPattern: UInt(context + 64)) else { return 0 }
+  return storage.pointee.destination(frame: frame, hostRoot: root) ?? 0
 }
 
 // Called on a private host stack. The diagnostic never enters EL0.
