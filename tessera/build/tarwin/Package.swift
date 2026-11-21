@@ -46,6 +46,7 @@ let package = Package(
         .product(name: "TarwinMM", package: "tarwin-mm"),
       ]),
     .testTarget(name: "TarwinW1BootstrapTests", dependencies: [
+      .product(name: "TarwinW0Verify", package: "w0"),
       "TarwinW1Bootstrap", .product(name: "TarwinLoader", package: "tarwin-loader"),
       .product(name: "TarwinArchAarch64", package: "tarwin-arch-aarch64"),
       .product(name: "TarwinSyscall", package: "tarwin-syscall"),
