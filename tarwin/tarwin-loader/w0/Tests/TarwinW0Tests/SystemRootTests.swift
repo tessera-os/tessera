@@ -64,7 +64,14 @@ final class SystemRootTests: XCTestCase {
               check(ordinary, ordinarySignature, ordinaryOK: true)
               for (fixture, sig) in cases {
                 let a = fixture.archive(from: ordinary)
-                check(a, sig, rootOK: fixture == .valid)
+                check(a, sig, rootOK: fixture == .valid || fixture == .platformBuilder)
+                if fixture == .platformBuilder {
+                  XCTAssertEqual(SHA256.hash(data: a).map { String(format: "%02x", $0) }.joined(),
+                    "0b4a670a09d7c5d984b8c9ea39b1d9f0d7cb2b4076b2f53f9ed0874df5028fbd")
+                  let other = cases.first { $0.0 == .valid }!.1
+                  check(a, other, signed: false)
+                  check(RootFixture.valid.archive(from: ordinary), sig, signed: false)
+                }
                 if fixture == .valid {
                   check(a, sig, debug: false)
                   var damaged = a

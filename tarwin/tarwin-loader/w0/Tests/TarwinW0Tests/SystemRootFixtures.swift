@@ -3,7 +3,7 @@ import TarwinLoader
 
 // Host-only variants of the same four signed members; each has its own detached signature.
 enum RootFixture: String, CaseIterable {
-  case valid, zero, short, long, compressed, badMemberHash, renamed, extra, overlapsImage
+  case valid, platformBuilder, zero, short, long, compressed, badMemberHash, renamed, extra, overlapsImage
 
   static let headSHA256 = Data([
     0xac, 0xf8, 0xe3, 0x29, 0xe9, 0x80, 0xf5, 0xea, 0x25, 0x30, 0xad, 0x42, 0xc2, 0x9d,
@@ -26,7 +26,7 @@ enum RootFixture: String, CaseIterable {
     if self == .long { data.append(0) }
     // The first payload starts at 24. Use its real hash to isolate the range check.
     if self == .overlapsImage { data = ordinary.subdata(in: 24..<56) }
-    let offset = self == .overlapsImage ? 24 : table
+    var offset = self == .overlapsImage ? 24 : table
     var scratch = [BlakeCv](
       repeating: .init(w0: 0, w1: 0, w2: 0, w3: 0, w4: 0, w5: 0, w6: 0, w7: 0), count: 54)
     let cv = data.withUnsafeBytes { b in
@@ -42,13 +42,23 @@ enum RootFixture: String, CaseIterable {
       r.append(self == .compressed ? 1 : 0)
       return r + hash
     }
-    var result = Data(ordinary[..<table]) + data
+    var result = Data(ordinary[..<table])
+    var initEntry = Data(ordinary[last...])
+    if self == .platformBuilder {
+      // The platform producer orders payloads as well as the directory by name.
+      let field = 1 + "tessera.init".utf8.count
+      offset = initEntry.withUnsafeBytes {
+        Int(UInt64(littleEndian: $0.loadUnaligned(fromByteOffset: field, as: UInt64.self)))
+      }
+      initEntry.replaceSubrange(field..<field + 8, with: le(UInt64(offset + data.count)))
+    }
+    result.insert(contentsOf: data, at: self == .platformBuilder ? offset : table)
     if self == .extra { result += data }
     result.replaceSubrange(8..<12, with: le(UInt32(self == .extra ? 6 : 5)))
     result.replaceSubrange(16..<24, with: le(UInt64(result.count)))
     result += ordinary[table..<last]
     result += record(self == .renamed ? "system.trfs.roou" : "system.trfs.root", offset)
-    result += ordinary[last...]
+    result += initEntry
     if self == .extra { result += record("unused", table + data.count) }
     return result
   }
