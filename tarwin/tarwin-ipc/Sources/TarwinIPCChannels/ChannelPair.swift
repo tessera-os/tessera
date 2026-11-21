@@ -39,6 +39,7 @@ public struct ChannelPair: ~Copyable {
     invalidate: (UInt64) -> Void, retire: (UnsafePointer<ObjectHeader>) -> Void
   ) -> ChildBootstrap? {
     let member = child.member
+    let childMap = child.initialMap
     guard child.phase == .created, b.pointee.ownerJob == child.job.id,
       toA.writable, toB.writable, toA.count == 0, toB.count == 0, tags.count == names.count,
       let id = StartupIdentity(flags: flags, app: app, process: member.id, job: child.job.id),
@@ -57,7 +58,8 @@ public struct ChannelPair: ~Copyable {
         return nil
       }
       close(.a, retire: retire)
-      return ChildBootstrap(process: member, endpoint: b.pointee.koid, name: name)
+      return ChildBootstrap(
+        process: member, initialMap: childMap, endpoint: b.pointee.koid, name: name)
     } ?? nil
   }
 
@@ -65,9 +67,11 @@ public struct ChannelPair: ~Copyable {
   /// locks, for the child whose VM root is being installed. No pointer escapes.
   public func entryName(
     _ token: ChildBootstrap, child: borrowing ProcessExecution,
-    tree: borrowing JobTree
+    tree: borrowing JobTree, initialMap: UInt64? = nil
   ) -> UInt64? {
-    guard token.process == child.member, token.endpoint == b.pointee.koid,
+    guard token.process == child.member, token.initialMap == initialMap,
+      initialMap == child.initialMap,
+      token.endpoint == b.pointee.koid,
       tree.returnGate(child.member) == .run, toB.senderClosed, toB.count == 1, toB.readable,
       child.soleStartupHandle(token.name, channel: b)
     else { return nil }
@@ -137,5 +141,6 @@ public struct ChannelPair: ~Copyable {
 /// authenticates an image nor owns a VM root; the launch owner binds those.
 public struct ChildBootstrap {
   fileprivate let process: ProcessKey
+  fileprivate let initialMap: UInt64?
   fileprivate let endpoint, name: UInt64
 }

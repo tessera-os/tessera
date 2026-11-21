@@ -10,6 +10,11 @@ import TarwinSync
 import TarwinSyncObjects
 import TarwinSyscall
 
+#if arch(arm64)
+  import TarwinArchAarch64
+  import TarwinArmBootstrap
+#endif
+
 private struct Arena {
   var remaining: UnsafeMutableRawBufferPointer
   // The caller exclusively owns uninitialized, page-aligned firmware pages.
@@ -93,7 +98,7 @@ private func selfHandle(_ process: inout ProcessExecution, tree: borrowing JobTr
 
 private func bootstrapChannel(
   _ arena: inout Arena, process: inout ProcessExecution, tree: borrowing JobTree,
-  ids: borrowing KoidSource, job: UnsafePointer<ObjectHeader>
+  ids: borrowing KoidSource, job: UnsafePointer<ObjectHeader>, roots: UnsafeMutableRawBufferPointer
 ) -> Bool {
   let heads = arena.take(ObjectHeader.self, count: 2)
   for i in heads.indices {
@@ -137,11 +142,16 @@ private func bootstrapChannel(
     }
   }
   guard let token, invalidated == jobName, staging.count == 0,
-    let name = pair.entryName(token, child: process, tree: tree),
-    tree.setFrozen(true, job: tree.root), pair.entryName(token, child: process, tree: tree) == nil,
+    let name = pair.entryName(token, child: process, tree: tree, initialMap: process.initialMap),
+    tree.setFrozen(true, job: tree.root),
+    pair.entryName(token, child: process, tree: tree, initialMap: process.initialMap) == nil,
     tree.setFrozen(false, job: tree.root),
-    pair.entryName(token, child: process, tree: tree) == name
+    pair.entryName(token, child: process, tree: tree, initialMap: process.initialMap) == name
   else { return false }
+  #if arch(arm64)
+    guard checkFrames(roots, process: process, tree: tree, pair: pair, token: token, name: name)
+    else { return false }
+  #endif
   var size = ChannelSize()
   var received: UInt64 = 0
   let ok = process.withHandles(tree: tree) { table in
@@ -151,7 +161,7 @@ private func bootstrapChannel(
     } == .ok
   }
   guard ok == true, size.bytes == 56, size.handles == 1, received != 0, received != jobName,
-    pair.entryName(token, child: process, tree: tree) == nil,
+    pair.entryName(token, child: process, tree: tree, initialMap: process.initialMap) == nil,
     case .found(let pin) = process.handleReader.pinWithinEpoch(
       received, kind: TarwinKind.job, need: 256)
   else { return false }
@@ -169,14 +179,69 @@ private func bootstrapChannel(
     process.withHandles(
       tree: tree, { $0.close(received, retire: { _ in }) && $0.close(name, retire: { _ in }) })
       == true,
-    pair.entryName(token, child: process, tree: tree) == nil
+    pair.entryName(token, child: process, tree: tree, initialMap: process.initialMap) == nil
   else { return false }
   pair.close(.b, retire: { _ in })
   return heads.baseAddress!.pointee.release() == .destroy
     && (heads.baseAddress! + 1).pointee.release() == .destroy
 }
 
+#if arch(arm64)
+  /// Two never-installed roots with equally valid descriptors. Only one
+  /// belongs to the child. The leaf frames contain no executable image.
+  private func checkFrames(
+    _ roots: UnsafeMutableRawBufferPointer,
+    process: borrowing ProcessExecution, tree: borrowing JobTree, pair: borrowing ChannelPair,
+    token: ChildBootstrap, name: UInt64
+  ) -> Bool {
+    let page = 16384
+    let pc: UInt64 = 1 << 32
+    let ordinary: UInt64 = 1 << 43
+    let rx = pc..<pc + 32
+    let stack = ordinary + 65536..<ordinary + 81920
+    let tcb = ordinary + 81920
+    for i in 0..<2 {
+      let memory = UnsafeMutableRawBufferPointer(
+        rebasing: roots[i * 11 * page..<(i * 11 + 8) * page])
+      let root = UInt64(UInt(bitPattern: memory.baseAddress))
+      let leaf = root + UInt64(8 * page)
+      guard var tables = ArmUserTranslation(backing: memory, physical: root),
+        tables.insert(virtual: pc, physical: leaf, write: false, execute: true),
+        tables.insert(
+          virtual: stack.lowerBound, physical: leaf + 16384, write: true, execute: false),
+        tables.insert(virtual: tcb, physical: leaf + 32768, write: true, execute: false),
+        ArmInitialState(
+          tables: tables, entry: pc + 16, imageRX: rx, bootstrapChannel: name,
+          stack: stack, tcb: tcb) != nil
+      else { return false }
+      let frame = initialArmChildFrame(
+        token, child: process, tree: tree, channel: pair,
+        tables: tables, entry: pc + 16, imageRX: rx, stack: stack, tcb: tcb)
+      if i == 0 {
+        guard let frame, frame.gpr[0] == name, frame.elr == pc + 16,
+          frame.sp == stack.upperBound, frame.tpidr == tcb
+        else { return false }
+        for reg in 1..<31 where frame.gpr[reg] != 0 { return false }
+      } else if frame != nil {
+        return false
+      }
+    }
+    return true
+  }
+#endif
+
 private func jobQuota(_ arena: inout Arena, _ limit: UInt64) -> Bool {
+  #if arch(arm64)
+    let padding = (0 &- UInt(bitPattern: arena.remaining.baseAddress)) & 16383
+    let extent = Int(padding) + 22 * 16384
+    guard extent <= arena.remaining.count else { return false }
+    let roots = UnsafeMutableRawBufferPointer(rebasing: arena.remaining[Int(padding)..<extent])
+    arena.remaining = .init(rebasing: arena.remaining[extent...])
+    let initialMap: UInt64? = UInt64(UInt(bitPattern: roots.baseAddress))
+  #else
+    let roots = UnsafeMutableRawBufferPointer(start: nil, count: 0)
+    let initialMap: UInt64? = nil
+  #endif
   let jobs = arena.take(JobNode.self, count: 2)
   let members = arena.take(JobMember.self, count: 1)
   jobs.initialize(repeating: JobNode())
@@ -207,12 +272,14 @@ private func jobQuota(_ arena: inout Arena, _ limit: UInt64) -> Bool {
   return withUnsafePointer(to: process) { ph in
     guard
       var p = ProcessExecution(
-        header: ph, job: branch, tree: tree, slots: slots, cells: cells, salt: 3)
+        header: ph, job: branch, tree: tree, slots: slots, cells: cells, salt: 3,
+        initialMap: initialMap)
     else { return false }
     defer { cells.deinitialize() }
     guard
       withUnsafePointer(
-        to: child, { bootstrapChannel(&arena, process: &p, tree: tree, ids: ids, job: $0) })
+        to: child,
+        { bootstrapChannel(&arena, process: &p, tree: tree, ids: ids, job: $0, roots: roots) })
     else { return false }
     return withUnsafePointer(to: thread) { th in
       guard var t = ThreadExecution(header: th, process: p.member, job: branch) else {
@@ -396,6 +463,11 @@ private typealias Output = @convention(c) (UnsafeRawPointer, UnsafePointer<UInt1
 private typealias Reset = @convention(c) (UInt32, UInt, UInt, UnsafeRawPointer?) -> Void
 @_cdecl("efi_main")
 public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> UInt {
+  #if arch(arm64)
+    let count: UInt = 94
+  #else
+    let count: UInt = 2
+  #endif
   // Only firmware-owned tables in this disposable EFI guest.
   guard let image, let system, let boot = FirmwareBootServices(image: image, system: system),
     let rt = system.load(fromByteOffset: 88, as: UnsafeRawPointer?.self),
@@ -403,7 +475,7 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
     let shutdown = rt.load(fromByteOffset: 104, as: Reset?.self),
     let console = system.load(fromByteOffset: 64, as: UnsafeRawPointer?.self),
     let output = console.load(fromByteOffset: 8, as: Output?.self),
-    let pages = boot.reserveLoaderPages(2),
+    let pages = boot.reserveLoaderPages(count),
     let p = UnsafeMutableRawPointer(bitPattern: UInt(pages.base))
   else { return (1 << 63) | 3 }
   let ok = exercise(.init(start: p, count: Int(pages.length)), UInt64(UInt(bitPattern: image)))

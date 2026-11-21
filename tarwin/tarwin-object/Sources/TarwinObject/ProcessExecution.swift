@@ -54,6 +54,9 @@ public enum ProcessPhase: Equatable {
 public struct ProcessExecution: ~Copyable {
   public let member: ProcessKey
   public let job: JobKey
+  /// Kernel-private identity of the pinned, unpublished initial address
+  /// space. Never exported by Handle.info or confused with a local name.
+  public let initialMap: UInt64?
   public let header: UnsafePointer<ObjectHeader>
   private let slots: UnsafeMutableBufferPointer<ThreadSlot>
   private var handles: HandleTable
@@ -64,9 +67,9 @@ public struct ProcessExecution: ~Copyable {
   public init?(
     header: UnsafePointer<ObjectHeader>, job: JobKey, tree: borrowing JobTree,
     slots: UnsafeMutableBufferPointer<ThreadSlot>, cells: UnsafeMutableBufferPointer<HandleCell>,
-    salt: UInt8
+    salt: UInt8, initialMap: UInt64? = nil
   ) {
-    guard !slots.isEmpty, let policy = tree.policy(job), cells.count > 0,
+    guard initialMap != 0, !slots.isEmpty, let policy = tree.policy(job), cells.count > 0,
       cells.count <= Int(policy.handlesPerProcess)
     else { return nil }
     for i in slots.indices where slots[i].thread != nil { return nil }
@@ -79,6 +82,7 @@ public struct ProcessExecution: ~Copyable {
     self.header = header
     self.job = job
     self.member = member
+    self.initialMap = initialMap
     self.slots = slots
   }
   public var phase: ProcessPhase {

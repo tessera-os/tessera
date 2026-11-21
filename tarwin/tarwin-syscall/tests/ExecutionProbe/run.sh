@@ -30,6 +30,10 @@ for arch in "$@"; do
     for src in "$r"/kcore/Sources/KCore "$r"/{tarwin-boot,tarboot,tarwin-object,tarwin-syscall,tarwin-sync,tarwin-ipc,tarwin-sched}/Sources/Tar* "$r"/tarwin-syscall/providers/Sources/TarwinObjectCalls; do
         module "$(basename "$src")" "$src"/*.swift
     done
+    if [[ $arch == aarch64 ]]; then
+        module TarwinArchAarch64 "$r/tarwin-arch-aarch64/Sources/TarwinArchAarch64"/*.swift
+        module TarwinArmBootstrap "$r/tarwin-syscall/first-entry/Sources/TarwinArmBootstrap"/*.swift
+    fi
     native="$r/../libtessera/app/Backend/Tarwin"
     module LibTesseraTarwin "$native"/CallNumbers.swift "$native"/Native*.swift
     "$bin/swiftc" "${flags[@]}" -module-name ExecutionProbe -emit-ir -o "$d/main.ll" "$here/Probe.swift" "$r/tarboot/tests/FirmwareProbe/Memory.swift"

@@ -10,7 +10,7 @@ guests, e.g. `bash run.sh aarch64 riscv64`. The test uses:
 - `EDK_BASETOOLS`: built EDK II BaseTools (tested with edk2-stable202408);
   RV64 uses its GenFw and linker script.
 
-Each guest reserves two firmware pages, transfers an event and an eight-byte
+Each guest reserves scratch pages, transfers an event and an eight-byte
 message between handle tables, cancels the pending operation on that specific
 sender name and waits for its provider to finish before delivery, narrows
 rights through the native register interface, closes the last reference
@@ -21,6 +21,10 @@ waiter, wakes it and rejects its stale timeout.
 The guest preloads a child's sole bootstrap channel with a §11.4 Startup
 message and a job handle, verifies the child-local name, decodes the
 received grant, and rejects reuse of the handoff after the read.
+On AArch64 it also constructs two equally mapped, never-installed roots,
+checks that only the child's root yields a frame, and compares x0 to the
+preloaded local name. The descriptor test does not initialize a real TCB,
+execute mapped code, authenticate an image or enter EL0.
 It checks a descendant's footprint against the root's budget, then
 marks its thread runnable, freezes and kills it, drains the
 process handle table and checks its termination signal and the root's budget.

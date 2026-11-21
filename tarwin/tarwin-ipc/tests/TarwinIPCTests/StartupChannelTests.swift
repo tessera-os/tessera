@@ -37,7 +37,7 @@ final class StartupChannelTests: XCTestCase {
       ProcessExecution(
         header: .init(heads + 1 + i), job: tree.root, tree: tree,
         slots: .init(start: slots.baseAddress! + i, count: 1),
-        cells: .init(start: cells + i * 3, count: 3), salt: 19)!
+        cells: .init(start: cells + i * 3, count: 3), salt: 19, initialMap: 0x4000)!
     }
     func queue(_ i: Int) -> ChannelQueue {
       ChannelQueue(
@@ -90,8 +90,10 @@ final class StartupChannelTests: XCTestCase {
     XCTAssertEqual(p.withHandles(tree: tree) { $0.count }, 0)
     XCTAssertEqual(staging.count, 2)
     guard let token = install([13], [pass]),
-      let name = pair.entryName(token, child: p, tree: tree)
+      let name = pair.entryName(token, child: p, tree: tree, initialMap: 0x4000)
     else { return XCTFail() }
+    XCTAssertNil(pair.entryName(token, child: p, tree: tree))
+    XCTAssertNil(pair.entryName(token, child: p, tree: tree, initialMap: 0x8000))
     XCTAssertNil(install([], []))
     // Even an identical local integer bound to the same endpoint in a
     // sibling table cannot authorize a frame for that sibling.
@@ -102,20 +104,20 @@ final class StartupChannelTests: XCTestCase {
         tree: tree, { $0.derive(first, rights: 4, duplicate: false) })
     else { return XCTFail() }
     XCTAssertEqual(name, same)
-    XCTAssertNil(pair.entryName(token, child: other, tree: tree))
+    XCTAssertNil(pair.entryName(token, child: other, tree: tree, initialMap: 0x4000))
     guard
       case .installed(let extra)? = p.withHandles(
         tree: tree, { $0.install(.init(heads + 5), rights: 0) })
     else { return XCTFail() }
-    XCTAssertNil(pair.entryName(token, child: p, tree: tree))
+    XCTAssertNil(pair.entryName(token, child: p, tree: tree, initialMap: 0x4000))
     XCTAssertEqual(p.withHandles(tree: tree) { $0.close(extra) { _ in XCTFail() } }, true)
-    XCTAssertEqual(pair.entryName(token, child: p, tree: tree), name)
+    XCTAssertEqual(pair.entryName(token, child: p, tree: tree, initialMap: 0x4000), name)
     guard
       case .installed(let fresh)? = p.withHandles(
         tree: tree, { $0.derive(name, rights: 4, duplicate: false) })
     else { return XCTFail() }
     XCTAssertNotEqual(name, fresh)
     XCTAssertEqual(pair.peek(at: .b)?.handles, 1)
-    XCTAssertNil(pair.entryName(token, child: p, tree: tree))
+    XCTAssertNil(pair.entryName(token, child: p, tree: tree, initialMap: 0x4000))
   }
 }
