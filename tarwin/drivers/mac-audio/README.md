@@ -22,10 +22,28 @@ TARWIN_AUDIO_HAL=1 swift test
 ```
 
 The normal smoke test renders offline through `AudioProcessor.render`, the same
-method called by the real HAL callback. Opt-in smoke starts each available
-default playback/input device and verifies a callback timestamp. Missing endpoints
-are printed; if neither exists the smoke test is skipped. Microphone access and
-HAL device availability are host responsibilities, not simulated successes.
+method called by the real HAL callback. The opt-in test requires a loopback device
+selected as both default input and output. After 250 ms of startup silence to
+prime both independently started AudioUnits, it plays a deterministic pseudorandom
+marker followed by a stereo 1 kHz sine through the playback ring, records through
+the capture ring, checks marker correlation (>0.99), waveform RMS error (<0.005),
+and advancing position frames for both endpoints. Missing devices or silence
+fail the opted-in test rather than skipping it. Microphone access and device
+routing are host responsibilities, not simulated successes.
+
+BlackHole 2ch setup on this Mac (no reboot was needed):
+
+```sh
+brew install --cask blackhole-2ch
+brew install switchaudio-osx
+sudo killall coreaudiod
+SwitchAudioSource -a
+SwitchAudioSource -s 'BlackHole 2ch' -t input
+SwitchAudioSource -s 'BlackHole 2ch' -t output
+SwitchAudioSource -c -t input
+SwitchAudioSource -c -t output
+TARWIN_AUDIO_HAL=1 swift test
+```
 
 ## Host integration / lifetime
 

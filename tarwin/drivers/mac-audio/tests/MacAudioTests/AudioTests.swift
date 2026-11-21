@@ -7,6 +7,23 @@ import MacAudioHost
 import MacAudioDriver
 import TarwinArchHosted
 
+private final class HALPositions {
+  private let lock = NSLock()
+  private var values: [UInt32: (count: Int, first: UInt64, last: UInt64, time: UInt64)] = [:]
+  func receive(_ bytes: UnsafeRawBufferPointer) {
+    guard let frame = FrameView(bytes), frame.family == 2, frame.kind == AudioKind.position,
+      frame.payload.count == 28 else { return }
+    let endpoint = UInt32(Wire.read(frame.payload,0,4))
+    let position = Wire.read(frame.payload,4,8), time = Wire.read(frame.payload,12,8)
+    lock.lock(); defer { lock.unlock() }
+    let old = values[endpoint]
+    values[endpoint] = ((old?.count ?? 0) + 1, old?.first ?? position, position, time)
+  }
+  func snapshot(_ endpoint: AudioEndpoint) -> (count: Int, first: UInt64, last: UInt64, time: UInt64)? {
+    lock.lock(); defer { lock.unlock() }; return values[endpoint.rawValue]
+  }
+}
+
 final class AudioTests: XCTestCase {
   func testHostedDeviceRegistryAndEndpoint() throws {
     let (host, channel) = LoopbackChannel.pair()
@@ -203,25 +220,79 @@ final class AudioTests: XCTestCase {
       output.withUnsafeMutableBufferPointer { XCTAssertEqual(processor.render(into:$0,frames:480,timestampNs:1), 0) }
       XCTAssertTrue(output.allSatisfy { $0 == 0 }); return
     }
+    _ = try XCTUnwrap(MacAudioHost.hasDefaultDevice(.playback) ? true : nil, "HAL loopback requires a default output")
+    _ = try XCTUnwrap(MacAudioHost.hasDefaultDevice(.capture) ? true : nil, "HAL loopback requires a default input")
     let (a,b) = LoopbackChannel.pair()
-    let playback = AudioRing(capacity: 4096, configuration: config())!
-    let capture = AudioRing(capacity: 4096, configuration: config())!
+    let positions = HALPositions()
+    a.onReceive = { positions.receive($0) }
+    let playback = AudioRing(capacity: 131072, configuration: config())!
+    let capture = AudioRing(capacity: 131072, configuration: config())!
+    let lead = 4096, markerLength = 2048, sineLength = 48000, tail = 2048
+    let frames = lead + markerLength + sineLength + tail
+    var signal = [Float](repeating: 0, count: frames * 2)
+    var random: UInt32 = 0x48564c50
+    for frame in 0..<markerLength {
+      random = random &* 1664525 &+ 1013904223
+      let value: Float = random & 0x80000000 == 0 ? -0.25 : 0.25
+      signal[(lead + frame)*2] = value; signal[(lead + frame)*2+1] = -0.5 * value
+    }
+    for frame in 0..<sineLength {
+      let value = Float(0.15 * sin(2 * Double.pi * 1000 * Double(frame) / 48000))
+      signal[(lead + markerLength + frame)*2] = value
+      signal[(lead + markerLength + frame)*2+1] = -0.5 * value
+    }
     let host = MacAudioHost(channel: b, playback: playback, capture: capture)
     defer { host.shutdown(); withExtendedLifetime(a) {} }
-    var started = 0
-    for endpoint in AudioEndpoint.allCases {
-      guard MacAudioHost.hasDefaultDevice(endpoint) else {
-        print("HAL: no default \(endpoint) device"); continue
-      }
-      try host.startHardware(endpoint)
-      let elapsed = expectation(description: "HAL \(endpoint) callbacks")
-      DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(150)) { elapsed.fulfill() }
-      wait(for: [elapsed], timeout: 2)
-      let processor = endpoint == .playback ? host.playback! : host.capture!
-      XCTAssertGreaterThan(processor.hostTimeNs.load(ordering: .acquiring), 0)
-      host.stopHardware(endpoint); started += 1
-      print("HAL: \(endpoint) started and callback observed")
+    try host.startHardware(.capture)
+    try host.startHardware(.playback)
+    let primed = expectation(description: "HAL loopback startup silence")
+    DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(250)) { primed.fulfill() }
+    wait(for: [primed], timeout: 2)
+    signal.withUnsafeBufferPointer { XCTAssertEqual(playback.write($0, frames: frames), frames) }
+    let elapsed = expectation(description: "HAL loopback recording")
+    DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(1800)) { elapsed.fulfill() }
+    wait(for: [elapsed], timeout: 5)
+    host.stopHardware(.playback); host.stopHardware(.capture)
+    XCTAssertEqual(playback.availableFrames, 0, "HAL must consume the complete known signal")
+    XCTAssertEqual(capture.overruns, 0, "A dropped capture block would invalidate alignment")
+    let recordedFrames = capture.availableFrames
+    var recorded = [Float](repeating: 0, count: recordedFrames * 2)
+    recorded.withUnsafeMutableBufferPointer { XCTAssertEqual(capture.read(into: $0, frames: recordedFrames), recordedFrames) }
+    let markerStart = try XCTUnwrap((0..<recordedFrames).first { abs(recorded[$0*2]) > 0.2 },
+      "No marker captured: route the same loopback device to default input and output")
+    _ = try XCTUnwrap(markerStart + markerLength + sineLength <= recordedFrames ? true : nil,
+      "The recording must contain the entire marker and sine")
+    var dot = 0.0, expectedEnergy = 0.0, observedEnergy = 0.0
+    for frame in 0..<markerLength {
+      let expected = Double(signal[(lead+frame)*2]), observed = Double(recorded[(markerStart+frame)*2])
+      dot += expected * observed; expectedEnergy += expected * expected; observedEnergy += observed * observed
     }
-    if started == 0 { throw XCTSkip("No default Core Audio input or output device") }
+    let correlation = dot / sqrt(max(Double.leastNonzeroMagnitude, expectedEnergy * observedEnergy))
+    XCTAssertGreaterThan(correlation, 0.99, "Pseudorandom marker must survive the HAL loopback")
+    var error = 0.0
+    var firstMismatch: Int?, lastMismatch: Int?, mismatchCount = 0
+    for frame in 0..<sineLength {
+      for channel in 0..<2 {
+        let expected = Double(signal[(lead+markerLength+frame)*2+channel])
+        let observed = Double(recorded[(markerStart+markerLength+frame)*2+channel])
+        error += (expected-observed) * (expected-observed)
+        if abs(expected-observed) > 0.005 {
+          if firstMismatch == nil { firstMismatch = frame }
+          lastMismatch = frame; mismatchCount += 1
+        }
+      }
+    }
+    let rmsError = sqrt(error / Double(sineLength * 2))
+    if let firstMismatch, let lastMismatch {
+      print("HAL sine mismatches: frames \(firstMismatch)...\(lastMismatch), \(mismatchCount) channel samples")
+    }
+    XCTAssertLessThan(rmsError, 0.005, "Both channels must retain the known 1 kHz waveform and gain")
+    for endpoint in AudioEndpoint.allCases {
+      let position = try XCTUnwrap(positions.snapshot(endpoint))
+      XCTAssertGreaterThan(position.count, 2); XCTAssertGreaterThan(position.last, position.first)
+      XCTAssertGreaterThan(position.time, 0)
+      print("HAL loopback \(endpoint): position \(position.first)->\(position.last), \(position.count) position frames")
+    }
+    print("HAL loopback: recorded \(recordedFrames) frames, marker at \(markerStart), correlation \(correlation), sine RMS error \(rmsError)")
   }
 }
