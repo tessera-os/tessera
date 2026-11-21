@@ -5,6 +5,7 @@ let package = Package(
   name: "TRFS", platforms: [.macOS(.v26)],
   products: [
     .library(name: "TarwinFsWire", targets: ["TarwinFsWire"]),
+    .library(name: "TarwinFAT", targets: ["TarwinFAT"]),
     .library(name: "TRFS", targets: ["TRFS"]),
   ],
   dependencies: [
@@ -12,6 +13,15 @@ let package = Package(
     .package(path: "../tarwin-device"),
   ],
   targets: [
+    .target(
+      name: "TarwinFAT",
+      dependencies: ["TarwinFsWire", .product(name: "TarwinIPC", package: "tarwin-ipc")]),
+    .testTarget(
+      name: "FATTests",
+      dependencies: [
+        "TarwinFAT", "TRFS", "TarwinFsWire", .product(name: "TarwinIPC", package: "tarwin-ipc"),
+        .product(name: "TarwinDevice", package: "tarwin-device"),
+      ], path: "tests/FATTests"),
     .target(
       name: "TarwinFsWire", dependencies: [.product(name: "TarwinIPC", package: "tarwin-ipc")]),
     .target(
