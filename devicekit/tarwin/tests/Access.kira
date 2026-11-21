@@ -1,0 +1,27 @@
+import Foundation
+
+@Test
+function noncoherentOwnershipNeverChangesAfterFailedCacheMaintenance() {
+    var b = NativeDmaBuffer { handle: 5, iova: 8192, length: 4096, direction: .FromDevice }
+    let failSync: (U64,DmaDirection) -> Bool = { h,d in return false }
+    let sync: (U64,DmaDirection) -> Bool = { h,d in return h == 5 && d == .FromDevice }
+    let close: (U64) -> Bool = { h in return h == 5 }
+    expect!(b.suitable(4096,8192))
+    expect!(!b.suitable(4096,2048))
+    expect!(!b.prepareForDevice(failSync))
+    expect!(b.prepareForDevice(sync))
+    expect!(!b.retire(close))
+    expect!(!b.completeFromDevice(failSync))
+    expect!((b.owner == BufferOwner.Device))
+    expect!(b.completeFromDevice(sync))
+    expect!(b.retire(close))
+    expect!(!b.prepareForDevice(sync))
+}
+
+@Test
+function driverApiRefusesExpiredFutureOrPreTarwinDrivers() {
+    expect!(compatibleDriver(27,10,26,11))
+    expect!(!compatibleDriver(27,11,26,11))
+    expect!(!compatibleDriver(26,11,26,10))
+    expect!(!compatibleDriver(26,11,26,12))
+}

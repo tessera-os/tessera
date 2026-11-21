@@ -1,0 +1,5 @@
+construct NativeDriverKit extends Package {
+    let kind: PackageKind = .Library
+    let version: String = "26.11.1"
+    let moduleRoot: String = "NativeDriverKit"
+}
