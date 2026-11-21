@@ -49,10 +49,9 @@ function distinctAreas(a: U64, aBytes: U64, b: U64, bBytes: U64) -> Bool {
     return a - b >= bBytes
 }
 
-public function installSplitQueue(index: U32, memory: borrow QueueMemory,
-                                  read: borrow (U32) -> U32, write: borrow (U32,U32) -> Void) -> Bool {
+function splitMemoryValid(memory: borrow QueueMemory) -> Bool {
     let count = U64(memory.count)
-    if count < 1 || count > 32768 || (count & (count - 1)) != 0 || read(0x70) != 11 { return false }
+    if count < 1 || count > 32768 || (count & (count - 1)) != 0 { return false }
     let d = count * 16
     let a = 6 + count * 2
     let u = 6 + count * 8
@@ -60,6 +59,12 @@ public function installSplitQueue(index: U32, memory: borrow QueueMemory,
         !validArea(memory.used, u, 4) || !distinctAreas(memory.descriptors, d, memory.available, a) ||
         !distinctAreas(memory.descriptors, d, memory.used, u) ||
         !distinctAreas(memory.available, a, memory.used, u) { return false }
+    return true
+}
+
+public function installSplitQueue(index: U32, memory: borrow QueueMemory,
+                                  read: borrow (U32) -> U32, write: borrow (U32,U32) -> Void) -> Bool {
+    if !splitMemoryValid(memory) || read(0x70) != 11 { return false }
     write(0x30, index)
     if read(0x44) != 0 || read(0x34) < memory.count { return false }
     write(0x38, memory.count)

@@ -1,0 +1,83 @@
+public struct RegisteredReceive {
+    let process: U64
+    let key: U64
+    let memory: U64
+    let offset: U64
+    let length: U32
+}
+public enum ReceiveResult { NoMatch PolicyDenied WouldBlock Fault Delivered(U32) }
+
+function addressMatches(bytes: borrow [U8], at: Int, width: Int, bound: borrow [U8]) -> Bool {
+    if bound.count == 0 { return true }
+    if bound.count != width { return false }
+    for i in 0..width { if bound[i] != bytes[at + i] { return false } }
+    return true
+}
+
+// Per bound UDP endpoint; peer matching and policy are checked before a
+// posted receive can be consumed. The VM pins exactly the registered range;
+// teardown owns the unpin. Publish completions under the port credit contract.
+public struct UdpEndpoint {
+    let process: U64
+    let family: IpFamily
+    let port: U16
+    let limit: Int
+    var local: [U8] = []
+    var peer: [U8] = []
+    var peerPort: U16 = 0
+    var interfaceId: U64 = 0
+    var receives: [RegisteredReceive] = []
+    var first: Int = 0
+    var count: Int = 0
+    var closed: Bool = false
+
+    function post(borrow mut self, r: borrow RegisteredReceive,
+                  pinWritable: borrow (U64,U64,U64,U32) -> Bool) -> Bool {
+        if closed || r.process != process || r.memory == 0 || r.key == 0 || r.length == 0 ||
+            count >= limit || U64(r.length - 1) > 0xffffffffffffffff - r.offset { return false }
+        for i in 0..count { if receives[(first + i) % limit].key == r.key { return false } }
+        if !pinWritable(process,r.memory,r.offset,r.length) { return false }
+        let index = (first + count) % limit
+        if index == receives.count { receives.append(copy r) } else { receives[index] = copy r }
+        count += 1
+        return true
+    }
+
+    function deliver(borrow mut self, bytes: borrow [U8], iface: U64,
+                     permitted: borrow (U64,U64,borrow [U8]) -> Bool,
+                     writePinned: borrow (borrow RegisteredReceive,borrow [U8],Int,Int) -> Bool,
+                     done: borrow (borrow RegisteredReceive,U32,Bool) -> Void) -> ReceiveResult {
+        if closed { return .NoMatch }
+        match decodeUdp(bytes) {
+            Accepted(d) -> {
+                if d.family != family || d.destinationPort != port { return .NoMatch }
+                let width: Int = d.family == .V4 ? 4 : 16
+                let start: Int = d.family == .V4 ? 12 : 8
+                if (interfaceId != 0 && interfaceId != iface) ||
+                    (peerPort != 0 && peerPort != d.sourcePort) ||
+                    !addressMatches(bytes,start,width,peer) ||
+                    !addressMatches(bytes,start + width,width,local) { return .NoMatch }
+                if !permitted(process,iface,bytes) { return .PolicyDenied }
+                if count == 0 { return .WouldBlock }
+                let r = receives[first]
+                let n = d.length > Int(r.length) ? Int(r.length) : d.length
+                let copied = writePinned(r,bytes,d.payload,n)
+                count -= 1
+                first = (first + 1) % limit
+                done(r,copied ? U32(n) : 0,copied)
+                if !copied { return .Fault }
+                return .Delivered(U32(n))
+            }
+            else -> { return .NoMatch }
+        }
+    }
+
+    function shutdown(borrow mut self, cancel: borrow (borrow RegisteredReceive) -> Void) {
+        closed = true
+        while count > 0 {
+            cancel(receives[first])
+            first = (first + 1) % limit
+            count -= 1
+        }
+    }
+}

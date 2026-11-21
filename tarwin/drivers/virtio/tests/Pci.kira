@@ -1,0 +1,60 @@
+import Foundation
+
+function pciConfig() -> [U8] {
+    var b: [U8] = []
+    for i in 0..256 { b.append(0) }
+    b[0] = 0xf4
+    b[1] = 0x1a
+    b[2] = 0x42
+    b[3] = 0x10
+    b[6] = 16
+    b[0x34] = 0x40
+    for i in 0..3 {
+        let at = 64 + 20 * i
+        b[at] = 9
+        b[at + 1] = i == 2 ? 0 : U8(at + 20)
+        b[at + 2] = 20
+        b[at + 3] = U8(i + 1)
+        b[at + 4] = U8(i)
+        b[at + 12] = 64
+    }
+    b[100] = 4
+    return move b
+}
+
+@Test
+function modernPciRequiresBoundedCapabilitiesAndAcyclicList() {
+    var b = pciConfig()
+    let bars: [U64] = [64,64,64,0,0,0]
+    match discoverVirtioPci(b,bars,2) {
+        Invalid -> { expect!(false) }
+        Found(w) -> { expect!((w.multiplier == 4 && w.config.length == 0 && w.isr.bar == 2)) }
+    }
+    b[105] = 64
+    expect!((discoverVirtioPci(b,bars,2) == PciDiscovery.Invalid))
+    b[105] = 0
+    b[96] = 65
+    expect!((discoverVirtioPci(b,bars,2) == PciDiscovery.Invalid))
+}
+
+@Test
+function notifyAddressMustFitBeforeTheQueueIsEnabled() {
+    let w = PciWindow { bar: 0, offset: 0, length: 64 }
+    let t = TransportWindows { common: w, notify: w, isr: w, config: w, multiplier: 4 }
+    var offset: U32 = 16
+    var enabled: U32 = 0
+    let read: (U32,U32) -> U32 = { reg,width in
+        if reg == 20 { return 11 }
+        if reg == 18 { return 1 }
+        if reg == 24 { return 4 }
+        if reg == 30 { return offset }
+        if reg == 28 { return enabled }
+        return 0 }
+    let write: (U32,U32,U32) -> Void = { reg,width,v in if reg == 28 { enabled = v } }
+    let memory = QueueMemory { count: 4, descriptors: 4096, available: 8192, used: 12288 }
+    expect!((setupPciQueue(0,memory,t,read,write) == QueueNotify.Invalid))
+    expect!((enabled == 0))
+    offset = 15
+    expect!((setupPciQueue(0,memory,t,read,write) == QueueNotify.Offset(60)))
+    expect!((enabled == 1))
+}

@@ -1,0 +1,32 @@
+// Each flow contributes only its FIFO head. The finish tag is local to
+// the interface, in bytes of service; after an idle period a flow starts
+// at the current virtual time instead of banking credit.
+public struct FlowHead {
+    let notBefore: U64
+    let background: Bool
+    let finish: U64
+    let ordinal: U64
+}
+
+public function flowFinish(last: U64, virtualTime: U64, bytes: U32) -> U64 {
+    let start = last > virtualTime ? last : virtualTime
+    if U64(bytes) > 0xffffffffffffffff - start { return 0xffffffffffffffff }
+    return start + U64(bytes)
+}
+
+public function nextFlow(heads: borrow [FlowHead], now: U64, congested: Bool) -> Int {
+    var best: Int = -1
+    for i in 0..heads.count {
+        let head = heads[i]
+        if head.notBefore > now { continue }
+        if best >= 0 {
+            let old = heads[best]
+            if congested && old.background != head.background {
+                if head.background { continue }
+            } else if head.finish > old.finish ||
+                (head.finish == old.finish && head.ordinal >= old.ordinal) { continue }
+        }
+        best = Int(i)
+    }
+    return best
+}

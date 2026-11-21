@@ -1,0 +1,112 @@
+// PCI 1.3 modern transport. Snapshot the first 256 config bytes through
+// DeviceSlot; bars holds lengths of validated MMIO BARs (zero for I/O BARs,
+// unavailable BARs, or the upper half of a 64-bit BAR).
+public struct PciWindow { let bar: U8
+    let offset: U64
+    let length: U64
+}
+public struct TransportWindows { let common: PciWindow
+    let notify: PciWindow
+    let isr: PciWindow
+    let config: PciWindow
+    let multiplier: U32
+}
+public enum PciDiscovery { Invalid Found(TransportWindows) }
+
+function configLe(bytes: borrow [U8], at: Int, width: Int) -> U32 {
+    var value: U32 = 0
+    for i in 0..width { value |= U32(bytes[at + i]) << U32(i * 8) }
+    return value
+}
+
+public function discoverVirtioPci(bytes: borrow [U8], bars: borrow [U64], deviceType: U16) -> PciDiscovery {
+    if bytes.count < 256 || bars.count != 6 || deviceType == 0 || deviceType > 63 ||
+        configLe(bytes,0,2) != 0x1af4 || configLe(bytes,2,2) != 0x1040 + U32(deviceType) ||
+        (bytes[6] & 16) == 0 || (bytes[14] & 127) != 0 { return .Invalid }
+    let empty = PciWindow { bar: 0, offset: 0, length: 0 }
+    var regions = [empty, empty, empty, empty]
+    var multiplier: U32 = 0
+    var visited: U64 = 0
+    var at = Int(bytes[0x34])
+    while at != 0 {
+        if at < 64 || at > 252 || at % 4 != 0 { return .Invalid }
+        let mark = U64(1) << U64(at / 4)
+        if (visited & mark) != 0 { return .Invalid }
+        visited |= mark
+        let following = Int(bytes[at + 1])
+        if bytes[at] == 9 {
+            let length = Int(bytes[at + 2])
+            if length < 4 || length > 256 - at { return .Invalid }
+            let kind = Int(bytes[at + 3])
+            if kind >= 1 && kind <= 4 && regions[kind - 1].length == 0 {
+                if length < 16 || (kind == 2 && length < 20) { return .Invalid }
+                let bar = bytes[at + 4]
+                let offset = U64(configLe(bytes,at + 8,4))
+                let size = U64(configLe(bytes,at + 12,4))
+                var minimum: U64 = 1
+                if kind == 1 { minimum = 56 }
+                if kind == 2 { minimum = 2 }
+                if bar >= 6 || size < minimum || offset >= bars[Int(bar)] ||
+                    size > bars[Int(bar)] - offset { return .Invalid }
+                if (kind == 1 && offset % 4 != 0) || (kind == 2 && offset % 2 != 0) { return .Invalid }
+                regions[kind - 1] = PciWindow { bar: bar, offset: offset, length: size }
+                if kind == 2 {
+                    multiplier = configLe(bytes,at + 16,4)
+                    if multiplier != 0 && (multiplier < 2 || (multiplier & (multiplier - 1)) != 0) {
+                        return .Invalid
+                    }
+                }
+            }
+        }
+        at = following
+    }
+    if regions[0].length == 0 || regions[1].length == 0 || regions[2].length == 0 { return .Invalid }
+    return .Found(TransportWindows { common: regions[0], notify: regions[1], isr: regions[2],
+        config: regions[3], multiplier: multiplier })
+}
+
+// Accessors are relative to common_cfg with ordered little-endian accesses
+// of exactly the supplied width, serialized across selector transactions.
+public function negotiatePci(bits: U32, read: borrow (U32,U32) -> U32,
+                             write: borrow (U32,U32,U32) -> Void,
+                             resetTimedOut: borrow () -> Bool) -> MmioFeatures {
+    write(20,1,0)
+    while read(20,1) != 0 { if resetTimedOut() { return .Unavailable } }
+    write(20,1,1)
+    write(20,1,3)
+    write(0,4,0)
+    let low = read(4,4)
+    write(0,4,1)
+    let features = isolatedSplitFeatures((U64(read(4,4)) << 32) | U64(low),bits)
+    if features == 0 { write(20,1,0x83)
+        return .Unavailable }
+    write(8,4,0)
+    write(12,4,U32(features & 0xffffffff))
+    write(8,4,1)
+    write(12,4,U32(features >> 32))
+    write(20,1,11)
+    if read(20,1) != 11 { write(20,1,read(20,1) | 0x80)
+        return .Unavailable }
+    return .Negotiated(features)
+}
+
+public enum QueueNotify { Invalid Offset(U64) }
+public function setupPciQueue(index: U16, memory: borrow QueueMemory, transport: borrow TransportWindows,
+                              read: borrow (U32,U32) -> U32,
+                              write: borrow (U32,U32,U32) -> Void) -> QueueNotify {
+    if read(20,1) != 11 || U32(index) >= read(18,2) || !splitMemoryValid(memory) { return .Invalid }
+    write(22,2,U32(index))
+    if memory.count > read(24,2) || read(28,2) != 0 { return .Invalid }
+    let doorbell = U64(read(30,2)) * U64(transport.multiplier)
+    if doorbell >= transport.notify.length || transport.notify.length - doorbell < 2 { return .Invalid }
+    write(24,2,memory.count)
+    write(32,4,U32(memory.descriptors & 0xffffffff))
+    write(36,4,U32(memory.descriptors >> 32))
+    write(40,4,U32(memory.available & 0xffffffff))
+    write(44,4,U32(memory.available >> 32))
+    write(48,4,U32(memory.used & 0xffffffff))
+    write(52,4,U32(memory.used >> 32))
+    write(28,2,1)
+    if read(28,2) != 1 { return .Invalid }
+    return .Offset(transport.notify.offset + doorbell)
+}
