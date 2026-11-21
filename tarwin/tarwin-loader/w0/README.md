@@ -35,15 +35,14 @@ the kernel's identity, role, train, CPU and relocation-free R/RX subset
 all have to pass. Release mode and non-enrolled machines must not call this
 entry point. This is not a production trust-store or PKI implementation.
 
-The default host suite checks an actual signed AArch64 archive from the
-platform's Embedded Swift kernel, without executing it. The public fixture
-is confined to the test target; the recorded UTC is an independent test
-input from that run, never a clock to use in the guest. No private key is
-in the corpus. Its TIRA SHA-256 is
-`bac20805c738ac09c8010ffc937d44191609e3a1ff0cc4bedf223e736d5a18d7`.
+The default host suite checks actual tagged AArch64 and x64 archives from
+the platform's Embedded Swift kernel, without executing them. The previous
+signed but untagged AArch64 entry must fail. The public corpus is confined to
+the test target; the captured UTC is an independent test input from that
+run, never a clock to use in the guest. No private key is in the corpus.
 
 To also exercise a newly signed fixture on the host, set
 `W0_TEST_ARCHIVE`, `W0_TEST_SIGNATURE`, `W0_TEST_ENROLLMENT` and
 `W0_TEST_UTC` (an independently supplied Unix time) for the test command.
 Set `W0_TEST_MACHINE` and `W0_TEST_ENTRY_HEX` from the expected build
-manifest for other targets (defaults: `aarch64` and `4000`).
+manifest for other targets (defaults: `aarch64` and `4010`).

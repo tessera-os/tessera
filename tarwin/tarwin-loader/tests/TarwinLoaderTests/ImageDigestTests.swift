@@ -9,6 +9,17 @@ private func hex(_ cv: BlakeCv) -> String {
 }
 
 final class ImageDigestTests: XCTestCase {
+  func testW0EntryTypeID() throws {
+    let spelling = Array("fn(ptr) -> never abi(c)".utf8)
+    var stack = [BlakeCv](repeating: initialCv(), count: 54)
+    let root = try XCTUnwrap(
+      spelling.withUnsafeBytes { bytes in
+        stack.withUnsafeMutableBufferPointer { bootSetDigest(bytes, scratch: $0) }
+      })
+    XCTAssertEqual(root.w0, w0SinglePointerTag)
+    XCTAssertEqual(hex(root), "605041d491c43f87a19564e7dd22cfd2d6bf679f3ee1ee3ecb4a073a5e238006")
+  }
+
   func testCanonicalEntitlementArrays() {
     for (input, valid) in [
       ("[]", true), (#"["a","aa","b"]"#, true), (#"["\t","A","é"]"#, true),

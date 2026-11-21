@@ -84,48 +84,18 @@ func signingParts(_ file: Data, machine: UInt16, train: [UInt8], tir: [UInt8]) t
   Data, Range<Int>, Range<Int>
 ) {
   var s = stack()
-  guard
+  guard train.count == 3, tir.count == 3,
     let kernel = file.withUnsafeBytes({ b in
       s.withUnsafeMutableBufferPointer {
-        inspectSigningCandidate(
-          b, machine: machine, addressLimit: .max, finalized: false, requiresEntry: true,
-          scratch: $0)
+        inspectW0SigningCandidate(
+          b, machine: machine, train: (train[0], train[1], train[2]),
+          tir: (tir[0], tir[1], tir[2]), addressLimit: .max, scratch: $0)
       }
     }), let sig = kernel.notes.signature,
-    let env = file.withUnsafeBytes({ HybridEnvelope($0, descriptor: sig) }),
-    let profile = kernel.notes.profile, let grants = kernel.notes.entitlements,
-    let target = kernel.notes.target, let window = kernel.notes.train,
-    file[profile].elementsEqual([3, 4]), file[grants].elementsEqual("[]".utf8),
-    file[window].elementsEqual(train + tir + train)
-  else { throw Failure.invalid("unsigned, invalid image, incorrect W0 role, grants or train") }
-  try require(
-    file[target].withUnsafeBytes { matchesW0Baseline($0, machine: machine) },
-    "not the full W0 baseline")
-  for p in stride(
-    from: kernel.programHeaders.lowerBound, to: kernel.programHeaders.upperBound, by: 56)
-  {
-    if try file.uint(p, UInt32.self) == 4 { continue }
-    let flags = try file.uint(p + 4, UInt32.self)
-    try require(
-      try file.uint(p, UInt32.self) == 1 && (flags == 4 || flags == 5)
-        && file.uint(p + 32, UInt64.self) == file.uint(p + 40, UInt64.self),
-      "not a file-backed R/RX W0 image")
+    let env = file.withUnsafeBytes({ HybridEnvelope($0, descriptor: sig) })
+  else {
+    throw Failure.invalid("not a W0 kernel with the required tagged entry, train and baseline")
   }
-  let h = Int(try file.uint(40, UInt64.self))
-  for i in 0..<Int(try file.uint(60, UInt16.self)) {
-    try require(
-      try file.uint(h + 64 * i + 8, UInt64.self) & 0x401 == 0,
-      "W0 does not initialize writable or TLS sections")
-  }
-  guard let section = kernel.loaderRecords,
-    let records = file[section].withUnsafeBytes({ inspectLoaderRecords($0, addressLimit: .max) })
-  else { throw Failure.invalid("loader records") }
-  for k in [
-    LoaderTableKind.relative, .authenticated, .imports, .runtime, .dispatch, .tls, .features,
-  ] { try require(records[k].count == 0, "W0 is relocation-free") }
-  try require(
-    try file.uint(section.lowerBound + records[.gpu].bytes.lowerBound, UInt32.self) == 0,
-    "GPU records unsupported")
   var msg = Data(repeating: 0, count: 1024)
   guard
     let count = file.withUnsafeBytes({ b in

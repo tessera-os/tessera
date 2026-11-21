@@ -45,12 +45,6 @@ private func view(_ b: UnsafeRawBufferPointer, _ r: Range<Int>) -> UnsafeRawBuff
 private func literal(_ s: StaticString) -> UnsafeRawBufferPointer {
   UnsafeRawBufferPointer(start: s.utf8Start, count: s.utf8CodeUnitCount)
 }
-private func equal(_ b: UnsafeRawBufferPointer, _ s: StaticString) -> Bool {
-  let t = literal(s)
-  guard t.count == b.count else { return false }
-  for i in b.indices where b[i] != t[i] { return false }
-  return true
-}
 private func word(_ b: UnsafeRawBufferPointer, _ p: Int) -> UInt32 {
   UInt32(littleEndian: b.loadUnaligned(fromByteOffset: p, as: UInt32.self))
 }
@@ -100,53 +94,6 @@ private func member(
   else { return nil }
   return range
 }
-private func version(_ b: UnsafeRawBufferPointer, _ at: Int, _ v: W0Version) -> Bool {
-  b[at] == v.0 && b[at + 1] == v.1 && b[at + 2] == v.2
-}
-private func restrictedKernel(_ b: UnsafeRawBufferPointer, _ image: InspectedImage, _ p: W0Policy)
-  -> Bool
-{
-  let notes = image.notes
-  guard let role = notes.profile, role.count == 2, b[role.lowerBound] == 3,
-    b[role.lowerBound + 1] == 4,
-    let grants = notes.entitlements, equal(view(b, grants), "[]"),
-    let train = notes.train, train.count == 9, version(b, train.lowerBound, p.train),
-    version(b, train.lowerBound + 3, p.tir), version(b, train.lowerBound + 6, p.train),
-    let target = notes.target, matchesW0Baseline(view(b, target), machine: p.machine),
-    notes.finalizer == nil,
-    let section = image.loaderRecords,
-    let d = inspectLoaderRecords(view(b, section), addressLimit: p.addressLimit),
-    d[.relative].count == 0, d[.authenticated].count == 0, d[.imports].count == 0,
-    d[.runtime].count == 0, d[.dispatch].count == 0,
-    d[.tls].count == 0, d[.features].count == 0,
-    word(b, section.lowerBound + d[.gpu].bytes.lowerBound) == 0
-  else { return false }
-  var notesCount = 0
-  for at in stride(
-    from: image.programHeaders.lowerBound, to: image.programHeaders.upperBound, by: 56)
-  {
-    if word(b, at) == 4 {
-      notesCount += 1
-      continue
-    }
-    guard word(b, at) == 1, word(b, at + 4) == 4 || word(b, at + 4) == 5,
-      wide(b, at + 32) == wide(b, at + 40)
-    else { return false }
-    // Note descriptors must not share a mapped page, even a read-only page.
-    let page = imagePage(p.machine)
-    let start = wide(b, at + 8)
-    let length = wide(b, at + 32)
-    if length > 0, let id = notes.buildID, let sig = notes.signature {
-      let mapped = Int(start / page * page)..<Int((start + length + page - 1) / page * page)
-      if mapped.overlaps(id) || mapped.overlaps(sig) { return false }
-    }
-  }
-  // InspectSigningCandidate has already bounded the entire section table.
-  let header = Int(wide(b, 40))
-  let count = Int(UInt16(littleEndian: b.loadUnaligned(fromByteOffset: 60, as: UInt16.self)))
-  for i in 0..<count where wide(b, header + 64 * i + 8) & 0x401 != 0 { return false }
-  return notesCount == 1
-}
 
 /// QEMU-only. All scratch buffers must be private, correctly aligned, disjoint
 /// from each other and from the immutable inputs. No verification callback.
@@ -176,10 +123,9 @@ public func authorizeQEMUStage0(
   else { return nil }
   let kernel = view(archive, range)
   guard
-    let image = inspectSigningCandidate(
-      kernel, machine: policy.machine, addressLimit: policy.addressLimit, finalized: false,
-      requiresEntry: true, scratch: hashes),
-    restrictedKernel(kernel, image, policy), let sig = image.notes.signature,
+    let image = inspectW0SigningCandidate(
+      kernel, machine: policy.machine, train: policy.train, tir: policy.tir,
+      addressLimit: policy.addressLimit, scratch: hashes), let sig = image.notes.signature,
     let n = nativeSigningMessage(kernel, notes: image.notes, into: message),
     authenticated(view(kernel, sig), enrollment, view(msg, 0..<n), hashes, polynomials)
   else { return nil }

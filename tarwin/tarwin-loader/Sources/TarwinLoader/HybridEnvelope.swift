@@ -77,16 +77,25 @@ public func inspectSigningCandidate(
   _ bytes: UnsafeRawBufferPointer, machine: UInt16, addressLimit: UInt64, finalized: Bool,
   requiresEntry: Bool, scratch: UnsafeMutableBufferPointer<BlakeCv>
 ) -> InspectedImage? {
+  parsedSigningCandidate(
+    bytes, machine: machine, addressLimit: addressLimit, finalized: finalized,
+    requiresEntry: requiresEntry, scratch: scratch)?.0
+}
+
+func parsedSigningCandidate(
+  _ bytes: UnsafeRawBufferPointer, machine: UInt16, addressLimit: UInt64, finalized: Bool,
+  requiresEntry: Bool, scratch: UnsafeMutableBufferPointer<BlakeCv>
+) -> (InspectedImage, LoaderDirectory, Range<Int>)? {
   guard
     let image = inspectELF(
       bytes, target: machine, addressLimit: addressLimit, finalized: finalized,
       requiresEntry: requiresEntry, requiresLoaderRecords: true),
     let root = nativeSigningID(bytes, image: image, scratch: scratch),
-    validatedMetadata(
+    let (directory, section) = validatedMetadata(
       bytes, image: image, machine: machine, addressLimit: addressLimit, finalized: finalized,
-      root: root) != nil
+      root: root)
   else { return nil }
-  return image
+  return (image, directory, section)
 }
 
 public func bootSetDigest(

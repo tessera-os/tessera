@@ -17,5 +17,5 @@ let package = Package(
       ]),
     .testTarget(
       name: "TarwinW0Tests", dependencies: ["TarwinW0Verify"],
-      resources: [.copy("acvp-43.json"), .copy("SignedAArch64")]),
+      resources: [.copy("acvp-43.json"), .copy("SignedAArch64"), .copy("SignedX64")]),
   ])

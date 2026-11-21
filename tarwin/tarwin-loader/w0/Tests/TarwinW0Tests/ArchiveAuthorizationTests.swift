@@ -4,13 +4,18 @@ import TarwinW0Verify
 import XCTest
 
 final class ArchiveAuthorizationTests: XCTestCase {
-  func testRecordedAArch64Authorization() throws {
-    let root = try XCTUnwrap(Bundle.module.resourceURL).appendingPathComponent("SignedAArch64")
-    try checkArchive(
-      archive: Data(contentsOf: root.appendingPathComponent("BOOT.TIR")),
-      signature: Data(contentsOf: root.appendingPathComponent("BOOT.SIG")),
-      key: Data(contentsOf: root.appendingPathComponent("test-enrollment.pub")),
-      clock: 1_795_237_353, target: 183, entry: 0x4000)
+  func testRecordedAuthorization() throws {
+    let root = try XCTUnwrap(Bundle.module.resourceURL)
+    let key = try Data(contentsOf: root.appendingPathComponent("SignedAArch64/test-enrollment.pub"))
+    for (fixture, machine, entry, accepted): (String, UInt16, UInt64, Bool) in [
+      ("SignedAArch64/BOOT", 183, 0x4010, true), ("SignedX64/BOOT", 62, 0x1010, true),
+      ("SignedAArch64/untagged", 183, 0x4000, false),
+    ] {
+      try checkArchive(
+        archive: Data(contentsOf: root.appendingPathComponent(fixture + ".TIR")),
+        signature: Data(contentsOf: root.appendingPathComponent(fixture + ".SIG")),
+        key: key, clock: 1_795_237_613, target: machine, entry: entry, accepted: accepted)
+    }
   }
 
   func testExternalStage0Archive() throws {
@@ -26,12 +31,12 @@ final class ArchiveAuthorizationTests: XCTestCase {
       archive: data("ARCHIVE"), signature: data("SIGNATURE"), key: data("ENROLLMENT"),
       clock: XCTUnwrap(UInt64(e["W0_TEST_UTC"] ?? "")),
       target: XCTUnwrap(targets[e["W0_TEST_MACHINE"] ?? "aarch64"]),
-      entry: XCTUnwrap(UInt64(e["W0_TEST_ENTRY_HEX"] ?? "4000", radix: 16)))
+      entry: XCTUnwrap(UInt64(e["W0_TEST_ENTRY_HEX"] ?? "4010", radix: 16)))
   }
 
   private func checkArchive(
     archive: Data, signature: Data, key: Data,
-    clock: UInt64, target: UInt16, entry: UInt64
+    clock: UInt64, target: UInt16, entry: UInt64, accepted: Bool = true
   ) throws {
     guard key.count == 2036, signature.count > 3373, archive.count > 24 else {
       return XCTFail("incomplete fixture")
@@ -75,7 +80,8 @@ final class ArchiveAuthorizationTests: XCTestCase {
         }
       }
     }
-    XCTAssertTrue(run(archive, signature, key))
+    XCTAssertEqual(run(archive, signature, key), accepted)
+    guard accepted else { return }
     for i in [8, signature.count - 3373, signature.count - 3309] {
       var bad = signature
       bad[i] ^= 1
