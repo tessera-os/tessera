@@ -22,9 +22,15 @@ public struct BootstrapCPU: ~Copyable {
   private var last: UInt64
 
   public init(now: UInt64) { last = now }
-  public var running: UInt64 { active.map { slots[$0].id } ?? 0 }
+  // Mutating reads let Embedded Swift borrow individual inline slots in place.
+  public var running: UInt64 {
+    mutating get {
+      if let i = active { return slots[i].id }
+      return 0
+    }
+  }
 
-  private func find(_ id: UInt64) -> Int? {
+  private mutating func find(_ id: UInt64) -> Int? {
     guard id != 0 else { return nil }
     for i in slots.indices where slots[i].id == id { return i }
     return nil
@@ -115,7 +121,7 @@ public struct BootstrapCPU: ~Copyable {
     return true
   }
 
-  private func key(_ i: Int) -> DispatchKey {
+  private mutating func key(_ i: Int) -> DispatchKey {
     let s = slots[i]
     return DispatchKey(
       qos: s.qos, readySince: s.readyAt, virtualStart: s.virtualStart,
@@ -151,7 +157,7 @@ public struct BootstrapCPU: ~Copyable {
   }
 
   /// A lone runnable thread is tickless. Additional wakes trigger select.
-  public func nextSliceEnd(now: UInt64) -> UInt64? {
+  public mutating func nextSliceEnd(now: UInt64) -> UInt64? {
     guard let i = active else { return nil }
     for j in slots.indices where slots[j].state == .ready {
       let since = now >= last ? now - last : 0
