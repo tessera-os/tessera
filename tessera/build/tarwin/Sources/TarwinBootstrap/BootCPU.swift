@@ -36,10 +36,28 @@ public struct BootCPU: ~Copyable {
   }
 
   public struct Dispatch {
+    /// Counter sampled for this successful scheduler decision.
+    public let counter: UInt64
     public let previous: UInt64
     public let next: UInt64
     /// Absolute hardware counter value, or nil to disarm the local slice timer.
     public let sliceCounter: UInt64?
+
+    /// Apply the scheduler and timer-object decision to the same local
+    /// comparator. Call with local interrupts masked in the original clock
+    /// domain. Refusal is not permission to enter idle or commit a switch.
+    public func programDeadline(
+      timers: TimerWakePlan, clock: SystemClocks, counter: UInt64, set: (UInt64?) -> Bool
+    ) -> Bool {
+      switch timers {
+      case .unavailable: return false
+      case .none: return set(sliceCounter)
+      case .atBoot(let limit):
+        guard let timer = clock.compareValue(forBoot: limit, counter: counter) else { return false }
+        if let sliceCounter { return set(min(sliceCounter, timer)) }
+        return set(timer)
+      }
+    }
   }
 
   /// The caller supplies a sample of the same non-wrapping counter each time.
@@ -71,19 +89,15 @@ public struct BootCPU: ~Copyable {
     if let end = queue.nextSliceEnd(now: now) {
       deadline = Self.counterAt(end, frequency: frequency, origin: origin)
     }
-    return Dispatch(previous: previous, next: next, sliceCounter: deadline)
+    return Dispatch(counter: counter, previous: previous, next: next, sliceCounter: deadline)
   }
 
   // ceil(ns * Hz / 10^9), split into seconds and a bounded fractional
   // product. If the counter cannot span the next slice, interrupt at its
   // last representable tick: never turn an armed slice into tickless idle.
   private static func counterAt(_ ns: UInt64, frequency: UInt64, origin: UInt64) -> UInt64 {
-    let unit: UInt64 = 1_000_000_000
-    let (whole, a) = (ns / unit).multipliedReportingOverflow(by: frequency)
-    let frac = ns % unit
-    let tail = frac * (frequency / unit) + (frac * (frequency % unit) + unit - 1) / unit
-    let (duration, b) = whole.addingReportingOverflow(tail)
-    let (ticks, c) = origin.addingReportingOverflow(duration)
-    return a || b || c ? .max : ticks
+    guard let distance = deadlineTicks(ns, frequency: frequency), distance <= .max - origin
+    else { return .max }
+    return origin + distance
   }
 }
