@@ -30,12 +30,15 @@ public struct ChannelPair: ~Copyable {
   public mutating func send(
     from end: ChannelEnd, _ bytes: UnsafeRawBufferPointer,
     names: UnsafeBufferPointer<UInt64>, table: inout HandleTable,
+    invalidate: (UInt64) -> Void,
     retire: (UnsafePointer<ObjectHeader>) -> Void
   ) -> ChannelStatus {
     let result: ChannelStatus
     switch end {
-    case .a: result = toB.write(bytes, names: names, from: &table, retire: retire)
-    case .b: result = toA.write(bytes, names: names, from: &table, retire: retire)
+    case .a:
+      result = toB.write(bytes, names: names, from: &table, invalidate: invalidate, retire: retire)
+    case .b:
+      result = toA.write(bytes, names: names, from: &table, invalidate: invalidate, retire: retire)
     }
     refresh()
     return result

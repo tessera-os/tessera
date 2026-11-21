@@ -11,7 +11,8 @@ guests, e.g. `bash run.sh aarch64 riscv64`. The test uses:
   RV64 uses its GenFw and linker script.
 
 Each guest reserves two firmware pages, transfers an event and an eight-byte
-message between handle tables, narrows rights through the native register
+message between handle tables, cancels the pending operation on that specific
+sender name and waits for its provider to finish before delivery, narrows rights through the native register
 interface, closes the last reference and finishes an epoch grace period.
 It also requeues an address waiter, wakes it and rejects its stale timeout.
 The guest checks a descendant's footprint against the root's budget, then

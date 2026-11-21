@@ -49,7 +49,8 @@ public struct ChannelQueue: ~Copyable {
 
   public mutating func write(
     _ bytes: UnsafeRawBufferPointer, names: UnsafeBufferPointer<UInt64>,
-    from table: inout HandleTable, retire: (UnsafePointer<ObjectHeader>) -> Void
+    from table: inout HandleTable, invalidate: (UInt64) -> Void,
+    retire: (UnsafePointer<ObjectHeader>) -> Void
   ) -> ChannelStatus {
     // The syscall boundary rejects an oversized handle list before copying it.
     guard names.count <= 64 else { return .outOfRange }
@@ -65,7 +66,7 @@ public struct ChannelQueue: ~Copyable {
     }
     let slot = (first + count) % lengths.count
     var n = 0
-    let result = table.moveForChannel(names) { (g: consuming ObjectGrant) in
+    let result = table.moveForChannel(names, invalidate: invalidate) { (g: consuming ObjectGrant) in
       if status == .ok {
         (grants.baseAddress! + slot * 64 + n).initialize(to: g)
         n += 1

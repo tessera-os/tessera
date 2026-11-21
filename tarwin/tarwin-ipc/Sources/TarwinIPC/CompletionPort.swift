@@ -1,5 +1,5 @@
-private extension RingRecord {
-  mutating func pair(_ word: Int, _ value: UInt64) {
+extension RingRecord {
+  fileprivate mutating func pair(_ word: Int, _ value: UInt64) {
     words[word] = UInt32(truncatingIfNeeded: value)
     words[word + 1] = UInt32(value >> 32)
   }
@@ -41,10 +41,23 @@ public struct PortOperation: Equatable {
   fileprivate let serial: UInt64
 }
 
+/// The same name (including salt/generation) can exist in two processes.
+/// The submitter captures its process KOID and the original object handle
+/// under the table epoch; neither field comes from the completion packet.
+public struct OperationHandle: Equatable {
+  public let process, name: UInt64
+  public init?(process: UInt64, name: UInt64) {
+    guard process != 0, name != 0 else { return nil }
+    self.process = process
+    self.name = name
+  }
+}
+
 public struct PortSlot {
   fileprivate enum State { case free, pending, cancelling, held, available }
   fileprivate var state: State = .free
   fileprivate var object: UInt64 = 0, serial: UInt64 = 0
+  fileprivate var owner: OperationHandle?
   fileprivate var packet = PortPacket()
   fileprivate var prev = -1, next = -1, list = -1
   // Each slab index also owns an independent hash bucket of object tails.
@@ -93,7 +106,9 @@ public struct CompletionPort: ~Copyable {
   }
 
   /// Reserve the eventual terminal packet before starting a one-shot operation.
-  public mutating func reserve(object: UInt64, key: UInt64, kind: UInt32) -> PortOperation? {
+  public mutating func reserve(
+    object: UInt64, key: UInt64, kind: UInt32, owner: OperationHandle? = nil
+  ) -> PortOperation? {
     guard !closed, free >= 0, object != 0, (1...11).contains(kind), serial != .max else {
       return nil
     }
@@ -102,6 +117,7 @@ public struct CompletionPort: ~Copyable {
     serial += 1
     slots[i].state = .pending
     slots[i].object = object
+    slots[i].owner = owner
     slots[i].serial = serial
     slots[i].packet.key = key
     slots[i].packet.kind = kind
@@ -132,9 +148,22 @@ public struct CompletionPort: ~Copyable {
   /// The callback schedules backend cancellation; it must not re-enter
   /// this port. Publish Cancelled only after the backend stops using buffers.
   public mutating func cancel(key: UInt64, schedule: (PortOperation) -> Void) -> Int {
+    cancel(where: { $0.packet.key == key }, schedule: schedule)
+  }
+
+  /// Closing, replacing or transferring one name does not cancel work
+  /// submitted through a duplicate or through a different process's table.
+  public mutating func cancel(owner: OperationHandle, schedule: (PortOperation) -> Void) -> Int {
+    cancel(where: { $0.owner == owner }, schedule: schedule)
+  }
+
+  private mutating func cancel(
+    where matches: (PortSlot) -> Bool,
+    schedule: (PortOperation) -> Void
+  ) -> Int {
     guard !closed else { return 0 }
     var count = 0
-    for i in slots.indices where slots[i].state == .pending && slots[i].packet.key == key {
+    for i in slots.indices where slots[i].state == .pending && matches(slots[i]) {
       slots[i].state = .cancelling
       count += 1
       schedule(PortOperation(index: i, serial: slots[i].serial))

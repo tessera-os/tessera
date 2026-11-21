@@ -1,6 +1,7 @@
 import LibTesseraTarwin
 import Tarboot
 import TarwinABI
+import TarwinIPC
 import TarwinIPCChannels
 import TarwinObject
 import TarwinObjectCalls
@@ -146,6 +147,9 @@ private func exercise(_ bytes: UnsafeMutableRawBufferPointer, _ challenge: UInt6
   let payload = arena.take(UInt8.self, count: 64)
   let buckets = arena.take(AddressBucket.self, count: 2)
   let sleepers = arena.take(AddressSleeper.self, count: 1)
+  let ops = arena.take(PortSlot.self, count: 1)
+  ops.initialize(repeating: PortSlot())
+  defer { ops.deinitialize() }
   for i in buckets.indices { (buckets.baseAddress! + i).initialize(to: AddressBucket()) }
   sleepers.baseAddress!.initialize(to: AddressSleeper())
   defer {
@@ -186,19 +190,31 @@ private func exercise(_ bytes: UnsafeMutableRawBufferPointer, _ challenge: UInt6
   }
   guard var queue = ChannelQueue(lengths: sizes, bytes: .init(payload), grants: grants),
     case .installed(var sent) = sender.install(UnsafePointer(hdr), rights: 7),
+    var port = CompletionPort(storage: ops),
+    let owner = OperationHandle(process: 1, name: sent),
+    let pending = port.reserve(object: hdr.pointee.koid, key: challenge, kind: 1, owner: owner),
     hdr.pointee.release() == .stillLive
   else { return false }
   var input = challenge
   var output: UInt64 = 0
   var received: UInt64 = 0
+  var cancelled: PortOperation?
   guard
     withUnsafeBytes(
       of: &input,
       { raw in
         withUnsafePointer(to: &sent) {
-          queue.write(raw, names: .init(start: $0, count: 1), from: &sender, retire: { _ in })
+          queue.write(
+            raw, names: .init(start: $0, count: 1), from: &sender, invalidate: { name in
+              if let source = OperationHandle(process: 1, name: name) {
+                _ = port.cancel(owner: source) { cancelled = $0 }
+              }
+            },
+            retire: { _ in })
         }
-      }) == .ok, !sender.close(sent, retire: { _ in })
+      }) == .ok, !sender.close(sent, retire: { _ in }), cancelled == pending,
+    port.take() == nil, port.finish(pending, at: 1, result: { PortPacket() }) == 1,
+    let packet = port.take(), packet.key == challenge, packet.error == 26
   else { return false }
   queue.closeSender()
   var size = ChannelSize()

@@ -174,6 +174,7 @@ public struct HandleTable: ~Copyable {
   /// transfer it onward or drop it, including on backpressure or peer death.
   public mutating func moveForChannel(
     _ names: UnsafeBufferPointer<UInt64>,
+    invalidate: (UInt64) -> Void = { _ in },
     take: (consuming ObjectGrant) -> Void
   ) -> HandleCheck {
     guard names.count <= 64 else { return .invalidHandle }
@@ -185,7 +186,9 @@ public struct HandleTable: ~Copyable {
       for j in 0..<i where names[i] == names[j] { return .invalidHandle }
     }
     for name in names {
-      take(remove(live(name)!, index: Int(handleIndex(name))))
+      let grant = remove(live(name)!, index: Int(handleIndex(name)))
+      invalidate(name)
+      take(grant)
     }
     return .allowed
   }

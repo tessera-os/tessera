@@ -1,3 +1,4 @@
+import TarwinIPC
 import TarwinIPCChannels
 import TarwinObject
 import XCTest
@@ -43,10 +44,12 @@ private final class Pair {
     }
     return n
   }
-  func write(_ bytes: [UInt8], _ names: [UInt64] = []) -> ChannelStatus {
+  func write(_ bytes: [UInt8], _ names: [UInt64] = [], invalidate: (UInt64) -> Void = { _ in })
+    -> ChannelStatus
+  {
     bytes.withUnsafeBytes { b in
       names.withUnsafeBufferPointer { n in
-        queue.write(b, names: n, from: &src) { _ in XCTFail() }
+        queue.write(b, names: n, from: &src, invalidate: invalidate) { _ in XCTFail() }
       }
     }
   }
@@ -68,6 +71,43 @@ private final class Pair {
 }
 
 final class ChannelQueueTests: XCTestCase {
+  func testMoveCancelsOnlyOperationsUsingThatNameInThisProcess() {
+    let p = Pair()
+    let moved = p.name(6)
+    let duplicate = p.name(6)
+    let denied = p.name(4)
+    var storage = [PortSlot](repeating: PortSlot(), count: 4)
+    storage.withUnsafeMutableBufferPointer { slab in
+      var port = CompletionPort(storage: slab)!
+      let a = OperationHandle(process: 10, name: moved)!
+      let b = OperationHandle(process: 10, name: duplicate)!
+      let c = OperationHandle(process: 11, name: moved)!
+      let ops = [a, b, c, a].map { port.reserve(object: 22, key: 15, kind: 1, owner: $0)! }
+      var cancelled: [PortOperation] = []
+      func invalidate(_ name: UInt64) {
+        _ = port.cancel(owner: OperationHandle(process: 10, name: name)!) { cancelled.append($0) }
+      }
+      XCTAssertEqual(p.write([], [moved, denied], invalidate: invalidate), .accessDenied)
+      XCTAssertTrue(cancelled.isEmpty)
+      XCTAssertEqual(p.write([], [moved], invalidate: invalidate), .ok)
+      XCTAssertEqual(cancelled, [ops[0], ops[3]])
+      XCTAssertNil(port.take())
+      for (i, op) in ops.enumerated() {
+        var committed = false
+        XCTAssertEqual(
+          port.finish(op, at: 23) {
+            committed = true
+            return PortPacket()
+          }, 1)
+        XCTAssertEqual(committed, i == 1 || i == 2)
+        XCTAssertEqual(port.take()?.error, committed ? 0 : 26)
+      }
+      var invalidated: [UInt64] = []
+      p.queue.closeReceiver { _ in XCTFail() }
+      XCTAssertEqual(p.write([], [duplicate], invalidate: { invalidated.append($0) }), .peerClosed)
+      XCTAssertEqual(invalidated, [duplicate])
+    }
+  }
   func testPairPublishesReadinessOnTheCorrectEnd() {
     let pair = Pair()
     let heads = UnsafeMutablePointer<ObjectHeader>.allocate(capacity: 2)
@@ -101,7 +141,9 @@ final class ChannelQueueTests: XCTestCase {
     XCTAssertEqual(
       [a].withUnsafeBufferPointer { names in
         [UInt8(21)].withUnsafeBytes {
-          q.send(from: .a, $0, names: names, table: &pair.src) { _ in XCTFail() }
+          q.send(
+            from: .a, $0, names: names, table: &pair.src, invalidate: { XCTAssertEqual($0, a) }
+          ) { _ in XCTFail() }
         }
       }, .ok)
     XCTAssertEqual(heads.pointee.signals, 0)
