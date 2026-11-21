@@ -73,6 +73,34 @@ private final class TaskMappings: HostedTaskMappings {
   #expect(space.footprint == page)
 }
 
+@Test func trfsFaultCombinesFourBlocksAndRejectsShortBlock() throws {
+  let page = hostedPageSize
+  let task = TaskMappings()
+  let space = try HostedAddressSpace(window: page..<(4 * page), task: task)
+  var blocks: [UInt64] = []
+  var short = false
+  let backing = HostedFileBacking.trfsSnapshot(size: page + 1) { index, buffer in
+    blocks.append(index)
+    buffer.initializeMemory(as: UInt8.self, repeating: UInt8(index + 1))
+    if index == 4 { return short ? 0 : 1 }
+    return buffer.count
+  }
+  try space.reserveFile(address: page, size: 2 * page, backing: backing, offset: 0, protection: .read)
+  #expect(try space.fault(address: page, access: .read) == .mapped)
+  short = true
+  #expect(throws: HostedFaultError.incompleteRead) {
+    try space.fault(address: 2 * page, access: .read)
+  }
+  #expect(space.footprint == page)
+  short = false
+  #expect(try space.fault(address: 2 * page, access: .read) == .mapped)
+  #expect(blocks == [0, 1, 2, 3, 4, 4])
+  let mapped = try task.commands[1].entry.mapLocally(protection: .read)
+  let bytes = try #require(UnsafePointer<UInt8>(bitPattern: UInt(mapped.address)))
+  #expect(bytes[0] == 5)
+  #expect(bytes[1] == 0)
+}
+
 @Test func jetsamSignalsInBandOrderAndChoosesLargestEligibleVictim() {
   let processes = [
     HostedPressureProcess(id: 1, band: 0, footprint: 1000, limit: 1),

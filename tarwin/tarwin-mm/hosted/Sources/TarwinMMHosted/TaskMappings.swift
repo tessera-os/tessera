@@ -1,5 +1,6 @@
 import Darwin
 import TarwinTaskProtocol
+import TarwinTaskTransport
 
 public struct HostedTaskCommandMappings: HostedTaskMappings {
   public typealias Exchange = (TaskCommand, mach_port_t?) throws -> TaskCommandReply
@@ -7,6 +8,20 @@ public struct HostedTaskCommandMappings: HostedTaskMappings {
   private let exchange: Exchange
 
   public init(exchange: @escaping Exchange) { self.exchange = exchange }
+
+  public init(
+    task: SpawnedTask, timeout: mach_msg_timeout_t = 5_000,
+    onTransportFailure: @escaping (TaskTransportError) -> Void
+  ) {
+    self.init { command, entry in
+      switch task.command(command, memoryEntry: entry ?? 0, timeout: timeout) {
+      case .success(let reply): return reply
+      case .failure(let error):
+        onTransportFailure(error)
+        throw error
+      }
+    }
+  }
 
   public func map(_ command: HostedMapCommand) throws {
     let view = try command.entry.restricted(

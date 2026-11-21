@@ -13,8 +13,13 @@ let package = Package(
     .target(name: "TarwinMMHosted", dependencies: [
       .product(name: "TarwinMM", package: "tarwin-mm"),
       .product(name: "TarwinTaskProtocol", package: "tarwin-task"),
+      .product(name: "TarwinTaskTransport", package: "tarwin-task"),
       .product(name: "TarwinArchHosted", package: "tarwin-arch-hosted"),
     ]),
-    .testTarget(name: "TarwinMMHostedTests", dependencies: ["TarwinMMHosted"]),
+    .executableTarget(
+      name: "HostedMemoryTaskProbe",
+      dependencies: [.product(name: "TarwinTaskTransport", package: "tarwin-task")],
+      path: "Tests/HostedMemoryTaskProbe"),
+    .testTarget(name: "TarwinMMHostedTests", dependencies: ["TarwinMMHosted", "HostedMemoryTaskProbe"]),
   ]
 )
