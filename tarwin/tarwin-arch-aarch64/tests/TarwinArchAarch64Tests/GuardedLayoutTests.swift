@@ -44,6 +44,11 @@ import Testing
   let rw = k.insert(virtual: high + step, physical: pa + step, write: true, execute: false)
   let ro = k.insert(virtual: high + 2 * step, physical: pa + 2 * step, write: false, execute: false)
   #expect(rx && rw && !ro)
+  let mmio = k.insertReadOnlyDevice(virtual: high + 2 * step, physical: 0x090d_0000)
+  let normalAlias = k.mapsPrivateDataPage(high + 2 * step, physical: 0x090d_0000)
+  let low = k.insertReadOnlyDevice(virtual: 0x100000000, physical: 0x090d_0000)
+  #expect(mmio && !normalAlias && !low)
+  #expect(permission(ArmPermissionLayout.pir, 2) == 8 && permission(ArmPermissionLayout.pire0, 2) == 0)
   #expect(
     permission(ArmPermissionLayout.pir, 0) == 10 && permission(ArmPermissionLayout.pir, 1) == 12)
   #expect(

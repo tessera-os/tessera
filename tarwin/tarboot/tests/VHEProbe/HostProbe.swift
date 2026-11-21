@@ -67,7 +67,7 @@ _start:
   cmp x4, #1
   b.ne failed
   // The boot identity aliases only contain kernel RX and RW pages.
-  ldr x0, =0x000c000a00000000
+  ldr x0, =0x000c080a00000000
   msr S3_4_C10_C2_3, x0
   #ifdef TEST_WRONG_BANK
   mov x0, #0x0900000000000000 // deny more than the root expects
@@ -144,6 +144,40 @@ _start:
   b exit_host
   #endif
   cbz w0, failed
+  #ifdef TEST_HIGH_GENID
+  // The identity root is gone. Prove type, PA and both privilege levels
+  // before using the live read-only device in the private host mapping.
+  ldr x21, =0xffff800041000000
+  at s1e2r, x21
+  isb
+  mrs x0, par_el1
+  tbnz x0, #0, failed
+  lsr x1, x0, #56
+  cbnz x1, failed
+  ubfx x0, x0, #12, #36
+  ldr x1, =0x90d0
+  cmp x0, x1
+  b.ne failed
+  at s1e2w, x21
+  isb
+  mrs x0, par_el1
+  tbz x0, #0, failed
+  at s1e0r, x21
+  isb
+  mrs x0, par_el1
+  tbz x0, #0, failed
+  ldr x0, =0x090d0000
+  at s1e2r, x0
+  isb
+  mrs x0, par_el1
+  tbz x0, #0, failed
+  mov x0, x19
+  bl tarwin_vhe_sample_generation
+  cbz w0, failed
+  adr x1, genid_ok
+  mov x0, #4
+  hlt #0xf000
+  #endif
   mov x21, #0x80000000000
   add x21, x21, #4, lsl #12
   mov x22, #0xcb34
@@ -403,6 +437,7 @@ gcs_ok: .asciz "VHE-GCS-STORE-ORDINARY-WRITE-DENIED\\nVHE-PRIVATE-PIE-RELRO-GUAR
 wrong_ok: .asciz "VHE-REFUSED-MISMATCHED-PIE-BANK\\n"
 pac_ok: .asciz "VHE-IMPORT-IA-HOST-KEY-RESTORED\\n"
 stopped: .asciz "VHE-STOP-ON-SEPARATE-SCHEDULER-STACK\\n"
+genid_ok: .asciz "VHE-VMGEN-KERNEL-READONLY-NO-IDENTITY-OR-USER-ACCESS\\n"
 .p2align 3
 exit_ok: .quad 0x20026,0
 exit_bad: .quad 0x20026,1

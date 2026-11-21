@@ -4,9 +4,9 @@ public enum ArmPermissionLayout: Sendable {
   case direct, guarded
 
   // PIIndex uses {UXN, PXN, DBM, AP[1]}. All unspecified entries deny.
-  // EL2: 8 = kernel RX; 12 = kernel RW. EL0: 5 = RX; 13 = RW;
+  // EL2: 8 = kernel RX; 10 = kernel RO; 12 = kernel RW. EL0: 5 = RX; 13 = RW;
   // 14 = GCS (ordinary read, no ordinary write); 15 = RO.
-  public static let pir: UInt64 = 0x000c_000a_0000_0000
+  public static let pir: UInt64 = 0x000c_080a_0000_0000
   public static let pire0: UInt64 = 0x89c0_0000_00a0_0000
 
   func userLeaf(_ pa: UInt64, write: Bool, execute: Bool) -> UInt64 {

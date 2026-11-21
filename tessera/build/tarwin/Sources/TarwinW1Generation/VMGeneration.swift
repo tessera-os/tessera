@@ -12,6 +12,13 @@ public struct W1GenerationSource {
   private let location: Location
   public static let registerBase: UInt64 = 0x090d_0000
 
+  /// Only the validated writer-free source has a Device page. Never
+  /// remap the ACPI variant's reserved normal RAM with Device attributes.
+  public var readOnlyRegisterPage: UInt64? {
+    if case .registers = location { return Self.registerBase }
+    return nil
+  }
+
   public init?<R: QEMUConfigReader>(policy: QEMUGenerationPolicy, reader: inout R,
     regions: UnsafeBufferPointer<FirmwareRegion>, readWord: (UInt64) -> UInt64?) {
     switch policy {

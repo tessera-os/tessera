@@ -33,6 +33,9 @@ public func buildRoots(
     var p = ArmUserTranslation(backing: arena(a), physical: a),
     var q = ArmUserTranslation(backing: arena(b, pages: 7), physical: b, layout: layout)
   else { return 1 }
+  #if TEST_HIGH_GENID
+    guard installGeneration(in: &k, context: context) else { return 1 }
+  #endif
   for i: UInt64 in 0..<2 {
     let pa = text + i * page
     guard k.insert(virtual: high + pa, physical: pa, write: false, execute: true) else { return 2 }

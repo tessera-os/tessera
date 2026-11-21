@@ -33,8 +33,14 @@ LD
 "$bin/ld.lld" --gc-sections -T "$d/sections" "$d/start.o" "$d/host.o" "$d/probe.o" -o "$d/probe.elf"
 run_guest() {
   # Bound a guest whose unhandled exception correctly stops the boot CPU.
-  python3 -c 'import subprocess,sys; sys.exit(subprocess.run(sys.argv[1:], timeout=10).returncode)' qemu-system-aarch64 -machine virt,virtualization=on \
+  local board=virt extra=()
+  if [[ $1 == genid ]]; then
+    board=virt-11.1
+    extra=(-global fw_cfg_mem.dma_enabled=off -device tarwin-virt-vmgenid-ro)
+  fi
+  python3 -c 'import subprocess,sys; sys.exit(subprocess.run(sys.argv[1:], timeout=10).returncode)' qemu-system-aarch64 -machine "$board,virtualization=on" \
     -cpu max -smp 1 -m 128M -nodefaults -nographic -monitor none -serial none \
+    ${extra[@]+"${extra[@]}"} \
     -semihosting-config enable=on,target=native -d int -D "$d/exceptions" -kernel "$d/$1.elf" >"$d/log" 2>&1 || {
       cat "$d/log" >&2; exit 1
     }
@@ -54,6 +60,25 @@ if grep -Fxq 'VHE-CPU-GCS-S1PIE-TCRX=111' "$d/log"; then
   grep -Fx 'VHE-GCS-STORE-ORDINARY-WRITE-DENIED' "$d/log"
   grep -Fx 'VHE-PRIVATE-PIE-RELRO-GUARD' "$d/log"
   grep -Fx 'VHE-FIRST-GCS-REGS-RESTORED' "$d/log"
+  if [[ ${TARBOOT_TEST_RO_GENID:-0} == 1 ]]; then
+    for src in "$pkgs/tarwin/kcore/Sources/KCore" "$pkgs/tarwin/tarwin-boot/Sources/TarwinBoot" \
+      "$pkgs/tarwin/tarboot/Sources/Tarboot" "$pkgs/tarwin/tarwin-security/random/Sources/TarwinRandomCore" \
+      "$pkgs/tessera/build/tarwin/Sources/TarwinW1Generation"; do
+      mod=$(basename "$src")
+      "$bin/swiftc" "${flags[@]}" -enable-experimental-feature Volatile -module-name "$mod" \
+        -emit-module -emit-module-path "$d/$mod.swiftmodule" "$src"/*.swift
+    done
+    swift "$pkgs/tessera/build/tarwin-stage0/ArmFIFOAccess.swift" > "$d/device.ll"
+    "$bin/clang" -target aarch64-none-none-elf -Oz -c "$d/device.ll" -o "$d/device.o"
+    "$bin/swiftc" "${flags[@]}" -D TEST_GCS -D TEST_HIGH_GENID -emit-ir \
+      "$here/Probe.swift" "$here/GenerationProbe.swift" "$here/../FirmwareProbe/Memory.swift" \
+      "$pkgs/tessera/build/tarwin/Sources/TarwinW1Bootstrap/KernelGeneration.swift" -o "$d/genid.ll"
+    "$bin/clang" -target aarch64-none-none-elf -ffunction-sections -fdata-sections -Oz -c "$d/genid.ll" -o "$d/genid-probe.o"
+    "$bin/clang" -target aarch64-none-none-elf -march=armv9.4-a+gcs -DTEST_GCS -DTEST_HIGH_GENID -c "$d/start.S" -o "$d/genid.o"
+    "$bin/ld.lld" --gc-sections -T "$d/sections" "$d/genid.o" "$d/device.o" "$d/host.o" "$d/genid-probe.o" -o "$d/genid.elf"
+    run_guest genid
+    grep -Fx 'VHE-VMGEN-KERNEL-READONLY-NO-IDENTITY-OR-USER-ACCESS' "$d/log"
+  fi
   for mod in TarwinABI TarwinSyscall; do
     "$bin/swiftc" "${flags[@]}" -module-name "$mod" -emit-module -emit-module-path "$d/$mod.swiftmodule" \
       "$pkgs/tarwin/tarwin-syscall/Sources/$mod"/*.swift
@@ -73,4 +98,7 @@ if grep -Fxq 'VHE-CPU-GCS-S1PIE-TCRX=111' "$d/log"; then
   "$bin/ld.lld" --gc-sections -T "$d/sections" "$d/wrong.o" "$d/host.o" "$d/gcs-probe.o" -o "$d/wrong.elf"
   run_guest wrong
   grep -Fx 'VHE-REFUSED-MISMATCHED-PIE-BANK' "$d/log"
+elif [[ ${TARBOOT_TEST_RO_GENID:-0} == 1 ]]; then
+  echo 'guarded high generation diagnostic requires GCS, S1PIE and TCRX' >&2
+  exit 1
 fi

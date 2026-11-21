@@ -243,6 +243,17 @@ public struct ArmKernelTranslation: ~Copyable {
     let leaf = physical | 0x703 | ap | fetch | (1 << 54)
     return root.insert(virtual: virtual, physical: physical, leaf: leaf)
   }
+
+  /// One independently identified read-only MMIO page, never normal RAM.
+  /// Pin MAIR[1] = Device-nGnRnE; exclude all writable, cacheable and user aliases.
+  public mutating func insertReadOnlyDevice(virtual: UInt64, physical: UInt64) -> Bool {
+    guard virtual >= 0xffff_8000_0000_0000, physical & 16383 == 0, physical < 1 << 48
+    else { return false }
+    // Direct: AP=RO privileged + PXN + UXN. PIE: PIIndex 10 is RO at
+    // EL2 and inaccessible at EL0. MAIR index 1, outer shareable, AF.
+    let perms: UInt64 = (1 << 54) | (layout == .direct ? 1 << 53 : 1 << 51)
+    return root.insert(virtual: virtual, physical: physical, leaf: physical | 0x687 | perms)
+  }
 }
 
 /// Finished descriptors, not a runnable process or an ASID allocation.

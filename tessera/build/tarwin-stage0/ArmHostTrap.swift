@@ -249,7 +249,7 @@
     b.ne .Lbad_mode
     .Lpermissions_ok:
     mrs x2, mair_el2
-    and x2, x2, #255
+    and x2, x2, #0xffff // index 0: WB, index 1: Device-nGnRnE
     cmp x2, #255
     b.ne .Lbad_mode
     mov x3, #0xffff800000000000
@@ -275,6 +275,52 @@
     isb
     mov w0, #1
     ret
+
+    // Caller has pinned this exclusive host root. Check the actual MMIO
+    // translation before the load, preserving the caller's PAR even on failure.
+    .global tarwin_w1_read_generation_register
+    .hidden tarwin_w1_read_generation_register
+    tarwin_w1_read_generation_register:
+    bti c
+    mrs x4, CurrentEL
+    cmp x4, #8
+    b.ne .Lbad_mode
+    mrs x4, hcr_el2
+    tbz x4, #34, .Lbad_mode
+    tbz x4, #27, .Lbad_mode
+    mrs x4, sctlr_el2
+    tbz x4, #0, .Lbad_mode
+    mrs x4, ttbr1_el2
+    cmp x4, x0
+    b.ne .Lbad_mode
+    mrs x5, par_el1
+    at s1e2r, x1
+    isb
+    mrs x4, par_el1
+    tbnz x4, #0, .Lbad_register
+    lsr x6, x4, #56
+    cbnz x6, .Lbad_register
+    ubfx x4, x4, #12, #36
+    cmp x4, x2, lsr #12
+    b.ne .Lbad_register
+    at s1e2w, x1
+    isb
+    mrs x4, par_el1
+    tbz x4, #0, .Lbad_register
+    at s1e0r, x1
+    isb
+    mrs x4, par_el1
+    tbz x4, #0, .Lbad_register
+    msr par_el1, x5
+    dmb osh
+    ldr x4, [x1]
+    dmb osh
+    str x4, [x3]
+    mov w0, #1
+    ret
+    .Lbad_register:
+    msr par_el1, x5
+    b .Lbad_mode
 
     // Boot CPU, verified import only. x2 is the aligned IA pair borrowed
     // from the unpublished child's protected key bank, x3 its owner's

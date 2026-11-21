@@ -78,3 +78,13 @@ accepted for dispatch. The guest above tests the architectural transition,
 not archive enrollment, first entry of signed init, a successful registered
 syscall, interrupt handling, SMP or scheduling. W0's independent page and
 run-queue self-test does not constitute W1 entry.
+
+With the writer-free QEMU patch from the EFI fixture, set
+`TARBOOT_TEST_RO_GENID=1` to sample the same live device after switching
+away from the bootstrap identity map. An unpublished guarded TTBR1 maps
+only the 16 KiB register aperture at its high address as Device-nGnRnE.
+The reader refuses an inactive root, unaligned offsets and addresses
+outside the four defined registers. The hardware walk permits EL2 reads,
+rejects EL2 writes and EL0 reads, and no longer resolves the old low address.
+The guest compares a fresh versioned sample, never logs the ID, and does
+not use this test as a restore fence or signed process authorization.
