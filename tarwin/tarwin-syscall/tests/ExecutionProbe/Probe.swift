@@ -92,12 +92,45 @@ private func jobQuota(_ arena: inout Arena, _ limit: UInt64) -> Bool {
     let branch = tree.create(child, under: tree.root, policy: policy),
     let process = ObjectHeader(
       source: ids, ownerJob: child.koid, kind: TarwinKind.process, maximumRights: 0),
-    let member = tree.attach(process, to: branch), tree.resizeFootprint(member, to: limit),
-    !tree.resizeFootprint(member, to: limit + 1), tree.usage(tree.root)?.footprint == limit,
-    tree.setFrozen(true, job: tree.root), tree.returnGate(member) == .frozen,
-    tree.kill(branch), tree.returnGate(member) == .terminate, tree.detach(member)
+    let thread = ObjectHeader(
+      source: ids, ownerJob: child.koid, kind: TarwinKind.thread, maximumRights: 0)
   else { return false }
-  return tree.remove(branch) && tree.usage(tree.root)?.footprint == 0
+  let slots = arena.take(ThreadSlot.self, count: 1)
+  let cells = arena.take(HandleCell.self, count: 2)
+  slots.initialize(repeating: ThreadSlot())
+  defer { slots.deinitialize() }
+  return withUnsafePointer(to: process) { ph in
+    guard
+      var p = ProcessExecution(
+        header: ph, job: branch, tree: tree, slots: slots, cells: cells, salt: 3)
+    else { return false }
+    defer { cells.deinitialize() }
+    return withUnsafePointer(to: thread) { th in
+      guard var t = ThreadExecution(header: th, process: p.member, job: branch) else {
+        return false
+      }
+      return withUnsafeMutablePointer(to: &t) { tp in
+        let id = th.pointee.koid
+        guard tree.resizeFootprint(p.member, to: limit),
+          !tree.resizeFootprint(p.member, to: limit + 1),
+          tree.usage(tree.root)?.footprint == limit,
+          p.join(tp, qos: 2, realtimeEntitled: false, tree: tree) == .added,
+          p.gate(id, tree: tree) == .hold,
+          p.start(id, tree: tree),
+          p.gate(id, tree: tree) == .dispatch,
+          case .installed(let name)? = p.withHandles(tree: tree, { $0.install(th, rights: 0) }),
+          tree.setFrozen(true, job: tree.root), p.gate(id, tree: tree) == .hold,
+          tree.kill(branch), p.gate(id, tree: tree) == .stop,
+          p.stopped(id, code: 0, tree: tree, notify: { _ in }, retire: { _ in }),
+          p.exit?.reason == .jobKilled
+        else { return false }
+        var invalid: UInt64 = 0
+        return p.beginCleanup(invalidate: { invalid = $0 }, retire: { _ in }) && invalid == name
+          && p.finishCleanup(tree: tree, notify: { _ in }) && ph.pointee.signals & 16 != 0
+          && tree.remove(branch) && tree.usage(tree.root)?.footprint == 0
+      }
+    }
+  }
 }
 
 private func exercise(_ bytes: UnsafeMutableRawBufferPointer, _ challenge: UInt64) -> Bool {

@@ -15,7 +15,8 @@ message between handle tables, narrows rights through the native register
 interface, closes the last reference and finishes an epoch grace period.
 It also requeues an address waiter, wakes it and rejects its stale timeout.
 The guest checks a descendant's footprint against the root's budget, then
-freezes, kills and detaches it, leaving the root's footprint at zero.
+marks its thread runnable, freezes and kills it, drains the
+process handle table and checks its termination signal and the root's budget.
 Success requires both the EFI console marker and QMP's guest shutdown event.
-No user mode, hardware trap, interrupt, real process or signed Tarwin image
+No user mode, hardware trap, context switch, interrupt or signed Tarwin image
 is involved. This does not boot a Tarwin kernel or measure performance.

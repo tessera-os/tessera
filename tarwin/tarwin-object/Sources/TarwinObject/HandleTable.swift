@@ -69,7 +69,11 @@ public struct HandleTable: ~Copyable {
   private let cells: UnsafeMutableBufferPointer<HandleCell>
   private let salt: UInt8
   private var first = 0
-  public private(set) var freeCount: Int
+  private var unused: Int
+  private var limit: Int
+  public private(set) var count = 0
+  public var freeCount: Int { min(unused, max(0, limit - count)) }
+  mutating func tighten(to maximum: UInt32) { limit = min(limit, Int(maximum)) }
 
   public init?(storage: UnsafeMutableBufferPointer<HandleCell>, salt: UInt8) {
     guard storage.count > 0, storage.count <= Int(HandleLayout.maximumSlots),
@@ -77,7 +81,8 @@ public struct HandleTable: ~Copyable {
     else { return nil }
     self.cells = storage
     self.salt = salt
-    self.freeCount = storage.count
+    self.unused = storage.count
+    self.limit = storage.count
     for i in 0..<storage.count {
       (base + i).initialize(to: HandleCell(next: i + 1 == storage.count ? -1 : i + 1))
     }
@@ -96,7 +101,8 @@ public struct HandleTable: ~Copyable {
     let i = first
     let c = cells.baseAddress! + i
     first = c.pointee.next
-    freeCount -= 1
+    unused -= 1
+    count += 1
     let name = UInt64(salt) << 56 | c.pointee.generation << 20 | UInt64(i)
     c.pointee.object.store(UnsafeRawPointer(grant.header), ordering: .sequentiallyConsistent)
     c.pointee.rights.store(grant.rights, ordering: .sequentiallyConsistent)
@@ -129,11 +135,12 @@ public struct HandleTable: ~Copyable {
     c.pointee.published.store(0, ordering: .sequentiallyConsistent)
     c.pointee.object.store(nil, ordering: .sequentiallyConsistent)
     c.pointee.rights.store(0, ordering: .sequentiallyConsistent)
+    count -= 1
     if c.pointee.generation != HandleLayout.lastGeneration {
       c.pointee.generation += 1
       c.pointee.next = first
       first = index
-      freeCount += 1
+      unused += 1
     }
     return ObjectGrant(header: held.header, rights: held.rights)
   }
@@ -157,7 +164,7 @@ public struct HandleTable: ~Copyable {
     let reduced = rights == UInt64.max ? source.rights : rights
     if duplicate { return install(source.header, rights: reduced) }
     // Replacement normally reuses the old slot, even when the table is full.
-    guard freeCount > 0 || c.pointee.generation < HandleLayout.lastGeneration else { return .limit }
+    guard unused > 0 || c.pointee.generation < HandleLayout.lastGeneration else { return .limit }
     let held = remove(c, index: Int(handleIndex(name)))
     return .installed(publish(ObjectGrant(header: held.header, rights: reduced)))
   }
@@ -183,11 +190,16 @@ public struct HandleTable: ~Copyable {
     return .allowed
   }
 
-  public mutating func drain(retire: (UnsafePointer<ObjectHeader>) -> Void) {
+  public mutating func drain(
+    invalidate: (UInt64) -> Void = { _ in }, retire: (UnsafePointer<ObjectHeader>) -> Void
+  ) {
     for i in 0..<cells.count {
       let c = cells.baseAddress! + i
-      if c.pointee.published.load(ordering: .sequentiallyConsistent) != 0 {
-        remove(c, index: i).drop(retire: retire)
+      let name = c.pointee.published.load(ordering: .sequentiallyConsistent)
+      if name != 0 {
+        let grant = remove(c, index: i)
+        invalidate(name)
+        grant.drop(retire: retire)
       }
     }
   }
