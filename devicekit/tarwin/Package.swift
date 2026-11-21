@@ -7,6 +7,8 @@ let package = Package(
   dependencies: [],
   targets: [
     .target(name: "NativeDriverKit", dependencies: []),
-    .testTarget(name: "NativeDriverKitTests", dependencies: ["NativeDriverKit"]),
+    .testTarget(
+      name: "NativeDriverKitTests", dependencies: ["NativeDriverKit"],
+      path: "tests/NativeDriverKitTests"),
   ]
 )
