@@ -1,0 +1,40 @@
+// One ledger per client Process. The driver charges a mapping once, not on
+// every CPU or GPU view. Memory handles/allocations are resolved before use.
+public enum GpuBacking { System DeviceLocal }
+public struct GpuCharge { let id: U64
+    let bytes: U64
+    let backing: GpuBacking
+}
+public struct GpuFootprint {
+    let process: U64
+    let limit: U64
+    let objectLimit: Int
+    var used: U64 = 0
+    var count: Int = 0
+    var entries: [GpuCharge] = []
+
+    function charge(borrow mut self, client: U64, allocation: borrow GpuCharge) -> Bool {
+        if process == 0 || client != process || allocation.id == 0 || allocation.bytes == 0 ||
+            count >= objectLimit || used > limit || allocation.bytes > limit - used { return false }
+        for i in 0..count { if entries[i].id == allocation.id { return false } }
+        if count < entries.count { entries[count] = copy allocation } else { entries.append(copy allocation) }
+        count += 1
+        used += allocation.bytes
+        return true
+    }
+
+    // Release only after the memory manager has drained DMA and mappings.
+    function release(borrow mut self, client: U64, id: U64, retired: borrow (U64) -> Bool) -> Bool {
+        if client != process { return false }
+        for i in 0..count {
+            if entries[i].id == id {
+                if !retired(id) { return false }
+                used -= entries[i].bytes
+                count -= 1
+                entries[i] = entries[count]
+                return true
+            }
+        }
+        return false
+    }
+}

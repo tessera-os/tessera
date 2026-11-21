@@ -1,0 +1,47 @@
+import Foundation
+
+@Test
+function recordsAreScopedAndReleaseSharesBeforeCompleting() {
+    var c = FsChannel { volume: 10, epoch: 2, limit: 2 }
+    let root = VolumeNode { volume: 10, node: 0xfe }
+    let none = VolumeNode { volume: 0, node: 0 }
+    let outside = VolumeNode { volume: 9, node: 0xfe }
+    let valid: (U64,U64,U32,Bool) -> Bool = { v,share,n,write in
+        return v == 10 && share == 11 && n == 256 && write }
+    var sent: Int = 0
+    let post: (borrow FsRecord) -> Bool = { r in
+        let wire = fsRequestBytes(r)
+        sent += 1
+        return wire.count == 64 && wire[0] == 1 && wire[2] == 4 && wire[8] == 1 &&
+            wire[16] == 0xfe && wire[48] == 11 && wire[60] == 0 && wire[61] == 1 }
+    expect!(!c.begin(.Rename, root, outside, 0, 0, 0, 0, 0, valid, post))
+    expect!(!c.begin(.Read, outside, none, 0, 0, 0, 11, 256, valid, post))
+    expect!(!c.begin(.Write, root, none, 0, 11, 256, 0, 0, valid, post))
+    expect!(c.begin(.Read, root, none, 0, 0, 0, 11, 256, valid, post))
+    expect!(!c.begin(.Read, root, none, 0, 0, 0, 11, 256, valid, post))
+    expect!((sent == 1))
+    let yes: (borrow FsRecord) -> Bool = { r in return r.output == 11 }
+    expect!(!c.finish(1,1,20,yes))
+    expect!(!c.finish(2,1,257,yes))
+    expect!(!c.finish(2,1,256,{ r in return false }))
+    expect!((c.live == 1))
+    expect!(c.finish(2,1,256,yes))
+    expect!(!c.finish(2,1,0,yes))
+}
+
+@Test
+function deadServerCannotSubmitWhileRevocationIsPending() {
+    var c = FsChannel { volume: 10, epoch: 2, limit: 1 }
+    let root = VolumeNode { volume: 10, node: 1 }
+    let none = VolumeNode { volume: 0, node: 0 }
+    let valid: (U64,U64,U32,Bool) -> Bool = { v,s,n,w in return false }
+    let post: (borrow FsRecord) -> Bool = { r in return true }
+    var failed: U64 = 0
+    let fail: (U64) -> Void = { id in failed = id }
+    expect!(c.begin(.Sync,root,none,0,0,0,0,0,valid,post))
+    expect!(!c.disconnect({ r in return false },fail))
+    expect!((failed == 0 && c.live == 1))
+    expect!(!c.begin(.Sync,root,none,0,0,0,0,0,valid,post))
+    expect!(c.disconnect({ r in return true },fail))
+    expect!((failed == 1 && c.live == 0))
+}

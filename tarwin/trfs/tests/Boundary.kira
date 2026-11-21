@@ -1,0 +1,37 @@
+import Foundation
+
+@Test
+function followsConfinedLinksButNotAboveTheCapability() {
+    let lookup: (U64, borrow [U8]) -> Entry = { dir, name in
+        if name.count != 1 { return .Missing }
+        if dir == 5 && name[0] == 97 { return .Directory(6) }
+        if dir == 5 && name[0] == 98 { return .File(9) }
+        if dir == 6 && name[0] == 99 { return .Symlink([46,46,47,98]) }
+        if dir == 5 && name[0] == 100 { return .Symlink([46,46,47,98]) }
+        if dir == 5 && name[0] == 101 { return .Symlink([101]) }
+        return .Missing
+    }
+    expect!((scopedLookup(5, [97,47,99], true, lookup) == Walk.Found(9)))
+    expect!((scopedLookup(5, [97,47,99], false, lookup) == Walk.NotDirectory))
+    expect!((scopedLookup(5, [100], true, lookup) == Walk.Escape))
+    expect!((scopedLookup(5, [101], true, lookup) == Walk.Loop))
+    expect!((scopedLookup(5, [46,46], true, lookup) == Walk.Invalid))
+    expect!((scopedLookup(5, [98,47,98], true, lookup) == Walk.NotDirectory))
+}
+
+@Test
+function neverSubmitsPlaintextOnEncryptionFailure() {
+    let u = EncryptedUnit { block: 11, tweak: 99, keyObject: 1 }
+    var sent: Int = 0
+    var cleared: U64 = 0
+    let io: (U64,U64) -> Bool = { block,page in sent += 1
+        return block == 11 && page == 3 }
+    let clear: (U64) -> Void = { page in cleared = page }
+    expect!(!encryptedWriteback(u, 2, 3, { k,t,p,c in return false }, io, clear))
+    expect!((sent == 0 && cleared == 3))
+    expect!(encryptedWriteback(u, 2, 3, { k,t,p,c in return k == 1 && t == 99 && p == 2 && c == 3 }, io, clear))
+    expect!((sent == 1))
+    expect!(!encryptedPageIn(u, 2, 2, io, { k,t,c,p in return true }, clear))
+    expect!(!encryptedPageIn(u, 2, 3, io, { k,t,c,p in return false }, clear))
+    expect!((cleared == 2))
+}

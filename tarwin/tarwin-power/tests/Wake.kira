@@ -1,0 +1,27 @@
+import Foundation
+
+@Test
+function locksAreAttributedAndCannotBeReleasedByAnotherProcess() {
+    var locks = WakeLocks { limit: 2 }
+    expect!((locks.acquire(10,.System,false) == 0))
+    let device = locks.acquire(10,.Device(9),true)
+    expect!((device != 0 && locks.preventsSleep(.Device(9)) && locks.preventsSleep(.System)))
+    expect!(!locks.preventsSleep(.Device(8)))
+    expect!(!locks.release(11,device))
+    let system = locks.acquire(11,.System,true)
+    expect!((system != 0 && locks.preventsSleep(.Device(8))))
+    expect!((locks.acquire(12,.System,true) == 0))
+    locks.dropProcess(10)
+    expect!(locks.release(11,system))
+    expect!(!locks.preventsSleep(.System))
+}
+
+@Test
+function wakePatternRequiresSignificantBitsAndEntirePayload() {
+    let p = WakePattern { offset: 1, data: [0xa5,0xbb], mask: [0xf0,0xff] }
+    expect!(p.matches([0,0xaf,0xbb]))
+    expect!(!p.matches([0,0xa5]))
+    expect!(!p.matches([0,0xa5,0xba]))
+    let emptyMask = WakePattern { offset: 0, data: [0], mask: [0] }
+    expect!(!emptyMask.matches([0]))
+}

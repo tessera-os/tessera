@@ -1,0 +1,36 @@
+import Foundation
+
+@Test
+function wholeGroupRemainsUnavailableUntilResetAndDrainComplete() {
+    var s = DeviceSlotState { group: 3 }
+    let isolated: (U64,U64) -> Bool = { group,epoch in return group == 3 }
+    let yes: () -> Bool = { in return true }
+    let no: () -> Bool = { in return false }
+    expect!(!s.assign(false,4,isolated))
+    expect!(!s.assign(true,4,{ g,e in return false }))
+    expect!(s.assign(true,4,isolated))
+    expect!(s.owns(4,1))
+    expect!(!s.revoke(false,yes,yes,no,yes))
+    expect!(!s.owns(4,1))
+    expect!(!s.assign(true,5,isolated))
+    expect!(!s.revoke(false,no,no,yes,no))
+    expect!(s.revoke(false,no,no,no,yes))
+    expect!(s.assign(true,5,isolated))
+    expect!(s.owns(5,2))
+    expect!(!s.owns(4,1))
+    expect!(s.revoke(true,yes,yes,yes,no))
+    expect!(!s.assign(true,5,isolated))
+}
+
+@Test
+function registerMappingCannotCoverAdjacentPagesOrChangeCacheType() {
+    var s = DeviceSlotState { group: 7 }
+    expect!(s.assign(true,4,{ g,e in return true }))
+    let page = DeviceRange { base: 0x4000, length: 0x4000 }
+    let r = MmioAperture { range: copy page, frameBuffer: false }
+    let map: (U64,U64,U64,DeviceCache) -> Bool = { p,a,n,c in return p == 4 && a == 0x4000 }
+    expect!(mapSlotRegisters(s,4,1,r,page,0x4000,.Register,map))
+    expect!(!mapSlotRegisters(s,4,2,r,page,0x4000,.Register,map))
+    expect!(!mapSlotRegisters(s,4,1,r,page,0x4000,.FrameBuffer,map))
+    expect!(!mapSlotRegisters(s,4,1,r,DeviceRange { base: 0, length: 0x8000 },0x4000,.Register,map))
+}

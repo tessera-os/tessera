@@ -1,0 +1,15 @@
+import Foundation
+
+@Test
+function clientChargeRemainsUntilItsGpuAllocationIsRetired() {
+    var ledger = GpuFootprint { process: 7, limit: 4096, objectLimit: 4 }
+    let a = GpuCharge { id: 1, bytes: 4096, backing: .DeviceLocal }
+    expect!(!ledger.charge(8,a))
+    expect!(ledger.charge(7,a))
+    expect!(!ledger.charge(7,a))
+    expect!(!ledger.charge(7,GpuCharge { id: 2, bytes: 1, backing: .System }))
+    expect!(!ledger.release(7,1,{ id in return false }))
+    expect!((ledger.used == 4096))
+    expect!(ledger.release(7,1,{ id in return true }))
+    expect!((ledger.used == 0 && ledger.count == 0))
+}

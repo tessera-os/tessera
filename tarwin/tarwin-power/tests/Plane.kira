@@ -1,0 +1,41 @@
+import Foundation
+
+@Test
+function cycleOrUnknownProviderSuspendsNothing() {
+    let cycle = [PowerEdge { dependent: 0, provider: 1 },PowerEdge { dependent: 1, provider: 0 }]
+    expect!((planSuspend(2, cycle) == SuspendPlan.Invalid))
+    expect!((planSuspend(1, cycle) == SuspendPlan.Invalid))
+}
+
+@Test
+function failedSuspendRollsBackAndRetryResumesProvidersFirst() {
+    let edges = [PowerEdge { dependent: 2, provider: 1 },PowerEdge { dependent: 1, provider: 0 }]
+    match planSuspend(3, edges) {
+        Invalid -> { expect!(false) }
+        Order(order) -> {
+            var s = SleepTransaction { order: move order }
+            var log: Int = 0
+            let sleep: (Int) -> Bool = { n in log = log * 10 + n + 1
+                return n != 0 }
+            expect!(!s.quiesce(sleep, { in return false }, { n in return false }))
+            expect!((s.asleep == 2 && log == 321))
+            expect!(s.restore({ n in log = log * 10 + n + 1
+                return true }))
+            expect!((s.asleep == 0 && log == 32123))
+        }
+    }
+}
+
+@Test
+function accountsFractionalCpuSlicesAndHottestZone() {
+    var energy = ProcessEnergy {}
+    for t in 0..10 { energy.addCpu(100000000, 1) }
+    expect!((energy.microjoules == 1 && energy.fraction == 0))
+    energy.addDevice(8)
+    expect!((energy.microjoules == 9))
+    energy.addCpu(0xffffffffffffffff, 0xffffffff)
+    expect!((energy.microjoules == 0xffffffffffffffff))
+    let zones = [ThermalZone { millidegrees: 70, fair: 50, serious: 60, critical: 80 },
+                 ThermalZone { millidegrees: 50, fair: 50, serious: 60, critical: 80 }]
+    expect!((thermalBand(zones) == ThermalBand.Serious))
+}

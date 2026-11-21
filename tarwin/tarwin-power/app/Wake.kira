@@ -1,0 +1,62 @@
+public enum WakeScope { System Device(U64) }
+public struct WakeHolder { let process: U64
+    let id: U64
+    let scope: WakeScope
+}
+
+// Serialized with suspend admission. A process is the resolved owner, not
+// a caller-selected billing id. Close and process teardown are idempotent.
+public struct WakeLocks {
+    let limit: Int
+    var seq: U64 = 0
+    var count: Int = 0
+    var entries: [WakeHolder] = []
+    function acquire(borrow mut self, process: U64, scope: WakeScope, entitled: Bool) -> U64 {
+        if !entitled || process == 0 || count >= limit || seq == 0xffffffffffffffff { return 0 }
+        seq += 1
+        let h = WakeHolder { process: process, id: seq, scope: scope }
+        if count == entries.count { entries.append(h) } else { entries[count] = h }
+        count += 1
+        return seq
+    }
+    function release(borrow mut self, process: U64, id: U64) -> Bool {
+        for i in 0..count {
+            if entries[i].process == process && entries[i].id == id {
+                count -= 1
+                entries[i] = entries[count]
+                return true
+            }
+        }
+        return false
+    }
+    function dropProcess(borrow mut self, process: U64) {
+        var kept: Int = 0
+        for i in 0..count {
+            if entries[i].process != process { entries[kept] = entries[i]
+                kept += 1 }
+        }
+        count = kept
+    }
+    function preventsSleep(borrow self, target: WakeScope) -> Bool {
+        for i in 0..count {
+            if target == .System || entries[i].scope == .System || entries[i].scope == target { return true }
+        }
+        return false
+    }
+}
+
+public struct WakePattern {
+    let offset: Int
+    let data: [U8]
+    let mask: [U8]
+    function matches(borrow self, packet: borrow [U8]) -> Bool {
+        if offset < 0 || offset > packet.count || data.count == 0 || data.count > 128 ||
+            data.count != mask.count || data.count > packet.count - offset { return false }
+        var significant = false
+        for i in 0..data.count {
+            if mask[i] != 0 { significant = true }
+            if ((packet[offset + i] ^ data[i]) & mask[i]) != 0 { return false }
+        }
+        return significant
+    }
+}
