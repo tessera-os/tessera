@@ -240,20 +240,34 @@ linker on virt and adds an opt-in property to generate a fresh GUID from
 the host CSPRNG at realization and on VMState load. It is not upstream and
 does not certify an arbitrary hypervisor. Only use this single-vCPU, stopped
 snapshot profile; do not accept a boot-set flag as management authorization.
-The guest polls the page; virt's GED does not deliver a VMGenID IRQ.
+The guest polls the page; it does not rely on a VMGenID IRQ.
 
 To reproduce, apply `qemu-11.1.3-virt-vmgenid.patch` with `patch -p1` to
 QEMU 11.1.3 (release tar.xz SHA256
 `5a8289c7940dc77d3873c81a6c29ba3afe1446fc9d36e77fa1658cdbecb84b22`).
 Configure with `--target-list=aarch64-softmmu --enable-tcg --disable-docs`,
 build with ninja and prepend the build directory to PATH. Add
-`TARBOOT_TEST_RESTORE=1` to the generation/FIFO test above. The runner
-creates a disposable qcow2 VM-state node, saves the waiting guest and
-loads that snapshot via QMP. After a checked initial draw the guest must
+`TARBOOT_TEST_RESTORE=1` to the generation/FIFO test above. With the
+512 MiB virt-11.1 TCG fixture and edk2-aarch64-code.fd (SHA-256
+`47765fe344818cbc464b1c14ae658fb4b854f5c2ceffa982411731eb4865594d`),
+both sides independently pin the 4 KiB ACPI NVS page at 0x5c740000,
+slot +40. If firmware allocates another page, discovery or restore must
+fail; never derive a new destination pin from guest or snapshot bytes.
+
+QMP stops the vCPU before saving to disposable qcow2. The host device
+checks the full migrated slot against the destination-only pin, resolves
+the complete page to its canonical offset in machine RAM, and writes just
+the new GUID there. Management compares the live device GUID with those
+16 guest bytes before save and again while paused after load. Only then
+does it resume this diagnostic. Repeat with `TARBOOT_TEST_WRONG_PAGE=1`
+to use a different destination pin: the load must fail before rotation
+and the vCPU must remain stopped. After a checked initial draw the guest must
 see the live NVS GUID change, reject both the new epoch and the latched
 old one, then accept a fresh TPM reseed at the new epoch. No entropy or
 key material is printed. This is not a production launch or an SMP,
-postcopy, ACPI-interrupt or cross-host migration test.
+postcopy, ACPI-interrupt or cross-host migration test. This fixture still
+needs fw_cfg DMA for firmware discovery. It does not drain other devices,
+prove that protected pages have no DMA aliases, or authorize W1 entry.
 
 `TARBOOT_TEST_TPM=1 TARBOOT_TEST_FIFO=1 bash run.sh aarch64` binds a single
 QEMU virt platform-bus TIS device to disposable swtpm. After ExitBootServices,

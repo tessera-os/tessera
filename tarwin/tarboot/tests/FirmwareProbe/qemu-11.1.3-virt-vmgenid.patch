@@ -11,15 +11,19 @@
      bool
 --- a/hw/acpi/vmgenid.c
 +++ b/hw/acpi/vmgenid.c
-@@ -12,6 +12,7 @@
+@@ -12,7 +12,11 @@
  
  #include "qemu/osdep.h"
  #include "qapi/error.h"
 +#include "crypto/random.h"
  #include "qemu/module.h"
++#include "qemu/error-report.h"
++#include "hw/core/boards.h"
++#include "system/runstate.h"
  #include "hw/acpi/acpi.h"
  #include "hw/acpi/aml-build.h"
-@@ -168,9 +169,25 @@
+ #include "hw/acpi/vmgenid.h"
+@@ -168,9 +172,54 @@
  /* After restoring an image, we need to update the guest memory and notify
   * it of a potential change to VM Generation ID
   */
@@ -39,17 +43,51 @@
  static int vmgenid_post_load(void *opaque, int version_id)
  {
      VmGenIdState *vms = opaque;
-+    if (vms->rotate_on_load && vmgenid_rotate(vms, NULL) < 0) {
-+        return -EIO;
++    if (vms->rotate_on_load) {
++        uint64_t p = vms->pinned_page;
++        MemoryRegion *ram = MACHINE(qdev_get_machine())->ram;
++        MemoryRegionSection s;
++        QemuUUID guid_le;
++
++        if (!runstate_check(RUN_STATE_PAUSED)) {
++            error_report("vmgenid: destination must already be paused");
++            return -EINVAL;
++        }
++        if (ldq_le_p(vms->vmgenid_addr_le) != p + VMGENID_GUID_OFFSET) {
++            error_report("vmgenid: refusing unbound restore slot");
++            return -EINVAL;
++        }
++        s = memory_region_find(get_system_memory(), p, VMGENID_FW_CFG_SIZE);
++        bool direct = s.mr && s.mr == ram && ram->container == get_system_memory() &&
++                      p >= ram->addr && s.offset_within_region == p - ram->addr &&
++                      s.offset_within_address_space == p &&
++                      int128_eq(s.size, int128_make64(VMGENID_FW_CFG_SIZE));
++        if (!direct || vmgenid_rotate(vms, NULL) < 0) {
++            memory_region_unref(s.mr);
++            return -EIO;
++        }
++        guid_le = qemu_uuid_bswap(vms->guid);
++        hwaddr off = s.offset_within_region + VMGENID_GUID_OFFSET;
++        memcpy((uint8_t *)memory_region_get_ram_ptr(ram) + off,
++               guid_le.data, sizeof(guid_le.data));
++        memory_region_set_dirty(ram, off, sizeof(guid_le.data));
++        memory_region_unref(s.mr);
++        /* The stopped ARM fixture polls the page; no interrupt or MMIO. */
++        return 0;
 +    }
      vmgenid_update_guest(vms);
      return 0;
  }
-@@ -213,11 +230,18 @@
+@@ -213,11 +262,24 @@
  
      qemu_register_reset(vmgenid_handle_reset, vms);
  
 +    if (vms->rotate_on_load) {
++        if (!vms->pinned_page || vms->pinned_page >= (1ULL << 32) ||
++            vms->pinned_page % VMGENID_FW_CFG_SIZE) {
++            error_setg(errp, "vmgenid: need a pinned 4K page below 4G");
++            return;
++        }
 +        if (vmgenid_rotate(vms, errp) < 0) {
 +            return;
 +        }
@@ -61,6 +99,7 @@
  static const Property vmgenid_device_properties[] = {
      DEFINE_PROP_UUID(VMGENID_GUID, VmGenIdState, guid),
 +    DEFINE_PROP_BOOL("x-rotate-on-load", VmGenIdState, rotate_on_load, false),
++    DEFINE_PROP_UINT64("x-pinned-page", VmGenIdState, pinned_page, 0),
  };
  
  static void vmgenid_device_class_init(ObjectClass *klass, const void *data)
@@ -100,11 +139,12 @@
          assert(vms->acpi_dev);
 --- a/include/hw/acpi/vmgenid.h
 +++ b/include/hw/acpi/vmgenid.h
-@@ -21,6 +21,7 @@
+@@ -21,6 +21,8 @@
  struct VmGenIdState {
      DeviceState parent_obj;
      QemuUUID guid;                /* The 128-bit GUID seen by the guest */
 +    bool rotate_on_load;
++    uint64_t pinned_page;         /* destination policy, never migrated */
      uint8_t vmgenid_addr_le[8];   /* Address of the GUID (little-endian) */
  };
  

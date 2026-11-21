@@ -5,7 +5,7 @@ public struct QEMUGenerationPage {
   public let physical: UInt64
 
   public static func discover<R: QEMUConfigReader>(
-    _ reader: inout R, regions: UnsafeBufferPointer<FirmwareRegion>,
+    _ reader: inout R, pinnedPage: UInt64, regions: UnsafeBufferPointer<FirmwareRegion>,
     readWord: (UInt64) -> UInt64?
   ) -> Self? {
     guard case .advertised(let addr, let guid) = qemuGenerationDevice(&reader) else { return nil }
@@ -19,14 +19,16 @@ public struct QEMUGenerationPage {
     // QEMU writes a 32-bit VGIA and firmware adds the SDT suppressor.
     guard p > 4096, p < 1 << 32, p & 4095 == 40 else { return nil }
     let page = p - 40
+    guard page == pinnedPage else { return nil }
     var reserved = false
     for i in 0..<regions.count {
       let r = regions[i]
-      if r.type == 10 && r.attributes & 8 != 0 && r.attributes & 0x2000 == 0
-        && r.base <= page && r.length >= 4096 && page - r.base <= r.length - 4096 {
-        reserved = true
-        break
-      }
+      let (end, overflow) = r.base.addingReportingOverflow(r.length)
+      guard !overflow, r.length > 0 else { return nil }
+      guard r.base < page + 4096 && page < end else { continue }
+      guard !reserved, r.type == 10, r.attributes & 8 != 0, r.attributes & 0x2000 == 0,
+        r.base <= page, page + 4096 <= end else { return nil }
+      reserved = true
     }
     guard reserved else { return nil }
     reader.select(guid)

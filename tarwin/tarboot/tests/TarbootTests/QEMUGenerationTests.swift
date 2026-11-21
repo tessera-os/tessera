@@ -87,13 +87,14 @@ private func entry(_ name: String, _ size: UInt16, _ key: UInt8) -> [UInt8] {
     FirmwareRegion(base: base, length: bytes, type: type, attributes: attr)
   }
   var reads = 0
-  func discover(_ r: FirmwareRegion, _ addr: UInt64 = 0x8028, _ values: [UInt64?] = [9, 17, 9, 17])
+  func discover(_ r: FirmwareRegion, _ addr: UInt64 = 0x8028, _ values: [UInt64?] = [9, 17, 9, 17],
+    more: [FirmwareRegion] = [], pin: UInt64 = 0x8000)
     -> QEMUGenerationPage? {
     c.files[32] = le(addr)
     c.files[33] = [UInt8](repeating: 0, count: 40) + le(9) + le(17)
     reads = 0
-    return [r].withUnsafeBufferPointer { rs in
-      QEMUGenerationPage.discover(&c, regions: rs) { at in
+    return ([r] + more).withUnsafeBufferPointer { rs in
+      QEMUGenerationPage.discover(&c, pinnedPage: pin, regions: rs) { at in
         defer { reads += 1 }
         guard reads < values.count, at == p + UInt64(reads % 2) * 8 else { return nil }
         return values[reads]
@@ -103,6 +104,13 @@ private func entry(_ name: String, _ size: UInt16, _ key: UInt8) -> [UInt8] {
   let result = discover(region())
   #expect(result?.physical == p)
   #expect(result?.sample { $0 == p ? 33 : 44 }?.0 == 33)
+  #expect(discover(region(), pin: 0x9000) == nil)
+  #expect(reads == 0)
+  for other in [region(), region(7), region(7, 8, 0x8fff, 4096), region(7, 8, .max, 4096)] {
+    #expect(discover(region(), more: [other]) == nil)
+    #expect(reads == 0)
+  }
+  #expect(discover(region(), more: [region(7, 8, 0x9000)])?.physical == p)
   for addr: UInt64 in [0, 40, p + 8, (1 << 32) + 40] {
     #expect(discover(region(), addr) == nil)
     #expect(reads == 0)

@@ -68,8 +68,10 @@ func check() throws {
   let qmp = try FileHandle(forWritingTo: URL(fileURLWithPath: monitor))
   defer { try? qmp.close() }
   let cpuCheck=ProcessInfo.processInfo.environment["TARBOOT_TEST_CPU"]
-  let armMachine = cpuCheck == "1" ? ["-machine","virt,gic-version=3,virtualization=on","-cpu","max"]
-    : ["-machine","virt,gic-version=3","-cpu","cortex-a72"]
+  let restore = ProcessInfo.processInfo.environment["TARBOOT_TEST_RESTORE"] == "1"
+  let board = restore ? "virt-11.1,accel=tcg" : "virt"
+  let armMachine = cpuCheck == "1" ? ["-machine",board + ",gic-version=3,virtualization=on","-cpu","max"]
+    : ["-machine",board + ",gic-version=3","-cpu","cortex-a72"]
   let machine =
     a == "x86_64"
     ? (secure ? ["-machine","q35,smm=on","-global","driver=cfi.pflash01,property=secure,value=on"] : ["-machine", "q35"]) + (cpuCheck == "x64-refusal" ? ["-cpu","max"] : [])
@@ -124,8 +126,12 @@ func check() throws {
     ]
   }
   process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-  let restore = ProcessInfo.processInfo.environment["TARBOOT_TEST_RESTORE"] == "1"
-  let generationArgs = restore ? ["-device", "vmgenid,x-rotate-on-load=on", "-blockdev",
+  let wrongPage = ProcessInfo.processInfo.environment["TARBOOT_TEST_WRONG_PAGE"] == "1"
+  guard (!wrongPage || restore) && (!restore || (a == "aarch64" && !multiple && !displayEnabled))
+    else { throw Failure("restore diagnostic requires one headless ARM vCPU") }
+  // Destination policy for this firmware/machine fixture, not from guest RAM or VMState.
+  let page = wrongPage ? "0x5c741000" : "0x5c740000"
+  let generationArgs = restore ? ["-device", "vmgenid,x-rotate-on-load=on,x-pinned-page=" + page, "-blockdev",
     "driver=file,filename=" + d + "/state.qcow2,node-name=statefile", "-blockdev",
     "driver=qcow2,file=statefile,node-name=state"] : []
   let evidence = ProcessInfo.processInfo.environment["TARBOOT_TEST_W1_EVIDENCE"] == "1"
@@ -141,6 +147,11 @@ func check() throws {
     ]
   process.standardInput = input
   process.standardOutput = qmp
+  let stderrPath = d + "/qemu-errors.log"
+  if wrongPage {
+    fm.createFile(atPath: stderrPath, contents: nil)
+    process.standardError = try FileHandle(forWritingTo: URL(fileURLWithPath: stderrPath))
+  }
   try process.run()
   defer {
     if process.isRunning { _ = kill(process.processIdentifier, SIGKILL) }
@@ -152,36 +163,80 @@ func check() throws {
   var captured = false
   let bootKernel = ProcessInfo.processInfo.environment["TARBOOT_ENTER_W0"] == "1"
   var nextShot = ContinuousClock.now
-  var saved = false, loaded = false
-  func snapshot(_ action: String) throws {
-    let cmd: [String: Any] = ["execute": "snapshot-" + action, "arguments": [
-      "job-id": action, "tag": "tarwin", "vmstate": "state", "devices": ["state"]]]
-    var data = try JSONSerialization.data(withJSONObject: cmd)
+  var loaded = false, serialID = 0
+  func request(_ command: String, _ args: [String: Any] = [:]) throws -> Any {
+    serialID += 1
+    var data = try JSONSerialization.data(withJSONObject: [
+      "execute": command, "arguments": args, "id": serialID] as [String: Any])
     data.append(10)
     try input.fileHandleForWriting.write(contentsOf: data)
+    while ContinuousClock.now < deadline {
+      let events = try Data(contentsOf: URL(fileURLWithPath: monitor))
+      for line in events.split(separator: 10).reversed() {
+        guard let reply = (try? JSONSerialization.jsonObject(with: Data(line))) as? [String: Any],
+          reply["id"] as? Int == serialID else { continue }
+        guard let result = reply["return"] else { throw Failure("QMP refused " + command) }
+        return result
+      }
+      if !process.isRunning { break }
+      Thread.sleep(forTimeInterval: 0.01)
+    }
+    throw Failure("missing QMP reply: " + command)
+  }
+  func snapshot(_ action: String) throws -> String? {
+    _ = try request("snapshot-" + action, [
+      "job-id": action, "tag": "tarwin", "vmstate": "state", "devices": ["state"]])
+    while ContinuousClock.now < deadline {
+      if let jobs = try request("query-jobs") as? [[String: Any]],
+        let job = jobs.first(where: { $0["id"] as? String == action }),
+        job["status"] as? String == "concluded" { return job["error"] as? String }
+      Thread.sleep(forTimeInterval: 0.05)
+    }
+    throw Failure("snapshot job did not conclude")
+  }
+  func deviceID() throws -> UUID {
+    guard let info = try request("query-vm-generation-id") as? [String: Any],
+      let guid = info["guid"] as? String, let id = UUID(uuidString: guid) else {
+      throw Failure("missing device generation")
+    }
+    return id
+  }
+  func checkPage(_ id: UUID) throws {
+    let path = d + "/paused-guid.bin"
+    _ = try request("pmemsave", ["val": 0x5c740028, "size": 16, "filename": path])
+    var uuid = id.uuid
+    let raw = withUnsafeBytes(of: &uuid) { Array($0) }
+    let wire = [3,2,1,0,5,4,7,6,8,9,10,11,12,13,14,15].map { raw[$0] }
+    guard try Data(contentsOf: URL(fileURLWithPath: path)).elementsEqual(wire)
+    else { throw Failure("device and paused guest generation differ") }
   }
   while process.isRunning && ContinuousClock.now < deadline {
-    if restore && !loaded {
-      if !saved {
-        if let uart = try? Data(contentsOf: URL(fileURLWithPath: serial)),
-          uart.range(of: Data("TARWIN-VMGEN-SNAPSHOT-READY".utf8)) != nil {
-          try snapshot("save")
-          saved = true
-        }
-      } else {
-        let events = try Data(contentsOf: URL(fileURLWithPath: monitor))
-        for line in events.split(separator: 10) {
-          let event = (try? JSONSerialization.jsonObject(with: Data(line))) as? [String: Any]
-          if let error = event?["error"] { throw Failure("snapshot: " + String(describing: error)) }
-          if event?["event"] as? String == "JOB_STATUS_CHANGE",
-            let data = event?["data"] as? [String: Any], data["id"] as? String == "save",
-            data["status"] as? String == "concluded" {
-            try snapshot("load")
-            loaded = true
-            break
-          }
-        }
+    if restore && !loaded, let uart = try? Data(contentsOf: URL(fileURLWithPath: serial)),
+      uart.range(of: Data("TARWIN-VMGEN-SNAPSHOT-READY".utf8)) != nil {
+      _ = try request("stop")
+      let before = try deviceID()
+      guard let status = try request("query-status") as? [String: Any],
+        status["status"] as? String == "paused"
+      else { throw Failure("failed to pause diagnostic") }
+      try checkPage(before)
+      guard try snapshot("save") == nil
+      else { throw Failure("failed to save paused diagnostic") }
+      let loadError = try snapshot("load")
+      guard let after = try request("query-status") as? [String: Any],
+        after["running"] as? Bool == false else { throw Failure("vCPU resumed during restore") }
+      if wrongPage {
+        guard loadError != nil, try deviceID() == before,
+          try String(contentsOfFile: stderrPath, encoding: .utf8).contains("refusing unbound restore slot")
+        else { throw Failure("missing destination-page refusal") }
+        print("aarch64: mismatched VMGenID destination refused before rotation; guest not resumed")
+        return
       }
+      let fresh = try deviceID()
+      guard loadError == nil, after["status"] as? String == "paused", fresh != before
+      else { throw Failure("paused restore did not rotate VMGenID: " + (loadError ?? "")) }
+      try checkPage(fresh)
+      _ = try request("cont")
+      loaded = true
     }
     if let bytes = try? Data(contentsOf: URL(fileURLWithPath:serial)),
       bytes.range(of:Data("TARWIN-SIGNED-VERIFICATION-FAILED".utf8)) != nil {
@@ -350,7 +405,7 @@ func check() throws {
     if ProcessInfo.processInfo.environment["TARBOOT_TEST_FIFO"] == "1" {
       if ProcessInfo.processInfo.environment["TARBOOT_TEST_GENERATION"] == "1" {
         if restore {
-          guard saved && loaded,
+          guard loaded,
             uart.range(of: Data("TARWIN-VMGEN-RESTORED-REFUSED-RESEEDED".utf8)) != nil
           else { throw Failure("missing snapshot restore and checked reseed") }
           print("\(a): restored guest rejected its previous RNG stream, then reseeded from swtpm")
