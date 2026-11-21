@@ -4,8 +4,14 @@ import VirtioGuest
 // QTest boots no firmware. Assign the scratch virtio function's memory BARs
 // in the synthetic q35 PCI hole before handing the snapshot to the driver.
 // This harness never opens a host device or maps host PCI configuration.
-func pciTransport(_ q: QTest, _ mem: QueueMemory) throws -> DiskTransport {
-  func select(_ offset: Int) { _ = q.send("outl 0xcf8 \(0x8000_2000 + (offset & ~3))") }
+func pciTransport(
+  _ q: QTest, type: UInt16, instance: Int, supported: UInt32,
+  queues: [QueueMemory]
+) throws -> DeviceTransport {
+  let function = type == 2 ? 4 : 5 + instance
+  func select(_ offset: Int) {
+    _ = q.send("outl 0xcf8 \(0x8000_0000 + function * 0x800 + (offset & ~3))")
+  }
   func cfg(_ offset: Int) throws -> UInt32 {
     select(offset)
     let result = q.send("inl 0xcfc")
@@ -18,12 +24,12 @@ func pciTransport(_ q: QTest, _ mem: QueueMemory) throws -> DiskTransport {
     select(offset)
     _ = q.send("outl 0xcfc \(value)")
   }
-  try q.require(try cfg(0) == 0x1042_1af4, "No modern virtio-blk function at 00:04.0")
+  try q.require(try cfg(0) == (0x1040 + UInt32(type)) << 16 | 0x1af4, "Missing modern PCI function")
   select(4)
   _ = q.send("outw 0xcfc 0")
   var bars = [UInt64](repeating: 0, count: 6)
   var sizes = bars
-  var next: UInt64 = 0xc000_0000
+  var next: UInt64 = 0xc000_0000 + UInt64(function - 4) * 0x1000000
   var i = 0
   while i < 6 {
     let off = 16 + i * 4
@@ -45,7 +51,9 @@ func pciTransport(_ q: QTest, _ mem: QueueMemory) throws -> DiskTransport {
         throw Failure("Invalid BAR size")
       }
       next = (next + size - 1) & ~(size - 1)
-      guard next + size < 0xe000_0000 else { throw Failure("Synthetic BAR aperture exhausted") }
+      guard next + size <= 0xc000_0000 + UInt64(function - 3) * 0x1000000 else {
+        throw Failure("Synthetic BAR aperture exhausted")
+      }
       bars[i] = next
       sizes[i] = size
       set(off, UInt32(next) | original & 15)
@@ -64,23 +72,28 @@ func pciTransport(_ q: QTest, _ mem: QueueMemory) throws -> DiskTransport {
     let value = try cfg(off)
     for j in 0..<4 { config.append(UInt8(truncatingIfNeeded: value >> (j * 8))) }
   }
-  guard case .found(let windows) = discoverVirtioPci(config, sizes, 2), windows.config.length >= 8
+  guard case .found(let windows) = discoverVirtioPci(config, sizes, type),
+    windows.config.length >= (type == 2 ? 8 : 6)
   else { throw Failure("Invalid modern PCI capability list or device config") }
   let common = bars[Int(windows.common.bar)] + windows.common.offset
   func width(_ bytes: UInt32) -> String { bytes == 4 ? "l" : bytes == 2 ? "w" : "b" }
   let read: (UInt32, UInt32) -> UInt32 = { UInt32(q.read(width($1), common + UInt64($0))) }
   let write: (UInt32, UInt32, UInt32) -> Void = { q.write(width($1), common + UInt64($0), $2) }
   let end = ContinuousClock.now + .seconds(2)
-  guard case .negotiated(let features) = negotiatePci(0x2220, read, write, { .now >= end }),
-    case .offset(let offset) = setupPciQueue(0, mem, windows, read, write)
-  else { throw q.error ?? Failure("PCI negotiation or queue installation failed") }
+  guard case .negotiated(let features) = negotiatePci(supported, read, write, { .now >= end })
+  else { throw q.error ?? Failure("PCI negotiation failed") }
+  var notifications = [UInt64]()
+  for (i, memory) in queues.enumerated() {
+    guard case .offset(let offset) = setupPciQueue(UInt16(i), memory, windows, read, write)
+    else { throw q.error ?? Failure("PCI queue installation failed") }
+    notifications.append(bars[Int(windows.notify.bar)] + offset)
+  }
   write(20, 1, 15)
   try q.require(read(20, 1) == 15, "PCI driver not ready")
   let cfgBase = bars[Int(windows.config.bar)] + windows.config.offset
-  let capacity = q.read("l", cfgBase) | q.read("l", cfgBase + 4) << 32
-  let notify = bars[Int(windows.notify.bar)] + offset
   let isr = bars[Int(windows.isr.bar)] + windows.isr.offset
-  return DiskTransport(
-    features: features, capacity: capacity, notify: { q.write("w", notify, 0) },
+  return DeviceTransport(
+    features: features, config: { UInt8(q.read("b", cfgBase + UInt64($0))) },
+    notify: { q.write("w", notifications[$0], UInt16($0)) },
     acknowledge: { _ = q.read("b", isr) })
 }

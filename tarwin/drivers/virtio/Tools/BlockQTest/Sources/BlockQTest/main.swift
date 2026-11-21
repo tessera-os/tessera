@@ -1,5 +1,5 @@
 // QTest owns a synthetic guest's RAM and ordered MMIO; only the transport
-// and virtio-blk protocol are under test, not Tarwin isolation or boot.
+// and virtio block/network protocols are under test, not Tarwin isolation or boot.
 import Darwin
 import Foundation
 import VirtioGuest
@@ -26,6 +26,14 @@ final class QTest {
         ? "virtio-blk-pci,disable-legacy=on,addr=04.0,drive=scratch,iommu_platform=on"
         : "virtio-blk-device,drive=scratch,iommu_platform=on",
     ]
+    for i in 0..<2 {
+      let device =
+        machine == .x64 ? "virtio-net-pci,disable-legacy=on,addr=0\(5+i).0" : "virtio-net-device"
+      process.arguments! += [
+        "-netdev", "hubport,id=nic\(i),hubid=1",
+        "-device", device + ",netdev=nic\(i),iommu_platform=on,mac=52:54:00:00:00:0\(i+1)",
+      ]
+    }
     if machine != .x64 { process.arguments! += ["-global", "virtio-mmio.force-legacy=off"] }
     if machine == .arm { process.arguments! += ["-cpu", "cortex-a57"] }
     process.standardInput = input
@@ -93,30 +101,42 @@ enum Machine: String {
     }
   }
 }
-struct DiskTransport {
+struct DeviceTransport {
   let features: UInt64
-  let capacity: UInt64
-  let notify: () -> Void
+  let config: (Int) -> UInt8
+  let notify: (Int) -> Void
   let acknowledge: () -> Void
 }
-func mmioTransport(_ q: QTest, _ machine: Machine, _ mem: QueueMemory) throws -> DiskTransport {
+func transport(
+  _ q: QTest, _ machine: Machine, type: UInt16, instance: Int = 0,
+  supported: UInt32, queues: [QueueMemory]
+) throws -> DeviceTransport {
+  if machine == .x64 {
+    return try pciTransport(q, type: type, instance: instance, supported: supported, queues: queues)
+  }
   let candidates: [UInt64] =
     machine == .rv
     ? (0..<8).map { UInt64(0x1000_1000 + 0x1000 * $0) }
     : (0..<32).map { UInt64(0x0a00_0000 + 0x200 * $0) }
-  guard let base = candidates.first(where: { q.read("l", $0 + 8) == 2 }) else {
-    throw q.error ?? Failure("No virtio-blk MMIO transport")
+  let matching = candidates.filter { q.read("l", $0 + 8) == type }
+  guard matching.indices.contains(instance) else {
+    throw q.error ?? Failure("Missing virtio MMIO device")
   }
+  let base = matching[instance]
   let read: (UInt32) -> UInt32 = { UInt32(q.read("l", base + UInt64($0))) }
   let write: (UInt32, UInt32) -> Void = { q.write("l", base + UInt64($0), $1) }
   let expiry = ContinuousClock.now + .seconds(2)
-  guard case .negotiated(let features) = negotiateMmio(2, 0x2220, read, write, { .now >= expiry })
+  guard
+    case .negotiated(let features) = negotiateMmio(
+      UInt32(type), supported, read, write, { .now >= expiry })
   else { throw q.error ?? Failure("MMIO feature negotiation failed") }
-  try q.require(
-    installSplitQueue(0, mem, read, write) && driverReady(read, write), "Queue activation failed")
-  return DiskTransport(
-    features: features, capacity: UInt64(read(0x100)) | UInt64(read(0x104)) << 32,
-    notify: { write(0x50, 0) },
+  for (index, mem) in queues.enumerated() {
+    try q.require(installSplitQueue(UInt32(index), mem, read, write), "Queue installation failed")
+  }
+  try q.require(driverReady(read, write), "Queue activation failed")
+  return DeviceTransport(
+    features: features, config: { UInt8(q.read("b", base + 0x100 + UInt64($0))) },
+    notify: { write(0x50, UInt32($0)) },
     acknowledge: {
       let irq = read(0x60)
       if irq != 0 { write(0x64, irq) }
@@ -126,8 +146,8 @@ func testBlock(_ q: QTest, _ machine: Machine) throws {
   let mem = QueueMemory(
     count: 8, descriptors: machine.ram + 0x100000, available: machine.ram + 0x101000,
     used: machine.ram + 0x102000)
-  let transport = try machine == .x64 ? pciTransport(q, mem) : mmioTransport(q, machine, mem)
-  let capacity = transport.capacity
+  let transport = try transport(q, machine, type: 2, supported: 0x2220, queues: [mem])
+  let capacity = (0..<8).reduce(UInt64(0)) { $0 | UInt64(transport.config($1)) << (8 * $1) }
   let features = transport.features
   var queue = SplitQueue()
   try q.require(queue.initialize(Int(mem.count)) && capacity > 7, "Invalid disk geometry")
@@ -161,7 +181,7 @@ func testBlock(_ q: QTest, _ machine: Machine) throws {
       { index, head in q.write("w", mem.available + 4 + UInt64(index) * 2, head) },
       { idx in q.write("w", mem.available + 2, idx) })
     try q.require(submitted, "Request \(cookie) submission failed")
-    transport.notify()
+    transport.notify(0)
     let deadline = ContinuousClock.now + .seconds(3)
     while q.read("w", mem.used + 2) == UInt64(queue.consumed) && q.error == nil && .now < deadline {
       usleep(200)
@@ -199,6 +219,7 @@ func run() throws {
   do {
     defer { q.close() }
     try testBlock(q, machine)
+    try testNetwork(q, machine)
   }
   let contents = try Data(contentsOf: disk)
   let sector = 7 * 512
@@ -209,7 +230,7 @@ func run() throws {
 }
 do {
   try run()
-  print("PASS: QEMU virtio-blk write, flush and 512-byte readback")
+  print("PASS: QEMU virtio-blk write/flush/readback and isolated virtio-net TX/RX")
 } catch {
   FileHandle.standardError.write(Data("\(error)\n".utf8))
   exit(1)
