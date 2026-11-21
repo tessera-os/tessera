@@ -55,3 +55,10 @@ is no reply right. The spawner accepts this message only from its spawned
 PID, using the Mach audit trailer. It owns both returned rights until the
 `SpawnedTask` is released. The hosted kernel separately owns process exit
 observation and reaping.
+
+`tarwin-task` reserves the 64 GiB `TaskWindow` before checking in. Map,
+protect and unmap operate only in that window; unmap restores the address
+reservation. The main command thread clears its bootstrap port and installs
+a deny-by-default profile before processing commands. All Mach rights needed
+by the guest are transferred, not looked up. The optional spawn exception
+port uses the same exception mask and message format as `HostExceptionPort`.

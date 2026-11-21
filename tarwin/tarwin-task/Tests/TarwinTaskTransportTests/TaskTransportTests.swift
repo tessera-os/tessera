@@ -1,5 +1,6 @@
 import Darwin
 import Dispatch
+import Foundation
 import TarwinTaskProtocol
 @testable import TarwinTaskTransport
 import Testing
@@ -81,4 +82,77 @@ import Testing
     .map(mapping), on: port, memoryEntry: entry, timeout: 500).get()
   #expect(response.status == KERN_SUCCESS)
   #expect(finished.wait(timeout: .now() + .seconds(1)) == .success)
+}
+
+@Test func spawnedSandboxedTaskRunsLifecycleCommands() throws {
+  var image = Dl_info()
+  try #require(dladdr(#dsohandle, &image) != 0)
+  let imageName = try #require(image.dli_fname)
+  var dir = URL(fileURLWithPath: String(cString: imageName)).deletingLastPathComponent()
+  while dir.path != "/", !FileManager.default.isExecutableFile(
+    atPath: dir.appendingPathComponent("tarwin-task").path) {
+    dir.deleteLastPathComponent()
+  }
+  let executable = dir.appendingPathComponent("tarwin-task").path
+  try #require(FileManager.default.isExecutableFile(atPath: executable))
+  let child = try TaskSpawner.spawn(executable: executable)
+  var reaped = false
+  defer {
+    if !reaped {
+      kill(child.pid, SIGKILL)
+      _ = waitpid(child.pid, nil, 0)
+    }
+  }
+
+  let length = TaskWindow.pageSize
+  var host: mach_vm_address_t = 0
+  try #require(mach_vm_allocate(mach_task_self_, &host, length * 2, VM_FLAGS_ANYWHERE) == KERN_SUCCESS)
+  defer { _ = mach_vm_deallocate(mach_task_self_, host, length * 2) }
+  UnsafeMutablePointer<UInt32>(bitPattern: UInt(host))?.pointee = 0x1400_0000  // b .
+  try #require(mach_vm_protect(
+    mach_task_self_, host, length, 0, VM_PROT_READ | VM_PROT_EXECUTE) == KERN_SUCCESS)
+  var rx: mach_port_t = 0
+  var rw: mach_port_t = 0
+  var size = length
+  try #require(mach_make_memory_entry_64(
+    mach_task_self_, &size, host, VM_PROT_READ | VM_PROT_EXECUTE, &rx, 0) == KERN_SUCCESS)
+  defer { TaskMachMessage.releaseSend(rx) }
+  try #require(mach_make_memory_entry_64(
+    mach_task_self_, &size, host + length, VM_PROT_READ | VM_PROT_WRITE, &rw, 0) == KERN_SUCCESS)
+  defer { TaskMachMessage.releaseSend(rw) }
+
+  let code = TaskWindow.base
+  let data = code + length
+  let stack = data + length - 16
+  let read = UInt32(VM_PROT_READ)
+  let exec = UInt32(VM_PROT_EXECUTE)
+  let write = UInt32(VM_PROT_WRITE)
+  func send(_ command: TaskCommand, entry: mach_port_t = 0) throws -> Int32 {
+    try child.command(command, memoryEntry: entry, timeout: 1_000).get().status
+  }
+  try #require(try send(.map(TaskMapping(
+    address: code, length: length, offset: 0, protection: read | exec, copy: false)), entry: rx)
+    == KERN_SUCCESS)
+  try #require(try send(.map(TaskMapping(
+    address: data, length: length, offset: 0, protection: read | write, copy: true)), entry: rw)
+    == KERN_SUCCESS)
+  #expect(try send(.protect(address: data, length: length, protection: read)) == KERN_SUCCESS)
+  #expect(try send(.protect(address: data, length: length, protection: read | write)) == KERN_SUCCESS)
+  #expect(try send(.protect(address: data, length: length, protection: write | exec))
+    == KERN_INVALID_ARGUMENT)
+
+  let start = TaskCommand.createThread(id: 1, entry: code, argument: 0, stack: stack, tls: data)
+  try #require(try send(start) == KERN_SUCCESS)
+  #expect(try send(start) == KERN_INVALID_ARGUMENT)
+  let registers = InlineArray<31, UInt64>(repeating: 0)
+  #expect(try send(.setThreadState(id: 1, state: TaskThreadState(
+    registers: registers, stack: stack, pc: code, cpsr: 0))) == KERN_SUCCESS)
+  #expect(try send(.resumeThread(id: 1)) == KERN_SUCCESS)
+  #expect(try send(.suspendThread(id: 1)) == KERN_SUCCESS)
+  #expect(try send(.unmap(address: data, length: length)) == KERN_SUCCESS)
+  #expect(try send(.terminate) == KERN_SUCCESS)
+  var status: Int32 = -1
+  reaped = waitpid(child.pid, &status, 0) == child.pid
+  #expect(reaped)
+  #expect(status == 0)
 }

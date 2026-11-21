@@ -27,7 +27,7 @@ public final class SpawnedTask: Sendable {
 
 public enum TaskSpawner {
   public static func spawn(
-    executable: String, timeout: mach_msg_timeout_t = 5_000
+    executable: String, exceptionPort: mach_port_t = 0, timeout: mach_msg_timeout_t = 5_000
   ) throws -> SpawnedTask {
     var bootstrap: mach_port_t = 0
     let result = TaskMachMessage.newReceive(&bootstrap)
@@ -43,6 +43,13 @@ public enum TaskSpawner {
     defer { posix_spawnattr_destroy(&attributes) }
     try check(posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT)))
     try check(posix_spawnattr_setspecialport_np(&attributes, bootstrap, TASK_BOOTSTRAP_PORT))
+    if exceptionPort != 0 {
+      let mask = exception_mask_t(EXC_MASK_BAD_ACCESS | EXC_MASK_BAD_INSTRUCTION | EXC_MASK_ARITHMETIC
+        | EXC_MASK_BREAKPOINT | EXC_MASK_SOFTWARE | EXC_MASK_GUARD)
+      try check(posix_spawnattr_setexceptionports_np(
+        &attributes, mask, exceptionPort, EXCEPTION_DEFAULT | Int32(bitPattern: MACH_EXCEPTION_CODES),
+        ARM_THREAD_STATE64))
+    }
 
     var pid: pid_t = 0
     try executable.withCString { path in
@@ -55,6 +62,9 @@ public enum TaskSpawner {
     case .success(let ports):
       return SpawnedTask(pid: pid, ports: ports)
     case .failure(let error):
+      var status: Int32 = 0
+      let waited = waitpid(pid, &status, WNOHANG)
+      if waited == pid { throw TaskTransportError.childExited(status) }
       kill(pid, SIGKILL)
       while waitpid(pid, nil, 0) == -1 && errno == EINTR {}
       throw error

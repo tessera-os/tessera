@@ -78,5 +78,6 @@ struct KernelTaskPorts: Sendable {
 public enum TaskTransportError: Error, Equatable {
   case mach(mach_msg_return_t)
   case spawn(Int32)
+  case childExited(Int32)
   case invalidMessage
 }
