@@ -79,11 +79,38 @@ private struct RegisterGate<P: CallProvider>: NativeGate {
   }
 }
 
-private struct Caller: CurrentProcessContext {
+private struct Caller: CurrentProcessContext, ExitingProcessContext {
   let process: UnsafeMutablePointer<ProcessExecution>
   let tree: UnsafePointer<JobTree>
+  var stopping: UInt64 = 0
   func withCaller<R>(_ body: (inout ProcessExecution, borrowing JobTree) -> R) -> R? {
     body(&process.pointee, tree.pointee)
+  }
+  mutating func withExitingCaller(
+    _ body: (inout ProcessExecution, borrowing JobTree, (UInt64) -> Void) -> Bool
+  ) -> Bool? {
+    body(&process.pointee, tree.pointee, { self.stopping = $0 })
+  }
+}
+
+private func exitCaller(_ process: inout ProcessExecution, tree: borrowing JobTree, thread: UInt64)
+  -> Bool
+{
+  withUnsafeMutablePointer(to: &process) { p in
+    withUnsafePointer(to: tree) { j in
+      var calls = ProcessExitCalls(context: Caller(process: p, tree: j))
+      var scratch: UInt64 = 0
+      let isa = RegisterGate(calls: calls).isa
+      let effect = withUnsafeMutablePointer(to: &scratch) { word in
+        dispatchCall(
+          isa: isa, savedPC: isa == .rv64 ? 4096 : 4096 + isa.instructionWidth,
+          libraryCode: 4096..<4112, userRange: 0..<0, number: TarwinSyscall.TarwinCall.processExit,
+          registers: CallRegisters(UInt64(bitPattern: -37)), scratch: .init(start: word, count: 1),
+          provider: &calls)
+      }
+      guard case .stopCaller = effect else { return false }
+      return calls.context.stopping == thread && p.pointee.exit == TaskExit(.exited, code: -37)
+    }
   }
 }
 
@@ -443,9 +470,10 @@ private func jobQuota(_ arena: inout Arena, _ limit: UInt64) -> Bool {
           case let own = selfHandle(&p, tree: tree), own != 0,
           case .installed(let name)? = p.withHandles(tree: tree, { $0.install(th, rights: 0) }),
           tree.setFrozen(true, job: tree.root), p.gate(id, tree: tree) == .hold,
-          tree.kill(branch), p.gate(id, tree: tree) == .stop,
+          tree.setFrozen(false, job: tree.root), exitCaller(&p, tree: tree, thread: id),
+          p.gate(id, tree: tree) == .stop, tree.kill(branch),
           p.stopped(id, code: 0, tree: tree, notify: { _ in }, retire: { _ in }),
-          p.exit?.reason == .jobKilled, selfHandle(&p, tree: tree) == 0
+          p.exit == TaskExit(.exited, code: -37), selfHandle(&p, tree: tree) == 0
         else { return false }
         var invalid: UInt8 = 0
         return p.beginCleanup(

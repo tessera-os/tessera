@@ -34,7 +34,9 @@ checks that only the child's root yields a frame, and compares x0 to the
 preloaded local name. The descriptor test does not initialize a real TCB,
 execute mapped code, authenticate an image or enter EL0.
 It checks a descendant's footprint against the root's budget, then
-marks its thread runnable, freezes and kills it, drains the
+marks its thread runnable, freezes and thaws it, and dispatches process exit
+with a negative code. Exit requests a thread stop rather than a return.
+A later job kill preserves the first exit cause. It drains the
 process handle table and checks its termination signal and the root's budget.
 The guest also accounts a periodic work group's first interval, rejects its
 stale completion and moves from the lower-energy model point to the faster

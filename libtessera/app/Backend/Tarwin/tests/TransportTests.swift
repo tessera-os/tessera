@@ -52,6 +52,9 @@ private struct Loopback: NativeGate {
     }
     switch result {
     case .returned(let result): return result
+    case .stopCaller:
+      XCTFail("unexpected process exit")
+      return CallResult(status: .max)
     case .terminateBadOrigin:
       XCTFail("wrong instruction address")
       return CallResult(status: .max)

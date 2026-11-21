@@ -14,6 +14,7 @@ public protocol CallProvider {
 
 public enum DispatchResult {
   case terminateBadOrigin  // TARWIN-S0001; the trap path must not resume this process.
+  case stopCaller  // Process.exit accepted. Switch off this stack before acknowledging the stop.
   case returned(CallResult)
 }
 
@@ -49,7 +50,8 @@ public func dispatchCall<P: CallProvider>(
         from: address, into: UnsafeMutableBufferPointer(rebasing: scratch[count..<n]))
     else { return .returned(CallResult(status: syscallStatus(1, 1))) }
   }
-  return .returned(
-    provider.invoke(
-      number: number, words: UnsafeBufferPointer(rebasing: UnsafeBufferPointer(scratch)[..<n])))
+  let result = provider.invoke(
+    number: number, words: UnsafeBufferPointer(rebasing: UnsafeBufferPointer(scratch)[..<n]))
+  if number == TarwinCall.processExit && result.status == 0 { return .stopCaller }
+  return .returned(result)
 }

@@ -1,6 +1,11 @@
 import TarwinABI
 
 public enum NativeProcess {
+  public static func exit<G: NativeGate>(_ code: Int64, gate: inout G) -> Never {
+    _ = gate.enter(
+      number: TarwinCall.processExit, registers: CallRegisters(UInt64(bitPattern: code)))
+    fatalError("Process.exit returned")
+  }
   public static func current<G: NativeGate>(gate: inout G) -> UInt64 {
     let r = gate.enter(number: TarwinCall.processCurrent, registers: CallRegisters())
     return r.status == 0 ? r.first : 0

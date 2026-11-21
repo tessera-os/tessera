@@ -1,7 +1,7 @@
 import TarwinABI
 
 public enum Arm64TrapOutcome {
-  case resumeEL0, terminateBadOrigin, otherSynchronousException, invalidKernelFrame
+  case resumeEL0, stopCaller, terminateBadOrigin, otherSynchronousException, invalidKernelFrame
 }
 
 /// Called only by the lower-EL synchronous vector, on a private kernel
@@ -27,6 +27,7 @@ public func dispatchArm64EL0<P: CallProvider>(
     number: gprs[16], registers: regs, scratch: scratch, provider: &provider)
   {
   case .terminateBadOrigin: return .terminateBadOrigin
+  case .stopCaller: return .stopCaller
   case .returned(let r):
     gprs[0] = r.status
     gprs[1] = r.detail

@@ -55,8 +55,13 @@ final class Arm64TrapTests: XCTestCase {
     XCTAssertEqual(run(), .resumeEL0)
     XCTAssertEqual(regs[3], 81)
     XCTAssertEqual(p.entered, 2)
+    p.count = 1
+    regs[16] = TarwinCall.processExit
+    let exiting = regs
+    XCTAssertEqual(run(), .stopCaller)
+    XCTAssertEqual(regs, exiting)
     regs.removeLast()
     XCTAssertEqual(run(), .invalidKernelFrame)
-    XCTAssertEqual(p.entered, 2)
+    XCTAssertEqual(p.entered, 3)
   }
 }
