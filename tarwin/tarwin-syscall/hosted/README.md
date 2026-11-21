@@ -29,3 +29,9 @@ cancellation or task teardown releases it if no reply can be sent.
 
 The wire format does not carry a claimed program counter. A value supplied by
 the caller would not establish trusted call origin.
+
+`TarwinKernelGate` binds a gate receive port and audited PID to one kernel
+process. A verified trap handler must authorize the captured call registers
+before the matching Mach request can enter `TarwindKernel`. The authorization
+is single-use. The event loop calls `completeReady()` to consume ready kernel
+continuations and reply without making a gate worker wait.
