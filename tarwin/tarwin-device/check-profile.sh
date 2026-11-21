@@ -44,5 +44,8 @@ for target in aarch64-none-none-elf x86_64-unknown-none-elf riscv64-none-none-ea
   elif [ "$(basename "$package")" = tarwin-gpu ]; then
     "$compiler" -I "$out" -target "$target" -enable-experimental-feature Embedded -O -wmo -parse-as-library -emit-object \
       -no-allocations -module-name TarwinFence "$package/Sources/TarwinGPU/Timeline.swift" "$package/Sources/TarwinGPU/FenceObject.swift" -o "$out/$target-fence.o"
+  elif [ "$(basename "$package")" = tarwin-power ]; then
+    "$compiler" -target "$target" -enable-experimental-feature Embedded -O -wmo -parse-as-library -emit-object \
+      -no-allocations -module-name TarwinWake "$package/Sources/TarwinPower/WakeGate.swift" -o "$out/$target-wake.o"
   fi
 done
