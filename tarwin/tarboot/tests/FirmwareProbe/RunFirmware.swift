@@ -305,6 +305,12 @@ func check() throws {
     print("\(a): firmware TCG2 PCR 8 and PCR 9 match independent host replay")
     print("\(a): captured log contains both expected SHA-256 measurements and the final firmware exit event")
     if ProcessInfo.processInfo.environment["TARBOOT_TEST_FIFO"] == "1" {
+      if ProcessInfo.processInfo.environment["TARBOOT_TEST_GENERATION"] == "1" {
+        guard uart.range(of: Data("TARWIN-NO-VMGEN-RNG-REFUSED".utf8)) != nil else {
+          throw Failure("missing post-exit RNG refusal")
+        }
+        print("\(a): guest found no advertised generation device; kernel RNG refused the TBIB seed and emulated TPM sample")
+      }
       print("\(a): post-exit TPM2_GetRandom supplied a full 32-byte debug sample")
       print("\(a): post-exit TPM event sequence hashed the fixture; PCR 10 and the appended Event2 SHA-256 digest match host replay")
     }

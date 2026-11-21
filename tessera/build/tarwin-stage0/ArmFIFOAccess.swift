@@ -10,11 +10,13 @@ for bits in [8, 32] {
   }
   """)
 }
-print("""
-define void @tarwin_mmio_write8(ptr %p, i8 %v) nounwind {
+for bits in [8, 16, 32] {
+  print("""
+define void @tarwin_mmio_write\(bits)(ptr %p, i\(bits) %v) nounwind {
   call void asm sideeffect "dmb osh", "~{memory}"()
-  store volatile i8 %v, ptr %p, align 1
+  store volatile i\(bits) %v, ptr %p, align \(bits / 8)
   call void asm sideeffect "dmb osh", "~{memory}"()
   ret void
 }
 """)
+}

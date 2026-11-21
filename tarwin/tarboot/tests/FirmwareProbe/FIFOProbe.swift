@@ -1,6 +1,52 @@
 #if TARBOOT_TEST_FIFO
   import KCore
   import TarwinBoot
+  #if TARBOOT_TEST_GENERATION
+    import Tarboot
+    import TarwinKernelRandom
+    import TarwinRandomCore
+
+    @_extern(c, "tarwin_mmio_write16") private func write16(_ p: UnsafeRawPointer, _ v: UInt16)
+    @_extern(c, "tarwin_mmio_write32") private func write32(_ p: UnsafeRawPointer, _ v: UInt32)
+
+    // QEMU virt diagnostic bindings only: fw-cfg@9020000 and pl011@9000000.
+    private struct VirtConfig: QEMUConfigReader {
+      let base = UnsafeRawPointer(bitPattern: 0x0902_0000)!
+      mutating func select(_ key: UInt16) { write16(base + 8, key.bigEndian) }
+      mutating func readByte() -> UInt8 { read8(base) }
+    }
+
+    @inline(never) private func refusesRandom(_ seed: UnsafeRawBufferPointer,
+      _ sample: UnsafeRawBufferPointer, _ generation: RandomEpoch?) -> Bool {
+      if let _ = KernelRandom(policy: .debugQEMU, bootSeed: seed, hardware: sample,
+        source: .emulatedTPM, generation: generation) { return false }
+      return true
+    }
+
+    func exerciseUnavailableGeneration(bootSeed: UnsafeRawBufferPointer) -> Bool {
+      var cfg = VirtConfig()
+      guard bootSeed.count == 64, case .unavailable = qemuGenerationDevice(&cfg) else { return false }
+      var command = InlineArray<1100, UInt8>(repeating: 0)
+      var sample = InlineArray<32, UInt8>(repeating: 0)
+      defer { sample = .init(repeating: 0) }
+      guard withUnsafeMutableBytes(of: &command, { raw in
+        guard var port = TPMFIFO(registers: VirtFIFO(), scratch: raw, pollLimit: 500000),
+          readTPMEntropy32(&port, into: &sample) else { return false }
+        return withUnsafeBytes(of: &sample) { refusesRandom(bootSeed, $0, nil) }
+      }) else { return false }
+      let uart = UnsafeRawPointer(bitPattern: 0x0900_0000)!
+      let marker: StaticString = "TARWIN-NO-VMGEN-RNG-REFUSED\r\n"
+      for i in 0..<marker.utf8CodeUnitCount {
+        var polls = 500000
+        while read32(uart + 0x18) & 0x20 != 0 {
+          polls -= 1
+          if polls == 0 { return false }
+        }
+        write32(uart, UInt32(marker.utf8Start[i]))
+      }
+      return true
+    }
+  #endif
 
   @_extern(c, "tarwin_mmio_read8") private func read8(_ p: UnsafeRawPointer) -> UInt8
   @_extern(c, "tarwin_mmio_read32") private func read32(_ p: UnsafeRawPointer) -> UInt32

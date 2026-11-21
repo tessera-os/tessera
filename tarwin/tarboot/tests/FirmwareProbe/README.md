@@ -198,6 +198,13 @@ start a secondary CPU or test IPI delivery or scheduling.
 
 ### AArch64 post-exit PCR transport
 
+Add `TARBOOT_TEST_GENERATION=1 TARBOOT_TEST_RNG=1` to the FIFO run below to
+check the missing-generation fallback. After physical TBIB readback, the
+guest scans QEMU virt's fw_cfg directory, reads a fresh 32-byte sample
+from swtpm and checks that kernel RNG initialization refuses the absent
+generation. The host requires the post-exit serial marker. This negative
+probe does not supply an epoch, an ASLR draw or permission to launch W1.
+
 `TARBOOT_TEST_TPM=1 TARBOOT_TEST_FIFO=1 bash run.sh aarch64` binds a single
 QEMU virt platform-bus TIS device to disposable swtpm. After ExitBootServices,
 TarwinBoot requests locality zero and streams the ESP fixture bytes through
