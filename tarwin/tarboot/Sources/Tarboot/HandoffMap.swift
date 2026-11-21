@@ -24,7 +24,7 @@ func writeHandoffMap(
   var pins = 0
   var count = 0
   var last: UInt64 = 0
-  func emit(_ start: UInt64, _ end: UInt64, _ kind: UInt32, _ attributes: UInt64) -> Bool {
+  func emit(_ start: UInt64, _ end: UInt64, _ kind: UInt32, _ attributes: UInt64, _ count: inout Int) -> Bool {
     if start == end { return true }
     guard count < output.count / 32 else { return false }
     let entry = PhysicalRegion(
@@ -47,13 +47,13 @@ func writeHandoffMap(
       let pin = pins == 0 ? first : second
       if pin.base >= end { break }
       guard pin.base >= start, pin.length <= end - pin.base, r.type == 2, r.ordinaryWritableRAM,
-        emit(start, pin.base, kind, r.attributes),
-        emit(pin.base, pin.base + pin.length, pin.kind, r.attributes)
+        emit(start, pin.base, kind, r.attributes, &count),
+        emit(pin.base, pin.base + pin.length, pin.kind, r.attributes, &count)
       else { return nil }
       pins += 1
       start = pin.base + pin.length
     }
-    guard emit(start, end, kind, r.attributes) else { return nil }
+    guard emit(start, end, kind, r.attributes, &count) else { return nil }
   }
   return pins == 2 ? count : nil
 }

@@ -6,7 +6,7 @@ public struct DebugBootConfig {
 
   public init?(_ bytes: UnsafeRawBufferPointer) {
     var pos = 0
-    func consume(_ token: StaticString) -> Bool {
+    func consume(_ token: StaticString, at pos: inout Int) -> Bool {
       guard token.utf8CodeUnitCount <= bytes.count - pos else { return false }
       for i in 0..<token.utf8CodeUnitCount where bytes[pos + i] != token.utf8Start[i] {
         return false
@@ -14,7 +14,7 @@ public struct DebugBootConfig {
       pos += token.utf8CodeUnitCount
       return true
     }
-    guard consume(#"{"flags":["debug"],"securityVersion":"#) else { return nil }
+    guard consume(#"{"flags":["debug"],"securityVersion":"#, at: &pos) else { return nil }
     let start = pos
     var v: UInt64 = 0
     while pos < bytes.count, (48...57).contains(bytes[pos]) {
@@ -24,12 +24,12 @@ public struct DebugBootConfig {
       if v > 9_007_199_254_740_991 { return nil }
       pos += 1
     }
-    guard pos > start, consume(#","slot":""#), pos < bytes.count,
+    guard pos > start, consume(#","slot":""#, at: &pos), pos < bytes.count,
       bytes[pos] == 65 || bytes[pos] == 66
     else { return nil }
     slot = bytes[pos] - 65
     pos += 1
-    guard consume(#""}"#), pos == bytes.count else { return nil }
+    guard consume(#""}"#, at: &pos), pos == bytes.count else { return nil }
     securityVersion = v
   }
 }
