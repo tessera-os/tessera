@@ -1,5 +1,6 @@
 import Darwin
 import Dispatch
+import Foundation
 import TarwinABI
 import TarwinGateTransport
 import TarwinHostedGate
@@ -16,8 +17,14 @@ private final class TestHost: TarwindHost {
 }
 
 @Test func stubDispatchesOnlyAuthorizedCallsAndDoesNotHoldWorkerForWait() throws {
-  let kernel = try Tarwind.boot(
-    .init(diskPath: "", systemImagePath: "", panicRecordPath: "", taskExecutablePath: ""), host: TestHost())
+  let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+  try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+  defer { try? FileManager.default.removeItem(at: directory) }
+  let kernel = try Tarwind.boot(.init(
+    diskPath: directory.appendingPathComponent("disk").path,
+    systemImagePath: directory.appendingPathComponent("image").path,
+    panicRecordPath: directory.appendingPathComponent("panic").path,
+    taskExecutablePath: ""), host: TestHost())
   defer { kernel.shutdown() }
   let process = kernel.createKernelProcess(name: "gate-test")
   let ports = try GatePortSet()
