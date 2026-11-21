@@ -1,6 +1,7 @@
 import KCore
 
-public struct CompressedSlot {
+public struct CompressedSlot: IntrusiveNode {
+  public var listLink = IntrusiveLink()
   fileprivate var serial: UInt64 = 0
   fileprivate var offset = 0, size = 0
   fileprivate var tagged = false
@@ -29,6 +30,7 @@ public struct CompressedSegment: ~Copyable {
   private let id: UInt64
   private let storage: UnsafeMutableBufferPointer<UInt8>
   private let slots: UnsafeMutableBufferPointer<CompressedSlot>
+  private var free: IntrusiveList<CompressedSlot>
   public private(set) var usedBytes = 0
   private var serial: UInt64 = 0
 
@@ -36,10 +38,15 @@ public struct CompressedSegment: ~Copyable {
     slots: UnsafeMutableBufferPointer<CompressedSlot>) {
     guard identity != 0, storage.count == 4096 || storage.count == 16384,
       (1...64).contains(slots.count) else { return nil }
+    for i in slots.indices { slots[i] = CompressedSlot() }
+    guard var list = IntrusiveList(nodes: slots) else { return nil }
+    for i in slots.indices.reversed() {
+      guard list.prepend(i) else { return nil }
+    }
     id = identity
     self.storage = storage
     self.slots = slots
-    for i in slots.indices { slots[i] = CompressedSlot() }
+    free = consume list
   }
 
   /// The source is frozen under its object lock. Do not recycle its frame
@@ -48,15 +55,12 @@ public struct CompressedSegment: ~Copyable {
     _ frame: S, tagged: Bool, table: inout H
   ) -> CompressedPage? {
     guard frame.byteCount() == frameBytes(UInt64(storage.count), tagged: tagged),
-      usedBytes < storage.count, serial != .max else { return nil }
-    var i = 0
-    while i < slots.count && slots[i].serial != 0 { i += 1 }
-    guard i < slots.count else { return nil }
+      usedBytes < storage.count, serial != .max, free.first != nil else { return nil }
     // Do not publish a block that costs as much as its resident data page.
     let capacity = min(storage.count - usedBytes, storage.count - 1)
     var tail = SegmentBytes(bytes: .init(start: storage.baseAddress! + usedBytes, count: capacity))
     let result = compressPage(frame, output: &tail, table: &table)
-    guard result.ok else { return nil }
+    guard result.ok, let i = free.popFirst() else { return nil }
     serial += 1
     slots[i].serial = serial
     slots[i].offset = usedBytes
@@ -86,14 +90,14 @@ public struct CompressedSegment: ~Copyable {
   /// Called after the owner no longer references this block. Move the tail
   /// down in place; surviving references name slots, not offsets.
   public mutating func discard(_ ref: CompressedPage) -> Bool {
-    guard let s = slot(ref) else { return false }
+    guard let s = slot(ref), free.prepend(ref.slot) else { return false }
     for src in (s.offset + s.size)..<usedBytes { storage[src - s.size] = storage[src] }
     let end = usedBytes - s.size
     for i in end..<usedBytes { storage[i] = 0 }
     for i in slots.indices where slots[i].serial != 0 && slots[i].offset > s.offset {
       slots[i].offset -= s.size
     }
-    slots[ref.slot] = CompressedSlot()
+    slots[ref.slot].serial = 0
     usedBytes = end
     return true
   }

@@ -48,6 +48,9 @@ import Testing
       #expect(UInt64(pool.usedBytes) == first.storedBytes)
       #expect(pool.restore(first, into: &frame, tagged: false) == true)
       #expect(frame.data.allSatisfy { $0 == 0 })
+      let second = pool.store(frame, tagged: false, table: &table)
+      #expect(second != nil)
+      #expect(pool.store(frame, tagged: false, table: &table) == nil)
     }
   }
 }
