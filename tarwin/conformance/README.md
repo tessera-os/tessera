@@ -1,11 +1,11 @@
 # Tarwin 26.11.1 acceptance
 
-This is a host-side Kira lab controller and evidence checker. It does not emulate a kernel, benchmark a Mac as if it were a reference machine, or turn unit tests into acceptance evidence.
+This is a host-side Swift lab controller and evidence checker. It does not emulate a kernel, benchmark a Mac as if it were a reference machine, or turn unit tests into acceptance evidence.
 
 ```sh
-kira test conformance
-kira run conformance -- refs.tsv /absolute/new-run /absolute/trusted-lab-adapter
-kira run conformance -- refs.tsv /absolute/archived-run
+swift test --package-path conformance
+swift run --package-path conformance tarwin-conformance refs.tsv /absolute/new-run /absolute/trusted-lab-adapter
+swift run --package-path conformance tarwin-conformance refs.tsv /absolute/archived-run
 ```
 
 Use the train owner's inventory of **all** reference devices. Each non-comment row has eight tab-separated fields: `physical arch serial tarwin-build linux-build battery nested confidential`. Architectures: aarch64, x64, rv64. Flags: yes/no from hardware discovery. Build identifiers name unique immutable builds; the Linux identifier must be the latest stable mainline configured per workload, not a distro version. The same serial must denote the same physical machine across reboots. Bind these identifiers to measured boot logs, approved reference inventory, compiler/options, workload versions and board configuration in the archived capture. The runner cannot authenticate a lab operator's claims.
