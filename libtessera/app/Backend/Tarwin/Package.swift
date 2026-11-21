@@ -15,9 +15,10 @@ let package = Package(
     .target(
       name: "LibTesseraTarwin",
       dependencies: [.product(name: "TarwinABI", package: "tarwin-syscall")],
-      path: ".", exclude: ["tests"],
+      path: ".", exclude: ["tests", "variants"],
       sources: [
         "CallNumbers.swift", "NativeEntry.swift", "NativeHandles.swift", "NativeSync.swift",
+        "NativeHardwareGate.swift",
       ]),
     .testTarget(
       name: "NativeEntryTests",
