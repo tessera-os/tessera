@@ -3,6 +3,7 @@ import Foundation
 import XCTest
 
 @testable import TarwinLoader
+@testable import TarwinW0Verify
 
 final class FrozenSDKTests: XCTestCase {
   private func withContract<R>(_ body: (EarlyRIDLContract) throws -> R) rethrows -> R {
@@ -80,6 +81,11 @@ final class FrozenSDKTests: XCTestCase {
                 executable: p, framework: l, caller: exe,
                 dir: directory, section: section, lib: lib, machine: arm, contract: c))
             XCTAssertEqual(binding.typeTag, c.typeTag)
+            if let text = env["W1_INTEROP_THUNK_RVA"] {
+              try checkTemporaryThunk(
+                try XCTUnwrap(UInt64(text, radix: 16)), bytes: p,
+                image: exe, binding: binding)
+            }
             XCTAssertNil(
               inspectEarlyRIDLBinding(
                 executable: p, framework: l, machine: arm,
@@ -88,6 +94,40 @@ final class FrozenSDKTests: XCTestCase {
           }
         }
       }
+    }
+  }
+
+  // Cross-check this producer's hidden thunk, not a production instruction whitelist.
+  private func checkTemporaryThunk(
+    _ pc: UInt64, bytes: UnsafeRawBufferPointer,
+    image: InspectedImage, binding: NativeFunctionBinding
+  ) throws {
+    let r = ELFReader(bytes: bytes)
+    let ph = try XCTUnwrap(
+      stride(
+        from: image.programHeaders.lowerBound,
+        to: image.programHeaders.upperBound, by: 56
+      ).first { h in
+        r.u32(h) == 1 && r.u32(h + 4) == 5 && pc >= r.u64(h + 16)
+          && imageContains(r.u64(h + 32), pc - r.u64(h + 16), 20)
+      })
+    let off = Int(r.u64(ph + 8) + (pc - r.u64(ph + 16)))
+    let page = r.u32(off)
+    let add = r.u32(off + 4)
+    let mov = r.u32(off + 12)
+    XCTAssertEqual(page & 0x9f00_001f, 0x9000_0011)  // adrp x17
+    XCTAssertEqual(add & 0xffc0_03ff, 0x9100_0231)  // add x17,x17,#imm12
+    XCTAssertEqual(r.u32(off + 8), 0xf940_0230)  // ldr x16,[x17]
+    XCTAssertEqual(mov & 0xffe0_001f, 0xf2e0_0011)  // movk x17,#tag,lsl #48
+    XCTAssertEqual(r.u32(off + 16), 0xd71f_0a11)  // braa x16,x17
+    let imm21 = Int64(((page >> 5) & 0x7ffff) << 2 | (page >> 29) & 3)
+    let delta = ((imm21 << 43) >> 43) << 12
+    for bias: UInt64 in [1 << 32, (1 << 43) - 0x40000] {
+      let slot = UInt64(bitPattern: Int64((bias + pc) & ~4095) + delta) + UInt64((add >> 10) & 4095)
+      XCTAssertEqual(slot, bias + binding.slotRVA)
+      XCTAssertEqual(
+        (slot & 0x0000_ffff_ffff_ffff) | UInt64((mov >> 5) & 65535) << 48,
+        W1AddressPlan.importModifier(slot: bias + binding.slotRVA, tag: binding.typeTag))
     }
   }
 }

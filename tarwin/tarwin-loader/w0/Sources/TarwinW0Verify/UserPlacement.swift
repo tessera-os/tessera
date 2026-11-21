@@ -10,6 +10,10 @@ public struct W1AddressPlan {
   public let slotAddress, targetAddress, storageModifier: UInt64
   /// All pages of init's writable load must be sealed before entry.
   public let sealReadOnly: Range<UInt64>
+
+  static func importModifier(slot: UInt64, tag: UInt32) -> UInt64 {
+    (slot & 0x0000_ffff_ffff_ffff) | (UInt64(tag & 0xffff) << 48)
+  }
 }
 
 extension W1BootSet {
@@ -56,7 +60,7 @@ extension W1BootSet {
       libraryCode: (l.lowerBound + library.layout.code.lowerBound)..<(l.lowerBound
         + library.layout.code.upperBound),
       slotAddress: slot, targetAddress: l.lowerBound + binding.entryRVA,
-      storageModifier: (slot & 0x0000_ffff_ffff_ffff) | (UInt64(binding.typeTag & 0xffff) << 48),
+      storageModifier: W1AddressPlan.importModifier(slot: slot, tag: binding.typeTag),
       sealReadOnly: (p.lowerBound + ro.lowerBound)..<(p.lowerBound + end))
   }
 }
