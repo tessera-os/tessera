@@ -11,7 +11,7 @@ for target in aarch64-none-none-elf x86_64-unknown-none-elf riscv64-none-none-ea
     tarwin-device) deps="kcore:KCore tarwin-boot:TarwinBoot tarwin-ipc:TarwinIPC tarwin-device:TarwinIoCompletion tarwin-object:TarwinObject tarwin-syscall:TarwinABI tarwin-syscall:TarwinSyscall" ;;
     tarwin-block) deps="tarwin-ipc:TarwinIPC tarwin-device:TarwinIoCompletion tarwin-block:TarwinBlockWire" ;;
     tarwin-gpu) deps="tarwin-object:TarwinObject tarwin-syscall:TarwinABI tarwin-syscall:TarwinSyscall" ;;
-    tarwin-net) deps="tarwin-ipc:TarwinIPC tarwin-net:TarwinNetWire" ;;
+    tarwin-net) deps="tarwin-ipc:TarwinIPC tarwin-device:TarwinIoCompletion tarwin-net:TarwinNetWire tarwin-object:TarwinObject tarwin-syscall:TarwinABI tarwin-syscall:TarwinSyscall" ;;
     trfs) deps="kcore:KCore tarwin-mm:TarwinMM tarwin-ipc:TarwinIPC trfs:TarwinFsWire tarwin-object:TarwinObject tarwin-syscall:TarwinABI tarwin-syscall:TarwinSyscall tarwin-device:TarwinIoCompletion" ;;
     *) deps="" ;;
   esac

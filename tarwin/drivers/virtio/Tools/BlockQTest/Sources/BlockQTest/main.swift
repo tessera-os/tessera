@@ -203,15 +203,16 @@ func transport(
     })
 }
 // Single-threaded hosted client, not a kernel port table or an IOMMU.
-private struct TestClient: IoPorts, ~Copyable {
+struct TestClient: IoPorts, ~Copyable {
   var port: CompletionPort, references = 0, notifications = 0
+  var koid: UInt64 = 1
   mutating func retainPort(_ id: UInt64) -> Bool {
-    guard id == 1 else { return false }
+    guard id == koid else { return false }
     references += 1
     return true
   }
   mutating func withLockedPort(_ id: UInt64, _ visit: (inout CompletionPort) -> Void) {
-    precondition(id == 1)
+    precondition(id == koid)
     visit(&port)
   }
   mutating func releasePort(_ id: UInt64) { references -= 1 }

@@ -7,13 +7,21 @@ let package = Package(
     .library(name: "TarwinNetWire", targets: ["TarwinNetWire"]),
     .library(name: "TarwinNet", targets: ["TarwinNet"]),
   ],
-  dependencies: [.package(path: "../tarwin-ipc"), .package(path: "../tarwin-device")],
+  dependencies: [
+    .package(path: "../tarwin-ipc"), .package(path: "../tarwin-device"),
+    .package(path: "../tarwin-object"), .package(path: "../tarwin-syscall"),
+  ],
   targets: [
     .target(
       name: "TarwinNetWire", dependencies: [.product(name: "TarwinIPC", package: "tarwin-ipc")]),
     .target(
       name: "TarwinNet",
-      dependencies: ["TarwinNetWire", .product(name: "TarwinIPC", package: "tarwin-ipc")]),
+      dependencies: [
+        "TarwinNetWire", .product(name: "TarwinIPC", package: "tarwin-ipc"),
+        .product(name: "TarwinIoCompletion", package: "tarwin-device"),
+        .product(name: "TarwinObject", package: "tarwin-object"),
+        .product(name: "TarwinSyscall", package: "tarwin-syscall"),
+      ]),
     .testTarget(
       name: "TarwinNetTests",
       dependencies: [

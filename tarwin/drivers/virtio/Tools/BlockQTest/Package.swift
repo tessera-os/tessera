@@ -9,6 +9,7 @@ let package = Package(
     .package(path: "../.."),
     .package(path: "../../../../tarwin-block"),
     .package(path: "../../../../tarwin-device"), .package(path: "../../../../tarwin-ipc"),
+    .package(path: "../../../../tarwin-object"), .package(path: "../../../../tarwin-syscall"),
   ],
   targets: [
     .executableTarget(
@@ -17,6 +18,8 @@ let package = Package(
         .product(name: "TRFS", package: "trfs"),
         .product(name: "VirtioNetService", package: "virtio"),
         .product(name: "TarwinNet", package: "tarwin-net"),
+        .product(name: "TarwinObject", package: "tarwin-object"),
+        .product(name: "TarwinSyscall", package: "tarwin-syscall"),
         .product(name: "KCore", package: "kcore"),
         .product(name: "TarwinBlock", package: "tarwin-block"),
         .product(name: "TarwinIoCompletion", package: "tarwin-device"),
