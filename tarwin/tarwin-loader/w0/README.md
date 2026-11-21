@@ -73,6 +73,20 @@ reserialized JSON. Compare them against the ordered firmware event records.
 `initSHA256` covers the entire signed init ELF, not its archive directory
 entry, BLAKE3 build ID or rounded code range.
 
+The separate debug `authorizeQEMUSystemRoot` profile requires those four
+members **and exactly one** uncompressed `system.trfs.root`. Ordinary W0/W1
+never accept it. The result's `bootSet` borrows the same immutable signed
+archive; `metadataHeadSHA256` copies the 32 nonzero-as-a-whole raw digest
+bytes from its BLAKE3-checked, disjoint fifth member. It is not a sector
+number, a hash of the digest, or authority to mount. The consumer must
+verify the actual nonempty TRFS head and compare SHA-256 of its 4096 bytes
+before measuring it or publishing a read-only system mount.
+
+`SystemRootCorpus` uses independent host-test keys and a W0 test kernel;
+do not boot it. Each malformed archive reconstructed by `RootFixture` has
+its own valid detached signature. The positive root is SHA-256 of I/O's
+TRFS fixture metadata head, not of an empty reference.
+
 `set.addressPlan(for:occupied:nextRandom:)` chooses both image reservations from
 Appendix A.2's image window. Hold exclusive map ownership, pass every
 occupied image reservation in ascending order, and draw from the seeded
