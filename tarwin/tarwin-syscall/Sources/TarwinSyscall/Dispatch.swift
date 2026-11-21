@@ -17,6 +17,12 @@ public enum DispatchResult {
   case returned(CallResult)
 }
 
+func callOriginAllowed(isa: CallISA, savedPC: UInt64, libraryCode: Range<UInt64>) -> Bool {
+  guard let ip = isa.instruction(savedPC: savedPC) else { return false }
+  return syscallOriginAllowed(
+    ip, isa.instructionWidth, libraryCode.lowerBound, libraryCode.upperBound)
+}
+
 /// Gate metadata and scratch are private to this entry. Pass the executable
 /// LibTessera mapping, not a span that includes other images or data.
 public func dispatchCall<P: CallProvider>(
@@ -24,9 +30,9 @@ public func dispatchCall<P: CallProvider>(
   userRange: Range<UInt64>, number: UInt64, registers: CallRegisters,
   scratch: UnsafeMutableBufferPointer<UInt64>, provider: inout P
 ) -> DispatchResult {
-  guard let ip = isa.instruction(savedPC: savedPC),
-    syscallOriginAllowed(ip, isa.instructionWidth, libraryCode.lowerBound, libraryCode.upperBound)
-  else { return .terminateBadOrigin }
+  guard callOriginAllowed(isa: isa, savedPC: savedPC, libraryCode: libraryCode) else {
+    return .terminateBadOrigin
+  }
   guard TarwinCall.isAssigned(number), let slots = provider.argumentCount(for: number) else {
     return .returned(CallResult(status: syscallStatus(10, 1)))
   }
