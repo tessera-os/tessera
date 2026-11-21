@@ -271,8 +271,10 @@ prove that protected pages have no DMA aliases, or authorize W1 entry.
 
 For the separate no-fw_cfg-DMA fixture, add `TARBOOT_TEST_RO_GENID=1` to
 the restore run. The same QEMU patch supplies a non-hotpluggable VMGENID
-subclass on virt-11.1. It omits the ACPI table, fw_cfg blobs, IRQ and RAM
-update hook. Its sole guest interface is one read-only 16 KiB I/O region at
+subclass on virt-11.1. It omits the ACPI table, GUID/address blobs, IRQ and
+RAM update hook. A one-byte fw_cfg file `etc/tarwin/vmgenid-ro` advertises
+register ABI 1, not an address or generation. Without it this profile
+refuses before probing MMIO. The live value is only in a read-only 16 KiB I/O region at
 0x090d0000, outside RAM and the platform bus. Aligned 64-bit reads at +0,
 +8, +16 and +24 return the ABI magic, destination version and GUID words.
 Two matching nonzero versions bracket each sample. Neither the GUID nor

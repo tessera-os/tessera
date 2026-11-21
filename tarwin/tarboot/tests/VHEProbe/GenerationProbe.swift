@@ -14,17 +14,24 @@ private func identityRead(_ physical: UInt64) -> UInt64? {
   return load(UnsafeRawPointer(bitPattern: UInt(physical))!)
 }
 
-func installGeneration(in root: inout ArmKernelTranslation, context: UInt64) -> Bool {
+func installGeneration(in root: inout ArmKernelTranslation, context: UInt64) -> UInt32 {
   let base = W1GenerationSource.registerBase
   var config = QEMUVirtConfig(mapped: UnsafeRawPointer(bitPattern: 0x0902_0000)!)
+  var probed = false
   guard let source = W1GenerationSource(policy: .readOnlyVirt11, reader: &config,
-    regions: .init(start: nil, count: 0), readWord: identityRead),
-    let epoch = source.current(readWord: identityRead),
+    regions: .init(start: nil, count: 0), readWord: { address in
+      probed = true
+      return identityRead(address)
+    }) else {
+    if !probed, case .unavailable = qemuGenerationDevice(&config) { return 6 }
+    return 1
+  }
+  guard let epoch = source.current(readWord: identityRead),
     let mapping = W1KernelGeneration(source, at: high, in: &root),
-    mapping.readWord(base) == nil else { return false }
+    mapping.readWord(base) == nil else { return 1 }
   UnsafeMutablePointer<Witness>(bitPattern: UInt(context + 2048))!.initialize(
     to: Witness(mapping: mapping, initial: epoch))
-  return true
+  return 0
 }
 
 @_cdecl("tarwin_vhe_sample_generation")

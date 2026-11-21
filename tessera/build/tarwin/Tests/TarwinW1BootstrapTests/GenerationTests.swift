@@ -5,6 +5,7 @@ import Testing
 
 private struct Config: QEMUConfigReader {
   let dma: Bool
+  var advertised = true
   var key: UInt16 = 0, i = 0
   mutating func select(_ key: UInt16) { self.key = key; i = 0 }
   mutating func readByte() -> UInt8 {
@@ -13,8 +14,11 @@ private struct Config: QEMUConfigReader {
     case 0: return Array("QEMU".utf8)[i]
     case 1: return i == 0 ? (dma ? 3 : 1) : 0
     case 0x19:
-      // One unrelated, well-formed directory entry.
-      switch i { case 3, 7: return 1; case 9: return 32; case 12: return 65; default: return 0 }
+      if i == 3 || i == 7 { return 1 }
+      if i == 9 { return 32 }
+      let name = Array((advertised ? "etc/tarwin/vmgenid-ro" : "etc/other").utf8)
+      return i >= 12 && i - 12 < name.count ? name[i - 12] : 0
+    case 32: return 1
     default: return 0
     }
   }
@@ -31,6 +35,10 @@ private struct Config: QEMUConfigReader {
   }
   #expect(open(true) == nil)
   #expect(open(false, magic ^ 1) == nil)
+  var absent = Config(dma: false, advertised: false), probed = false
+  let missing = W1GenerationSource(policy: .readOnlyVirt11, reader: &absent,
+    regions: .init(start: nil, count: 0)) { _ in probed = true; return magic }
+  #expect(missing == nil && !probed)
   guard let source = open() else { Issue.record("missing read-only source"); return }
   func sample(_ versions: [UInt64?], _ lo: UInt64?, _ hi: UInt64?) -> RandomEpoch? {
     var i = 0

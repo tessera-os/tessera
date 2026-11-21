@@ -36,7 +36,8 @@ run_guest() {
   local board=virt extra=()
   if [[ $1 == genid* ]]; then
     board=virt-11.1
-    extra=(-global fw_cfg_mem.dma_enabled=off -device tarwin-virt-vmgenid-ro)
+    extra=(-global fw_cfg_mem.dma_enabled=off)
+    if [[ ${2:-} != absent ]]; then extra+=(-device tarwin-virt-vmgenid-ro); fi
   fi
   python3 -c 'import subprocess,sys; sys.exit(subprocess.run(sys.argv[1:], timeout=10).returncode)' qemu-system-aarch64 -machine "$board,virtualization=on" \
     -cpu max -smp 1 -m 128M -nodefaults -nographic -monitor none -serial none \
@@ -78,6 +79,9 @@ if grep -Fxq 'VHE-CPU-GCS-S1PIE-TCRX=111' "$d/log"; then
     "$bin/ld.lld" --gc-sections -T "$d/sections" "$d/genid.o" "$d/device.o" "$d/host.o" "$d/genid-probe.o" -o "$d/genid.elf"
     run_guest genid
     grep -Fx 'VHE-VMGEN-KERNEL-READONLY-NO-IDENTITY-OR-USER-ACCESS' "$d/log"
+    run_guest genid absent
+    grep -Fx 'VHE-VMGEN-ABSENT-NO-MMIO-OR-EL0' "$d/log"
+    if grep -Fq 'Exception return from AArch64 EL2 to AArch64 EL0' "$d/exceptions"; then exit 1; fi
   fi
   for mod in TarwinABI TarwinSyscall; do
     "$bin/swiftc" "${flags[@]}" -module-name "$mod" -emit-module -emit-module-path "$d/$mod.swiftmodule" \

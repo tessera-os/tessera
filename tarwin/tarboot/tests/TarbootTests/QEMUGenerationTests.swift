@@ -76,6 +76,21 @@ private func entry(_ name: String, _ size: UInt16, _ key: UInt8) -> [UInt8] {
   }
 }
 
+@Test func registerABIMustBeUniqueAndCannotCoexistWithACPI() {
+  let name = "etc/tarwin/vmgenid-ro", marker = entry(name, 1, 36)
+  func scan(_ rows: [[UInt8]], _ abi: UInt8 = 1) -> QEMUGenerationDevice {
+    var config = Config(directory: [0, 0, 0, UInt8(rows.count)] + rows.flatMap { $0 },
+      files: [36: [abi]])
+    return qemuGenerationDevice(&config)
+  }
+  guard case .readOnlyRegisters = scan([marker]) else { Issue.record("ABI 1 missing"); return }
+  for invalid in [scan([marker], 0), scan([marker], 2), scan([entry(name, 8, 36)]),
+    scan([marker, entry(name, 1, 37)]), scan([marker, entry("etc/vmgenid_addr", 8, 37)]),
+    scan([entry("etc/vmgenid_guid", 4096, 37), marker])] {
+    if case .malformed = invalid {} else { Issue.record("accepted invalid register inventory") }
+  }
+}
+
 @Test func discoverOnlyAStableLiveIDInReservedMemory() {
   let directory = [0, 0, 0, 2] as [UInt8]
   var c = Config(directory: directory + entry("etc/vmgenid_addr", 8, 32)

@@ -103,7 +103,7 @@
  };
  
  static void vmgenid_device_class_init(ObjectClass *klass, const void *data)
-@@ -236,11 +298,113 @@
+@@ -236,11 +298,115 @@
      .parent        = TYPE_DEVICE,
      .instance_size = sizeof(VmGenIdState),
      .class_init    = vmgenid_device_class_init,
@@ -174,6 +174,7 @@
 +
 +static void ro_realize(DeviceState *dev, Error **errp)
 +{
++    static uint8_t register_abi = 1; /* discovery only, not an epoch */
 +    RoGenId *s = (RoGenId *)dev;
 +    MemoryRegion *sys = get_system_memory();
 +    MemoryRegionSection region;
@@ -195,6 +196,7 @@
 +    }
 +    memory_region_init_io(&s->mmio, OBJECT(dev), &ro_ops, s, TYPE_VMGENID_RO, RO_GENID_SIZE);
 +    memory_region_add_subregion(sys, RO_GENID_BASE, &s->mmio);
++    fw_cfg_add_file(fw_cfg_find(), "etc/tarwin/vmgenid-ro", &register_abi, 1);
 +    qemu_register_reset(ro_reset, s);
 +}
 +

@@ -37,6 +37,10 @@ _start:
   ldr x6, =sample
   ldr x7, =scheduler_base
   bl tarwin_vhe_build_roots
+  #ifdef TEST_HIGH_GENID
+  cmp w0, #6
+  b.eq genid_absent
+  #endif
   cbnz w0, failed
   mov x0, #1
   lsl x0, x0, #34
@@ -414,6 +418,16 @@ tarwin_w1_stopped_private:
   adr x1, exit_ok
   b exit_host
 .globl tarwin_w1_dispatch_private
+#ifdef TEST_HIGH_GENID
+genid_absent:
+  adr x1, genid_missing
+  mov x0, #4
+  hlt #0xf000
+  adr x1, exit_ok
+  b exit_host
+genid_missing: .asciz "VHE-VMGEN-ABSENT-NO-MMIO-OR-EL0\\n"
+.p2align 2
+#endif
 tarwin_w1_dispatch_private:
 failed:
   adr x1, bad

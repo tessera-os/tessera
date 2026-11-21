@@ -28,7 +28,7 @@ public struct W1GenerationSource {
       else { return nil }
       location = .page(page)
     case .readOnlyVirt11:
-      guard case .unavailable = qemuGenerationDevice(&reader) else { return nil }
+      guard case .readOnlyRegisters = qemuGenerationDevice(&reader) else { return nil }
       reader.select(1)
       guard reader.readByte() == 1, reader.readByte() == 0, reader.readByte() == 0, reader.readByte() == 0,
         readWord(Self.registerBase) == 0x3144_4947_4d56_5754 else { return nil }
