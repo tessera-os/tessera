@@ -211,7 +211,13 @@ probe does not supply an epoch, an ASLR draw or permission to launch W1.
 
 ### Detached W1 evidence after EFI exit (debug QEMU only)
 
-Add `TARBOOT_TEST_W1_EVIDENCE=1` to the generation/FIFO test. After EFI
+Add `TARBOOT_TEST_W1_EVIDENCE=1` to the generation/FIFO test. Before EFI
+exit the firmware adapter reads an inert detached envelope from `\BOOT.SIG`
+on its own volume. With independent authority absent it returns no kernel.
+For an authenticated debug installation, pass the full boot and system TQE1
+pins, trusted policy and historical train SDK contract to `firmwareKernel`.
+Only the kernel borrowed from the four-member verdict can be installed;
+do not hand a verified flag to the next stage or fall back to W0. After EFI
 exit the guest rejects the wrong archive PA, then copies the exact bytes of
 an inert fw_cfg file once, without overwriting the adjacent sentinel. In
 the absence of independent trust inputs, verification refuses it. No image

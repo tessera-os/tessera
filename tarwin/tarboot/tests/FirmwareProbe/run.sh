@@ -66,6 +66,7 @@ for isa in "${@:-all}"; do
             modules+=("$root/tarwin-loader/w0/Sources/TarwinW0Verify")
             flags+=(-D TARBOOT_TEST_W1_EVIDENCE)
             entry_source+=("$composition/Sources/TarwinW1Bootstrap/QEMUReverification.swift" "$here/W1EvidenceProbe.swift")
+            printf '%s' 'not-a-signature' > "$d/esp/BOOT.SIG"
         fi
         if [[ ${TARBOOT_TEST_PSCI:-0} == 1 ]]; then
             [[ $arch == aarch64 && ${TARBOOT_TEST_CPU:-0} == 1 && ${TARBOOT_TEST_SMP_TABLES:-0} == 1 ]] || exit 2

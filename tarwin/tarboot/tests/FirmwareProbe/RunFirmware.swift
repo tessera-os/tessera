@@ -250,9 +250,10 @@ func check() throws {
   }
   let uart = try Data(contentsOf: URL(fileURLWithPath: serial))
   if evidence {
-    guard uart.range(of: Data("TARWIN-W1-EVIDENCE-COPIED-UNAUTHORIZED".utf8)) != nil
-    else { throw Failure("missing post-exit W1 evidence refusal") }
-    print("\(a): copied the untrusted fw_cfg payload after EFI exit; wrong archive and absent W1 authority refused")
+    guard uart.range(of: Data("TARWIN-W1-FIRMWARE-KERNEL-REFUSED".utf8)) != nil,
+      uart.range(of: Data("TARWIN-W1-EVIDENCE-COPIED-UNAUTHORIZED".utf8)) != nil
+    else { throw Failure("missing W1 refusal before or after EFI exit") }
+    print("\(a): W1 refused the EFI kernel and the post-exit process set without independent authority")
   }
   guard !denied else { throw Failure("no explicit unsigned boot rejection") }
   if let cpuCheck,cpuCheck != "0" {

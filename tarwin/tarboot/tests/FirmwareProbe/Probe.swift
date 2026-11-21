@@ -105,6 +105,11 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
           &boot, system: system, console: console, output: output,
           into: UnsafeMutableRawBufferPointer(start: archiveBase, count: Int(archive.length)))
       else { return false }
+      #if TARBOOT_TEST_W1_EVIDENCE
+        guard refusesFirmwareKernel(.init(start: archiveBase, count: size), services: boot)
+        else { return false }
+        writeDiagnostic("TARWIN-W1-FIRMWARE-KERNEL-REFUSED\r\n", console: console, output: output)
+      #endif
       #if TARBOOT_TEST_SIGNED
         let immutable = UnsafeRawBufferPointer(start: archiveBase, count: size)
         let candidate = verifyBootSet(immutable, services: &boot, system: system, floor: observedFloor, baseline: snapshotOK)
