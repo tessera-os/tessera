@@ -5,11 +5,12 @@ let package = Package(
   name: "TarwinDevice",
   platforms: [.macOS(.v15)],
   products: [.library(name: "TarwinDevice", targets: ["TarwinDevice"])],
-  dependencies: [.package(path: "../tarwin-object"), .package(path: "../tarwin-syscall")],
+  dependencies: [.package(path: "../tarwin-ipc"), .package(path: "../tarwin-object"), .package(path: "../tarwin-syscall")],
   targets: [
     .target(
       name: "TarwinDevice",
       dependencies: [
+        .product(name: "TarwinIPC", package: "tarwin-ipc"),
         .product(name: "TarwinObject", package: "tarwin-object"),
         .product(name: "TarwinSyscall", package: "tarwin-syscall"),
       ]),
