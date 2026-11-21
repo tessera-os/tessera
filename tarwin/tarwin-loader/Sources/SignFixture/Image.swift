@@ -98,16 +98,9 @@ func signingParts(_ file: Data, machine: UInt16, train: [UInt8], tir: [UInt8]) t
     file[profile].elementsEqual([3, 4]), file[grants].elementsEqual("[]".utf8),
     file[window].elementsEqual(train + tir + train)
   else { throw Failure.invalid("unsigned, invalid image, incorrect W0 role, grants or train") }
-  let name: String
-  let shape: [UInt8]
-  switch machine {
-  case ElfMachine.aarch64: (name, shape) = ("aarch64.base", [1, 1])
-  case ElfMachine.x64: (name, shape) = ("x64.v3", [1, 2])
-  case ElfMachine.rv64: (name, shape) = ("rv64.base", [0, 0])
-  default: throw Failure.invalid("machine")
-  }
-  let baseline = little(UInt16(name.utf8.count)) + Data(name.utf8) + Data([0, 0]) + Data(shape)
-  try require(file[target].elementsEqual(baseline), "not the expected W0 baseline")
+  try require(
+    file[target].withUnsafeBytes { matchesW0Baseline($0, machine: machine) },
+    "not the full W0 baseline")
   for p in stride(
     from: kernel.programHeaders.lowerBound, to: kernel.programHeaders.upperBound, by: 56)
   {

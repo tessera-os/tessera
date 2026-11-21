@@ -90,7 +90,7 @@ final class ELFTests: XCTestCase {
     var pos = start
     for (k, data): (Int, [UInt8]) in [
       (1, [UInt8](repeating: 0, count: 32)), (3, Array("[\"tessera.network.client\"]".utf8)),
-      (4, [26, 11, 1, 26, 11, 1, 27, 4, 1]), (5, [6, 0] + Array("x64.v3".utf8) + [0, 0, 1, 2]),
+      (4, [26, 11, 1, 26, 11, 1, 27, 4, 1]), (5, targetNote("x64.v3", x64Features, 2)),
       (7, [0, 0]),
     ] {
       file.put(8, at: pos, width: 4)

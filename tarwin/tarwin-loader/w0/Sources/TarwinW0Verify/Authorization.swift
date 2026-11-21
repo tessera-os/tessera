@@ -103,25 +103,6 @@ private func member(
 private func version(_ b: UnsafeRawBufferPointer, _ at: Int, _ v: W0Version) -> Bool {
   b[at] == v.0 && b[at + 1] == v.1 && b[at + 2] == v.2
 }
-private func baseline(_ b: UnsafeRawBufferPointer, _ machine: UInt16) -> Bool {
-  let name: StaticString
-  let shape: UInt8
-  switch machine {
-  case ElfMachine.aarch64:
-    name = "aarch64.base"
-    shape = 1
-  case ElfMachine.x64:
-    name = "x64.v3"
-    shape = 2
-  case ElfMachine.rv64:
-    name = "rv64.base"
-    shape = 0
-  default: return false
-  }
-  let n = name.utf8CodeUnitCount
-  return b.count == n + 6 && b[0] == UInt8(n) && b[1] == 0 && equal(view(b, 2..<n + 2), name)
-    && b[n + 2] == 0 && b[n + 3] == 0 && b[n + 4] == (shape == 0 ? 0 : 1) && b[n + 5] == shape
-}
 private func restrictedKernel(_ b: UnsafeRawBufferPointer, _ image: InspectedImage, _ p: W0Policy)
   -> Bool
 {
@@ -131,7 +112,8 @@ private func restrictedKernel(_ b: UnsafeRawBufferPointer, _ image: InspectedIma
     let grants = notes.entitlements, equal(view(b, grants), "[]"),
     let train = notes.train, train.count == 9, version(b, train.lowerBound, p.train),
     version(b, train.lowerBound + 3, p.tir), version(b, train.lowerBound + 6, p.train),
-    let target = notes.target, baseline(view(b, target), p.machine), notes.finalizer == nil,
+    let target = notes.target, matchesW0Baseline(view(b, target), machine: p.machine),
+    notes.finalizer == nil,
     let section = image.loaderRecords,
     let d = inspectLoaderRecords(view(b, section), addressLimit: p.addressLimit),
     d[.relative].count == 0, d[.authenticated].count == 0, d[.imports].count == 0,

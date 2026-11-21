@@ -24,6 +24,15 @@ Each PT_LOAD starts on a target page boundary in the file and in memory; nonempt
 | 6 | TVISA hash then finalizer build identifier: 32 raw bytes each. Take target, features and svec from 5, not a duplicate. |
 | 7 | u8 profile (app/system/driver/kernel = 0/1/2/3), u8 image kind (executable/framework/plug-in/driver/kernel = 0/1/2/3/4); combinations per TVISA §6.6. |
 
+Note 5 contains the **complete** sorted set of TVISA feature names implied by
+the target, including inherited target features and modifier additions (TVISA
+§§30.1–30.2), not just features in excess of the baseline. A tuning suffix
+never changes the set. For example, `aarch64.base` has 17 names and `x64.v3`
+has 25 (including the x86-64-v2 names and CET/crypto extensions). An empty,
+partial or augmented set is not equivalent to the declared baseline. The
+guest must additionally check the actual hardware against the **entire**
+architecture baseline, including requirements with no TVISA feature name.
+
 ### Digest and signing boundary
 
 The authorized signer finalizes the ELF layout, including the actual chain and final descriptor sizes, before hashing. For ID calculation, hash the whole file in file order, substituting 32 zeros for note 1's descriptor and omitting **only** the two raw signature byte ranges in note 2. Thus the chain, header offsets, lengths, padding and every other byte are covered. No GNU/TIR secondary ID is patched on the Tarwin path. The hash before the signer adds the envelope is not the signed artifact's ID.

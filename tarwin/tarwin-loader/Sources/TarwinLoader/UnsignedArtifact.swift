@@ -106,6 +106,12 @@ extension ELFReader {
     var split = name.lowerBound
     while split < name.upperBound && bytes[split] != 43 && bytes[split] != 58 { split += 1 }
     let base = name.lowerBound..<split
+    if name == base
+      && (nameEquals(base, "aarch64.base") || nameEquals(base, "x64.v3")
+        || nameEquals(base, "rv64.base"))
+    {
+      return matchesW0Baseline(.init(rebasing: bytes[extent]), machine: machine)
+    }
     // Full modifier and feature support must be checked against the CPU at launch.
     var scale: UInt8
     switch machine {
