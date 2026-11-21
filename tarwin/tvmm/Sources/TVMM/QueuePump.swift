@@ -2,7 +2,7 @@
 // The acquire/publish callbacks operate on that queue's guest pages only. A
 // backend returns after I/O is complete; a failed operation with a virtio status
 // still returns its used length. A transport failure instead breaks the queue.
-public enum PumpResult { case drained, progress, broken }
+public enum PumpResult { case drained, progress, reschedule, broken }
 public struct QueuePump {
   public let slots: Int
   public internal(set) var nextAvail: UInt64 = 0
@@ -18,6 +18,17 @@ public struct QueuePump {
     _ acquireAvailable: () -> UInt64, _ readHead: (UInt64) -> UInt64,
     _ snapshotTable: () -> [UInt8],
     _ execute: ([Segment]) -> UInt64,
+    _ writeUsed: (UInt64, UInt64, UInt64) -> Void, _ releaseUsed: (UInt64) -> Void
+  ) -> PumpResult {
+    let n = slots
+    return serviceOne(
+      acquireAvailable, readHead, { descriptorChain(snapshotTable(), n, $0, ram) },
+      execute, writeUsed, releaseUsed)
+  }
+
+  mutating func serviceOne(
+    _ acquireAvailable: () -> UInt64, _ readHead: (UInt64) -> UInt64,
+    _ decode: (Int) -> Result<[Segment], QueueError>, _ execute: ([Segment]) -> UInt64,
     _ writeUsed: (UInt64, UInt64, UInt64) -> Void, _ releaseUsed: (UInt64) -> Void
   ) -> PumpResult {
     if broken { return .broken }
@@ -38,7 +49,7 @@ public struct QueuePump {
       return .broken
     }
     let segments: [Segment]
-    switch descriptorChain(snapshotTable(), slots, Int(head), ram) {
+    switch decode(Int(head)) {
     case .success(let s): segments = s
     case .failure:
       broken = true

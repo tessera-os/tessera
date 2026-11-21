@@ -46,12 +46,24 @@ public func descriptorChain(
   {
     return .failure(.invalidQueue)
   }
+  return descriptorChain(slots, head, ram) { index in
+    Array(table[(index * 16)..<(index * 16 + 16)])
+  }
+}
+
+func descriptorChain(
+  _ slots: Int, _ head: Int, _ ram: GuestAperture, _ read: (Int) -> [UInt8]
+) -> Result<[Segment], QueueError> {
   var index = head
   var chain: [Segment] = []
   var writableSeen = false
-  for hop in 0..<slots {
+  var visited = Set<Int>()
+  for _ in 0..<slots {
     if index < 0 || index >= slots { return .failure(.invalidDescriptor) }
-    let p = index * 16
+    guard visited.insert(index).inserted else { return .failure(.invalidChain) }
+    let table = read(index)
+    guard table.count == 16 else { return .failure(.invalidDescriptor) }
+    let p = 0
     let address = vword(table, p, 8)
     let size = vword(table, p + 8, 4)
     let flags = vword(table, p + 12, 2)
