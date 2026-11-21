@@ -3,7 +3,7 @@ import Synchronization
 import TarwinIPC
 import XCTest
 
-private final class SharedMemory: @unchecked Sendable {
+final class SharedMemory: @unchecked Sendable {
   let raw: UnsafeMutableRawPointer
   let cells: UnsafeMutableBufferPointer<Atomic<UInt32>>
   var view: UnsafeBufferPointer<Atomic<UInt32>> { UnsafeBufferPointer(cells) }

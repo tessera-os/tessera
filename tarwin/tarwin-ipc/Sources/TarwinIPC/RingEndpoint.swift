@@ -49,6 +49,7 @@ public struct RingEndpoint: ~Copyable {
   private var peerCursor: Int { producer ? control + 16 : control }
   private var idle: Int { cursor + 32 }
   private var peerIdle: Int { peerCursor + 32 }
+  var isPortCompletionProducer: Bool { completion && producer && geometry.stride == 64 }
 
   private mutating func peerReady() -> RingStep? {
     if failed { return .invalidPeer }
