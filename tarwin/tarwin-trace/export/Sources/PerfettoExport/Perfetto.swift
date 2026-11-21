@@ -35,7 +35,7 @@ public func perfettoTrack(_ uuid: UInt64, _ label: String, _ counter: Bool) -> [
 public enum TrackType { case begin, end, instant, counter }
 public func perfettoEvent(
   _ uuid: UInt64, _ monotonicNs: UInt64, _ kind: TrackType, _ category: String,
-  _ name: String, _ counterBits: UInt64
+  _ name: String, _ counterBits: UInt64, subject: UInt64? = nil, value: UInt64? = nil
 ) -> [UInt8] {
   let t: UInt64 =
     switch kind {
@@ -52,6 +52,14 @@ public func perfettoEvent(
     dataField(&event, 23, Array(name.utf8))
   }
   if kind == .counter { integerField(&event, 30, counterBits) }
+  for (label, number) in [("subject", subject), ("value", value)] {
+    if let number {
+      var arg: [UInt8] = []
+      dataField(&arg, 10, Array(label.utf8))  // DebugAnnotation.name
+      integerField(&arg, 3, number)  // uint_value
+      dataField(&event, 4, arg)
+    }
+  }
   var packet: [UInt8] = []
   integerField(&packet, 8, monotonicNs)
   integerField(&packet, 58, 3)
