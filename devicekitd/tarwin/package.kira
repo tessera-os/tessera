@@ -1,6 +1,0 @@
-construct NativeDeviceManager extends Package {
-    let kind: PackageKind = .Library
-    let version: String = "26.11.1"
-    let moduleRoot: String = "NativeDeviceManager"
-    let dependencies: [Dependency] = [Dependency { name: "NativeDriverKit", path: "../../devicekit/tarwin" }]
-}
