@@ -51,6 +51,14 @@ for isa in "${@:-all}"; do
             flags+=(-D TARBOOT_TEST_STAGE0)
         fi
         modules=()
+        if [[ ${TARBOOT_TEST_BOOT_HART:-0} == 1 ]]; then
+            [[ $arch == riscv64 && ${TARBOOT_TEST_SMP_TABLES:-0} == 1 ]] || exit 2
+            flags+=(-D TARBOOT_TEST_BOOT_HART -enable-experimental-feature Extern)
+            modules+=("$root/tarwin-arch-rv64/Sources/TarwinArchRv64")
+            swift "$root/tarwin-arch-rv64/tools/HSM.swift" > "$d/hsm.S"
+            "$bin/clang" -target "$triple" -mno-relax -c "$d/hsm.S" -o "$d/hsm.o"
+            extra+=("$d/hsm.o")
+        fi
         entry_source=("$here/CompressedPages.swift")
         if [[ ${TARBOOT_TEST_FIXED_GENID:-0} == 1 ]]; then
             [[ $arch == aarch64 && ${TARBOOT_TEST_RNG:-0} == 1 && ${TARBOOT_TEST_FIFO:-0} == ${TARBOOT_TEST_FIXED_RNG:-0} &&

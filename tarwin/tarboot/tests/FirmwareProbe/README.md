@@ -82,6 +82,12 @@ supplied but invalid ACPI directory is never replaced with a DT fallback.
 This discovers CPUs; it does not start them, test their security features,
 configure interrupt routing, or demonstrate SMP scheduling.
 
+On RV64 add `TARBOOT_TEST_BOOT_HART=1` to read the boot hart ID from
+RISCV_EFI_BOOT_PROTOCOL before exit. After exit, SBI HSM must report that
+hart started and every other listed hart stopped. Do not assume hart 0 or
+substitute the first FDT entry. This checks the §6.6 hart state only:
+the unsigned probe does not transfer control to a kernel.
+
 The RNG-enabled run builds an Appendix A.1 block in its own EFI reservation,
 followed by the serialized memory map. Only the exact boot-set and boot-info
 reservations are retyped, including when firmware coalesces adjacent loader

@@ -4,8 +4,14 @@
   @_extern(c, "tarwin_sbi_hsm_start")
   private func start(_ hart: UInt64, _ physicalEntry: UInt64, _ opaque: UInt64) -> Int64
 
+  public func rvHartStatus(_ hart: UInt64) -> UInt64? {
+    guard hart != .max, present() == 1 else { return nil }
+    let status = state(hart)
+    return status <= 6 ? status : nil
+  }
+
   public func rvHartIsStopped(_ hart: UInt64) -> Bool {
-    hart != .max && present() == 1 && state(hart) == 1
+    rvHartStatus(hart) == 1
   }
 
   /// The exclusive boot owner supplies a firmware-enumerated hart, a

@@ -123,6 +123,13 @@ public enum FirmwareExit {
     /// Snapshot firmware directory entries, without following their addresses.
     @unsafe public func locateTables() -> FirmwareTableLocations? { tableLocations(system) }
 
+    #if arch(riscv64)
+      @unsafe public func bootHart() -> FirmwareBootHart? {
+        guard let locate else { return nil }
+        return FirmwareBootHart(locate)
+      }
+    #endif
+
     /// The validated system table owns the mapped runtime-services pointer.
     /// Use it only in the pre-exit physical addressing mode; retain no method.
     @unsafe public func firmwareBootMode() -> FirmwareBootMode? {

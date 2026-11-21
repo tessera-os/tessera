@@ -529,6 +529,11 @@ func check() throws {
     else { throw Failure("\(a): missing guest-initiated shutdown event") }
   if rngEnabled { print("\(a): physical TBIB, EFI RNG seed, randomized reservation and typed archive/map extents passed readback") }
   if multiple { print("\(a): enumerated four distinct enabled CPU hardware IDs from firmware; boot CPU only") }
+  if ProcessInfo.processInfo.environment["TARBOOT_TEST_BOOT_HART"] == "1" {
+    guard a == "riscv64", multiple, uart.range(of: Data("TARWIN-RV64-BOOT-HART-PROTOCOL".utf8)) != nil
+    else { throw Failure("missing RISC-V boot protocol") }
+    print("\(a): after EFI exit HSM reported the firmware boot hart started and all other listed harts stopped")
+  }
   if ProcessInfo.processInfo.environment["TARBOOT_TEST_PSCI"] == "1" {
     print("\(a): PSCI AFFINITY_INFO reports the MPIDR-matched boot CPU ON and three secondaries OFF")
   }

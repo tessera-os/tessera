@@ -4,6 +4,9 @@ import Tarboot
 import TarwinBoot
 import TarwinBootstrap
 import TarwinMM
+#if TARBOOT_TEST_BOOT_HART
+import TarwinArchRv64
+#endif
 #if TARBOOT_TEST_SIGNED
 import TarwinW0Verify
 #endif
@@ -56,6 +59,10 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
       guard var boot = FirmwareBootServices(image: image, system: system),
         let tables = boot.locateTables()
       else { return false }
+      #if TARBOOT_TEST_BOOT_HART
+        guard let bootHart = boot.bootHart() else { return false }
+        writeDiagnostic("TARWIN-RV64-BOOT-HART-PROTOCOL\r\n", console: console, output: output)
+      #endif
       #if TARBOOT_TEST_CPU
         let snapshotOK=processorEvidence(console:console,output:output)
         #if TARBOOT_TEST_CPU_REFUSAL || TARBOOT_TEST_X64_REFUSAL
@@ -231,6 +238,11 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
                 into: bytes.bindMemory(to: FirmwareProcessor.self)) == 4
             })
         else { return false }
+        #if TARBOOT_TEST_BOOT_HART
+          guard withUnsafeBytes(of: &ids, {
+            bootHart.verifiedID(in: $0.bindMemory(to: FirmwareProcessor.self), hsmStatus: rvHartStatus)
+          }) != nil else { return false }
+        #endif
         #if TARBOOT_TEST_PSCI
           guard armPSCIConduit(tables, in: UnsafeBufferPointer(rebasing: buffer[..<n])) == .smc,
             withUnsafeBytes(of: &ids, { bootCPUOnly($0.bindMemory(to: FirmwareProcessor.self)) })
