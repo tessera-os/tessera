@@ -69,7 +69,7 @@ public struct HardwareRegistry: ~Copyable {
     events: [RegistryEvent] = []
   private var pending: RegistryPlan?
   private var frozen = false, superseded = false
-  private var last: UInt64 = 0
+  private var last: UInt64 = 0, lastSlotEpoch: UInt64 = 0
   public private(set) var revision: UInt64 = 0
   public init?(limit: Int) {
     guard (1...4096).contains(limit) else { return nil }
@@ -199,17 +199,19 @@ public struct HardwareRegistry: ~Copyable {
   public mutating func assign(
     deviceRoot: Bool, node: UInt64, process: UInt64, isolate: (UInt64, UInt64) -> Bool
   ) -> GroupLease? {
-    guard deviceRoot, !frozen, let g = nodes.first(where: { $0.id == node })?.device.group
+    guard deviceRoot, !frozen, lastSlotEpoch < .max,
+      let g = nodes.first(where: { $0.id == node })?.device.group
     else { return nil }
-    let i: Int
-    if let index = slots.firstIndex(where: { $0.group == g }) {
-      i = index
-    } else {
-      i = slots.count
-      slots.append(DeviceSlotState(group: g))
-    }
-    guard slots[i].assign(deviceRoot, process, isolate) else { return nil }
-    return GroupLease(node: node, group: g, process: process, epoch: slots[i].epoch)
+    let i = slots.firstIndex(where: { $0.group == g })
+    var slot = i.map { slots[$0] } ?? DeviceSlotState(group: g)
+    guard slot.phase == .vacant else { return nil }
+    // Reconciliation can delete a group's old slot. Its DMA, interrupt and
+    // driver records can outlive it; never recycle their epoch on hotplug.
+    slot.epoch = lastSlotEpoch
+    guard slot.assign(deviceRoot, process, isolate) else { return nil }
+    lastSlotEpoch = slot.epoch
+    if let i { slots[i] = slot } else { slots.append(slot) }
+    return GroupLease(node: node, group: g, process: process, epoch: slot.epoch)
   }
   public func permits(_ lease: GroupLease, process: UInt64, node: UInt64) -> Bool {
     !frozen && process == lease.process

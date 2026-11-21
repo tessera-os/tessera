@@ -69,6 +69,7 @@ final class RegistryTests: XCTestCase {
     XCTAssertEqual(current.map(\.id), [5, 6, 7, 8])
     XCTAssertEqual(current.map(\.parentID), [0, 5, 0, 7])
     let new = r.assign(deviceRoot: true, node: 6, process: 10, isolate: { _, _ in true })!
+    XCTAssertGreaterThan(new.epoch, lease.epoch)
     XCTAssertFalse(r.permits(lease, process: 10, node: 6))
     XCTAssertTrue(r.permits(new, process: 10, node: 7))
     XCTAssertEqual(
@@ -92,11 +93,34 @@ final class RegistryTests: XCTestCase {
     XCTAssertTrue(r.commit(&p))
     XCTAssertFalse(r.permits(old, process: 3, node: 2))
     let next = r.assign(deviceRoot: true, node: 2, process: 3, isolate: { _, _ in true })!
+    XCTAssertGreaterThan(next.epoch, old.epoch)
     XCTAssertTrue(r.permits(next, process: 3, node: 3))
     XCTAssertTrue(r.revoke(next, deviceRoot: true, provider: &p))
     XCTAssertFalse(r.permits(next, process: 3, node: 2))
     let third = r.assign(deviceRoot: true, node: 3, process: 3, isolate: { _, _ in true })!
     XCTAssertGreaterThan(third.epoch, next.epoch)
     XCTAssertFalse(r.revoke(next, deviceRoot: true, provider: &p))
+  }
+  func testGroupReappearanceKeepsEpochMonotonicAcrossAnEmptyRegistry() {
+    var registry = HardwareRegistry(limit: 1)!
+    let device = dev(1, 9)
+    var teardown = Drains(result: true)
+    var lastEpoch: UInt64 = 0
+    for _ in 0..<3 {
+      XCTAssertTrue(registry.stage([device], reason: .orderly))
+      XCTAssertTrue(registry.commit(&teardown))
+      guard case .snapshot(_, let nodes) = registry.changes(deviceRoot: true, after: nil),
+        let node = nodes.first
+      else { return XCTFail() }
+      let lease = registry.assign(deviceRoot: true, node: node.id, process: 4) { group, epoch in
+        group == 9 && epoch > lastEpoch
+      }
+      guard let lease else { return XCTFail("Isolation provider did not receive a fresh epoch") }
+      XCTAssertGreaterThan(lease.epoch, lastEpoch)
+      lastEpoch = lease.epoch
+      XCTAssertTrue(registry.stage([], reason: .surprise))
+      XCTAssertTrue(registry.commit(&teardown))
+      XCTAssertFalse(registry.permits(lease, process: 4, node: node.id))
+    }
   }
 }
