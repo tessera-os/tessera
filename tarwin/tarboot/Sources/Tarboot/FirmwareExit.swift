@@ -87,6 +87,22 @@ public enum FirmwareExit {
       fileprivate init(_ base: UInt64, _ count: Int) { table = base; regions = count }
     }
 
+    /// For the W1 kernel handoff both pinned fence pages have fixed offsets
+    /// from x0, outside the published map. Never release the reservation.
+    @unsafe public consuming func finishForColdKernel(
+      storage: borrowing LoaderPages, map: UnsafeMutableRawBufferPointer,
+      into regions: inout UnsafeMutableBufferPointer<FirmwareRegion>
+    ) -> ColdWorkspace? {
+      guard storage.count == ColdKernelLayout.pages, let layout = ColdKernelLayout(handoff: storage.base),
+        case .exited(let count) = finish(map: map, into: &regions) else { return nil }
+      for i in 0..<count {
+        let r = regions[i]
+        if r.type == 2, r.ordinaryWritableRAM, r.base <= storage.base,
+          layout.end <= r.base + r.length { return ColdWorkspace(layout.table, count) }
+      }
+      return nil
+    }
+
     /// Terminal, including on error after an exit attempt. Never call EFI
     /// boot services again. Keep both pages out of every subsequent allocator.
     @unsafe public consuming func finishForColdBoot(

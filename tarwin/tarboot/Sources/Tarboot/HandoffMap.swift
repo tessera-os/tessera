@@ -65,7 +65,8 @@ func writeHandoffMap(
   @unsafe public func writeHandoff(
     _ initial: BootInfo, regions: UnsafeBufferPointer<FirmwareRegion>,
     storage: borrowing FirmwareBootServices.LoaderPages,
-    archive: borrowing FirmwareBootServices.LoaderPages, archiveBytes: UInt64
+    archive: borrowing FirmwareBootServices.LoaderPages, archiveBytes: UInt64,
+    debugFixedGeneration: DebugQEMUFixedGeneration? = nil, mapCapacity: Int? = nil
   ) -> Bool {
     guard storage.length >= 8192, storage.length <= UInt64(Int.max),
       let destination = UnsafeMutableRawPointer(bitPattern: UInt(storage.base)),
@@ -73,8 +74,9 @@ func writeHandoffMap(
     else { return false }
     let block = UnsafeMutableRawBufferPointer(start: destination, count: 4096)
     block[0] = 0
-    let map = UnsafeMutableRawBufferPointer(
-      start: destination.advanced(by: 4096), count: Int(storage.length) - 4096)
+    let capacity = mapCapacity ?? Int(storage.length) - 4096
+    guard capacity >= 32, capacity <= Int(storage.length) - 4096 else { return false }
+    let map = UnsafeMutableRawBufferPointer(start: destination.advanced(by: 4096), count: capacity)
     guard
       let n = writeHandoffMap(
         regions,
@@ -89,6 +91,10 @@ func writeHandoffMap(
     guard validBootInfo(info) else { return false }
     for i in 1..<4096 { block[i] = bootInfoByte(info, offset: UInt64(i)) }
     block[0] = bootInfoByte(info, offset: 0)
+    if let debugFixedGeneration, !debugFixedGeneration.encode(in: block) {
+      block[0] = 0
+      return false
+    }
     return true
   }
 #endif
