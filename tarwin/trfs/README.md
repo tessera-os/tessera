@@ -1,8 +1,14 @@
 # trfs
 
-Scoped lookup, encrypted-page staging and A.5 filesystem service records. No on-disk format or crash recovery is inferred from Tarwin.
+The [TRFS v1 format](TRFS.md) defines native snapshot volumes. `TrfsVolume` uses immutable backward-linked records, authenticated file pages and alternating flush-ordered anchors. It supports regular files, directories, relative symbolic links, atomic file/link rename and unlink, sparse pages, read-only measured-root mounts and copy-on-write snapshot branches. Resolve links inside the starting Node and the same snapshot. Lookup is linear in history; there is no space reclamation yet.
 
-Run `swift test` on macOS. For an Embedded Swift object-only check, run `SWIFTC=/path/to/swift-6.3.3/usr/bin/swiftc ../tarwin-device/check-profile.sh "$PWD"`. Host tests and cross-compiled objects do not demonstrate a booted Tarwin kernel.
+Run `swift test` on macOS. For an Embedded Swift object-only check, run `SWIFTC=/path/to/swift-6.3.3/usr/bin/swiftc sh ../tarwin-device/check-profile.sh "$PWD"`. Host tests and cross-compiled objects do not demonstrate a booted Tarwin kernel.
+
+Build the virtio driver's BlockQTest in release mode. From its package directory,
+run `sh test-measured-volume.sh /path/to/BlockQTest /path/to/qemu-system-x86_64`
+with `swtpm` on PATH. This verifies the encrypted snapshot after an NVMe cold
+restart, checks the exact TPM event, and compares PCR 11 against independent
+SHA-256 replay. The fixture supplies the expected root, not a signed boot set.
 
 ## VM file-cache binding
 
@@ -10,7 +16,11 @@ Run `swift test` on macOS. For an Embedded Swift object-only check, run `SWIFTC=
 
 The volume-specific `TrfsPageStore` must resolve the immutable file object/extent map, authorize writable faults, supply frames from the VM, read/write only valid bytes, scrub released frames and use the encrypted staging path where applicable. Neither keys nor plaintext cache frames are passed to a block driver.
 
+`TrfsSnapshotStore` fills 4 KiB and 16 KiB VM pages from an immutable root. Its exclusive writer binding commits the entire dirty frame with one anchor flip, rejects stale heads, checks write rights and never extends a file past its mapped EOF. The frame allocator, per-object rights and mount lock remain kernel composition inputs.
+
 ### Software-encrypted block transfers
+
+`TrfsEncryptedMedia` binds v1 volume I/O to the XTS sector path with a retained key object, a private page and a disjoint ciphertext pin. The sleepable transport must return only after terminal DMA retirement. Provisioned blank encrypted anchors are *encrypted* zeros; two uninitialized ciphertext sectors must never trigger formatting. The QEMU check is `BlockQTest /path/to/qemu-system-x86_64 --trfs-nvme-xts`.
 
 `XtsSector` applies AES-256-XTS to a whole data unit of 16-byte blocks (at most 16 MiB). The volume supplies the block address, data-unit number and pinned key-object identity; the trusted CPU backend supplies the tweak and data AES-256 schedules. Data-unit numbering, on-disk allocation and key lifecycle are not defined by this adapter. XTS provides confidentiality, not integrity or crash recovery.
 

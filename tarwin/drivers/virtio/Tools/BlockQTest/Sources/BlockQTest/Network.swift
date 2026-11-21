@@ -53,7 +53,7 @@ func queueCompleted(_ q: QTest, _ queue: inout SplitQueue, _ memory: QueueMemory
 }
 
 /// Both modern NICs attach only to the same in-process QEMU hub.
-func testNetwork(_ q: QTest, _ machine: Machine) throws {
+func testNetwork(_ q: QTest, _ machine: Machine, paddedIPv6: Bool = false) throws {
   func ring(_ index: Int) -> QueueMemory {
     let base = machine.ram + 0x200000 + UInt64(index) * 0x10000
     return QueueMemory(count: 8, descriptors: base, available: base + 4096, used: base + 8192)
@@ -69,11 +69,22 @@ func testNetwork(_ q: QTest, _ machine: Machine) throws {
   try q.require(macLeft != macRight, "Missing independent MACs")
 
   let payload = (0..<127).map { UInt8($0) }
+  let prefix: [UInt8] = [0x20, 1, 0x0d, 0xb8] + Array(repeating: 0, count: 11)
   let route = UdpRoute(
-    family: .v4, source: [192, 0, 2, 1], destination: [192, 0, 2, 2], sourcePort: 10001,
+    family: paddedIPv6 ? .v6 : .v4, source: paddedIPv6 ? prefix + [1] : [192, 0, 2, 1],
+    destination: paddedIPv6 ? prefix + [2] : [192, 0, 2, 2], sourcePort: 10001,
     destinationPort: 10002, hops: 64, mtu: 1500)
-  let ip = try sendDatagram(route: route, payload: payload)
-  let frame = macRight + macLeft + [0x08, 0x00] + ip
+  var ip = try sendDatagram(route: route, payload: payload)
+  if paddedIPv6 {
+    // The fixture adds options to the transmitted frame, not to the receive buffer.
+    ip.insert(contentsOf: [60, 0, 1, 4, 0, 0, 0, 0, 17, 0, 0, 0, 1, 2, 0, 0], at: 40)
+    let n = UInt16(ip.count - 40)
+    ip[4] = UInt8(n >> 8)
+    ip[5] = UInt8(truncatingIfNeeded: n)
+    ip[6] = 0
+  }
+  let etherType: [UInt8] = paddedIPv6 ? [0x86, 0xdd] : [0x08, 0x00]
+  let frame = macRight + macLeft + etherType + ip
   let hex = "0x" + frame.map { String(format: "%02x", $0) }.joined()
   let base = machine.ram + 0x300000
   let rxFrame = base + 4096
@@ -97,7 +108,8 @@ func testNetwork(_ q: QTest, _ machine: Machine) throws {
   }
   var inbound = InterfaceRxQueue(queue: 0, maximum: 1514, slots: rxSlots)!
   var outbound = InterfaceTxQueue(packets: txSlots, flows: flows)
-  var endpoint = UdpEndpoint(process: 91, family: .v4, port: route.destinationPort, limit: 1)
+  var endpoint = UdpEndpoint(
+    process: 91, family: route.family, port: route.destinationPort, limit: 1)
   endpoint.local = route.destination
   endpoint.peer = route.source
   endpoint.peerPort = route.sourcePort

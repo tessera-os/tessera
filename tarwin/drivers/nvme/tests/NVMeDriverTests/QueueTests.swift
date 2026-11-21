@@ -3,7 +3,7 @@ import XCTest
 
 @testable import NVMeDriver
 
-private final class Memory: NVMeAccess {
+private class Memory: NVMeAccess {
   var barBytes: UInt64 = 0x2000, words = [UInt64: UInt32](), registers = [UInt64: UInt32]()
   var clock: UInt64 = 0
   var events = [String]()
@@ -24,7 +24,127 @@ private final class Memory: NVMeAccess {
     store(at + 12, UInt32(status << 17 | phase << 16 | id))
   }
 }
+private final class IdentifyDisk: Memory {
+  let oncs: UInt32, nvmStatus: UInt32, readOnly: Bool
+  var nvmQueries = 0
+  init(oncs: UInt32, nvmStatus: UInt32, readOnly: Bool) {
+    self.oncs = oncs
+    self.nvmStatus = nvmStatus
+    self.readOnly = readOnly
+    super.init()
+    registers = [0: 7, 4: 32, 8: 0x10400]
+  }
+  override func setRegister(_ at: UInt64, _ v: UInt32) {
+    super.setRegister(at, v)
+    if at == 20 { registers[28] = 1 }
+    guard at == 0x1000 else { return }
+    let i = UInt64((v + 7) % 8)
+    let sq = 0x1000 + i * 64
+    let cq = 0x2000 + i * 16
+    var status: UInt32 = 0
+    if load(sq) & 255 == 6 {
+      for j in stride(from: UInt64(0), to: 4096, by: 4) { store(0x5000 + j, 0) }
+      switch load(sq + 40) {
+      case 1:
+        store(0x5200, 0x4466)
+        store(0x5204, 1)
+        store(0x5208, oncs)
+      case 6:
+        nvmQueries += 1
+        status = nvmStatus
+        store(0x5000, 1 << 24)
+        store(0x5004, 32)
+        store(0x5008, 7)
+      case 2: store(0x5000, 3)
+      case 0:
+        store(0x5000, 4096)
+        store(0x5008, 4096)
+        store(0x5080, 9 << 16)
+        store(0x5060, readOnly ? 1 << 24 : 0)
+      default: XCTFail()
+      }
+    }
+    store(cq + 8, v)
+    store(cq + 12, (load(sq) >> 16) | (1 << 16) | (status << 17))
+  }
+}
 final class QueueTests: XCTestCase {
+  func testDiscardCapabilityLimitsAndNoPublicationOnRefusal() throws {
+    for (cap, list, status, ro, limit): (UInt32, Bool, UInt32, Bool, UInt32) in [
+      (8, true, 0, false, 0), (4, false, 0, false, 0), (4, true, 0, false, 7),
+      (4, true, 0x4002, false, 1), (4, true, 0, true, 7),
+    ] {
+      let m = IdentifyDisk(oncs: cap, nvmStatus: status, readOnly: ro)
+      let pages = NVMePages(
+        adminSubmission: 0x1000, adminCompletion: 0x2000, submission: 0x3000,
+        completion: 0x4000, identify: 0x5000, prpLists: list ? [0x6000] : [])!
+      var driver = try NVMeController.start(m, pages: pages, depth: 8, epoch: 1) { $0.first }
+      XCTAssertEqual(m.nvmQueries, cap == 4 && list ? 1 : 0)
+      XCTAssertEqual(driver.maxDiscardBlocks, limit)
+      XCTAssertEqual(driver.limits.discard, limit != 0)
+      func submit(_ lba: UInt64, _ blocks: UInt64) throws {
+        let r = BlockRequest(
+          id: 1, epoch: 1, lba: lba, blocks: blocks, queue: 0, op: .discard, qos: .standard,
+          payload: .init())!
+        try driver.submit(
+          r.record(),
+          allows: { _, _, _ in
+            XCTFail()
+            return false
+          },
+          readVector: { _ in
+            XCTFail()
+            return nil
+          })
+      }
+      let before = m.events.count
+      XCTAssertThrowsError(try submit(0, UInt64(limit) + 1))
+      XCTAssertThrowsError(try submit(4096, 1))
+      if ro { XCTAssertThrowsError(try submit(2, 1)) }
+      XCTAssertEqual(before, m.events.count)
+      if limit > 0 && !ro {
+        try submit(4096 - UInt64(limit), UInt64(limit))
+        XCTAssertEqual(m.load(0x3000), 9)
+        XCTAssertEqual(m.load(0x3004), 3)
+        XCTAssertEqual(m.load(0x3018), 0x6000)
+        XCTAssertEqual(m.load(0x3020), 0)
+        XCTAssertEqual(m.load(0x3028), 0)
+        XCTAssertEqual(m.load(0x302c), 4)
+        XCTAssertEqual(m.load(0x3030), 0)
+        XCTAssertEqual(m.load(0x6004), limit)
+      }
+    }
+  }
+
+  func testDiscardDescriptorCannotBeReusedByAnotherPendingCommand() throws {
+    let m = Memory()
+    let page: UInt64 = 0x1_0000_9000
+    var q = Queue(id: 1, depth: 4, sq: 0x1000, cq: 0x2000, stride: 4, lists: [page])
+    var discard = Command(9)
+    discard.d11 = 4
+    let range = PrivatePayload.deallocate(lba: 0x1_2345_6780, blocks: 8)
+    try q.submit(discard, 1, m, payload: range)
+    XCTAssertEqual((0..<4).map { m.load(page + UInt64($0 * 4)) }, [0, 8, 0x2345_6780, 1])
+    XCTAssertEqual(m.load(0x101c), 1)
+    try q.submit(Command(0), 2, m)
+    m.cqe(0, head: 2, id: 1, phase: 1)
+    XCTAssertEqual(try q.poll(m)?.token, 2)
+    var write = Command(1)
+    write.prp1 = 0x4000
+    let list = PrivatePayload.prpList([0x5000, 0x6000])
+    XCTAssertThrowsError(try q.submit(write, 3, m, payload: list)) {
+      XCTAssertEqual($0 as? NVMeError, .busy)
+    }
+    XCTAssertEqual(m.load(page + 4), 8)
+    m.cqe(1, head: 2, id: 0, phase: 1)
+    XCTAssertEqual(try q.poll(m)?.token, 1)
+    try q.submit(write, 3, m, payload: list)
+    XCTAssertEqual(m.load(page), 0x5000)
+    XCTAssertThrowsError(try q.submit(discard, 4, m, payload: range)) {
+      XCTAssertEqual($0 as? NVMeError, .busy)
+    }
+    XCTAssertEqual(m.load(page), 0x5000)
+  }
   func testPhaseWrapOutOfOrderAndCredit() throws {
     let m = Memory()
     var q = Queue(id: 1, depth: 3, sq: 0x1000, cq: 0x2000, stride: 4)
@@ -138,20 +258,20 @@ final class QueueTests: XCTestCase {
     var q = Queue(id: 1, depth: 4, sq: 0x1000, cq: 0x2000, stride: 4, lists: [0x9000])
     var cmd = Command(1)
     cmd.prp1 = 0xab00
-    try q.submit(cmd, 1, m, listEntries: [0x1_0000_b000, 0xc000])
+    try q.submit(cmd, 1, m, payload: .prpList([0x1_0000_b000, 0xc000]))
     XCTAssertEqual(m.load(0x1020), 0x9000)
     XCTAssertEqual(m.load(0x9000), 0xb000)
     XCTAssertEqual(m.load(0x9004), 1)
     try q.submit(Command(0), 2, m)
     m.cqe(0, head: 2, id: 1, phase: 1)
     XCTAssertEqual(try q.poll(m)?.token, 2)
-    XCTAssertThrowsError(try q.submit(cmd, 3, m, listEntries: [0xd000, 0xe000])) {
+    XCTAssertThrowsError(try q.submit(cmd, 3, m, payload: .prpList([0xd000, 0xe000]))) {
       XCTAssertEqual($0 as? NVMeError, .busy)
     }
     XCTAssertEqual(m.load(0x9000), 0xb000)
     m.cqe(1, head: 2, id: 0, phase: 1)
     XCTAssertEqual(try q.poll(m)?.token, 1)
-    try q.submit(cmd, 3, m, listEntries: [0xd000, 0xe000])
+    try q.submit(cmd, 3, m, payload: .prpList([0xd000, 0xe000]))
     XCTAssertEqual(m.load(0x9000), 0xd000)
     XCTAssertEqual(m.load(0x9008), 0xe000)
   }

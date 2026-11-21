@@ -5,9 +5,10 @@ let package = Package(
   name: "BlockQTest", platforms: [.macOS(.v26)],
   dependencies: [
     .package(path: "../../../nvme"),
+    .package(path: "../../../usb-storage"),
     .package(path: "../../../ufs"),
     .package(path: "../../../../trfs"), .package(path: "../../../../tarwin-net"),
-    .package(path: "../../../../kcore"),
+    .package(path: "../../../../kcore"), .package(path: "../../../../tarwin-boot"),
     .package(path: "../.."),
     .package(path: "../../../../tarwin-block"),
     .package(path: "../../../../tarwin-device"), .package(path: "../../../../tarwin-ipc"),
@@ -18,6 +19,7 @@ let package = Package(
       name: "BlockQTest",
       dependencies: [
         .product(name: "NVMeDriver", package: "nvme"),
+        .product(name: "USBMassStorage", package: "usb-storage"),
         .product(name: "UFSDriver", package: "ufs"),
         .product(name: "TRFS", package: "trfs"),
         .product(name: "VirtioNetService", package: "virtio"),
@@ -25,7 +27,7 @@ let package = Package(
         .product(name: "TarwinObject", package: "tarwin-object"),
         .product(name: "TarwinSyscall", package: "tarwin-syscall"),
         .product(name: "TarwinABI", package: "tarwin-syscall"),
-        .product(name: "KCore", package: "kcore"),
+        .product(name: "KCore", package: "kcore"), .product(name: "TarwinBoot", package: "tarwin-boot"),
         .product(name: "TarwinBlock", package: "tarwin-block"),
         .product(name: "TarwinIoCompletion", package: "tarwin-device"),
         .product(name: "TarwinDevice", package: "tarwin-device"),

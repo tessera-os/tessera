@@ -202,3 +202,25 @@ Freeze admission on any topology change before resampling, under the same hardwa
 The q35 QTest now discovers its disk and NIC requester IDs through PCI header enumeration and a read-only registry snapshot rather than assuming device addresses. The synthetic inventory does not infer IOMMU groups from PCI addresses. Real platforms must verify ACS/alias topology and supply stable-ID generation, DeviceRoot resource lookup, hotplug notifications and synchronous group teardown. Physical hot-plug is not verified.
 
 The legacy VT-d backend accepts a checksum-valid ACPI DMAR revision 1 describing one DRHD register page for the selected segment. A direct endpoint scope must match the requester unless the segment is explicitly covered by INCLUDE_PCI_ALL. IOAPIC and HPET scopes cannot grant DMA access. The platform must independently confirm that the page is reserved as register memory. Ambiguous coverage, multiple units, bridge paths, reserved-memory requests (RMRR) and unsupported flags or structures are rejected; there is no identity fallback. This is not full ACPI namespace enumeration or hardware group discovery.
+
+### Cold Arm fence across kernel entry
+
+For the externally pinned single-CPU, no-restore virt-11.1 low-PCI profile,
+the boot owner must obtain `.streamsDenied` from `denyVirtBootDMA` before
+installing the verified image or jumping to it. Both private pages stay
+reserved and inaccessible to other writers across the jump. The kernel
+validates its handoff and page ownership, then calls
+`checkVirtBootDMAContinuity(table:commands:protected:bus:)` before using the
+protected bytes. Only `.matchesColdFence` matches the earlier configuration.
+Never retry a mismatch by running the installer from the intake path.
+
+The live reader supplies ordered 8/32/64-bit accesses to trusted MMIO and
+pinned RAM, plus selector/data (PIO-only) fw_cfg reads. It exposes no general
+write, reset or DMA method. The check requires parked bus masters, the cold
+inventory and disabled fw_cfg DMA, non-overlapping low BARs and reset endpoint
+status. It checks SMMU control and acknowledgement, abort policy, queue bases
+and completed producer/consumer indices, all 64 abort-only STEs and all eight
+command slots at the trusted addresses. QEMU checks both acceptance and
+refusal after endpoint reactivation. A snapshot of matching state does not
+prove that a fence was continuously held, authenticate a handoff or grant
+permission for first user entry; those are separate platform obligations.

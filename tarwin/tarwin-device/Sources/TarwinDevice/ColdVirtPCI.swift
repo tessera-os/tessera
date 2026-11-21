@@ -1,9 +1,12 @@
 /// Trusted, ordered device accesses on the fixed QEMU virt-11.1 cold diagnostic.
 /// A failed access must not be reported as a successful zero or absent function.
-public protocol ColdVirtRegisters: ~Copyable {
+public protocol ColdVirtReadRegisters: ~Copyable {
   mutating func read32(_ physical: UInt64) -> UInt32?
-  mutating func write32(_ physical: UInt64, _ value: UInt32) -> Bool
+  /// Ordered PIO selector/data read only; never use the fw_cfg DMA interface.
   mutating func fwConfigWord(_ selector: UInt16) -> UInt32?
+}
+public protocol ColdVirtRegisters: ColdVirtReadRegisters, ~Copyable {
+  mutating func write32(_ physical: UInt64, _ value: UInt32) -> Bool
 }
 
 /// None of these results authorize first entry. In particular the SMMU
@@ -15,7 +18,7 @@ public enum ColdVirtPCIResult: Equatable {
 
 /// Only for the pinned, single-CPU TCG fixture, with hotplug and restore
 /// excluded externally. Never take over a running SMMU or disable translation.
-func coldVirtInventory<R: ColdVirtRegisters & ~Copyable>(
+func coldVirtInventory<R: ColdVirtReadRegisters & ~Copyable>(
   _ r: inout R, firmwareEndpoints: Bool
 ) -> ColdVirtPCIResult? {
   // fw_cfg words here are decoded little endian from the four data bytes.
@@ -57,12 +60,14 @@ private func coldVirtSmmuIdle<R: ColdVirtRegisters & ~Copyable>(_ r: inout R) ->
     && r.read32(smmu + 0x60) == 0 && r.read32(smmu + 0x64) == 0
 }
 
-func coldVirtSmmuCheck<R: ColdVirtRegisters & ~Copyable>(_ r: inout R) -> ColdVirtPCIResult? {
+func coldVirtSmmuIdentity<R: ColdVirtReadRegisters & ~Copyable>(_ r: inout R) -> Bool {
   let smmu: UInt64 = 0x0905_0000
-  guard r.read32(smmu + 0xfe0) == 0x84, r.read32(smmu + 0xfe4) == 0xb4,
-    r.read32(smmu + 0xff0) == 0x0d, r.read32(smmu + 0xff4) == 0xf0,
-    r.read32(smmu + 0xff8) == 0x05, r.read32(smmu + 0xffc) == 0xb1
-  else { return .unsupportedPlatform }
+  return r.read32(smmu + 0xfe0) == 0x84 && r.read32(smmu + 0xfe4) == 0xb4
+    && r.read32(smmu + 0xff0) == 0x0d && r.read32(smmu + 0xff4) == 0xf0
+    && r.read32(smmu + 0xff8) == 0x05 && r.read32(smmu + 0xffc) == 0xb1
+}
+func coldVirtSmmuCheck<R: ColdVirtRegisters & ~Copyable>(_ r: inout R) -> ColdVirtPCIResult? {
+  guard coldVirtSmmuIdentity(&r) else { return .unsupportedPlatform }
   return coldVirtSmmuIdle(&r) ? nil : .smmuInUse
 }
 

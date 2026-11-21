@@ -21,7 +21,7 @@ for target in aarch64-none-none-elf x86_64-unknown-none-elf riscv64-none-none-ea
       -module-name "$name" "$here/../${dep%:*}/Sources/$name"/*.swift -emit-module-path "$out/$name.swiftmodule"
   done
   if [ "$(basename "$package")" = tarwin-device ]; then
-    set -- "$package"/Sources/TarwinDevice/*.swift
+    set -- -emit-module -emit-module-path "$out/TarwinIO.swiftmodule" "$package"/Sources/TarwinDevice/*.swift
   elif [ "$(basename "$package")" = tarwin-block ]; then
     set -- "$package"/Sources/TarwinBlock/*.swift
   elif [ "$(basename "$package")" = tarwin-net ]; then
@@ -36,8 +36,12 @@ for target in aarch64-none-none-elf x86_64-unknown-none-elf riscv64-none-none-ea
   if [ "$(basename "$package")" = tarwin-device ]; then
     src="$package/Sources/TarwinDevice"
     "$compiler" -I "$out" -target "$target" -enable-experimental-feature Embedded -O -wmo -parse-as-library -emit-object \
+      -no-allocations -module-name DoorbellProfile "$package/tests/DoorbellProfile.swift" -o "$out/$target-doorbell.o"
+    "$compiler" -I "$out" -target "$target" -enable-experimental-feature Embedded -O -wmo -parse-as-library -emit-object \
+      -no-allocations -module-name ColdFenceProfile "$package/tests/ColdFenceProfile.swift" -o "$out/$target-continuity.o"
+    "$compiler" -I "$out" -target "$target" -enable-experimental-feature Embedded -O -wmo -parse-as-library -emit-object \
       -no-allocations -module-name TarwinCritical "$src/Interrupt.swift" "$src/Range.swift" "$src/Dma.swift" \
-      "$src/Vtd.swift" "$src/ColdVirtPCI.swift" "$src/VirtBootFence.swift" "$src/PortInterrupt.swift" "$src/InterruptCall.swift" "$src/IoRing.swift" "$src/Binding.swift" "$src/Domain.swift" "$src/Slot.swift" "$src/Pci.swift" "$src/PciWalk.swift" "$src/Mcfg.swift" "$src/Native.swift" "$src/ConfigCalls.swift" -o "$out/$target-critical.o"
+      "$src/Vtd.swift" "$src/ColdVirtPCI.swift" "$src/VirtBootFence.swift" "$src/PortInterrupt.swift" "$src/InterruptCall.swift" "$src/IoRing.swift" "$src/Binding.swift" "$src/Domain.swift" "$src/Slot.swift" "$src/DoorbellMappings.swift" "$src/Pci.swift" "$src/PciWalk.swift" "$src/Mcfg.swift" "$src/Native.swift" "$src/ConfigCalls.swift" -o "$out/$target-critical.o"
   elif [ "$(basename "$package")" = trfs ]; then
     "$compiler" -I "$out" -target "$target" -enable-experimental-feature Embedded -O -wmo -parse-as-library -emit-object \
       -no-allocations -module-name TrfsSector "$package/Sources/TRFS/Pager.swift" "$package/Sources/TRFS/XtsSector.swift" -o "$out/$target-xts.o"

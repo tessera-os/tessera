@@ -71,9 +71,36 @@ public func decodeUdp(_ bytes: [UInt8]) -> UdpDecode {
     end = 40 + Int(word(bytes, 4))
     if end > bytes.count { return .invalid }
     start = 40
-    if bytes[6] == 44 { return .fragment }
-    // Extension headers go through the extension-header input path.
-    if bytes[6] != 17 { return .unsupported }
+    var next = bytes[6]
+    var destinationOptions = false
+    // RFC 8200: hop-by-hop first, then at most one final destination header.
+    // Only padding is a no-op. Do not deliver a packet past an unhandled option.
+    while next == 0 || next == 60 {
+      if (next == 0 && start != 40) || destinationOptions { return .unsupported }
+      destinationOptions = next == 60
+      guard end - start >= 2 else { return .invalid }
+      let after = start + (Int(bytes[start + 1]) + 1) * 8
+      guard after <= end else { return .invalid }
+      var pos = start + 2
+      while pos < after {
+        let option = bytes[pos]
+        pos += 1
+        if option == 0 { continue }
+        guard option == 1 else { return .unsupported }
+        guard pos < after else { return .invalid }
+        let stop = pos + 1 + Int(bytes[pos])
+        guard stop <= after else { return .invalid }
+        pos += 1
+        while pos < stop {
+          guard bytes[pos] == 0 else { return .invalid }
+          pos += 1
+        }
+      }
+      next = bytes[start]
+      start = after
+    }
+    if next == 44 { return .fragment }
+    if next != 17 { return .unsupported }
     sum = sumBytes(bytes, 8, 32, 0)
   } else {
     return .unsupported

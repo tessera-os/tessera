@@ -19,7 +19,7 @@ private func decode(_ text: String) -> [UInt8] {
 }
 // Public IEEE P1619 AES-256-XTS vector, data-unit ff, from OpenSSL's
 // test/recipes/30-test_evp_data/evpciph_aes_common.txt. Host test keys only.
-private struct VectorCipher: XtsCipher {
+struct VectorCipher: XtsCipher {
   let keyObject: UInt64 = 99
   let k1 = decode("2718281828459045235360287471352662497757247093699959574966967627")
   let k2 = decode("3141592653589793238462643383279502884197169399375105820974944592")

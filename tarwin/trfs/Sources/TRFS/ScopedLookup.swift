@@ -5,6 +5,7 @@ public enum Entry: Equatable {
   case file(UInt64)
   case symlink([UInt8])
   case missing
+  case damaged
 }
 public enum Walk: Equatable {
   case found(UInt64)
@@ -13,6 +14,7 @@ public enum Walk: Equatable {
   case invalid
   case escape
   case loop
+  case damaged
 }
 public func scopedLookup(
   _ root: UInt64, _ relative: [UInt8], _ followLinks: Bool, _ lookup: (UInt64, [UInt8]) -> Entry
@@ -57,6 +59,7 @@ public func scopedLookup(
       name.append(path[i])
     }
     switch lookup(parents[depth - 1], name) {
+    case .damaged: return .damaged
     case .missing: return .notFound
     case .file(let id):
       if !last { return .notDirectory }

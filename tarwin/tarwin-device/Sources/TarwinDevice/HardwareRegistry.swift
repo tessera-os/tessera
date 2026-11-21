@@ -1,3 +1,5 @@
+import TarwinObject
+
 /// Physical locations and resources are supplied by trusted platform enumeration,
 /// never by a driver or its match dictionary. A location is not a capability.
 public enum DeviceLocation: Equatable {
@@ -215,6 +217,23 @@ public struct HardwareRegistry: ~Copyable {
   }
   public func permits(_ lease: GroupLease, process: UInt64, node: UInt64) -> Bool {
     activeSlot(lease, process: process, node: node) != nil
+  }
+
+  /// Bind once when publishing the range handle; aperture geometry comes from
+  /// enumeration, not the driver's designation list. The registry owner keeps
+  /// the binding until its group has finished the CPU mapping teardown phase.
+  public func bindDoorbellRange(
+    _ range: UnsafePointer<ObjectHeader>, lease: GroupLease, node: UInt64, apertureIndex: Int,
+    pageBytes: UInt64, designated: UnsafeMutableBufferPointer<DoorbellPage>
+  ) -> RegisteredDoorbellRange? {
+    guard let slot = activeSlot(lease, process: lease.process, node: node),
+      let apertures = nodes.first(where: { $0.id == node })?.device.mmio,
+      apertures.indices.contains(apertureIndex),
+      let mappings = DoorbellMappings(
+        range: range, slot: slot,
+        aperture: apertures[apertureIndex].range, pageBytes: pageBytes, pages: designated)
+    else { return nil }
+    return RegisteredDoorbellRange(lease: lease, node: node, mappings: consume mappings)
   }
   func activeSlot(_ lease: GroupLease, process: UInt64, node: UInt64) -> DeviceSlotState? {
     guard !frozen, process == lease.process,

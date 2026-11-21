@@ -5,10 +5,12 @@ let package = Package(
   name: "TarwinPower",
   platforms: [.macOS(.v26)],
   products: [.library(name: "TarwinPower", targets: ["TarwinPower"])],
-  dependencies: [],
+  dependencies: [.package(path: "../tarwin-sched")],
   targets: [
     .target(name: "TarwinPower", dependencies: []),
     .testTarget(
-      name: "TarwinPowerTests", dependencies: ["TarwinPower"], path: "tests/TarwinPowerTests"),
+      name: "TarwinPowerTests",
+      dependencies: ["TarwinPower", .product(name: "TarwinSched", package: "tarwin-sched")],
+      path: "tests/TarwinPowerTests"),
   ]
 )

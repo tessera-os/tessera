@@ -126,6 +126,15 @@ private func checkFirmwareLayout(binary: String, disk: URL, layout: VirtBootPCIL
         table: 0x4200_0000, commands: 0x4200_1000, protected: $0, layout: layout, bus: &registers)
     }
     try q.require(result == .streamsDenied, "Boot PCI fence: \(result)")
+    func continuity() -> VirtBootContinuityResult {
+      ranges.withUnsafeBufferPointer {
+        checkVirtBootDMAContinuity(
+          table: 0x4200_0000, commands: 0x4200_1000, protected: $0, bus: &registers)
+      }
+    }
+    try q.require(
+      continuity() == (high ? .endpointChanged : .matchesColdFence),
+      "Cold low-only continuity did not match the installed PCI layout")
     try q.require(
       q.read("w", disk + 4) & 4 == 0 && q.read("w", rng + 4) & 4 == 0
         && q.read("l", 0x0905_0024) == 9 && q.read("l", 0x0905_009c) == 3,
@@ -138,6 +147,8 @@ private func checkFirmwareLayout(binary: String, disk: URL, layout: VirtBootPCIL
     // Test harness only: give the same endpoints another queue activation
     // without changing the SMMU. A parked device alone cannot pass this test.
     for i in 0..<2 { try activate(i) }
+    try q.require(
+      continuity() != .matchesColdFence, "Reactivated endpoints passed continuity check")
     try q.require(q.read("l", 0x0905_0024) == 9, "Stream table lost ownership")
     try q.require(
       snapshots == ranges.map { q.send("read \($0.base) 12288") },

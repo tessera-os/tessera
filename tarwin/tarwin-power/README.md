@@ -15,3 +15,23 @@ An early wake or device refusal rolls back the suspended prefix in reverse order
 ClusterGovernor programs a board-supplied frequency ceiling before admitting dispatches. Share one serialized governor per cluster. Its fixed-window CPU-ns reservations are pooled across CPUs and classes, survive changes of thermal band, and stop at the window boundary. The worst firmware/sensor zone wins, including the handheld skin sensor on a dock. Missing or stale samples select the critical ceiling; a failed actuator denies new dispatch slices. The platform must enforce the ceiling on already running CPUs, preempt at the admitted slice boundary, and supply certified OPPs and budget parameters.
 
 The single-writer PowerPageWriter publishes the existing LibTessera §18.1 64-byte PowerInfo record and the 64-bit refresh sequence at offset 64 of a fresh, pinned 4096-byte page. Give clients read-only mappings only after the first sample. Publication precedes notification; readers retry at most eight times and never accept an interrupted refresh. Native scheduler dispatch, sensor/actuator hardware, read-only mapping grants and physical 10,000-cycle endurance are not demonstrated by the package tests.
+
+### Process energy (§26.5)
+
+`EnergyLedger` uses fixed process, CPU and driver-counter slots. At dispatch,
+idle and each **observed** frequency change, settle the old interval and bind
+the next accounting context. Use the scheduler's charging context during
+direct IPC donation, not the currently executing server. Supply the calibrated
+microwatts for the actual CPU and operating point; unknown intervals appear as
+unmodelled CPU-ns rather than using an estimated ceiling as a measured rate.
+
+Bind each GPU, display or radio work context to its retained process at
+creation. Only its authenticated driver channel may report ordered cumulative
+microjoules above the observed baseline. Loss records a gap; reset requires
+a new binding. Never feed a shared whole-device meter into a per-process
+binding. Export the final summary before recycling the process slot. The
+power-service view and scheduler/driver hooks must use the same serialized
+book and clock. The tests exercise the real bootstrap scheduler's donated
+context with synthetic operating points and reports, not physical power
+measurements. Run `SWIFTC=/path/to/swiftc sh check-energy-profile.sh` for
+the nonallocating three-ISA object check.

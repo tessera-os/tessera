@@ -47,6 +47,11 @@ struct Command {
     d12: UInt32 = 0
   init(_ op: UInt8) { opcode = op }
 }
+enum PrivatePayload {
+  case none
+  case prpList(ArraySlice<UInt64>)
+  case deallocate(lba: UInt64, blocks: UInt32)
+}
 struct Done { let token: UInt64, status: UInt16, result: UInt32 }
 struct Queue: ~Copyable {
   let id: Int, depth: Int, sq: UInt64, cq: UInt64, db: UInt64, stride: UInt64
@@ -67,7 +72,7 @@ struct Queue: ~Copyable {
   }
   mutating func submit(
     _ cmd: Command, _ token: UInt64, _ io: any NVMeAccess,
-    listEntries: ArraySlice<UInt64> = []
+    payload: PrivatePayload = .none
   ) throws {
     guard !poisoned else { throw NVMeError.protocolFault }
     let new = (tail + 1) % depth
@@ -77,17 +82,37 @@ struct Queue: ~Copyable {
       throw NVMeError.busy
     }
     while live[next] != nil { next &+= 1 }
-    var list: UInt64?
-    if !listEntries.isEmpty {
-      guard (2...512).contains(listEntries.count), cmd.prp2 == 0, !listPages.isEmpty
-      else { throw NVMeError.configuration }
+    func privatePage() throws -> UInt64 {
+      guard !listPages.isEmpty else { throw NVMeError.configuration }
       guard let page = listPages.first(where: { page in !live.values.contains { $0.list == page } })
       else { throw NVMeError.busy }
+      return page
+    }
+    var list: UInt64?
+    var prp1 = cmd.prp1
+    var prp2 = cmd.prp2
+    switch payload {
+    case .none: break
+    case .prpList(let listEntries):
+      guard (2...512).contains(listEntries.count), prp2 == 0 else { throw NVMeError.configuration }
+      let page = try privatePage()
       list = page
+      prp2 = page
       for (i, addr) in listEntries.enumerated() {
         io.store(page + UInt64(i * 8), UInt32(truncatingIfNeeded: addr))
         io.store(page + UInt64(i * 8 + 4), UInt32(addr >> 32))
       }
+    case .deallocate(let lba, let blocks):
+      guard cmd.opcode == 9, cmd.d10 == 0, cmd.d11 == 4, cmd.d12 == 0, blocks != 0,
+        prp1 == 0, prp2 == 0
+      else { throw NVMeError.configuration }
+      let page = try privatePage()
+      list = page
+      prp1 = page
+      io.store(page, 0)
+      io.store(page + 4, blocks)
+      io.store(page + 8, UInt32(truncatingIfNeeded: lba))
+      io.store(page + 12, UInt32(lba >> 32))
     }
     let cid = next
     next &+= 1
@@ -97,10 +122,10 @@ struct Queue: ~Copyable {
         switch i {
         case 0: UInt32(cid) << 16 | UInt32(cmd.opcode)
         case 1: cmd.ns
-        case 6: UInt32(truncatingIfNeeded: cmd.prp1)
-        case 7: UInt32(cmd.prp1 >> 32)
-        case 8: UInt32(truncatingIfNeeded: list ?? cmd.prp2)
-        case 9: UInt32((list ?? cmd.prp2) >> 32)
+        case 6: UInt32(truncatingIfNeeded: prp1)
+        case 7: UInt32(prp1 >> 32)
+        case 8: UInt32(truncatingIfNeeded: prp2)
+        case 9: UInt32(prp2 >> 32)
         case 10: cmd.d10
         case 11: cmd.d11
         case 12: cmd.d12

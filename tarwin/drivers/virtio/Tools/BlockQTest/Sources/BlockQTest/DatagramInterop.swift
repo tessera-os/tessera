@@ -98,7 +98,8 @@ func checkDatagramEndpoint(_ ip: [UInt8], route: UdpRoute, expected: [UInt8]) th
       packet.aux == 0,
       packet.result0 == UInt64(expected.count), released == 1, ports.references == 0,
       inbox.count == 0,
-      source[0] == 0, Array(source[8..<12]) == route.source,
+      source[0] == (route.family == .v6 ? 1 : 0),
+      Array(source[8..<8 + route.source.count]) == route.source,
       UInt16(source[4]) | UInt16(source[5]) << 8 == route.sourcePort,
       buffer[0] == 0xbd, buffer[33] == 0xbd, buffer[34 + cut] == 0xbd, Array(a) + b == expected
     else { throw Failure("UDP source, scatter result or Net completion differed") }

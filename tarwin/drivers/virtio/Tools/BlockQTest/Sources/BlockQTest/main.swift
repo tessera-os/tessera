@@ -22,7 +22,7 @@ private struct DeviceTreeBlob: ByteSource {
   func byteAt(_ offset: UInt64) -> UInt8 { bytes[Int(offset)] }
 }
 
-enum TestDisk { case virtio, nvme, ufs }
+enum TestDisk { case virtio, nvme, ufs, usb }
 final class QTest {
   private let process = Process(), input = Pipe(), output = Pipe()
   private var buffered = Data()
@@ -56,17 +56,20 @@ final class QTest {
   init(
     binary: String, machine: Machine, disk: URL, translated: Bool, neighbors: Bool,
     extraDevices: [String] = [], tcpFixture: Bool = false, listenerSocket: String? = nil,
-    storage: TestDisk = .virtio
+    storage: TestDisk = .virtio, unmap: Bool = false, qcow2: Bool = false
   ) throws {
     process.executableURL = URL(fileURLWithPath: binary)
     process.arguments = [
       "-machine", machine == .x64 ? "q35" : "virt", "-accel", "qtest", "-m", "64M",
       "-display", "none", "-nodefaults", "-monitor", "none", "-serial", "none",
       "-qtest", "stdio", "-qtest-log", "/dev/null",
-      "-drive", "if=none,id=scratch,format=raw,file=" + disk.path,
+      "-drive", "if=none,id=scratch,format=" + (qcow2 ? "qcow2," : "raw,") + (unmap ? "discard=unmap," : "") + "file=" + disk.path,
       "-device",
     ]
     switch storage {
+    case .usb:
+      process.arguments! += ["piix3-usb-uhci,id=uhci,addr=04.0", "-device",
+        "usb-storage,bus=uhci.0,port=1,drive=scratch"]
     case .nvme: process.arguments!.append("nvme,serial=tarwin-test,drive=scratch")
     case .ufs:
       process.arguments! += [
@@ -454,14 +457,18 @@ func run() throws {
   let tcp = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--tcp-receive"
   let listen = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--tcp-listen"
   let intx = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--intx"
-  let nvme = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--nvme"
+  let nvme = CommandLine.arguments.count == 3 && ["--nvme", "--nvme-vtd", "--nvme-discard"].contains(CommandLine.arguments[2])
   let coldPCI = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--cold-virt-pci"
+  let measured = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--trfs-nvme-pcr11"
+  let trfs = measured || (CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--trfs-nvme-xts")
+  let usb = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--usb-vtd"
   let gpu = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--gpu"
+  let udp6 = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--udp6-padding"
   let ufs =
     CommandLine.arguments.count == 3 && ["--ufs", "--ufs-vtd"].contains(CommandLine.arguments[2])
   guard
     CommandLine.arguments.count == 2 || translated || neighbors || streams || tcp || listen || intx
-      || nvme || ufs || coldPCI || gpu,
+      || nvme || ufs || coldPCI || gpu || udp6 || usb || trfs,
     let machine = Machine(
       rawValue: URL(fileURLWithPath: CommandLine.arguments[1]).lastPathComponent)
   else {
@@ -475,9 +482,26 @@ func run() throws {
     UUID().uuidString + ".raw")
   try Data(repeating: 0x6c, count: 1 << 20).write(to: disk, options: .withoutOverwriting)
   defer { try? FileManager.default.removeItem(at: disk) }
+  if trfs {
+    guard machine == .x64 else { throw Failure("--trfs-nvme-xts requires q35 VT-d") }
+    let socket = ProcessInfo.processInfo.environment["TARWIN_QTEST_TPM_SOCKET"]
+    if measured && (socket?.hasPrefix("/") != true || socket!.contains(",")) {
+      throw Failure("Supply a private absolute swtpm control socket in TARWIN_QTEST_TPM_SOCKET")
+    }
+    let scenario = NVMeVolumeScenario(tpmSocket: measured ? socket : nil)
+    try testNVMe(binary: CommandLine.arguments[1], disk: disk, translated: true, volume: scenario)
+    try scenario.checkBacking(disk)
+    try testNVMe(binary: CommandLine.arguments[1], disk: disk, translated: true, volume: scenario)
+    return
+  }
   if coldPCI {
     guard machine == .arm else { throw Failure("--cold-virt-pci requires AArch64 virt-11.1") }
     try testColdVirtPCI(binary: CommandLine.arguments[1], disk: disk)
+    return
+  }
+  if usb {
+    guard machine == .x64 else { throw Failure("--usb-vtd requires q35") }
+    try testUSBStorage(binary: CommandLine.arguments[1], disk: disk)
     return
   }
   if gpu {
@@ -491,7 +515,8 @@ func run() throws {
     return
   }
   if nvme {
-    try testNVMe(binary: CommandLine.arguments[1], disk: disk)
+    let mode = CommandLine.arguments[2]
+    try testNVMe(binary: CommandLine.arguments[1], disk: disk, translated: mode != "--nvme", discard: mode == "--nvme-discard")
     return
   }
   if listen {
@@ -528,6 +553,10 @@ func run() throws {
     neighbors: neighbors)
   do {
     defer { q.close() }
+    if udp6 {
+      try testNetwork(q, machine, paddedIPv6: true)
+      return
+    }
     if neighbors {
       try testNeighbors(q, machine)
       return
@@ -563,16 +592,28 @@ func run() throws {
 do {
   try run()
   print(
-    CommandLine.arguments.last == "--cold-virt-pci"
+    CommandLine.arguments.last == "--trfs-nvme-pcr11"
+      ? "PASS: TRFS verified root extended into q35 TPM PCR 11 before encrypted read-only mount; independent SHA-256 replay matched"
+      : CommandLine.arguments.last == "--trfs-nvme-xts"
+      ? "PASS: TRFS encrypted snapshot written over VT-d NVMe and authenticated after cold controller restart"
+      : CommandLine.arguments.last == "--cold-virt-pci"
       ? "PASS: Arm firmware-style queues reset; both PCI streams denied access to their former pages. No boot or W1 entry."
+      : CommandLine.arguments.last == "--usb-vtd"
+      ? "PASS: q35 UHCI VT-d write/flush/read and UNMAP; only the requested 4 KiB qcow2 cluster was deallocated, all other bytes matched, three pins retired"
+      : CommandLine.arguments.last == "--udp6-padding"
+      ? "PASS: IPv6 UDP across isolated NICs with two padding headers, peer address and guarded scatter receive"
       : CommandLine.arguments.last == "--gpu"
       ? "PASS: virtio-gpu fenced 2D scanout, all 3072 pixels matched QEMU display capture; backing retired"
       : CommandLine.arguments.last == "--ufs-vtd"
       ? "PASS: q35 UFS translated command pages and directional scatter DMA; nine page drains, read remap, both backing files verified"
       : CommandLine.arguments.last == "--ufs"
         ? "PASS: q35 UFS discovered LUs 1 and 2, stopped on invalid selection, verified LU 2 scatter write/FUA/flush/read and unchanged LU 1"
+        : CommandLine.arguments.last == "--nvme-discard"
+          ? "PASS: q35 NVMe consumed one translated DSM range, completed discard and preserved every byte outside it"
+        : CommandLine.arguments.last == "--nvme-vtd"
+          ? "PASS: q35 NVMe translated queues and PRP list, eight directional data-page drains, remapped readback and disk verified"
         : CommandLine.arguments.last == "--nvme"
-          ? "PASS: q35 NVMe four-page PRP list, 12 KiB FUA write, flush, guarded readback, shutdown and backing-file check"
+          ? "PASS: q35 NVMe four-page FUA write, three-block Write Zeroes, flush, guarded readback and backing-file check"
           : CommandLine.arguments.last == "--intx"
             ? "PASS: observed disk INTx, IOAPIC masking, Device notifications and handle-authorized rearm on q35"
             : CommandLine.arguments.last == "--tcp-receive"

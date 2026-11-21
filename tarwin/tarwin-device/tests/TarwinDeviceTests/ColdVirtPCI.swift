@@ -94,6 +94,80 @@ final class ColdVirtPCITests: XCTestCase {
       b.stores.firstIndex(of: 0x40_1001_0004)!, b.stores.firstIndex(of: 0x4200_0000)!)
     XCTAssertEqual(b.wide[0x4200_0000 + 16 * 64], 1)
   }
+  private struct Observer: VirtBootFenceReadBus {
+    let f: Firmware
+    var excluded: UInt64? = nil
+    var revision: UInt32 = 1
+    var tableReads = 0, changeAtEnd = false
+    func fwConfigWord(_ selector: UInt16) -> UInt32? {
+      selector == 1 ? revision : f.fwConfigWord(selector)
+    }
+    func read8(_ p: UInt64) -> UInt8? { p == excluded ? nil : f.read8(p) }
+    mutating func read32(_ p: UInt64) -> UInt32? {
+      if p == excluded { return nil }
+      if changeAtEnd, p == 0x0905_0024, tableReads > 0 { return 0 }
+      return f.read32(p)
+    }
+    mutating func read64(_ p: UInt64) -> UInt64? {
+      if (0x4200_0000..<0x4200_1000).contains(p) { tableReads += 1 }
+      return p == excluded ? nil : f.read64(p)
+    }
+    mutating func check(_ table: UInt64 = 0x4200_0000, _ commands: UInt64 = 0x4200_1000)
+      -> VirtBootContinuityResult
+    {
+      [DeviceRange(base: 0x4100_0000, length: 4096)].withUnsafeBufferPointer {
+        checkVirtBootDMAContinuity(table: table, commands: commands, protected: $0, bus: &self)
+      }
+    }
+  }
+  func testContinuityObservesAllSteAndCommandWordsWithoutWriteCapability() {
+    var f = Firmware()
+    var cold = Observer(f: f)
+    XCTAssertNotEqual(cold.check(), .matchesColdFence)
+    XCTAssertEqual(f.fence(), .streamsDenied)
+    var good = Observer(f: f)
+    XCTAssertEqual(good.check(), .matchesColdFence)
+    XCTAssertEqual(good.tableReads, 512)
+    for bad in [UInt64(0x4200_0000), 0x4200_0008, 0x4200_0ff8, 0x4200_1000, 0x4200_1078] {
+      var altered = f
+      altered.wide[bad]! ^= 1
+      var b = Observer(f: altered)
+      XCTAssertEqual(b.check(), bad < 0x4200_1000 ? .tableChanged : .commandsChanged)
+    }
+    var raced = Observer(f: f, changeAtEnd: true)
+    XCTAssertEqual(raced.check(), .controllerChanged)
+  }
+  func testContinuityRejectsStaleHandoffAndLostOrUnreadableState() {
+    var f = Firmware()
+    XCTAssertEqual(f.fence(), .streamsDenied)
+    var observer = Observer(f: f)
+    for page: UInt64 in [0x4100_0000, 0x4200_0001, 0x4200_1000, .max] {
+      XCTAssertEqual(observer.check(page), .badMemory)
+    }
+    XCTAssertEqual(observer.check(0x4200_2000), .controllerChanged)
+    XCTAssertEqual(observer.tableReads, 0)
+    observer.revision = 3
+    XCTAssertEqual(observer.check(), .wrongPlatform)
+    for address: UInt64 in [
+      0x0800_ffe8, 0x40_100f_f000, 0x40_1000_0004, 0x40_1000_8004,
+      0x40_1001_0004, 0x0905_0fe0, 0x0905_0004, 0x0905_0020, 0x0905_0024, 0x0905_0028,
+      0x0905_0044, 0x0905_0054, 0x0905_0060, 0x0905_0064, 0x0905_0080, 0x0905_0088, 0x0905_0090,
+      0x0905_0098, 0x0905_009c, 0x2000_0014, 0x2001_0014, 0x4200_0ff8, 0x4200_1078,
+    ] {
+      var b = Observer(f: f, excluded: address)
+      XCTAssertNotEqual(b.check(), .matchesColdFence)
+    }
+    for (p, v): (UInt64, UInt32) in [
+      (0x40_1000_8004, 0x10_0006), (0x40_1001_0024, 0x80),
+      (0x40_1000_8020, 0x2001_000c), (0x2001_0014, 1), (0x0905_009c, 2), (0x0905_0098, 4),
+      (0x0905_0044, 0x1000), (0x0905_0020, 0), (0x0905_0060, 1), (0x0905_0088, 7),
+    ] {
+      var wrong = f
+      wrong.model.words[p] = v
+      var b = Observer(f: wrong)
+      XCTAssertNotEqual(b.check(), .matchesColdFence)
+    }
+  }
   func testRejectsAliasedRAMOrBARWithoutWrites() {
     for r in [
       DeviceRange(base: 0x41ff_ffff, length: 2), DeviceRange(base: 0x4200_1fff, length: 8),

@@ -10,6 +10,15 @@ Each NIC hardware queue gets a fresh A.4 ring pair (64-byte records) per driver 
 
 The Mac-hosted BlockQTest connects this interface/driver path to two QEMU NICs and delivers a checksummed IPv4 UDP datagram to a preposted endpoint receive on an isolated virtual link. Host callbacks supply pin/grant lookup; the test is neither a physical NIC run nor a guest network stack boot.
 
+UDP input accepts IPv6 Hop-by-Hop Options immediately after the base header,
+then optionally Destination Options (also accepted alone). Both may contain
+only Pad1 and zero-filled PadN. The UDP length and checksum exclude these
+headers and link padding. Reassembly, routing headers, other options and
+jumbograms are not implemented here. The Mac tests include a datagram
+captured from Darwin UDP on loopback. Run BlockQTest with `--udp6-padding`
+to exercise both headers across isolated NICs through Endpoint.receiveFrom;
+the link fixture adds the headers, not the Tarwin UDP sender.
+
 NeighborInterface forms ARP and IPv6 Neighbor Solicitations for routed on-link next hops and responds for its assigned address. Each interface/address/driver epoch has its own bounded NeighborTable. Only a live matching request can learn a unicast MAC. Neighbor Advertisements must be solicited, unfragmented, hop-limit 255, checksummed, and carry a matching Ethernet option. Unsolicited replies never replace a reachable entry. Retry and reachability deadlines use the caller's monotonic clock. This handles solicited next-hop resolution, not the full neighbor-unreachability state machine. Neighbor resolution alone does not authenticate peers.
 
 RouterDiscovery takes an already assigned link-local address, an opaque interface identifier from address policy, and a router admission callback. It consumes unfragmented link-local advertisements with valid hop limit, checksum and option bounds. Router and autonomous /64 lifetimes age independently; the unauthenticated two-hour rule protects existing addresses. Tentative addresses are not usable until DAD probes have actually been sent and the receive interval has elapsed. Valid competing DAD probes or advertisements suppress the tentative address. The interface owner must join multicast groups, serialize inbound frames and timers, distinguish local multicast loopback, and discard state across link epochs. Default-router reachability selection, on-link routes, RFC 7217 identifier derivation, temporary addresses, extension headers and DHCPv6 are outside this mechanism.

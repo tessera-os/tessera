@@ -8,10 +8,11 @@ public struct NVMeController: ~Copyable {
   private var queue: Queue
   public let namespace: UInt32, limits: BlockLimits, epoch: UInt64
   public let maxTransferBytes: UInt64
+  public let maxDiscardBlocks: UInt32
   private var stopped = false
   private init(
     io: any NVMeAccess, pages: NVMePages, queue: consuming Queue, namespace: UInt32,
-    limits: BlockLimits, epoch: UInt64, maxTransferBytes: UInt64
+    limits: BlockLimits, epoch: UInt64, maxTransferBytes: UInt64, maxDiscardBlocks: UInt32
   ) {
     self.io = io
     self.pages = pages
@@ -20,6 +21,7 @@ public struct NVMeController: ~Copyable {
     self.limits = limits
     self.epoch = epoch
     self.maxTransferBytes = maxTransferBytes
+    self.maxDiscardBlocks = maxDiscardBlocks
   }
   /// Cold start only; no implicit reset of an enabled or shared controller.
   /// The caller selects one active namespace returned by Identify (first
@@ -81,9 +83,28 @@ public struct NVMeController: ~Copyable {
       mdts: UInt8(truncatingIfNeeded: io.load(pages.scratch + 76) >> 8),
       lists: !pages.lists.isEmpty)
     let sizes = io.load(pages.scratch + 512)
+    let oncs = io.load(pages.scratch + 520)
+    let writeZeroes = oncs & (1 << 3) != 0
     guard sizes & 15 <= 6, (sizes >> 4) & 15 >= 6, (sizes >> 8) & 15 <= 4, (sizes >> 12) & 15 >= 4,
       io.load(pages.scratch + 516) > 0
     else { throw NVMeError.configuration }
+    var maxDiscard: UInt32 = 0
+    if oncs & (1 << 2) != 0, !pages.lists.isEmpty {
+      // One range of one LBA is safe without optional command-set limits.
+      maxDiscard = 1
+      if io.register(8) >= 0x10400 {
+        do {
+          try identify(6, 0)  // NVM command-set-specific Identify Controller, CSI = 0.
+          let single = io.load(pages.scratch + 4)
+          let total = UInt64(io.load(pages.scratch + 8)) | UInt64(io.load(pages.scratch + 12)) << 32
+          if single != 0, total != 0 {
+            maxDiscard = UInt32(min(UInt64(single), total))
+          }
+        } catch NVMeError.command(let status) where [1, 2].contains(status & 0x7ff) {
+          // An older NVM controller may not implement this CNS.
+        }
+      }
+    }
     try identify(2, 0)
     var ids = [UInt32]()
     for at in strideWords {
@@ -109,7 +130,8 @@ public struct NVMeController: ~Copyable {
       let limits = BlockLimits(
         capacity: blocks, blockBytes: 1 << shift, maxVectors: pages.lists.isEmpty ? 2 : 513,
         flush: true, fua: true,
-        discard: false, zero: false, readOnly: (io.load(pages.scratch + 96) >> 24) & 1 != 0)
+        discard: maxDiscard != 0, zero: writeZeroes,
+        readOnly: (io.load(pages.scratch + 96) >> 24) & 1 != 0)
     else { throw NVMeError.configuration }
     var number = Command(9)
     number.d10 = 7
@@ -129,7 +151,7 @@ public struct NVMeController: ~Copyable {
       queue: Queue(
         id: 1, depth: depth, sq: pages.sq, cq: pages.cq, stride: stride, lists: pages.lists),
       namespace: ns,
-      limits: limits, epoch: epoch, maxTransferBytes: maxBytes)
+      limits: limits, epoch: epoch, maxTransferBytes: maxBytes, maxDiscardBlocks: maxDiscard)
   }
   /// Caller resolves the validated read-only vector table once, pinning all
   /// granted ranges until completion or positive reset/domain-drain.
@@ -144,10 +166,19 @@ public struct NVMeController: ~Copyable {
     guard let r = BlockRequest(record: record, epoch: epoch, queue: 0), limits.supports(r) else {
       throw NVMeError.configuration
     }
-    var cmd = Command(r.op == .read ? 2 : r.op == .flush ? 0 : 1)
-    var listEntries = ArraySlice<UInt64>()
+    let opcode: UInt8
+    switch r.op {
+    case .read: opcode = 2
+    case .write, .fua: opcode = 1
+    case .flush: opcode = 0
+    case .zero: opcode = 8
+    case .discard: opcode = 9
+    default: throw NVMeError.configuration
+    }
+    var cmd = Command(opcode)
+    var payload = PrivatePayload.none
     cmd.ns = namespace
-    if r.op != .flush {
+    if r.op == .read || r.op == .write || r.op == .fua {
       let listBytes = UInt64(r.payload.vectors) * 16
       guard r.blocks <= maxTransferBytes / UInt64(limits.blockBytes),
         pages.disjoint(r.payload.list, listBytes),
@@ -166,12 +197,23 @@ public struct NVMeController: ~Copyable {
       else { throw NVMeError.configuration }
       cmd.prp1 = prps[0]
       if prps.count == 2 { cmd.prp2 = prps[1] }
-      if prps.count > 2 { listEntries = prps.dropFirst() }
+      if prps.count > 2 { payload = .prpList(prps.dropFirst()) }
+    }
+    if r.op == .zero {
+      // No PRPs, no deallocate bit. Until CSI-specific WZSL discovery,
+      // bound one command to one minimum controller page.
+      guard r.blocks <= 4096 / UInt64(limits.blockBytes) else { throw NVMeError.configuration }
+    }
+    if r.op == .discard {
+      guard r.blocks <= UInt64(maxDiscardBlocks) else { throw NVMeError.configuration }
+      cmd.d11 = 4  // Single range (NR=0), Deallocate attribute.
+      payload = .deallocate(lba: r.lba, blocks: UInt32(r.blocks))
+    } else if r.op != .flush {
       cmd.d10 = UInt32(truncatingIfNeeded: r.lba)
       cmd.d11 = UInt32(r.lba >> 32)
       cmd.d12 = UInt32(r.blocks - 1) | (r.op == .fua ? 1 << 30 : 0)
     }
-    try queue.submit(cmd, r.id, io, listEntries: listEntries)
+    try queue.submit(cmd, r.id, io, payload: payload)
   }
   public mutating func poll() throws -> BlockCompletion? {
     guard !stopped, io.register(28) & 3 == 1 else {
