@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-  name: "TarwinObject", products: [.library(name: "TarwinObject", targets: ["TarwinObject"])],
+  name: "TarwinObject", platforms: [.macOS(.v15)], products: [.library(name: "TarwinObject", targets: ["TarwinObject"])],
   targets: [
     .target(name: "TarwinObject"),
     .testTarget(
