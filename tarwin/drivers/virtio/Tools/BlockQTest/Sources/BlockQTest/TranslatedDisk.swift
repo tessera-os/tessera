@@ -22,11 +22,12 @@ private struct Tables: VtdTableMemory {
 }
 private struct Registers: VtdRegisters {
   let q: QTest
+  let base: UInt64
   var deadline = ContinuousClock.now + .seconds(3)
-  func read32(_ n: UInt32) -> UInt32 { UInt32(q.read("l", 0xfed9_0000 + UInt64(n))) }
-  func read64(_ n: UInt32) -> UInt64 { q.read("q", 0xfed9_0000 + UInt64(n)) }
-  func write32(_ n: UInt32, _ v: UInt32) { q.write("l", 0xfed9_0000 + UInt64(n), v) }
-  func write64(_ n: UInt32, _ v: UInt64) { q.write("q", 0xfed9_0000 + UInt64(n), v) }
+  func read32(_ n: UInt32) -> UInt32 { UInt32(q.read("l", base + UInt64(n))) }
+  func read64(_ n: UInt32) -> UInt64 { q.read("q", base + UInt64(n)) }
+  func write32(_ n: UInt32, _ v: UInt32) { q.write("l", base + UInt64(n), v) }
+  func write64(_ n: UInt32, _ v: UInt64) { q.write("q", base + UInt64(n), v) }
   func expired() -> Bool { q.error != nil || .now >= deadline }
 }
 
@@ -49,9 +50,12 @@ final class TranslatedDisk {
       else { throw Failure("Requester already bus mastering") }
     }
     var mem = Tables(q: q)
-    var reg = Registers(q: q)
-    guard let unit = VtdLegacyUnit(registerBytes: 4096, registers: &reg), unit.maxDomain >= 1,
-      let root = mem.allocateTable(), let d = VtdDomain(id: 1, physicalBits: 39, memory: &mem),
+    let fw = try discoverQ35Vtd(q, requester: requester)
+    var reg = Registers(q: q, base: fw.registers.base)
+    guard let unit = VtdLegacyUnit(registerBytes: UInt32(fw.registers.length), registers: &reg),
+      unit.maxDomain >= 1,
+      let root = mem.allocateTable(),
+      let d = VtdDomain(id: 1, physicalBits: fw.addressBits, memory: &mem),
       let binding = d.bind(rootTable: root, requester: requester, unit: unit, memory: &mem)
     else { throw Failure("Missing legacy VT-d unit or private domain") }
     var selected: UInt64?
