@@ -3,20 +3,9 @@ import KCore
 // TPM 2.0 part 3: HashSequenceStart(TPM_ALG_NULL), SequenceUpdate,
 // EventSequenceComplete. The TPM hashes the entire pinned input and extends
 // PCR 10; the log receives the digests returned by that same transaction.
-private func header<P: TpmPort>(_ p: inout P, _ tag: UInt64, _ code: UInt64, _ size: UInt64) {
-  putField(&p, p: 0, bytes: 2, value: tag, big: true)
-  putField(&p, p: 2, bytes: 4, value: size, big: true)
-  putField(&p, p: 6, bytes: 4, value: code, big: true)
-}
-
 private func emptyPW<P: TpmPort>(_ p: inout P, _ at: UInt64) {
   putField(&p, p: at, bytes: 4, value: 0x4000_0009, big: true)
   putField(&p, p: at + 4, bytes: 5, value: 0, big: true)
-}
-
-private func reply<P: TpmPort>(_ p: P, _ size: UInt64, tag: UInt64) -> Bool {
-  size >= 10 && size <= p.byteCount() && big(p, p: 0, n: 2) == tag
-    && big(p, p: 2, n: 4) == size && big(p, p: 6, n: 4) == 0
 }
 
 private func emptyAuth<P: TpmPort>(_ p: P, at: UInt64) -> Bool {
@@ -52,7 +41,7 @@ private func matchesPCR10<P: TpmPort>(_ port: inout P, _ expected: borrowing Inl
   let selection: InlineArray<16, UInt8> = [0, 0, 0, 1, 0, 11, 3, 0, 4, 0, 0, 0, 0, 1, 0, 32]
   for i in 0..<20 { port.putByte(UInt64(i), value: command[i]) }
   let n = port.submit(20)
-  guard n == 62, reply(port, n, tag: 0x8001) else { return false }
+  guard n == 62, tpmSuccess(port, n, tag: 0x8001) else { return false }
   for i in 0..<16 where port.byteAt(UInt64(i + 14)) != selection[i] { return false }
   for i in 0..<32 where port.byteAt(UInt64(i + 30)) != expected[i] { return false }
   return true
@@ -85,10 +74,10 @@ private func matchesPCR10<P: TpmPort>(_ port: inout P, _ expected: borrowing Inl
   let listBytes = fmt.digestListBytes
   let recordSize = 12 + listBytes + label.utf8CodeUnitCount
   guard recordSize <= log.count - start, matchesPCR10(&port, expected.before) else { return false }
-  header(&port, 0x8001, 0x186, 14)
+  tpmHeader(&port, 0x8001, 0x186, 14)
   putField(&port, p: 10, bytes: 4, value: 0x10, big: true)
   let began = port.submit(14)
-  guard began == 14, reply(port, began, tag: 0x8001), port.byteAt(10) == 0x80 else { return false }
+  guard began == 14, tpmSuccess(port, began, tag: 0x8001), port.byteAt(10) == 0x80 else { return false }
   let handle = big(port, p: 10, n: 4)
   var consumed = 0
   let chunk = Int(min(1024, port.byteCount() - 42))
@@ -97,7 +86,7 @@ private func matchesPCR10<P: TpmPort>(_ port: inout P, _ expected: borrowing Inl
     let last = size == image.count - consumed
     let at: UInt64 = last ? 42 : 29
     let n = at + UInt64(size)
-    header(&port, 0x8002, last ? 0x185 : 0x15c, n)
+    tpmHeader(&port, 0x8002, last ? 0x185 : 0x15c, n)
     if last { putField(&port, p: 10, bytes: 4, value: 10, big: true) }
     let s: UInt64 = last ? 14 : 10
     putField(&port, p: s, bytes: 4, value: handle, big: true)
@@ -108,7 +97,7 @@ private func matchesPCR10<P: TpmPort>(_ port: inout P, _ expected: borrowing Inl
     for i in 0..<size { port.putByte(at + UInt64(i), value: image[consumed + i]) }
     consumed += size
     let received = port.submit(n)
-    guard reply(port, received, tag: 0x8002) else { return false }
+    guard tpmSuccess(port, received, tag: 0x8002) else { return false }
     if last {
       let end = UInt64(14 + listBytes)
       guard received == end + 10, big(port, p: 10, n: 4) == UInt64(listBytes),

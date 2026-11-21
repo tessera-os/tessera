@@ -26,7 +26,9 @@
     var cursor = MeasurementLog(used: UInt64(used), stopped: false)
     let label: StaticString = "Tarwin FIFO diagnostic"
     return withUnsafeMutableBytes(of: &command) { raw in
+      var sample = InlineArray<32, UInt8>(repeating: 0)
       guard var port = TPMFIFO(registers: VirtFIFO(), scratch: raw, pollLimit: 500000),
+        readTPMEntropy32(&port, into: &sample),
         measureEarlyProcess(
           fixture,
           expected: PCR10Expectation(

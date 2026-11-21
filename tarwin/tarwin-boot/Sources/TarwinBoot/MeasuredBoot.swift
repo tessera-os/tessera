@@ -92,6 +92,17 @@ public protocol TpmPort: ByteBuffer {
   mutating func submit(_ commandSize: UInt64) -> UInt64
 }
 
+func tpmHeader<P: TpmPort>(_ p: inout P, _ tag: UInt64, _ code: UInt64, _ size: UInt64) {
+  putField(&p, p: 0, bytes: 2, value: tag, big: true)
+  putField(&p, p: 2, bytes: 4, value: size, big: true)
+  putField(&p, p: 6, bytes: 4, value: code, big: true)
+}
+
+func tpmSuccess<P: TpmPort>(_ p: P, _ size: UInt64, tag: UInt64) -> Bool {
+  size >= 10 && size <= p.byteCount() && big(p, p: 0, n: 2) == tag
+    && big(p, p: 2, n: 4) == size && big(p, p: 6, n: 4) == 0
+}
+
 public struct MeasurementLog {
   public internal(set) var used: UInt64
   public internal(set) var stopped: Bool

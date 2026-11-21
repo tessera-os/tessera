@@ -208,4 +208,7 @@ Through the MMIO FIFO only, it reads the starting SHA-256 PCR (must be zero)
 and the result (must match the host replay). Add `TARBOOT_TEST_RNG=1` to
 check the new log extent in the physical boot-info handoff. A short, malformed
 or timed-out transaction is terminal. This measures test data, not an authorized
-init image; it does not discover a production TPM or launch W1.
+init image; it does not discover a production TPM or launch W1. Before
+measurement the guest also obtains a 32-byte TPM2_GetRandom sample without
+logging its value. This checks transport only, not physical entropy quality,
+kernel RNG initialization or snapshot-generation detection.
