@@ -1,7 +1,7 @@
 import Tarboot
 import TarwinDevice
 
-private typealias Locate =
+typealias Locate =
   @convention(c) (UnsafeRawPointer, UnsafeRawPointer?, UnsafeMutablePointer<UnsafeRawPointer?>) ->
   UInt
 private typealias Output = @convention(c) (UnsafeRawPointer, UnsafePointer<UInt16>) -> UInt
@@ -40,6 +40,9 @@ private func discover(_ system: UnsafeRawPointer) -> Bool {
         return false
       }
       rng = checkConfig(root: root, read: read, function: f)
+      #if arch(x86_64)
+        rng = rng && checkQ35Ecam(locate: locate, root: root, read: read, function: f)
+      #endif
     }
     count += 1
     return true

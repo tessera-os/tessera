@@ -64,6 +64,13 @@ functions in parent-first order without heap allocation. A visitor may stop
 the scan before another config read; discard that partial snapshot. The array
 API collects the same visits. Neither API infers DMA groups from PCI ancestry.
 
+`firmwareEcam` validates a complete, immutable ACPI MCFG before returning the
+selected segment and bus window. It rejects overlapping bus claims, physical
+aliases, arithmetic overflow and malformed entries anywhere in the table.
+The platform independently authorizes the resulting MMIO extent. ECAM offsets
+from the walker are relative to the first bus; the MCFG base is relative to
+bus zero. Width, alignment, BDF and register bounds are checked per access.
+
 On a Mac with swift.org Swift 6.3.3, QEMU's EDK II images and built EDK II
 edk2-stable202408 BaseTools, set `EMBEDDED_SWIFTC`, `QEMU_FIRMWARE` and
 `EDK_BASETOOLS` as for the tarboot firmware probe. Then run:
@@ -77,11 +84,13 @@ against the discovered bridge. With a synthetic slot binding, the guest then
 reads the discovered RNG's PCI identity through the generated selector,
 native register dispatcher, object table and EFI config accessor. A BAR write
 and an access through the closed name must not reach that accessor. Moving
-the RNG onto the root bus must fail
-that check. Both cases require a console verdict and a guest-requested
-shutdown. This tests firmware config reads and register dispatch, not an
-actual user trap, native ECAM access, DMA isolation, a booted Tarwin kernel or
-physical hardware.
+the RNG onto the root bus must fail that check. On q35 the guest also reads
+MCFG from the ACPI SDT protocol, verifies its aperture against the enabled
+host bridge PCIEXBAR, and independently reads the RNG identity at its
+computed ECAM address via EFI CPU I/O. Both cases require a console verdict
+and a guest-requested shutdown. This tests firmware access and register
+dispatch, not a user trap, kernel MMIO mapping, DMA isolation, a booted
+Tarwin kernel or physical hardware.
 
 The kernel accepts a complete parent-first firmware/PCI inventory, not driver-reported MMIO, group membership or identity. The platform supplies the salted stable ID; the registry separately issues boot-local IDs that never repeat. Missing group coverage permits enumeration but never slot assignment. DeviceRoot holders may snapshot or read the latest delta; a lapped reader must take a full snapshot. This is the privileged inventory, not the public DeviceKit matching service.
 

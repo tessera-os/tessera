@@ -31,8 +31,8 @@ for arch in "$@"; do
         module "${name#*/}" "$r/${name%/*}/Sources/${name#*/}"/*.swift
     done
     src="$r/tarwin-device/Sources/TarwinDevice"
-    module TarwinDevice "$src"/{PciWalk,Pci,Range,Native,Slot,ConfigCalls}.swift
-    "$bin/swiftc" "${flags[@]}" -module-name FirmwarePCI -emit-ir -o "$d/main.ll" "$here/Probe.swift" "$here/ConfigAccess.swift" "$r/tarboot/tests/FirmwareProbe/Memory.swift"
+    module TarwinDevice "$src"/{PciWalk,Pci,Range,Mcfg,Native,Slot,ConfigCalls}.swift
+    "$bin/swiftc" "${flags[@]}" -module-name FirmwarePCI -emit-ir -o "$d/main.ll" "$here/Probe.swift" "$here/ConfigAccess.swift" "$here/Q35Ecam.swift" "$r/tarboot/tests/FirmwareProbe/Memory.swift"
     if [[ $arch == riscv64 ]]; then
         edk=${EDK_BASETOOLS:?set EDK_BASETOOLS to edk2-stable202408 BaseTools}
         "$bin/clang" -target "$triple" -mcmodel=medany -msmall-data-limit=0 -mno-relax -flto -O2 -c "$d/main.ll" -o "$d/main.o"
