@@ -8,9 +8,10 @@ guard task_get_special_port(mach_task_self_, TASK_BOOTSTRAP_PORT, &bootstrap) ==
 guard case .success(let ports) = TaskCheckIn.send(bootstrap: bootstrap) else { _exit(72) }
 guard task_set_special_port(mach_task_self_, TASK_BOOTSTRAP_PORT, 0) == KERN_SUCCESS else { _exit(73) }
 _ = mach_port_deallocate(mach_task_self_, bootstrap)
+guard let gate = TaskGateRuntime.install(gate: ports.gateSend) else { _exit(75) }
 guard TaskSandbox.install() else { _exit(74) }
 
-var runtime = TaskRuntime()
+var runtime = TaskRuntime(gate: gate)
 while true {
   let result = TaskCommandTransport.serveOne(on: ports.commandReceive) { command, entry in
     runtime.handle(command, memoryEntry: entry)

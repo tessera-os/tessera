@@ -9,11 +9,15 @@ let package = Package(
     .library(name: "TarwinTaskTransport", targets: ["TarwinTaskTransport"]),
     .executable(name: "tarwin-task", targets: ["TarwinTaskHost"]),
   ],
+  dependencies: [.package(name: "HostedGate", path: "../tarwin-syscall/hosted")],
   targets: [
     .target(name: "TarwinTaskProtocol"),
     .target(name: "TarwinTaskTransport", dependencies: ["TarwinTaskProtocol"]),
-    .executableTarget(
-      name: "TarwinTaskHost", dependencies: ["TarwinTaskProtocol", "TarwinTaskTransport"]),
+    .target(name: "CTarwinTaskGate"),
+    .executableTarget(name: "TarwinTaskHost", dependencies: [
+      "TarwinTaskProtocol", "TarwinTaskTransport", "CTarwinTaskGate",
+      .product(name: "TarwinGateTransport", package: "HostedGate"),
+    ]),
     .executableTarget(
       name: "TaskCheckInExample", dependencies: ["TarwinTaskTransport"],
       path: "Tests/TaskCheckInExample"),

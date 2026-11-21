@@ -131,6 +131,9 @@ import Testing
   #expect(try send(.protect(address: data, length: length, protection: read | write)) == KERN_SUCCESS)
   #expect(try send(.protect(address: data, length: length, protection: write | exec))
     == KERN_INVALID_ARGUMENT)
+  #expect(try send(.protect(address: TaskGatePage.address, length: length, protection: write))
+    == KERN_INVALID_ARGUMENT)
+  #expect(try send(.unmap(address: TaskGatePage.address, length: length)) == KERN_INVALID_ARGUMENT)
 
   let start = TaskCommand.createThread(id: 1, entry: code, argument: 0, stack: stack, tls: data)
   try #require(try send(start) == KERN_SUCCESS)
