@@ -20,6 +20,17 @@ public struct QEMUGenerationPage {
     guard p > 4096, p < 1 << 32, p & 4095 == 40 else { return nil }
     let page = p - 40
     guard page == pinnedPage else { return nil }
+    guard let result = reserved(page, in: regions) else { return nil }
+    reader.select(guid)
+    for _ in 0..<40 { _ = reader.readByte() }
+    let low = le64(), high = le64()
+    guard let current = result.sample(readWord: readWord),
+      current.0 == low, current.1 == high else { return nil }
+    return result
+  }
+
+  static func reserved(_ page: UInt64, in regions: UnsafeBufferPointer<FirmwareRegion>) -> Self? {
+    guard page != 0, page < 1 << 32, page & 4095 == 0 else { return nil }
     var reserved = false
     for i in 0..<regions.count {
       let r = regions[i]
@@ -30,14 +41,7 @@ public struct QEMUGenerationPage {
         r.base <= page, page + 4096 <= end else { return nil }
       reserved = true
     }
-    guard reserved else { return nil }
-    reader.select(guid)
-    for _ in 0..<40 { _ = reader.readByte() }
-    let low = le64(), high = le64()
-    let result = Self(physical: p)
-    guard let current = result.sample(readWord: readWord),
-      current.0 == low, current.1 == high else { return nil }
-    return result
+    return reserved ? Self(physical: page + 40) : nil
   }
 
   /// Caller retains a read-only, normal write-back kernel mapping of the

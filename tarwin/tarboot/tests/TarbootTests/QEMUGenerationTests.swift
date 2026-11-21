@@ -28,6 +28,27 @@ private func entry(_ name: String, _ size: UInt16, _ key: UInt8) -> [UInt8] {
       + n + Array(repeating: 0, count: 56 - n.count)
 }
 
+@Test func fixedClaimRejectsLivePartialDuplicateAndZeroGenerations() {
+  let name = "opt/org.tessera/tarwin/debug-fixed-epoch"
+  let fixed = entry(name, 16, 40), contents = Array(UInt8(1)...16)
+  func read(_ rows: [[UInt8]], _ value: [UInt8] = contents) -> (UInt64, UInt64)? {
+    var source = Config(directory: [0, 0, 0, UInt8(rows.count)] + rows.flatMap { $0 },
+      files: [40: value, 33: [1]])
+    guard let id = readFixedQEMUDebugClaim(&source) else { return nil }
+    return (id.low, id.high)
+  }
+  #expect(read([fixed])?.0 == 0x0807060504030201)
+  #expect(read([fixed])?.1 == 0x100f0e0d0c0b0a09)
+  for rows in [[], [fixed, entry(name, 16, 41)], [fixed, entry("etc/alias", 2, 40)],
+    [entry(name, 15, 40)], [fixed, entry("etc/vmgenid_addr", 8, 32)],
+    [fixed, entry("etc/vmgenid_addr", 8, 32), entry("etc/vmgenid_guid", 4096, 33)],
+    [fixed, entry("etc/tarwin/vmgenid-ro", 1, 33)]] {
+    #expect(read(rows) == nil)
+  }
+  #expect(read([fixed], Array(contents.dropLast())) == nil)
+  #expect(read([fixed], Array(repeating: 0, count: 16)) == nil)
+}
+
 @Test func payloadCopyRequiresAnUnambiguousDirectoryAndExactTransfer() {
   let name: StaticString = "opt/org.tessera/tarwin/w1.sig"
   let file = entry(name.description, 7, 47)

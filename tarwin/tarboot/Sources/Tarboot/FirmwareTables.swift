@@ -98,7 +98,8 @@ private func rootDirectory(_ rsdp: UInt64, in map: UnsafeBufferPointer<FirmwareR
   return madtProcessors(madt, family: family, into: scratch)
 }
 
-private func childTable(_ rsdp: UInt64, signature: UInt64, in map: UnsafeBufferPointer<FirmwareRegion>)
+private func childTable(_ rsdp: UInt64, signature: UInt64, in map: UnsafeBufferPointer<FirmwareRegion>,
+  matching: (TableBytes) -> Bool = { _ in true })
   -> TableBytes? {
   guard let root = rootDirectory(rsdp, in: map) else { return nil }
   let n = little(root, at: 4, bytes: 4)
@@ -109,13 +110,24 @@ private func childTable(_ rsdp: UInt64, signature: UInt64, in map: UnsafeBufferP
     guard let child = view(little(root, at: p, bytes: 8), acpi: true, in: map),
       child.length >= 36
     else { return nil }
-    if little(child, at: 0, bytes: 4) == signature {
+    if little(child, at: 0, bytes: 4) == signature && matching(child) {
       guard result == nil else { return nil }
       result = child
     }
     p += 8
   }
   return result
+}
+
+/// QEMU 11.1 q35 with UEFI ACPI, before any tables are reclaimed. Discovery
+/// alone does not attest rotation on restore, DMA confinement or entropy.
+@unsafe public func q35GenerationPage(_ locations: FirmwareTableLocations,
+  in map: UnsafeBufferPointer<FirmwareRegion>) -> QEMUGenerationPage? {
+  guard let table = childTable(locations.rsdp, signature: 0x5444_5353, in: map,
+    matching: { little($0, at: 16, bytes: 8) == 0x0044_494e_4547_4d56 }),
+    let base = q35GenerationBase(table)
+  else { return nil }
+  return QEMUGenerationPage.reserved(base, in: map)
 }
 
 public enum PSCIConduit: UInt8 { case smc, hvc }

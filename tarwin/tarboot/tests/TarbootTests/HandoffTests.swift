@@ -82,6 +82,30 @@ private func record(_ base: UInt64, _ length: UInt64, type: UInt32, attrs: UInt6
     }
   }
   #expect(accepts(block, map))
+  var debug = block
+  debug[177] = 2
+  let fixed = DebugQEMUFixedGeneration(low: 0x0807060504030201, high: 0x100f0e0d0c0b0a09)!
+  #expect(DebugQEMUFixedGeneration(low: 0, high: 0) == nil)
+  #expect(debug.withUnsafeMutableBytes { fixed.encode(in: $0) })
+  func claim(_ b: [UInt8], _ m: [UInt8]) -> DebugQEMUFixedGeneration? {
+    b.withUnsafeBytes { raw in m.withUnsafeBytes {
+      readFixedDebugQEMUHandoff(block: raw, at: 3*p, map: $0, at: 4*p)?.generation
+    } }
+  }
+  #expect(claim(debug, map) == fixed && !accepts(debug, map))
+  #expect(Array(debug[216..<224]) == Array("DBGQGEN1".utf8))
+  #expect(Array(debug[224..<240]) == Array(1...16))
+  #expect(claim(block, map) == nil && claim(debug, Array(map.dropLast())) == nil)
+  for i in [7,16,177,216,240,4095] {
+    var wrong = debug
+    wrong[i] ^= 1
+    #expect(claim(wrong, map) == nil)
+  }
+  var zero = debug
+  zero.replaceSubrange(224..<240, with: repeatElement(0, count: 16))
+  #expect(claim(zero, map) == nil)
+  var normal = block
+  #expect(!normal.withUnsafeMutableBytes { fixed.encode(in: $0) } && normal == block)
   #expect(!accepts(Array(block.dropLast()), map))
   #expect(!accepts(block, Array(map.dropLast())))
   #expect(!accepts(block, map, blockAt: 4 * p))

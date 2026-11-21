@@ -8,11 +8,32 @@ import KCore
   block: UnsafeRawBufferPointer, at address: UInt64,
   map: UnsafeRawBufferPointer, at mapAddress: UInt64
 ) -> BootInfo? {
+  validatedHandoff(block: block, at: address, map: map, at: mapAddress, fixed: nil)
+}
+
+/// Only for an independently selected, non-restorable debug QEMU profile.
+/// The TBIB carries the ID, never the authority to select that profile.
+@unsafe public func readFixedDebugQEMUHandoff(
+  block: UnsafeRawBufferPointer, at address: UInt64,
+  map: UnsafeRawBufferPointer, at mapAddress: UInt64
+) -> (boot: BootInfo, generation: DebugQEMUFixedGeneration)? {
+  guard let claim = DebugQEMUFixedGeneration.decode(block),
+    let info = validatedHandoff(block: block, at: address, map: map, at: mapAddress, fixed: claim)
+  else { return nil }
+  return (info, claim)
+}
+
+private func validatedHandoff(block: UnsafeRawBufferPointer, at address: UInt64,
+  map: UnsafeRawBufferPointer, at mapAddress: UInt64, fixed: DebugQEMUFixedGeneration?) -> BootInfo? {
   guard address != 0, block.count >= 4096, bootBlockFits(address, capacity: UInt64(block.count))
   else { return nil }
   var state = beginBootInfo(address, capacity: 4096)
   for i in 0..<4096 {
-    guard acceptBootByte(&state, byte: block[i]) else { return nil }
+    let byte: UInt8
+    if fixed != nil && i == 7 { byte = 1 }
+    else if fixed != nil && (216..<240).contains(i) { byte = 0 }
+    else { byte = block[i] }
+    guard acceptBootByte(&state, byte: byte) else { return nil }
   }
   guard let info = state.decoded, info.mapAddress == mapAddress,
     info.mapCount <= UInt64(map.count / 32),
