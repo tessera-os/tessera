@@ -70,7 +70,7 @@ func exactSCSISuccess(_ r: [UInt8]) -> Bool {
   r[6] == 0 && r[7] == 0 && r[1] & 0x60 == 0 && r.be(12, 4) == 0
 }
 private func senseKey(_ r: [UInt8]) -> UInt8? {
-  guard r[7] == 2, r.be(32, 2) >= 3, r.be(10, 2) == r.be(32, 2) + 2 else { return nil }
+  guard r[7] == 2, r.be(32, 2) >= 3, r.be(10, 2) >= r.be(32, 2) + 2 else { return nil }
   switch r[34] & 0x7f {
   case 0x70, 0x71: return r[36] & 15
   case 0x72, 0x73: return r[35] & 15
@@ -98,7 +98,16 @@ public final class UFSController {
   public static func start(
     _ io: any UFSAccess, pages: UFSPages, lun: UInt8, epoch: UInt64, timeoutNs: UInt64
   ) throws -> UFSController {
-    guard epoch != 0, lun < 0x80 else { throw UFSError.configuration }
+    guard lun < 0x80 else { throw UFSError.configuration }
+    return try start(io, pages: pages, epoch: epoch, timeoutNs: timeoutNs) { units in
+      units.contains(lun) ? lun : nil
+    }
+  }
+  public static func start(
+    _ io: any UFSAccess, pages: UFSPages, epoch: UInt64, timeoutNs: UInt64,
+    select: ([UInt8]) -> UInt8?
+  ) throws -> UFSController {
+    guard epoch != 0 else { throw UFSError.configuration }
     let t = Transfer(io, pages, timeoutNs)
     try t.startLink()
     let nop = try t.sync(.init(repeating: 0, count: 32), expect: 0x20)
@@ -111,6 +120,11 @@ public final class UFSController {
     }
     let device = try descriptor(t, id: 0)
     guard device.count >= 18, device[6] > 0, device.be(16, 2) >> 8 == 4 else {
+      throw UFSError.configuration
+    }
+    let units = try reportUnits(t, expected: device[6])
+    guard let lun = select(units), units.contains(lun) else {
+      try t.stop()
       throw UFSError.configuration
     }
     let unit = try descriptor(t, id: 2, index: lun)

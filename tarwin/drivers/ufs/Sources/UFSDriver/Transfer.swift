@@ -120,7 +120,7 @@ final class Transfer {
     for (i, v) in spans.enumerated() {
       guard v.address & 3 == 0, v.bytes & 3 == 0, v.bytes > 0, v.bytes <= 262144,
         control
-          ? spans.count == 1 && v.address == pages.command + 2048 && v.bytes <= 512
+          ? spans.count == 1 && v.address == pages.command + 2048 && v.bytes <= 2048
           : pages.permits(v.address, UInt64(v.bytes)),
         io.register(Reg.cap) & (1 << 24) != 0 || v.address + UInt64(v.bytes - 1) <= UInt32.max
       else { throw UFSError.configuration }
@@ -161,7 +161,7 @@ final class Transfer {
       let r = io.copyFromDMA(pages.command + 512, count: 512), r.count == 512, r[0] == a.type,
       r[2] == a.lun, r[3] == 0,
       r[8] == 0, r.be(10, 2) <= 480,
-      a.type != 0x21 || r.be(10, 2) == 0 || r.be(10, 2) == 2 + r.be(32, 2)
+      a.type != 0x21 || r.be(10, 2) == 0 || r.be(10, 2) >= 2 + r.be(32, 2)
     else {
       stopped = true
       throw UFSError.malformed
@@ -187,7 +187,7 @@ final class Transfer {
     response: [UInt8], data: [UInt8]
   ) {
     guard !stopped, active == nil else { throw UFSError.busy }
-    guard bytes > 0, bytes <= 512, bytes & 3 == 0 else { throw UFSError.configuration }
+    guard bytes > 0, bytes <= 2048, bytes & 3 == 0 else { throw UFSError.configuration }
     let address = pages.command + 2048
     guard io.copyToDMA(address, .init(repeating: 0, count: Int(bytes))) else {
       throw UFSError.configuration

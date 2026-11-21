@@ -2,7 +2,11 @@
 
 Regular Swift driver for a cold, exclusively assigned UFSHCI 4.x controller
 with legacy single-doorbell support. After DME link startup, NOP and device
-initialization, the driver checks the selected unit descriptor against SCSI
+initialization, REPORT LUNS on the well-known reporting unit discovers
+standard LUs. Only complete, unique peripheral addresses consistent with the
+device descriptor's LU count reach the selection callback. The driver stops
+the idle controller if selection is declined or unlisted. It checks the
+selected unit descriptor against SCSI
 READ CAPACITY(16). It rejects a disabled or empty LU, protection information,
 disagreeing capacities and block sizes outside 512–4096 bytes.
 
@@ -30,8 +34,8 @@ Run `swift test` here. The QEMU check runs on macOS:
 swift run -c release --package-path ../virtio/Tools/BlockQTest BlockQTest "$(command -v qemu-system-x86_64)" --ufs
 ```
 
-The host-side driver selects LU 2 on q35 and checks its geometry. The fixture
+The host-side driver discovers two LUs on q35, selects one and checks its geometry. The fixture
 tests ordinary and FUA writes through three DMA segments, flush, readback,
 guard bytes and four client port completions. After shutdown it compares the
-entire backing file. This does not boot Tarwin, perform IOMMU translation,
+entire backing file and the untouched second disk. This does not boot Tarwin, perform IOMMU translation,
 simulate power loss or test a physical flash controller.

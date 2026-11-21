@@ -37,9 +37,17 @@ private final class UFSModel: UFSAccess {
 }
 func testUFS(binary: String, disk: URL) throws {
   let data = (0..<4096).map { UInt8(truncatingIfNeeded: ($0 &* 13) ^ ($0 >> 5)) }
+  let other = disk.deletingLastPathComponent().appendingPathComponent(UUID().uuidString + ".raw")
+  let sentinel = Data(repeating: 0xa7, count: 1 << 19)
+  try sentinel.write(to: other, options: .withoutOverwriting)
+  defer { try? FileManager.default.removeItem(at: other) }
   do {
     let q = try QTest(
-      binary: binary, machine: .x64, disk: disk, translated: false, neighbors: false, storage: .ufs)
+      binary: binary, machine: .x64, disk: disk, translated: false, neighbors: false,
+      extraDevices: [
+        "-drive", "if=none,id=other,format=raw,file=" + other.path, "-device",
+        "ufs-lu,bus=ufs0,lun=1,drive=other",
+      ], storage: .ufs)
     defer { q.close() }
     guard let node = q.pciNodes.first(where: { $0.device.deviceClass >> 8 == 0x0109 }),
       case .pci(0, let bdf) = node.device.location
@@ -47,7 +55,21 @@ func testUFS(binary: String, disk: URL) throws {
     let (_, bars, sizes) = try assignTestBars(q, bdf: bdf, identity: UInt32(node.device.identity))
     let io = UFSModel(q, bars[0], sizes[0])
     let pages = UFSPages(transferList: 0x101000, command: 0x103000)!
-    let disk = try UFSController.start(io, pages: pages, lun: 2, epoch: 1, timeoutNs: 2_000_000_000)
+    var discovered = [UInt8]()
+    do {
+      _ = try UFSController.start(io, pages: pages, epoch: 1, timeoutNs: 2_000_000_000) { units in
+        discovered = units
+        return 99
+      }
+      throw Failure("Selected an unlisted logical unit")
+    } catch UFSError.configuration {}
+    try q.require(
+      discovered.sorted() == [1, 2] && io.register(0x34) & 1 == 0,
+      "Invalid LU selection did not stop controller")
+    let disk = try UFSController.start(io, pages: pages, epoch: 1, timeoutNs: 2_000_000_000) {
+      units in
+      units.sorted() == [1, 2] ? units.max() : nil
+    }
     try q.require(
       disk.limits.capacity == 256 && disk.limits.blockBytes == 4096, "Bad UFS unit geometry")
     let channel = BlockChannel(capacity: disk.limits.capacity, blockBytes: disk.limits.blockBytes)
@@ -123,4 +145,7 @@ func testUFS(binary: String, disk: URL) throws {
   expected.replaceSubrange(7 * 4096..<8 * 4096, with: data)
   expected.replaceSubrange(19 * 4096..<20 * 4096, with: data)
   guard try Data(contentsOf: disk) == expected else { throw Failure("UFS changed wrong blocks") }
+  guard try Data(contentsOf: other) == sentinel else {
+    throw Failure("UFS changed the unselected LU")
+  }
 }
