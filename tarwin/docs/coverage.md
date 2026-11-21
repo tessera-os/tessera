@@ -33,10 +33,12 @@ before copying the detached signature bytes on **both** layouts. With high
 MMIO enabled, the guest checked all eight pages of the two BAR4s with
 `AT S1E2W` for writable, identity-mapped Device memory before touching either
 endpoint. This checks the CPU mappings; the hosted QEMU traces above test
-DMA denial. Low-only remains the default. No signed image or W1/EL0 entry:
-integration of that handoff with the signed launcher, protected work-page lifetime,
-continuous exclusion across entry, and re-establishing DMA protection before
-resuming restored devices are unverified. The platform's separate read-only
+DMA denial. Low-only remains the default. This gate-only run stops before
+kernel installation. In a [separate fixed, single-CPU, non-restorable Arm debug
+run](https://cairn.sunday-cloud.com/tessera/changesets/4096), the signed kernel
+entered at EL2, reverified the boot set and extended PCR 10. Neither run
+demonstrates signed init or EL0 entry, a guest-profile boot, a production signer
+or DMA exclusion across restore. The platform's separate read-only
 VMGENID aperture test exercises generation rotation, not restored DMA exclusion.
 No hotplug, passthrough or physical
 DMA/ATC evidence. DeviceRoot manager acquisition, native syscall/VM pins,
@@ -45,11 +47,20 @@ native Metal/MosaicDisplay integration and same-hardware Linux budgets remain op
 The [TRFS fixture](../trfs/TRFS.md) is also exercised by the [three-guest
 storage check](../conformance/check-storage-guest.sh). Each guest authenticates and
 checks the intact 4096-byte file page and rejects a changed payload. Its backing
-is a read-only monitor disk, not a signed boot set, physical controller or recovery test.
+is a read-only plaintext monitor disk, not a signed boot set, physical controller or
+recovery test. The [sector encryption check](https://cairn.sunday-cloud.com/tessera/changesets/4160)
+is separate; the guest run did not mount an encrypted volume.
+
+On the [hosted q35 NVMe model](../drivers/nvme/README.md), a translated Write Zeroes
+cleared three interior blocks. A separate DSM discard covered eight blocks at LBA 64;
+every byte outside that range was unchanged. Discard does not establish zeroing or
+flash reclamation. The [GPU doorbell grant](../tarwin-gpu/README.md) retains the
+process until CPU unmap and translation invalidation are acknowledged. That result
+uses a mock VM, not native page tables or GPU hardware.
 
 | Hosted QEMU (arm64, x64, rv64) | Demonstrated | Still unverified |
 | --- | --- | --- |
-| [virtio-net](../drivers/virtio/README.md) | Stable MAC, carrier, MTU; isolated two-NIC UDP; ARP/ND, SLAAC, active/passive TCP against libslirp. | Multi-queue/RSS, offloads, native guest bindings, full TCP conformance and physical line rate. |
+| [virtio-net](../drivers/virtio/README.md) | Stable MAC, carrier, MTU; isolated two-NIC UDP, including [IPv6 with padding-only Hop-by-Hop and Destination Options](../tarwin-net/README.md); ARP/ND, SLAAC, active/passive TCP against libslirp. | Other IPv6 extension options, multi-queue/RSS, offloads, native guest bindings, full TCP conformance and physical line rate. |
 | [virtio-gpu](../drivers/virtio/README.md) | Fenced 2D resource and backing lifecycle; every pixel of the captured QEMU scanout matches. | 3D/Venus and live Metal/MosaicDisplay, native guest services, physical fences, presentation deadlines and bandwidth. |
 
 ### How to repeat host tests
