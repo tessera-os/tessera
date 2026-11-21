@@ -1,0 +1,96 @@
+import Foundation
+
+struct Reference {
+    let arch: String
+    let serial: String
+    let battery: Bool
+    let nested: Bool
+    let confidential: Bool
+    let tarwin: String
+    let linux: String
+}
+
+function safeId(word: borrow String) -> Bool {
+    if word.count == 0 || word.count > 128 || word == "." || word == ".." { return false }
+    for i in 0..word.count {
+        let c = Number(word.charAt(i))
+        if (c < 48 || c > 57) && (c < 65 || c > 90) && (c < 97 || c > 122)
+            && c != 46 && c != 45 && c != 95 { return false }
+    }
+    return true
+}
+
+function reference(line: borrow String) -> Reference? {
+    let f = line.split("\t")
+    if f.count != 8 || f[0] != "physical" { return .None }
+    if f[1] != "aarch64" && f[1] != "x64" && f[1] != "rv64" { return .None }
+    for i in 2..5 { if !safeId(f[i]) { return .None } }
+    for i in 5..8 { if f[i] != "yes" && f[i] != "no" { return .None } }
+    return .Some(Reference { arch: copy f[1], serial: copy f[2], tarwin: copy f[3],
+        linux: copy f[4], battery: f[5] == "yes", nested: f[6] == "yes", confidential: f[7] == "yes" })
+}
+
+// Records are produced by the trusted lab controller, never read from guest-supplied paths.
+// Require both a bound result and the corresponding nonempty original capture.
+function evidence(root: borrow String, ref: borrow Reference, key: borrow String,
+                  system: borrow String, trial: Number) -> String? {
+    let stem = root + "/" + ref.serial + "/" + key + "/" + system + "-" + "\(trial)"
+    if !pathExists(stem + ".log") || !pathExists(stem + ".tsv") { return .None }
+    let raw = match linkStatus(stem + ".log") { Ok(s) -> s Error(failure) -> { absorb failure return .None } }
+    if raw.kind != .File || raw.size == 0 { return .None }
+    let status = match linkStatus(stem + ".tsv") { Ok(s) -> s Error(failure) -> { absorb failure return .None } }
+    if status.kind != .File || status.size == 0 || status.size > 2048 { return .None }
+    let record = match readFile(stem + ".tsv") { Ok(file) -> file.text.trim() Error(failure) -> { absorb failure return .None } }
+    let fields = record.split("\t")
+    let build = system == "tarwin" ? copy ref.tarwin : copy ref.linux
+    if fields.count != 9 || fields[0] != "26.11.1" || fields[1] != "physical"
+        || fields[2] != ref.arch || fields[3] != ref.serial || fields[4] != key
+        || fields[5] != system || fields[6] != build || fields[7] != "\(trial)" { return .None }
+    return .Some(copy fields[8])
+}
+
+function positive(text: borrow String) -> Float? {
+    let n = match text.toNumber() { Some(x) -> Float(x) None -> return .None }
+    if !(n > 0.0 && n < infinity) { return .None }
+    return .Some(n)
+}
+
+function geometricMean(samples: borrow [Float]) -> Float? {
+    if samples.count != 10 { return .None }
+    var sum: Float = 0.0
+    var uniform = true
+    for sample in samples {
+        if !(sample > 0.0 && sample < infinity) { return .None }
+        if sample != samples[0] { uniform = false }
+        sum += log(sample)
+    }
+    if uniform { return .Some(samples[0]) }
+    return .Some(exp(sum / 10.0))
+}
+
+function measure(root: borrow String, ref: borrow Reference, key: borrow String, system: borrow String) -> Float? {
+    var samples: [Float] = []
+    for i in 1..11 {
+        let text = match evidence(root, ref, key, system, i) { Some(s) -> s None -> return .None }
+        match positive(text) { Some(n) -> samples.append(n) None -> return .None }
+    }
+    return geometricMean(samples)
+}
+
+enum Verdict { Passed Missed Missing }
+
+function budgetVerdict(root: borrow String, ref: borrow Reference, budget: borrow Budget) -> Verdict {
+    let measured = match measure(root, ref, budget.name, "tarwin") { Some(m) -> m None -> return .Missing }
+    var comparator: Float = 1.0
+    if budget.baseline == "best-fs" {
+        let a = match measure(root, ref, budget.name, "linux-ext4") { Some(m) -> m None -> return .Missing }
+        let b = match measure(root, ref, budget.name, "linux-btrfs") { Some(m) -> m None -> return .Missing }
+        comparator = a > b ? a : b
+    } else if budget.baseline != "absolute" {
+        comparator = match measure(root, ref, budget.name, budget.baseline) { Some(m) -> m None -> return .Missing }
+    }
+    let threshold = Float(budget.limit) * comparator
+    print("  geometric mean \(Number(measured)); baseline \(Number(comparator))")
+    if budget.lower { return measured <= threshold ? .Passed : .Missed }
+    return measured >= threshold ? .Passed : .Missed
+}
