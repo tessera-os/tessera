@@ -45,21 +45,38 @@ private struct ArmPrivateRoot: ~Copyable {
     return true
   }
 
-  private func mutableUserDataCell(_ va: UInt64) -> Int? {
+  // nil = corrupt path, -1 = missing intermediate table.
+  private func leafCell(_ va: UInt64) -> Int? {
     var table = 0
     for level in 0..<3 {
       let link = words[table * 2048 + Int(armWalkIndex(va, level: UInt8(level)))]
+      if link == 0 { return -1 }
       guard link & 16383 == 3, link >= physicalRoot + 3 else { return nil }
       let child = (link - 3 - physicalRoot) >> 14
       guard child > table, child < UInt64(usedPages) else { return nil }
       table = Int(child)
     }
-    let cell = table * 2048 + Int(armWalkIndex(va, level: 3))
+    return table * 2048 + Int(armWalkIndex(va, level: 3))
+  }
+
+  private func mutableUserDataCell(_ va: UInt64) -> Int? {
+    guard let cell = leafCell(va), cell >= 0 else { return nil }
     let leaf = words[cell]
     let physical = leaf & 0x0000_ffff_ffff_c000
     guard physical != 0, leaf == armUserPage(physical, write: true, execute: false, lpa2: false)
     else { return nil }
     return cell
+  }
+
+  func hasLeaf(_ va: UInt64, _ role: ArmEntryPage) -> Bool {
+    guard let cell = leafCell(va) else { return false }
+    let leaf = cell < 0 ? 0 : words[cell]
+    if role == .guardPage { return leaf == 0 }
+    let pa = leaf & 0x0000_ffff_ffff_c000
+    guard pa != 0 else { return false }
+    let code = role == .code
+    let intended = armUserPage(pa, write: !code, execute: code, lpa2: false)
+    return leaf == intended | (code ? 1 << 50 : 0)
   }
 
   mutating func sealUserData(_ range: Range<UInt64>) -> Bool {
@@ -108,6 +125,10 @@ public struct ArmUserTranslation: ~Copyable {
   /// No TLB invalidation: this is not an active address-space edit.
   public mutating func sealReadOnly(_ range: Range<UInt64>) -> Bool {
     root.sealUserData(range)
+  }
+
+  func entryPage(_ va: UInt64, is role: ArmEntryPage) -> Bool {
+    va >= 1 << 32 && va < 1 << 47 && root.hasLeaf(va, role)
   }
 }
 
