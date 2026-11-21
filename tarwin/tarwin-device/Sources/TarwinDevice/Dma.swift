@@ -42,6 +42,7 @@ public enum DmaRetirePhase: Equatable {
   case detached
   case ioFlushed
   case deviceFlushed
+  case writesDrained
   case released
 }
 
@@ -54,7 +55,8 @@ public struct DmaRetirement: Equatable {
 
   public mutating func retire(
     _ detach: (UInt64, UInt64, UInt64) -> Bool, _ invalidateIo: (UInt64, UInt64, UInt64) -> Bool,
-    _ invalidateAtcs: (UInt64, UInt64, UInt64) -> Bool, _ unpin: (UInt64) -> Void
+    _ invalidateAtcs: (UInt64, UInt64, UInt64) -> Bool,
+    _ drainWrites: (UInt64, UInt64, UInt64) -> Bool, _ releasePin: (UInt64) -> Bool
   ) -> Bool {
     if phase == .mapped {
       if !detach(domain, base, bytes) { return false }
@@ -69,7 +71,11 @@ public struct DmaRetirement: Equatable {
       phase = .deviceFlushed
     }
     if phase == .deviceFlushed {
-      unpin(pin)
+      guard drainWrites(domain, base, bytes) else { return false }
+      phase = .writesDrained
+    }
+    if phase == .writesDrained {
+      guard releasePin(pin) else { return false }
       phase = .released
     }
     return phase == .released

@@ -187,7 +187,8 @@ final class DmaCreateTests: XCTestCase {
     func finish(_ buffer: UnsafePointer<ObjectHeader>) {
       XCTAssertTrue(
         c.domain.retireBuffer(
-          buffer.pointee, detach: ok, invalidate: ok, drainAtcs: ok, unpin: { unpinned.append($0) })
+          buffer.pointee, detach: ok, invalidate: ok, drainAtcs: ok, drainWrites: ok,
+          releasePin: { unpinned.append($0); return true })
       )
       backend.free(buffer)
     }
@@ -217,7 +218,8 @@ final class DmaCreateTests: XCTestCase {
         XCTAssertFalse(
           c.domain.retireBuffer(
             header.pointee, detach: ok, invalidate: ok, drainAtcs: { _, _, _ in false },
-            unpin: { _ in XCTFail() }))
+            drainWrites: { _, _, _ in XCTFail(); return false },
+            releasePin: { _ in XCTFail(); return false }))
         XCTAssertEqual(c.domain.count, 1)
         finish(header)
       }
@@ -229,7 +231,9 @@ final class DmaCreateTests: XCTestCase {
     XCTAssertEqual(c.domain.count, 1)
     backend.accept = true
     XCTAssertEqual(call(domain, read, 1).code, 24)
-    XCTAssertTrue(c.domain.retire(backend.quarantineID!, ok, ok, ok) { unpinned.append($0) })
+    XCTAssertTrue(c.domain.retire(backend.quarantineID!, ok, ok, ok, ok) {
+      unpinned.append($0); return true
+    })
     backend.next = nil
     XCTAssertEqual(call(domain, read, 1).code, 24)
     backend.next = 1

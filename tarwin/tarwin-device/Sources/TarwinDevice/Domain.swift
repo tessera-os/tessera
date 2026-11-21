@@ -120,12 +120,12 @@ public struct SlotDomain: ~Copyable {
   public mutating func retire(
     _ id: UInt64, _ detach: (UInt64, UInt64, UInt64) -> Bool,
     _ invalidate: (UInt64, UInt64, UInt64) -> Bool, _ drainAtcs: (UInt64, UInt64, UInt64) -> Bool,
-    _ unpin: (UInt64) -> Void
+    _ drainWrites: (UInt64, UInt64, UInt64) -> Bool, _ releasePin: (UInt64) -> Bool
   ) -> Bool {
     guard !revoking else { return false }
     for i in 0..<count {
       if entries[i].id == id {
-        return retireEntry(i, detach, invalidate, drainAtcs, unpin)
+        return retireEntry(i, detach, invalidate, drainAtcs, drainWrites, releasePin)
       }
     }
     return false
@@ -134,9 +134,10 @@ public struct SlotDomain: ~Copyable {
   private mutating func retireEntry(
     _ i: Int, _ detach: (UInt64, UInt64, UInt64) -> Bool,
     _ invalidate: (UInt64, UInt64, UInt64) -> Bool, _ drainAtcs: (UInt64, UInt64, UInt64) -> Bool,
-    _ unpin: (UInt64) -> Void
+    _ drainWrites: (UInt64, UInt64, UInt64) -> Bool, _ releasePin: (UInt64) -> Bool
   ) -> Bool {
-    guard entries[i].retirement.retire(detach, invalidate, drainAtcs, unpin) else { return false }
+    guard entries[i].retirement.retire(detach, invalidate, drainAtcs, drainWrites, releasePin)
+    else { return false }
     count -= 1
     entries[i] = entries[count]
     entries[count] = .vacant
@@ -148,7 +149,8 @@ public struct SlotDomain: ~Copyable {
   public mutating func revokeAll(
     group: UInt64, epoch: UInt64, requestersStoppedAndDrained: Bool,
     detach: (UInt64, UInt64, UInt64) -> Bool, invalidate: (UInt64, UInt64, UInt64) -> Bool,
-    drainAtcs: (UInt64, UInt64, UInt64) -> Bool, unpin: (UInt64) -> Void,
+    drainAtcs: (UInt64, UInt64, UInt64) -> Bool, drainWrites: (UInt64, UInt64, UInt64) -> Bool,
+    releasePin: (UInt64) -> Bool,
     retired: (UInt64, UInt64?) -> Void
   ) -> Bool {
     guard self.group == group, self.epoch == epoch else { return false }
@@ -158,7 +160,7 @@ public struct SlotDomain: ~Copyable {
       let i = count - 1
       let id = entries[i].id
       let buffer = entries[i].buffer
-      guard retireEntry(i, detach, invalidate, drainAtcs, unpin) else { return false }
+      guard retireEntry(i, detach, invalidate, drainAtcs, drainWrites, releasePin) else { return false }
       retired(id, buffer == 0 ? nil : buffer)
     }
     return true

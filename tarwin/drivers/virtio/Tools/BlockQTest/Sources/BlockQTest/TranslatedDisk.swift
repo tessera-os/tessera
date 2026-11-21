@@ -121,6 +121,11 @@ final class TranslatedDisk {
           registers: &self.registers)
       },
       { _, _, _ in true },  // No requester ATC exists on this machine.
-      { _ in self.retired += 1 })
+      { _, _, _ in self.unit.flushTranslations(registers: &self.registers) },
+      { pin in
+        guard pin == frame else { return false }
+        self.retired += 1
+        return true
+      })
   }
 }

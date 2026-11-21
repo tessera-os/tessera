@@ -32,6 +32,7 @@ final class DomainTests: XCTestCase {
       domain.bindLastMapping(3, buffer: 112)
       var stopped = false
       var allowAtc = false
+      var allowRelease = false
       var resets = 0
       var detached: [UInt64] = []
       var flushed: [UInt64] = []
@@ -50,7 +51,12 @@ final class DomainTests: XCTestCase {
             return true
           },
           drainAtcs: { _, a, _ in a != 8192 || allowAtc },
-          unpin: { unpinned.append($0) },
+          drainWrites: { _, _, _ in true },
+          releasePin: { pin in
+            guard pin != 2 || allowRelease else { return false }
+            unpinned.append(pin)
+            return true
+          },
           retired: {
             mappings.append($0)
             buffers.append($1)
@@ -77,7 +83,7 @@ final class DomainTests: XCTestCase {
         XCTFail()
         return false
       }
-      XCTAssertFalse(domain.retire(2, nope, nope, nope) { _ in XCTFail() })
+      XCTAssertFalse(domain.retire(2, nope, nope, nope, nope) { _ in XCTFail(); return false })
       stopped = true
       XCTAssertFalse(revoke())
       XCTAssertEqual(resets, 0)
@@ -90,6 +96,13 @@ final class DomainTests: XCTestCase {
           return false
         })
       allowAtc = true
+      XCTAssertFalse(revoke())
+      XCTAssertEqual(domain.count, 2)
+      XCTAssertEqual(mappings, [3])
+      XCTAssertEqual(unpinned, [3])
+      XCTAssertEqual(resets, 0)
+      XCTAssertEqual(slot.phase, .draining)
+      allowRelease = true
       XCTAssertTrue(revoke())
       XCTAssertTrue(drain(7, active.epoch))
       XCTAssertEqual(domain.count, 0)
@@ -136,11 +149,17 @@ final class DomainTests: XCTestCase {
       let ok: (UInt64, UInt64, UInt64) -> Bool = { domain, addr, n in return true }
       let no: (UInt64, UInt64, UInt64) -> Bool = { domain, addr, n in return false }
       var released: UInt64 = 0
-      let unpin: (UInt64) -> Void = { id in released = id }
-      XCTAssertTrue(!d.retire(1, ok, ok, no, unpin))
+      let releasePin: (UInt64) -> Bool = { id in released = id; return true }
+      XCTAssertFalse(d.retire(1, ok, ok, no, ok, releasePin))
       XCTAssertTrue(d.create(handle, memory, slot, 9, 4096, read, 0, pin, mapped) == MapDma.retry)
       XCTAssertTrue(pins == 1 && released == 0)
-      XCTAssertTrue(d.retire(1, no, no, ok, unpin))
+      XCTAssertFalse(d.retire(1, no, no, ok, no, releasePin))
+      XCTAssertEqual(d.create(handle, memory, slot, 9, 4096, read, 0, pin, mapped), .retry)
+      XCTAssertEqual(released, 0)
+      XCTAssertFalse(d.retire(1, no, no, no, ok) { _ in false })
+      XCTAssertEqual(d.create(handle, memory, slot, 9, 4096, read, 0, pin, mapped), .retry)
+      XCTAssertEqual(pins, 1)
+      XCTAssertTrue(d.retire(1, no, no, no, no, releasePin))
       XCTAssertTrue(released == 1)
       switch d.create(handle, memory, slot, 9, 4096, read, 0, pin, mapped) {
       case .mapped(let m): XCTAssertTrue(m.address == 0x1000_0000 && m.id == 2 && pins == 2)

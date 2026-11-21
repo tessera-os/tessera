@@ -14,7 +14,7 @@ final class IsolationTests: XCTestCase {
     XCTAssertTrue(chooseDmaAddress(aperture, 4095, 4096, 0, held) == DmaAddress.unavailable)
   }
 
-  func testRetirementWaitsForBothCaches() {
+  func testRetirementResumesAtFirstUnacknowledgedStep() {
     var r = DmaRetirement(domain: 9, pin: 7, base: 4096, bytes: 4096, phase: .mapped)
     var order: Int = 0
     let dropPte: (UInt64, UInt64, UInt64) -> Bool = { d, a, n in
@@ -26,12 +26,24 @@ final class IsolationTests: XCTestCase {
       return true
     }
     let timeout: (UInt64, UInt64, UInt64) -> Bool = { d, a, n in return false }
-    let unpin: (UInt64) -> Void = { pin in order = order * 10 + Int(pin) }
-    XCTAssertTrue(!r.retire(dropPte, flush, timeout, unpin))
+    var releaseAllowed = false
+    let releasePin: (UInt64) -> Bool = { pin in
+      order = order * 10 + Int(pin)
+      return releaseAllowed
+    }
+    XCTAssertFalse(r.retire(dropPte, flush, timeout, flush, releasePin))
     XCTAssertTrue(order == 12 && r.phase == DmaRetirePhase.ioFlushed)
-    XCTAssertTrue(r.retire(dropPte, flush, flush, unpin))
-    XCTAssertTrue(r.retire(dropPte, flush, flush, unpin))
-    XCTAssertTrue(order == Int(1227))
+    XCTAssertFalse(r.retire(timeout, timeout, flush, timeout, releasePin))
+    XCTAssertEqual(r.phase, .deviceFlushed)
+    XCTAssertEqual(order, 122)
+    XCTAssertFalse(r.retire(timeout, timeout, timeout, flush, releasePin))
+    XCTAssertEqual(r.phase, .writesDrained)
+    XCTAssertEqual(order, 12227)
+    releaseAllowed = true
+    XCTAssertTrue(r.retire(timeout, timeout, timeout, timeout, releasePin))
+    XCTAssertTrue(r.retire(timeout, timeout, timeout, timeout, releasePin))
+    XCTAssertEqual(r.phase, .released)
+    XCTAssertEqual(order, 122277)
   }
 
   func testFullPortAndOldSlotCannotUnmask() {

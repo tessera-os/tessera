@@ -111,12 +111,13 @@ extension SlotDomain {
   public mutating func retireBuffer(
     _ header: borrowing ObjectHeader,
     detach: (UInt64, UInt64, UInt64) -> Bool, invalidate: (UInt64, UInt64, UInt64) -> Bool,
-    drainAtcs: (UInt64, UInt64, UInt64) -> Bool, unpin: (UInt64) -> Void
+    drainAtcs: (UInt64, UInt64, UInt64) -> Bool, drainWrites: (UInt64, UInt64, UInt64) -> Bool,
+    releasePin: (UInt64) -> Bool
   ) -> Bool {
     guard header.kind == TarwinKind.dmaBuffer, let id = mapping(forBuffer: header.koid) else {
       return false
     }
-    return retire(id, detach, invalidate, drainAtcs, unpin)
+    return retire(id, detach, invalidate, drainAtcs, drainWrites, releasePin)
   }
 }
 

@@ -125,7 +125,11 @@ Composition supplies the locked VM extent and pin, kernel entropy, fresh
 object storage and permission-limited IOMMU installation. Failed installation
 must queue the private mapping for recovery. On final buffer release, retain
 the original domain and payload until `retireBuffer` has detached the mapping,
-completed IOTLB and device ATC invalidation, and released the pin. Coordinate
+completed IOTLB and device ATC invalidation, drained outstanding device writes,
+and received the allocator's acknowledgement for that pin. A failed drain must
+not call the allocator. A failed release keeps the interval reserved and the
+pin charged; on retry the allocator must resolve ownership of the same pin
+without freeing or charging it twice. Coordinate
 this with slot-wide teardown; a handle close by itself is not a DMA drain.
 During teardown, `SlotDomain.revokeAll` seals the original group and epoch.
 No mapping is detached before the requesters stop and drain. The sweep owns
