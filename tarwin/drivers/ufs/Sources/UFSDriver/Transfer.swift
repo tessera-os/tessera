@@ -17,6 +17,13 @@ public enum UFSError: Error, Equatable {
   case configuration, busy, timeout, device, malformed, command
 }
 
+/// The caller must keep the controller and DMA grants isolated until a
+/// platform reset and domain drain. A thrown error is not a DMA completion.
+public struct UFSStartupQuarantine: Error {
+  public let cause: UFSError
+  public let stopFailure: UFSError?
+}
+
 public struct UFSPages {
   let list: UInt64, command: UInt64
   public init?(transferList: UInt64, command: UInt64) {
@@ -57,8 +64,9 @@ enum Reg {
 /// or timeout permanently stops reuse, including reuse of the command page.
 final class Transfer {
   let io: any UFSAccess, pages: UFSPages, timeoutNs: UInt64
-  private var active: (type: UInt8, lun: UInt8, start: UInt64)?
+  private var active: (type: UInt8, lun: UInt8, bytes: UInt64, start: UInt64)?
   private(set) var stopped = false
+  private(set) var claimed = false
   init(_ io: any UFSAccess, _ pages: UFSPages, _ timeout: UInt64) {
     self.io = io
     self.pages = pages
@@ -66,8 +74,9 @@ final class Transfer {
   }
   func wait(_ probe: () -> Bool) throws {
     let start = io.nowNs()
-    while !probe() {
+    while true {
       if io.register(Reg.status) & Reg.faults != 0 { throw UFSError.device }
+      if probe() { return }
       guard io.nowNs() &- start < timeoutNs else { throw UFSError.timeout }
       io.pause()
     }
@@ -79,6 +88,7 @@ final class Transfer {
     if io.register(Reg.cap) & (1 << 24) == 0 && max(pages.list, pages.command) > UInt32.max {
       throw UFSError.configuration
     }
+    claimed = true
     io.setRegister(Reg.enable, 1)
     try wait { io.register(Reg.enable) & 1 != 0 && io.register(Reg.host) & 8 != 0 }
     io.setRegister(Reg.interruptEnable, 0)
@@ -131,7 +141,7 @@ final class Transfer {
       io.copyToDMA(pages.command + 512, .init(repeating: 0, count: 512)),
       prdt.isEmpty || io.copyToDMA(pages.command + 1024, prdt), io.copyToDMA(pages.list, desc)
     else { throw UFSError.configuration }
-    active = (expect, req[2], io.nowNs())
+    active = (expect, req[2], req.be(12, 4), io.nowNs())
     io.release()
     io.setRegister(Reg.bell, 1)
   }
@@ -144,7 +154,12 @@ final class Transfer {
       stopped = true
       throw UFSError.device
     }
-    if io.register(Reg.bell) & 1 != 0 {
+    let bell = io.register(Reg.bell)
+    guard bell <= 1 else {
+      stopped = true
+      throw UFSError.malformed
+    }
+    if bell == 1 {
       guard io.nowNs() &- a.start < timeoutNs else {
         stopped = true
         throw UFSError.timeout
@@ -161,7 +176,8 @@ final class Transfer {
       let r = io.copyFromDMA(pages.command + 512, count: 512), r.count == 512, r[0] == a.type,
       r[2] == a.lun, r[3] == 0,
       r[8] == 0, r.be(10, 2) <= 480,
-      a.type != 0x21 || r.be(10, 2) == 0 || r.be(10, 2) >= 2 + r.be(32, 2)
+      a.type != 0x20 || r.be(10, 2) == 0,
+      a.type != 0x21 || validSCSIResponse(r, expectedBytes: a.bytes)
     else {
       stopped = true
       throw UFSError.malformed
@@ -170,6 +186,25 @@ final class Transfer {
     io.setRegister(Reg.completed, 1)
     io.setRegister(Reg.status, 1)
     return r
+  }
+  private func validSCSIResponse(_ r: [UInt8], expectedBytes: UInt64) -> Bool {
+    let residual = r.be(12, 4)
+    let flags = r[1] & 0x60
+    // Underflow is a possible short command; overflow is never safe for
+    // the bounded DMA grants advertised by this driver.
+    guard flags == 0 && residual == 0 || flags == 0x20 && residual > 0 && residual <= expectedBytes,
+      r[6] <= 1
+    else { return false }
+    switch r[7] {
+    case 0x00, 0x02, 0x04, 0x08, 0x10, 0x14, 0x18, 0x22, 0x28, 0x30, 0x40: break
+    default: return false
+    }
+    let length = r.be(10, 2)
+    if length == 0 || length == 2 + r.be(32, 2) { return true }
+    // Some targets reserve a zero-filled sense area even on GOOD, notably
+    // the q35 reporting LU. It contains no sense bytes to interpret.
+    return r[6] == 0 && r[7] == 0 && length >= 2
+      && r[32..<(32 + Int(length))].allSatisfy { $0 == 0 }
   }
   func sync(_ req: [UInt8], expect: UInt8) throws -> [UInt8] {
     try submit(req, expect: expect)
@@ -204,6 +239,9 @@ final class Transfer {
   func stop() throws {
     guard !stopped, active == nil else { throw UFSError.busy }
     stopped = true
+    guard io.register(Reg.status) & Reg.faults == 0, io.register(Reg.bell) == 0,
+      io.register(Reg.completed) == 0
+    else { throw UFSError.device }
     io.setRegister(Reg.run, 0)
     try wait { io.register(Reg.run) & 1 == 0 && io.register(Reg.bell) == 0 }
     io.setRegister(Reg.enable, 0)

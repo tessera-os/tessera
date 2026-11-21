@@ -528,7 +528,7 @@ do {
   try run()
   print(
     CommandLine.arguments.last == "--ufs"
-      ? "PASS: UFS 4.x link, unit descriptor, split DMA, write/flush/read, clean stop and backing-byte verification on q35"
+      ? "PASS: q35 UFS discovered LUs 1 and 2, stopped on invalid selection, verified LU 2 scatter write/FUA/flush/read and unchanged LU 1"
       : CommandLine.arguments.last == "--nvme"
         ? "PASS: discovered NVMe namespace, split-PRP FUA write, flush, readback, shutdown and backing-byte check on q35"
         : CommandLine.arguments.last == "--intx"

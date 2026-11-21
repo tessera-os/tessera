@@ -109,13 +109,30 @@ public final class UFSController {
   ) throws -> UFSController {
     guard epoch != 0 else { throw UFSError.configuration }
     let t = Transfer(io, pages, timeoutNs)
-    try t.startLink()
+    do {
+      try t.startLink()
+      return try discover(t, epoch: epoch, select: select)
+    } catch let cause as UFSError {
+      guard t.claimed else { throw cause }
+      guard cause == .configuration || cause == .command else {
+        throw UFSStartupQuarantine(cause: cause, stopFailure: nil)
+      }
+      do { try t.stop() } catch let failure as UFSError {
+        throw UFSStartupQuarantine(cause: cause, stopFailure: failure)
+      }
+      throw cause
+    }
+  }
+  private static func discover(
+    _ t: Transfer, epoch: UInt64, select: ([UInt8]) -> UInt8?
+  ) throws -> UFSController {
+    let io = t.io
     let nop = try t.sync(.init(repeating: 0, count: 32), expect: 0x20)
     guard nop[6] == 0 else { throw UFSError.command }
     _ = try query(t, op: 6, id: 1)
     let start = io.nowNs()
     while try query(t, op: 5, id: 1).be(20, 4) != 0 {
-      guard io.nowNs() &- start < timeoutNs else { throw UFSError.timeout }
+      guard io.nowNs() &- start < t.timeoutNs else { throw UFSError.timeout }
       io.pause()
     }
     let device = try descriptor(t, id: 0)
@@ -124,7 +141,6 @@ public final class UFSController {
     }
     let units = try reportUnits(t, expected: device[6])
     guard let lun = select(units), units.contains(lun) else {
-      try t.stop()
       throw UFSError.configuration
     }
     let unit = try descriptor(t, id: 2, index: lun)

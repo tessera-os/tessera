@@ -22,7 +22,10 @@ transfer cannot produce a successful block completion.
 The caller supplies two distinct, pinned 4 KiB DMA pages and the mapped BAR.
 It must serialize calls, prevent physical aliases of the private pages and
 hold every grant until completion or a positive controller reset and domain
-drain, including when initialization throws after enabling the controller.
+drain. A normal discovery or command rejection stops the idle controller before
+returning. If ownership is uncertain (malformed reply, fault, timeout or failed
+stop), startup throws `UFSStartupQuarantine`: retain the controller and its
+grants for platform recovery, not immediate reuse.
 A malformed reply, device failure or timeout does not release active grants.
 Stop is refused until the pending block completion has been polled.
 MCQ, inline crypto, native driver launch, interrupt delivery, PHY power

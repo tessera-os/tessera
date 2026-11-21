@@ -3,7 +3,7 @@ import XCTest
 
 @testable import UFSDriver
 
-private final class Model: UFSAccess {
+private class Model: UFSAccess {
   var barBytes: UInt64 = 0xa0, clock: UInt64 = 1
   var regs: [UInt32: UInt32] = [Reg.cap: 1 << 24, Reg.host: 3, Reg.run: 1, Reg.version: 0x410]
   var mem = [UInt64: [UInt8]](), events = [String]()
@@ -22,8 +22,74 @@ private final class Model: UFSAccess {
   func nowNs() -> UInt64 { clock }
   func pause() { clock += 1 }
 }
+
+private final class StartupModel: Model {
+  enum Behavior: CaseIterable { case rejectQuery, stuckStop, malformedNOP, noCompletion, foreign }
+  let behavior: Behavior
+  let pages: UFSPages
+  var bells = 0
+  init(_ behavior: Behavior, pages: UFSPages) {
+    self.behavior = behavior
+    self.pages = pages
+    super.init()
+    regs[Reg.host] = 11
+    regs[Reg.run] = 0
+    if behavior == .foreign { regs[Reg.enable] = 1 }
+  }
+  override func setRegister(_ at: UInt32, _ value: UInt32) {
+    if at == Reg.status || at == Reg.completed {
+      regs[at] = register(at) & ~value
+      return
+    }
+    if behavior == .stuckStop, at == Reg.run, value == 0 { return }
+    super.setRegister(at, value)
+    if at == Reg.uic { regs[Reg.status] = 1 << 10 }
+    guard at == Reg.bell else { return }
+    bells += 1
+    guard behavior != .noCompletion else { return }
+    var reply = [UInt8](repeating: 0, count: 512)
+    if mem[pages.command]?.first == 0x16 {
+      reply[0] = 0x36
+      reply[6] = 0xf6
+    } else {
+      reply[0] = behavior == .malformedNOP ? 0x36 : 0x20
+    }
+    mem[pages.list + 8] = [0, 0, 0, 0]
+    mem[pages.command + 512] = reply
+    regs[Reg.bell] = 0
+    regs[Reg.completed] = 1
+  }
+}
 final class TransferTests: XCTestCase {
   private let pages = UFSPages(transferList: 0x2000, command: 0x5000)!
+  func testStartupFailuresDistinguishStoppedFromQuarantined() {
+    for behavior in StartupModel.Behavior.allCases {
+      let model = StartupModel(behavior, pages: pages)
+      XCTAssertThrowsError(
+        try UFSController.start(model, pages: pages, lun: 0, epoch: 1, timeoutNs: 5)
+      ) { error in
+        switch behavior {
+        case .foreign:
+          XCTAssertEqual(error as? UFSError, .configuration)
+          XCTAssertTrue(model.events.isEmpty)
+        case .rejectQuery:
+          XCTAssertEqual(error as? UFSError, .command)
+          XCTAssertEqual(model.register(Reg.run), 0)
+          XCTAssertEqual(model.bells, 2)
+        case .stuckStop, .malformedNOP, .noCompletion:
+          guard let quarantine = error as? UFSStartupQuarantine else {
+            return XCTFail("Expected quarantine")
+          }
+          XCTAssertEqual(
+            quarantine.cause,
+            behavior == .stuckStop ? .command : behavior == .noCompletion ? .timeout : .malformed)
+          XCTAssertEqual(quarantine.stopFailure, behavior == .stuckStop ? .timeout : nil)
+          XCTAssertEqual(model.register(Reg.run), 1)
+        }
+        XCTAssertEqual(model.register(Reg.enable), behavior == .rejectQuery ? 0 : 1)
+      }
+    }
+  }
   func testColdControllerAndDMAExtentBoundaries() throws {
     XCTAssertNil(UFSPages(transferList: 0x1000, command: 0x1000))
     XCTAssertNil(UFSPages(transferList: 1, command: 0x1000))
@@ -147,6 +213,45 @@ final class TransferTests: XCTestCase {
         try t.submit(req, expect: 0x21, spans: [BlockDmaVector(address: a, bytes: n)]))
       XCTAssertTrue(m.events.isEmpty)
       XCTAssertTrue(m.mem.isEmpty)
+    }
+  }
+
+  func testSCSIFramingBeforeCompletionAcknowledgement() throws {
+    let bytes: UInt32 = 8
+    let req = scsiRequest(lun: 3, cdb: .init(repeating: 0, count: 16), bytes: bytes, read: true)
+    for (flags, residual, result, status, segment, sense, accepted) in [
+      (0, 0, 0, 0, 0, 0, true), (0, 0, 0, 0, 2, 0, true), (0x20, 8, 1, 2, 20, 18, true),
+      (0x20, 1, 0, 0, 0, 0, true), (0x20, 1, 0, 0, 20, 0, true),
+      (0, 1, 0, 0, 0, 0, false), (0x20, 0, 0, 0, 0, 0, false), (0x20, 9, 0, 0, 0, 0, false),
+      (0x40, 1, 0, 0, 0, 0, false), (0x60, 1, 0, 0, 0, 0, false), (0, 0, 0, 0xff, 0, 0, false),
+      (0, 0, 2, 0, 0, 0, false), (0, 0, 1, 2, 19, 18, false), (0, 0, 1, 2, 21, 18, false),
+    ] {
+      let model = Model()
+      let t = Transfer(model, pages, 5)
+      try t.submit(req, expect: 0x21, spans: [BlockDmaVector(address: 0x7000, bytes: bytes)])
+      var r = [UInt8](repeating: 0, count: 512)
+      r[0] = 0x21
+      r[1] = UInt8(flags)
+      r[2] = 3
+      r[6] = UInt8(result)
+      r[7] = UInt8(status)
+      r.field(10, UInt64(segment), 2, big: true)
+      r.field(12, UInt64(residual), 4, big: true)
+      r.field(32, UInt64(sense), 2, big: true)
+      model.mem[pages.list + 8] = [0, 0, 0, 0]
+      model.mem[pages.command + 512] = r
+      model.regs[Reg.bell] = 0
+      model.regs[Reg.completed] = 1
+      let before = model.events.count
+      if accepted {
+        XCTAssertEqual(try t.poll(), r)
+        XCTAssertEqual(exactSCSISuccess(r), flags == 0 && status == 0)
+      } else {
+        XCTAssertThrowsError(try t.poll()) { XCTAssertEqual($0 as? UFSError, .malformed) }
+        XCTAssertEqual(Array(model.events.dropFirst(before)), ["acquire"])
+        XCTAssertThrowsError(try t.stop())
+        XCTAssertThrowsError(try t.submit(req, expect: 0x21))
+      }
     }
   }
 }
