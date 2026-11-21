@@ -90,6 +90,8 @@ public struct HandleTable: ~Copyable {
 
   public var reader: HandleReadView { HandleReadView(cells: UnsafeBufferPointer(cells)) }
 
+  func contains(_ name: UInt64) -> Bool { live(name) != nil }
+
   private func live(_ name: UInt64) -> UnsafeMutablePointer<HandleCell>? {
     let i = Int(handleIndex(name))
     guard name != 0, i < cells.count, let base = cells.baseAddress else { return nil }

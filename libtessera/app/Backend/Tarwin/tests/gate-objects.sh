@@ -7,7 +7,7 @@ abi="$native/../../../../tarwin/tarwin-syscall/Sources/TarwinABI"
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
 bin=$(dirname "${EMBEDDED_SWIFTC:?set to a Swift.org Embedded compiler}")
-"${HOST_SWIFTC:-swiftc}" "$native/variants/GateVariants.swift" -o "$out/generator"
+"${HOST_SWIFTC:-swiftc}" -parse-as-library "$native/variants/GateVariants.swift" "$native/CallNumbers.swift" -o "$out/generator"
 for target in aarch64-none-none-elf x86_64-unknown-none-elf riscv64-none-none-eabi; do
     arch=${target%%-*}
     "$out/generator" "$arch" > "$out/gate.ll"

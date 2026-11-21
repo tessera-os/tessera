@@ -57,6 +57,7 @@ public struct ProcessExecution: ~Copyable {
   public let header: UnsafePointer<ObjectHeader>
   private let slots: UnsafeMutableBufferPointer<ThreadSlot>
   private var handles: HandleTable
+  private var selfName: UInt64 = 0
   public private(set) var threadCount: UInt32 = 0
   public private(set) var exit: TaskExit?
   private var started = false, suspended = false, cleaning = false, finished = false
@@ -105,6 +106,17 @@ public struct ProcessExecution: ~Copyable {
     return body(&handles)
   }
   public var handleReader: HandleReadView { handles.reader }
+  /// Process.current borrows a name, not a KOID. Hold the job, process and
+  /// table writer locks just as for withHandles. Never reuse a closed name.
+  public mutating func currentHandle(tree: borrowing JobTree) -> HandleMutation {
+    guard exit == nil, tree.returnGate(member) != .terminate, let limits = tree.policy(job)
+    else { return .invalidHandle }
+    if handles.contains(selfName) { return .installed(selfName) }
+    handles.tighten(to: limits.handlesPerProcess)
+    let result = handles.install(header, rights: (1 << 8) | (1 << 10))
+    if case .installed(let name) = result { selfName = name }
+    return result
+  }
   /// Privilege/stack/TLS validation and private stack allocation must succeed
   /// before join. A successful join never makes the thread runnable on its own.
   public mutating func join(

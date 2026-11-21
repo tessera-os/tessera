@@ -45,8 +45,8 @@ private struct LocalContext: HandleCallContext {
     epoch.pointee.withRead { body(table.pointee.reader, &life) }
   }
 }
-private struct RegisterGate: NativeGate {
-  var calls: HandleCalls<LocalContext>
+private struct RegisterGate<P: CallProvider>: NativeGate {
+  var calls: P
   var isa: CallISA {
     #if arch(arm64)
       .aarch64
@@ -73,6 +73,24 @@ private struct RegisterGate: NativeGate {
   }
 }
 
+private struct Caller: CurrentProcessContext {
+  let process: UnsafeMutablePointer<ProcessExecution>
+  let tree: UnsafePointer<JobTree>
+  func withCaller<R>(_ body: (inout ProcessExecution, borrowing JobTree) -> R) -> R? {
+    body(&process.pointee, tree.pointee)
+  }
+}
+
+private func selfHandle(_ process: inout ProcessExecution, tree: borrowing JobTree) -> UInt64 {
+  withUnsafeMutablePointer(to: &process) { p in
+    withUnsafePointer(to: tree) { j in
+      var gate = RegisterGate(calls: ProcessCurrentCalls(context: Caller(process: p, tree: j)))
+      let a = NativeProcess.current(gate: &gate)
+      return a == NativeProcess.current(gate: &gate) ? a : 0
+    }
+  }
+}
+
 private func jobQuota(_ arena: inout Arena, _ limit: UInt64) -> Bool {
   let jobs = arena.take(JobNode.self, count: 2)
   let members = arena.take(JobMember.self, count: 1)
@@ -93,7 +111,7 @@ private func jobQuota(_ arena: inout Arena, _ limit: UInt64) -> Bool {
       source: ids, ownerJob: root.koid, kind: TarwinKind.job, maximumRights: 0),
     let branch = tree.create(child, under: tree.root, policy: policy),
     let process = ObjectHeader(
-      source: ids, ownerJob: child.koid, kind: TarwinKind.process, maximumRights: 0),
+      source: ids, ownerJob: child.koid, kind: TarwinKind.process, maximumRights: 0x500),
     let thread = ObjectHeader(
       source: ids, ownerJob: child.koid, kind: TarwinKind.thread, maximumRights: 0)
   else { return false }
@@ -120,14 +138,17 @@ private func jobQuota(_ arena: inout Arena, _ limit: UInt64) -> Bool {
           p.gate(id, tree: tree) == .hold,
           p.start(id, tree: tree),
           p.gate(id, tree: tree) == .dispatch,
+          case let own = selfHandle(&p, tree: tree), own != 0,
           case .installed(let name)? = p.withHandles(tree: tree, { $0.install(th, rights: 0) }),
           tree.setFrozen(true, job: tree.root), p.gate(id, tree: tree) == .hold,
           tree.kill(branch), p.gate(id, tree: tree) == .stop,
           p.stopped(id, code: 0, tree: tree, notify: { _ in }, retire: { _ in }),
-          p.exit?.reason == .jobKilled
+          p.exit?.reason == .jobKilled, selfHandle(&p, tree: tree) == 0
         else { return false }
-        var invalid: UInt64 = 0
-        return p.beginCleanup(invalidate: { invalid = $0 }, retire: { _ in }) && invalid == name
+        var invalid: UInt8 = 0
+        return p.beginCleanup(
+          invalidate: { invalid |= $0 == own ? 1 : $0 == name ? 2 : 4 }, retire: { _ in })
+          && invalid == 3
           && p.finishCleanup(tree: tree, notify: { _ in }) && ph.pointee.signals & 16 != 0
           && tree.remove(branch) && tree.usage(tree.root)?.footprint == 0
       }
@@ -205,7 +226,8 @@ private func exercise(_ bytes: UnsafeMutableRawBufferPointer, _ challenge: UInt6
       { raw in
         withUnsafePointer(to: &sent) {
           queue.write(
-            raw, names: .init(start: $0, count: 1), from: &sender, invalidate: { name in
+            raw, names: .init(start: $0, count: 1), from: &sender,
+            invalidate: { name in
               if let source = OperationHandle(process: 1, name: name) {
                 _ = port.cancel(owner: source) { cancelled = $0 }
               }

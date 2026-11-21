@@ -4,7 +4,7 @@ import Foundation
 
 enum BaseISA: String { case aarch64, x86_64, riscv64 }
 
-func gate(_ isa: BaseISA) -> String {
+func gate(_ isa: BaseISA, scalarHandle: Bool = false) -> String {
   let op: String
   let outputs: [String]
   let inputs: [String]
@@ -33,16 +33,32 @@ func gate(_ isa: BaseISA) -> String {
   let constraints = (outputs + inputs + [number] + clobbers).joined(separator: ",")
   let result = "{i64,i64,i64,i64}"
   var ir =
-    "define hidden void @libtessera_tarwin_enter(i64 %number, ptr nocapture readonly %words, ptr nocapture writeonly %out) nounwind {\n"
+    scalarHandle
+    ? "define hidden i64 @libtessera_tarwin_current_gate() nounwind {\n"
+    : "define hidden void @libtessera_tarwin_enter(i64 %number, ptr nocapture readonly %words, ptr nocapture writeonly %out) nounwind {\n"
   var args = [String]()
   for i in inputs.indices {
+    if scalarHandle {
+      args.append("i64 0")
+      continue
+    }
     ir +=
       "%src\(i) = getelementptr i64, ptr %words, i64 \(i)\n%a\(i) = load i64, ptr %src\(i), align 8\n"
     args.append("i64 %a\(i)")
   }
-  args.append("i64 %number")
+  args.append(scalarHandle ? "i64 \(TarwinCall.processCurrent)" : "i64 %number")
   ir +=
     "%r = call \(result) asm sideeffect \"\(op)\", \"\(constraints)\"(\(args.joined(separator:",")))\n"
+  if scalarHandle {
+    return ir + """
+      %status = extractvalue \(result) %r, 0
+      %name = extractvalue \(result) %r, 2
+      %ok = icmp eq i64 %status, 0
+      %handle = select i1 %ok, i64 %name, i64 0
+      ret i64 %handle
+      }
+      """
+  }
   for i in outputs.indices {
     ir +=
       "%v\(i) = extractvalue \(result) %r, \(i)\n%dst\(i) = getelementptr i64, ptr %out, i64 \(i)\nstore i64 %v\(i), ptr %dst\(i), align 8\n"
@@ -50,7 +66,12 @@ func gate(_ isa: BaseISA) -> String {
   return ir + "ret void\n}"
 }
 
-guard CommandLine.arguments.count == 2, let isa = BaseISA(rawValue: CommandLine.arguments[1]) else {
-  exit(2)
+@main struct GenerateGate {
+  static func main() {
+    let args = CommandLine.arguments
+    guard (2...3).contains(args.count), let isa = BaseISA(rawValue: args[1]),
+      args.count == 2 || (isa == .aarch64 && args[2] == "--w1-process-current")
+    else { exit(2) }
+    print(gate(isa, scalarHandle: args.count == 3))
+  }
 }
-print(gate(isa))

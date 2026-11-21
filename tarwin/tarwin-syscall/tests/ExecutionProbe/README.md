@@ -12,9 +12,12 @@ guests, e.g. `bash run.sh aarch64 riscv64`. The test uses:
 
 Each guest reserves two firmware pages, transfers an event and an eight-byte
 message between handle tables, cancels the pending operation on that specific
-sender name and waits for its provider to finish before delivery, narrows rights through the native register
-interface, closes the last reference and finishes an epoch grace period.
-It also requeues an address waiter, wakes it and rejects its stale timeout.
+sender name and waits for its provider to finish before delivery, narrows
+rights through the native register interface, closes the last reference
+and finishes an epoch grace period.
+It also resolves a borrowed self-process handle through the native register
+interface, and rejects that call after process exit. It requeues an address
+waiter, wakes it and rejects its stale timeout.
 The guest checks a descendant's footprint against the root's budget, then
 marks its thread runnable, freezes and kills it, drains the
 process handle table and checks its termination signal and the root's budget.

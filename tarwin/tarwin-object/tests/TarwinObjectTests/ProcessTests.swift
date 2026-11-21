@@ -49,7 +49,7 @@ private func fixture(
   let tree = JobTree(jobs: jobs, members: members, root: root.pointee, limits: ceiling)!
   parent.initialize(
     to: ObjectHeader(
-      source: ids, ownerJob: root.pointee.koid, kind: TarwinKind.process, maximumRights: 0)!)
+      source: ids, ownerJob: root.pointee.koid, kind: TarwinKind.process, maximumRights: 0x7ff)!)
   var p = ProcessExecution(
     header: .init(parent), job: tree.root, tree: tree, slots: slots, cells: cells, salt: 33)!
   for i in 0..<2 {
@@ -63,6 +63,34 @@ private func fixture(
   body(&p, tree, records.baseAddress!, records.baseAddress! + 1)
 }
 final class ProcessTests: XCTestCase {
+  func testCurrentHandleIsBorrowedAndNamesOnlyThisProcess() {
+    fixture { process, tree, _, _ in
+      guard case .installed(let name) = process.currentHandle(tree: tree),
+        case .installed(let again) = process.currentHandle(tree: tree)
+      else { return XCTFail() }
+      XCTAssertEqual(name, again)
+      guard
+        case .found(let grant) = process.handleReader.pinWithinEpoch(
+          name, kind: TarwinKind.process, need: 0)
+      else { return XCTFail() }
+      XCTAssertEqual(grant.rights, 0x500)
+      XCTAssertEqual(grant.header, process.header)
+      grant.drop { _ in XCTFail() }
+      let closed = process.withHandles(tree: tree) { table in
+        XCTAssertEqual(table.count, 1)
+        return table.close(name) { _ in XCTFail() }
+      }
+      XCTAssertEqual(closed, true)
+      guard case .installed(let fresh) = process.currentHandle(tree: tree) else { return XCTFail() }
+      XCTAssertNotEqual(name, fresh)
+      XCTAssertTrue(
+        process.requestExit(TaskExit(.exited, code: 0), tree: tree, stop: { _ in XCTFail() }))
+      guard case .invalidHandle = process.currentHandle(tree: tree) else { return XCTFail() }
+      XCTAssertTrue(
+        process.beginCleanup(invalidate: { XCTAssertEqual($0, fresh) }, retire: { _ in XCTFail() }))
+      XCTAssertTrue(process.finishCleanup(tree: tree, notify: { _ in }))
+    }
+  }
   func testSuspendAndAncestorFreezeCannotWakeBlockedOrUnstartedThread() {
     fixture { p, tree, a, b in
       let id = a.pointee.header.pointee.koid
