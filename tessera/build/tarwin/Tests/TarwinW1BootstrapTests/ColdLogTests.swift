@@ -79,6 +79,19 @@ import Testing
   let later = event(9, "firmware", 6)
   let live: [UInt8: [UInt8]] = [8: extend(extend(zero, 4), 1), 9: extend(extend(zero, 2), 6), 10: zero]
   let complete = older + archive + config + note + later
+  func transfer(_ records: [UInt8], _ copy: UInt8 = 1, _ configuration: UInt8 = 2) -> Bool {
+    (header + records).withUnsafeBytes {
+      guard let pair = replayColdFirmwarePCRs($0, archive: .init(repeating: copy),
+        configuration: .init(repeating: configuration), dedicatedBanks: true) else { return false }
+      return (0..<32).map { pair.archive[$0] } == extend(zero, 1)
+        && (0..<32).map { pair.configuration[$0] } == extend(zero, 2)
+    }
+  }
+  #expect(transfer(unrelated + archive + note + config))
+  #expect(!transfer(archive + config, 7))
+  #expect(!transfer(archive + config, 1, 7))
+  #expect(!transfer(event(8, "Tarwin boot set", 7) + config, 7))
+  #expect(!transfer(complete))
   #expect(accepted(complete, live))
   #expect(!accepted(archive + config + later, live))
   #expect(!accepted(older + archive + config, live))

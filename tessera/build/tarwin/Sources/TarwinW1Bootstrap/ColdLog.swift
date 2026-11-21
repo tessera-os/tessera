@@ -49,9 +49,9 @@ struct W1ColdLogLayout {
 
 /// Only for the non-restorable PC Client cold profile: static PCRs 8–10
 /// start at zero. Replay the copied prefix independently of the TPM.
-func confirmedColdPCR10(_ bytes: UnsafeRawBufferPointer, archive: InlineArray<32, UInt8>,
-  configuration: InlineArray<32, UInt8>, matchesPCR: (UInt8, InlineArray<32, UInt8>) -> Bool)
-  -> InlineArray<32, UInt8>? {
+func replayColdFirmwarePCRs(_ bytes: UnsafeRawBufferPointer, archive: InlineArray<32, UInt8>,
+  configuration: InlineArray<32, UInt8>, dedicatedBanks: Bool)
+  -> (archive: InlineArray<32, UInt8>, configuration: InlineArray<32, UInt8>)? {
   guard let fmt = EventLogFormat(bytes) else { return nil }
   let reset = InlineArray<32, UInt8>(repeating: 0)
   var pcr8 = reset, pcr9 = reset
@@ -66,7 +66,8 @@ func confirmedColdPCR10(_ bytes: UnsafeRawBufferPointer, archive: InlineArray<32
       return true
     }
     let isArchive = matches("Tarwin boot set")
-    if isArchive || matches("Tarwin boot configuration") {
+    let isConfiguration = matches("Tarwin boot configuration")
+    if isArchive || isConfiguration {
       guard event.type == 13, event.pcr == nextPCR, event.pcr == (isArchive ? 8 : 9)
       else { return nil }
       for i in 0..<32 where bytes[event.sha256 + i] != (isArchive ? archive[i] : configuration[i]) {
@@ -75,6 +76,8 @@ func confirmedColdPCR10(_ bytes: UnsafeRawBufferPointer, archive: InlineArray<32
       nextPCR += 1
     }
     if event.type != 3 && (event.pcr == 8 || event.pcr == 9) { // EV_NO_ACTION does not extend.
+      // Log labels are not extended; do not let a second event be relabelled as the boot measurement.
+      guard !dedicatedBanks || isArchive || isConfiguration else { return nil }
       var digest = InlineArray<32, UInt8>(repeating: 0)
       for i in 0..<32 { digest[i] = bytes[event.sha256 + i] }
       if event.pcr == 8 { pcr8 = replaySHA256PCR(previous: pcr8, event: digest) }
@@ -82,7 +85,16 @@ func confirmedColdPCR10(_ bytes: UnsafeRawBufferPointer, archive: InlineArray<32
     }
     pos = event.payload.upperBound
   }
-  guard pos == bytes.count && nextPCR == 10, matchesPCR(8, pcr8), matchesPCR(9, pcr9),
+  guard pos == bytes.count && nextPCR == 10 else { return nil }
+  return (pcr8, pcr9)
+}
+
+func confirmedColdPCR10(_ bytes: UnsafeRawBufferPointer, archive: InlineArray<32, UInt8>,
+  configuration: InlineArray<32, UInt8>, matchesPCR: (UInt8, InlineArray<32, UInt8>) -> Bool)
+  -> InlineArray<32, UInt8>? {
+  let reset = InlineArray<32, UInt8>(repeating: 0)
+  guard let p = replayColdFirmwarePCRs(bytes, archive: archive, configuration: configuration, dedicatedBanks: false),
+    matchesPCR(8, p.archive), matchesPCR(9, p.configuration),
     matchesPCR(10, reset) else { return nil }
   return reset
 }

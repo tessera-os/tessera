@@ -51,6 +51,24 @@ public func matchesBootPCR<P: TpmPort>(_ port: inout P, index: UInt8,
   return true
 }
 
+/// A single TPM2_PCR_Read snapshot; reject a partial selection even if one digest matches.
+@available(macOS 26, *)
+public func matchesFirmwarePCRs<P: TpmPort>(_ port: inout P,
+  archive: borrowing InlineArray<32, UInt8>, configuration: borrowing InlineArray<32, UInt8>) -> Bool {
+  guard port.byteCount() >= 96 else { return false }
+  let cmd: InlineArray<20, UInt8> = [128, 1, 0, 0, 0, 20, 0, 0, 1, 126, 0, 0, 0, 1, 0, 11, 3, 0, 3, 0]
+  for i in 0..<20 { port.putByte(UInt64(i), value: cmd[i]) }
+  let n = port.submit(20)
+  let selection: InlineArray<16, UInt8> = [0, 0, 0, 1, 0, 11, 3, 0, 3, 0, 0, 0, 0, 2, 0, 32]
+  guard n == 96, tpmSuccess(port, n, tag: 0x8001), big(port, p: 62, n: 2) == 32 else { return false }
+  for i in 0..<16 where port.byteAt(UInt64(i + 14)) != selection[i] { return false }
+  for i in 0..<32 {
+    guard port.byteAt(UInt64(i + 30)) == archive[i],
+      port.byteAt(UInt64(i + 64)) == configuration[i] else { return false }
+  }
+  return true
+}
+
 /// Measure but do not authorize or enter a process. The caller must supply
 /// the exact immutable authorized image, a disjoint private event log with
 /// exclusive spare capacity, and serialized TPM access. Never retry after

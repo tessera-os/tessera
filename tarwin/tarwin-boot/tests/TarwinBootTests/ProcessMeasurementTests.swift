@@ -43,6 +43,15 @@ private struct SequencePort: TpmPort {
       ]
       result += before ? Array(repeating: 0x3c, count: 32) : (0..<32).map { replayedPCR[$0] }
       result[22] = UInt8(pcrMask)
+      if pcrMask == 3 {
+        result[5] = 96
+        result[27] = 2
+        result += [0, 32] + Array(repeating: 0x71, count: 32)
+        if fault == 13 { result[95] ^= 1 }
+        if fault == 14 { result[63] = 31 }
+        if fault == 15 { result[27] = 1 }
+        if fault == 16 { result.removeLast() }
+      }
       if fault == 12 { result[22] ^= 3 }
       if before && fault == 8 || !before && fault == 10 { result[60] ^= 1 }
       if !before && fault == 11 { result[22] = 8 }
@@ -78,6 +87,16 @@ private struct SequencePort: TpmPort {
     }
     bytes.replaceSubrange(..<result.count, with: result)
     return UInt64(result.count)
+  }
+}
+
+@available(macOS 26, *)
+@Test func firmwarePCRPairMustMatchOneCompleteLiveRead() {
+  for fault in [0, 8, 12, 13, 14, 15, 16] {
+    var port = SequencePort(fault: fault, pcrMask: 3)
+    let ok = matchesFirmwarePCRs(&port, archive: .init(repeating: 0x3c), configuration: .init(repeating: 0x71))
+    #expect(ok == (fault == 0))
+    #expect(port.codes == [0x17e])
   }
 }
 
