@@ -4,7 +4,8 @@ import PackageDescription
 let package = Package(
   name: "BlockQTest", platforms: [.macOS(.v26)],
   dependencies: [
-    .package(path: "../../../../tarwin-net"), .package(path: "../../../../kcore"),
+    .package(path: "../../../../trfs"), .package(path: "../../../../tarwin-net"),
+    .package(path: "../../../../kcore"),
     .package(path: "../.."),
     .package(path: "../../../../tarwin-block"),
     .package(path: "../../../../tarwin-device"), .package(path: "../../../../tarwin-ipc"),
@@ -13,6 +14,7 @@ let package = Package(
     .executableTarget(
       name: "BlockQTest",
       dependencies: [
+        .product(name: "TRFS", package: "trfs"),
         .product(name: "VirtioNetService", package: "virtio"),
         .product(name: "TarwinNet", package: "tarwin-net"),
         .product(name: "KCore", package: "kcore"),

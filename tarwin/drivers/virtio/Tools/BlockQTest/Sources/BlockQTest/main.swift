@@ -212,7 +212,7 @@ private struct TestClient: IoPorts, ~Copyable {
   mutating func wakePort(_ id: UInt64, count: Int) { notifications += count }
 }
 
-func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?) throws {
+func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?, encrypted: Bool) throws {
   let bias = dma?.bias ?? 0
   let mem = QueueMemory(
     count: 8, descriptors: machine.ram + 0x100000, available: machine.ram + 0x101000,
@@ -269,6 +269,10 @@ func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?) throws {
     let lba: UInt64 = flush ? 0 : operation == .zero ? 12 : operation == .discard ? 64 : 7
     let blocks: UInt64 = flush ? 0 : operation == .zero ? 3 : operation == .discard ? 8 : 1
     let physicalData = dma != nil && operation == .read ? 0x180000 : data
+    let xts =
+      encrypted && hasVector
+      ? EncryptedSectorCheck(frame: physicalData, read: operation == .read) : nil
+    try xts?.prepare(q)
     if let dma, hasVector {
       try dma.mapData(frame: physicalData, access: operation == .read ? .deviceWrite : .deviceRead)
     }
@@ -300,9 +304,9 @@ func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?) throws {
     else { throw q.error ?? Failure("Guest driver rejected block request") }
     let p = pending.packet
     let op = p.op
-    if op == .write { _ = q.send("write \(data) 512 0x\(pattern)") }
+    if op == .write && xts == nil { _ = q.send("write \(data) 512 0x\(pattern)") }
     if op == .read {
-      _ = q.send("memset \(physicalData) 512 0")
+      if xts == nil { _ = q.send("memset \(physicalData) 512 0") }
       if dma != nil { _ = q.send("memset \(data) 512 0x5a") }
     }
     let submitted = pending.submit(
@@ -349,7 +353,10 @@ func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?) throws {
       scheduler.release(
         id: cookie, at: 77, ports: &user,
         retireBuffers: {
-          $0 == buffer.cookie && (!hasVector || dma?.retireData(frame: physicalData) != false)
+          guard $0 == buffer.cookie else { return false }
+          let retire = { !hasVector || dma?.retireData(frame: physicalData) != false }
+          if let xts { return xts.finish(q, success: done.status == .ok, retire: retire) }
+          return retire()
         }),
       let packet = user.port.take(), packet.kind == 3, packet.key == key,
       packet.error == 0, packet.result0 == (hasVector ? 512 : 0), user.references == 0
@@ -361,7 +368,9 @@ func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?) throws {
           "Retired frame was modified")
       }
       try q.require(
-        q.send("read \(physicalData) 512") == "0x" + pattern, "512-byte disk readback mismatch")
+        q.send("read \(physicalData) 512") == "0x"
+          + (xts == nil ? pattern : String(repeating: "00", count: 512)),
+        "512-byte disk readback mismatch")
     }
     transport.acknowledge()
   }
@@ -374,7 +383,9 @@ func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?) throws {
 }
 
 func run() throws {
-  let translated = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--vtd"
+  let encrypted = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--vtd-xts"
+  let translated =
+    encrypted || (CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--vtd")
   let neighbors = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--neighbors"
   guard CommandLine.arguments.count == 2 || translated || neighbors,
     let machine = Machine(
@@ -397,7 +408,7 @@ func run() throws {
       return
     }
     let dma = translated ? try TranslatedDisk(q) : nil
-    try testBlock(q, machine, dma)
+    try testBlock(q, machine, dma, encrypted: encrypted)
     try dma?.close(q)
     if !translated { try testNetwork(q, machine) }
   }
@@ -405,7 +416,14 @@ func run() throws {
   let sector = 7 * 512
   let pattern = Data((0..<512).map { UInt8(truncatingIfNeeded: $0 ^ 0xa5) })
   var expected = Data(repeating: 0x6c, count: 1 << 20)
-  expected.replaceSubrange(sector..<sector + 512, with: pattern)
+  if encrypted {
+    guard contents.count == expected.count,
+      EncryptedSectorCheck.expectedCiphertext(contents[sector..<sector + 512])
+    else { throw Failure("On-disk ciphertext does not match IEEE vector") }
+    expected.replaceSubrange(sector..<sector + 512, with: contents[sector..<sector + 512])
+  } else {
+    expected.replaceSubrange(sector..<sector + 512, with: pattern)
+  }
   if !translated {
     expected.replaceSubrange(12 * 512..<15 * 512, with: Data(repeating: 0, count: 3 * 512))
     // Reads after discard are unspecified. Check every byte outside the range.
@@ -420,11 +438,13 @@ func run() throws {
 do {
   try run()
   print(
-    CommandLine.arguments.last == "--vtd"
-      ? "PASS: q35 VT-d translated disk DMA, IOTLB drain and same-IOVA remap"
-      : CommandLine.arguments.last == "--neighbors"
-        ? "PASS: ARP and IPv6 neighbor discovery via virtio-net against restricted libslirp"
-        : "PASS: QEMU virtio-blk write/flush/readback, zero/discard extents and paced UDP delivery across isolated NICs"
+    CommandLine.arguments.last == "--vtd-xts"
+      ? "PASS: AES-256-XTS known-answer sector over q35 VT-d, retired before decryption"
+      : CommandLine.arguments.last == "--vtd"
+        ? "PASS: q35 VT-d translated disk DMA, IOTLB drain and same-IOVA remap"
+        : CommandLine.arguments.last == "--neighbors"
+          ? "PASS: ARP and IPv6 neighbor discovery via virtio-net against restricted libslirp"
+          : "PASS: QEMU virtio-blk write/flush/readback, zero/discard extents and paced UDP delivery across isolated NICs"
   )
 } catch {
   FileHandle.standardError.write(Data("\(error)\n".utf8))
