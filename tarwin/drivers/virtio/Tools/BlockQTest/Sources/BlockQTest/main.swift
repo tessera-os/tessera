@@ -29,7 +29,7 @@ final class QTest {
   private(set) var mmio: [DeviceRange] = []
   private(set) var error: Error?
 
-  init(binary: String, machine: Machine, disk: URL, translated: Bool) throws {
+  init(binary: String, machine: Machine, disk: URL, translated: Bool, neighbors: Bool) throws {
     process.executableURL = URL(fileURLWithPath: binary)
     process.arguments = [
       "-machine", machine == .x64 ? "q35" : "virt", "-accel", "qtest", "-m", "64M",
@@ -46,11 +46,14 @@ final class QTest {
         "-device", "intel-iommu,device-iotlb=off,caching-mode=off,intremap=off",
       ]
     }
-    for i in 0..<2 {
+    for i in 0..<(neighbors ? 1 : 2) {
       let device =
         machine == .x64 ? "virtio-net-pci,disable-legacy=on,addr=0\(5+i).0" : "virtio-net-device"
       process.arguments! += [
-        "-netdev", "hubport,id=nic\(i),hubid=1",
+        "-netdev",
+        neighbors
+          ? "user,id=nic0,restrict=on,net=10.0.2.0/24,host=10.0.2.2,ipv6-net=fd00:23::/64,ipv6-host=fd00:23::2"
+          : "hubport,id=nic\(i),hubid=1",
         "-device", device + ",netdev=nic\(i),iommu_platform=on,mac=52:54:00:00:00:0\(i+1)",
       ]
     }
@@ -357,7 +360,8 @@ func testBlock(_ q: QTest, _ machine: Machine, _ dma: TranslatedDisk?) throws {
 
 func run() throws {
   let translated = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--vtd"
-  guard CommandLine.arguments.count == 2 || translated,
+  let neighbors = CommandLine.arguments.count == 3 && CommandLine.arguments[2] == "--neighbors"
+  guard CommandLine.arguments.count == 2 || translated || neighbors,
     let machine = Machine(
       rawValue: URL(fileURLWithPath: CommandLine.arguments[1]).lastPathComponent)
   else {
@@ -369,9 +373,14 @@ func run() throws {
   try Data(repeating: 0, count: 1 << 20).write(to: disk, options: .withoutOverwriting)
   defer { try? FileManager.default.removeItem(at: disk) }
   let q = try QTest(
-    binary: CommandLine.arguments[1], machine: machine, disk: disk, translated: translated)
+    binary: CommandLine.arguments[1], machine: machine, disk: disk, translated: translated,
+    neighbors: neighbors)
   do {
     defer { q.close() }
+    if neighbors {
+      try testNeighbors(q, machine)
+      return
+    }
     let dma = translated ? try TranslatedDisk(q) : nil
     try testBlock(q, machine, dma)
     try dma?.close(q)
@@ -389,7 +398,9 @@ do {
   print(
     CommandLine.arguments.last == "--vtd"
       ? "PASS: q35 VT-d translated disk DMA, IOTLB drain and same-IOVA remap"
-      : "PASS: QEMU virtio-blk write/flush/readback and paced UDP delivery across isolated NICs")
+      : CommandLine.arguments.last == "--neighbors"
+        ? "PASS: ARP and IPv6 neighbor discovery via virtio-net against restricted libslirp"
+        : "PASS: QEMU virtio-blk write/flush/readback and paced UDP delivery across isolated NICs")
 } catch {
   FileHandle.standardError.write(Data("\(error)\n".utf8))
   exit(1)

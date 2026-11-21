@@ -7,6 +7,41 @@ import TarwinNetWire
 import VirtioGuest
 import VirtioNetService
 
+func netSubmit(
+  _ q: QTest, _ queue: inout SplitQueue, _ memory: QueueMemory, _ id: UInt64, _ packet: NetPacket,
+  _ receive: Bool
+) throws {
+  if queue.size == 0 { try q.require(queue.initialize(Int(memory.count)), "Bad net queue size") }
+  try q.require(
+    submitFrame(
+      &queue, id, packet, receive, 1514,
+      { addr, size in _ = q.send("memset \(addr) \(size) 0") },
+      { index, addr, length, flags, next in
+        let slot = memory.descriptors + UInt64(index) * 16
+        q.write("q", slot, addr)
+        q.write("l", slot + 8, length)
+        q.write("w", slot + 12, flags)
+        q.write("w", slot + 14, next)
+      },
+      { i, head in q.write("w", memory.available + 4 + UInt64(i) * 2, head) },
+      { idx in q.write("w", memory.available + 2, idx) }), "Frame was not submitted")
+}
+func netCompleted(_ q: QTest, _ queue: inout SplitQueue, _ memory: QueueMemory) throws -> UsedBuffer
+{
+  let end = ContinuousClock.now + .seconds(3)
+  while q.read("w", memory.used + 2) == UInt64(queue.consumed) && q.error == nil && .now < end {
+    _ = q.send("clock_step 1000000")
+    usleep(500)
+  }
+  guard
+    case .completed(let entry) = queue.consume(
+      { UInt16(q.read("w", memory.used + 2)) },
+      { UInt32(q.read("l", memory.used + 4 + UInt64($0) * 8)) },
+      { UInt32(q.read("l", memory.used + 8 + UInt64($0) * 8)) })
+  else { throw q.error ?? Failure("Missing network used entry at \(memory.used)") }
+  return entry
+}
+
 /// Both modern NICs attach only to the same in-process QEMU hub.
 func testNetwork(_ q: QTest, _ machine: Machine) throws {
   func ring(_ index: Int) -> QueueMemory {
@@ -22,38 +57,6 @@ func testNetwork(_ q: QTest, _ machine: Machine) throws {
   try q.require(
     left.features & right.features & 32 != 0 && macLeft != macRight, "Missing independent MACs")
 
-  func submit(
-    _ queue: inout SplitQueue, _ memory: QueueMemory, _ pending: PendingNetFrame, _ receive: Bool
-  ) throws {
-    try q.require(queue.initialize(Int(memory.count)), "Bad net queue size")
-    try q.require(
-      submitFrame(
-        &queue, pending.request.id, pending.packet, receive, 1514,
-        { addr, size in _ = q.send("memset \(addr) \(size) 0") },
-        { index, addr, length, flags, next in
-          let slot = memory.descriptors + UInt64(index) * 16
-          q.write("q", slot, addr)
-          q.write("l", slot + 8, length)
-          q.write("w", slot + 12, flags)
-          q.write("w", slot + 14, next)
-        },
-        { i, head in q.write("w", memory.available + 4 + UInt64(i) * 2, head) },
-        { idx in q.write("w", memory.available + 2, idx) }), "Frame was not submitted")
-  }
-  func completed(_ queue: inout SplitQueue, _ memory: QueueMemory) throws -> UsedBuffer {
-    let end = ContinuousClock.now + .seconds(3)
-    while q.read("w", memory.used + 2) == UInt64(queue.consumed) && q.error == nil && .now < end {
-      _ = q.send("clock_step 1000000")
-      usleep(500)
-    }
-    guard
-      case .completed(let entry) = queue.consume(
-        { UInt16(q.read("w", memory.used + 2)) },
-        { UInt32(q.read("l", memory.used + 4 + UInt64($0) * 8)) },
-        { UInt32(q.read("l", memory.used + 8 + UInt64($0) * 8)) })
-    else { throw q.error ?? Failure("Missing network used entry at \(memory.used)") }
-    return entry
-  }
   let payload = (0..<127).map { UInt8($0) }
   let route = UdpRoute(
     family: .v4, source: [192, 0, 2, 1], destination: [192, 0, 2, 2], sourcePort: 10001,
@@ -104,7 +107,7 @@ func testNetwork(_ q: QTest, _ machine: Machine) throws {
   else { throw Failure("Receive credit did not reach driver") }
   var rx = SplitQueue()
   var tx = SplitQueue()
-  try submit(&rx, ring(2), read, true)
+  try netSubmit(q, &rx, ring(2), read.request.id, read.packet, true)
   right.notify(0)
   _ = q.send("write \(txFrame) \(count) \(hex)")
   let packet = TxPacket(
@@ -125,10 +128,10 @@ func testNetwork(_ q: QTest, _ machine: Machine) throws {
       record, epoch: outbound.epoch, queue: 1, direction: .transmit, maximum: 1514,
       header: base + 8192, grant: { $0 == txFrame && $1 == count && !$2 })
   else { throw Failure("Paced transmit did not reach driver") }
-  try submit(&tx, ring(1), write, false)
+  try netSubmit(q, &tx, ring(1), write.request.id, write.packet, false)
   left.notify(1)
-  let sent = try completed(&tx, ring(1))
-  let received = try completed(&rx, ring(2))
+  let sent = try netCompleted(q, &tx, ring(1))
+  let received = try netCompleted(q, &rx, ring(2))
   guard let txDone = write.complete(cookie: sent.cookie, written: sent.written, flags: 0, gso: 0),
     case .transferred = txChannel.replies.push(txDone.record()),
     case .transferred = txChannel.client.pop(into: &record)
