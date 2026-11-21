@@ -1,0 +1,18 @@
+import Foundation
+
+@Test
+function enumeratesBridgeAndMultifunctionWithNonzeroBusOrigin() {
+    let read: (U32) -> U32 = { address in
+        if address == 0 || address == 0x1000 || address == 0x100000 { return 0x12348086 }
+        if address == 12 { return 0x00810000 }
+        if address == 8 { return 0x06040001 }
+        if address == 24 { return 0x222120 }
+        return 0xffffffff
+    }
+    let functions = enumerateEcam(0x20, 0x22, read)
+    expect!((functions.count == 3))
+    expect!((functions[1].functionNumber == 1))
+    expect!((functions[2].bus == 0x21 && functions[2].parent == 0))
+    let absent = enumerateEcam(255, 255, { offset in return 0xffffffff })
+    expect!((absent.count == 0))
+}
