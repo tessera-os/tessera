@@ -90,6 +90,25 @@ public func efiMain(_ image: UnsafeRawPointer?, _ system: UnsafeRawPointer?) -> 
         }
       #endif
       guard case .exited(let n) = boot.finish(map: raw, into: &buffer) else { return false }
+      #if TARBOOT_TEST_SMP_TABLES
+        #if arch(arm64)
+          let family = ProcessorFamily.arm64
+        #elseif arch(x86_64)
+          let family = ProcessorFamily.x64
+        #else
+          let family = ProcessorFamily.rv64
+        #endif
+        var ids = InlineArray<4, FirmwareProcessor>(repeating: .empty)
+        guard
+          withUnsafeMutableBytes(
+            of: &ids,
+            { bytes in
+              firmwareProcessors(
+                tables, family: family, in: UnsafeBufferPointer(rebasing: buffer[..<n]),
+                into: bytes.bindMemory(to: FirmwareProcessor.self)) == 4
+            })
+        else { return false }
+      #endif
       #if TARBOOT_TEST_TPM
         guard
           let logSize = pending.finish(

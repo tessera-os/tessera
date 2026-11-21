@@ -54,35 +54,78 @@ func validXSDT<S: ByteSource>(_ bytes: S) -> Bool {
   return true
 }
 
+// Only firmware data in a single validated, identity-mapped descriptor is
+// readable, never an address from the ESP. Call before reclaiming any pages.
+private func view(_ address: UInt64, acpi: Bool, in map: UnsafeBufferPointer<FirmwareRegion>)
+  -> TableBytes?
+{
+  guard address != 0, let p = UnsafeRawPointer(bitPattern: UInt(address)) else { return nil }
+  for r in map where address >= r.base && address - r.base < r.length {
+    guard r.attributes & 0x2000 == 0 else { return nil }
+    // ACPI objects may not live in reclaimable boot-services storage: child
+    // table lifetimes extend beyond the handoff. The FDT is self-contained.
+    guard
+      r.type == 9 || r.type == 10 || r.type == 6
+        || (!acpi && (r.type == 2 || r.type == 4))
+    else { return nil }
+    return TableBytes(data: p, length: min(32 << 20, r.length - (address - r.base)))
+  }
+  return nil
+}
+
+private func rootDirectory(_ rsdp: UInt64, in map: UnsafeBufferPointer<FirmwareRegion>)
+  -> TableBytes?
+{
+  guard let root = view(rsdp, acpi: true, in: map), let addr = xsdtAddress(root),
+    let xsdt = view(addr, acpi: true, in: map), validXSDT(xsdt)
+  else { return nil }
+  return xsdt
+}
+
+/// Return the enabled physical IDs in private scratch only after a complete
+/// walk. Never try the DT as a fallback for a corrupt supplied ACPI directory.
+/// Firmware IDs alone authorize neither CPU startup nor interrupt routing.
+@unsafe public func firmwareProcessors(
+  _ locations: FirmwareTableLocations, family: ProcessorFamily,
+  in map: UnsafeBufferPointer<FirmwareRegion>,
+  into scratch: UnsafeMutableBufferPointer<FirmwareProcessor>
+) -> Int? {
+  if locations.rsdp == 0 {
+    guard let tree = view(locations.deviceTree, acpi: false, in: map) else { return nil }
+    return treeProcessors(tree, family: family, into: scratch)
+  }
+  guard let root = rootDirectory(locations.rsdp, in: map) else { return nil }
+  let n = little(root, at: 4, bytes: 4)
+  guard (n - 36) / 8 <= 4096 else { return nil }
+  var madt: TableBytes?
+  var p: UInt64 = 36
+  while p < n {
+    guard let child = view(little(root, at: p, bytes: 8), acpi: true, in: map),
+      child.length >= 36
+    else { return nil }
+    if little(child, at: 0, bytes: 4) == 0x4349_5041 {
+      guard madt == nil else { return nil }
+      madt = child
+    }
+    p += 8
+  }
+  guard let madt else { return nil }
+  return madtProcessors(madt, family: family, into: scratch)
+}
+
 /// Call before reclaiming any pages. Only firmware data in a single validated,
 /// identity-mapped descriptor is readable, never an address from the ESP.
 @unsafe public func inspectFirmwareTables(
   _ locations: FirmwareTableLocations,
   in map: UnsafeBufferPointer<FirmwareRegion>
 ) -> InspectedFirmwareTables? {
-  func view(_ address: UInt64, acpi: Bool) -> TableBytes? {
-    guard address != 0, let p = UnsafeRawPointer(bitPattern: UInt(address)) else { return nil }
-    for r in map where address >= r.base && address - r.base < r.length {
-      guard r.attributes & 0x2000 == 0 else { return nil }
-      // ACPI objects may not live in reclaimable boot-services storage: child
-      // table lifetimes extend beyond the handoff. The FDT is self-contained.
-      guard
-        r.type == 9 || r.type == 10 || r.type == 6
-          || (!acpi && (r.type == 2 || r.type == 4))
-      else { return nil }
-      return TableBytes(data: p, length: min(32 << 20, r.length - (address - r.base)))
-    }
-    return nil
-  }
   guard locations.rsdp != 0 || locations.deviceTree != 0 else { return nil }
   if locations.rsdp != 0 {
-    guard let root = view(locations.rsdp, acpi: true), let addr = xsdtAddress(root),
-      let xsdt = view(addr, acpi: true), validXSDT(xsdt)
-    else { return nil }
+    guard rootDirectory(locations.rsdp, in: map) != nil else { return nil }
   }
   var size: UInt64 = 0
   if locations.deviceTree != 0 {
-    guard let blob = view(locations.deviceTree, acpi: false) else { return nil }
+    guard let blob = view(locations.deviceTree, acpi: false, in: map) else { return nil }
     var cursor = openTree(blob)
     while !cursor.failed && !cursor.ended { _ = nextItem(blob, c: &cursor) }
     guard cursor.ended && !cursor.failed else { return nil }
@@ -122,6 +165,7 @@ func validXSDT<S: ByteSource>(_ bytes: S) -> Bool {
         finalEvents = addr
       }
     }
-    return acpi == 0 && fdt == 0 ? nil : FirmwareTableLocations(rsdp: acpi, deviceTree: fdt, finalEvents:finalEvents)
+    return acpi == 0 && fdt == 0
+      ? nil : FirmwareTableLocations(rsdp: acpi, deviceTree: fdt, finalEvents: finalEvents)
   }
 #endif

@@ -64,6 +64,7 @@ func check() throws {
     : (a == "aarch64"
       ? ["-machine", "virt,gic-version=3", "-cpu", "cortex-a72"] : ["-machine", "virt"])
   let process = Process()
+  let multiple = ProcessInfo.processInfo.environment["TARBOOT_TEST_SMP_TABLES"] == "1"
   let displayEnabled = ProcessInfo.processInfo.environment["TARBOOT_TEST_DISPLAY"] == "1"
   let displayArgs = !displayEnabled ? [] : (a == "x86_64" ? ["-vga", "std"] : ["-device", "ramfb"]) + ["-no-shutdown"]
   let rngEnabled = ProcessInfo.processInfo.environment["TARBOOT_TEST_RNG"] == "1"
@@ -105,7 +106,7 @@ func check() throws {
   process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
   process.arguments =
     ["qemu-system-" + a] + machine + tpmArgs + displayArgs + rngArgs + [
-      "-m", "512", "-smp", "1", "-display", "none",
+      "-m", "512", "-smp", multiple ? "4" : "1", "-display", "none",
       "-serial", "file:" + serial, "-monitor", "none", "-qmp", "stdio", "-nic", "none",
       "-drive", "if=pflash,format=raw,readonly=on,file=" + code, "-drive",
       "if=pflash,format=raw,file=" + d + "/vars.fd",
@@ -161,6 +162,7 @@ func check() throws {
   guard guestShutdown(try Data(contentsOf: URL(fileURLWithPath: monitor)))
     else { throw Failure("\(a): missing guest-initiated shutdown event") }
   if rngEnabled { print("\(a): physical TBIB, EFI RNG seed, randomized reservation and typed archive/map extents passed readback") }
+  if multiple { print("\(a): enumerated four distinct enabled CPU hardware IDs from firmware; boot CPU only") }
   if displayEnabled {
     guard captured else { throw Failure("no scanout recorded") }
     let frame = try Data(contentsOf: URL(fileURLWithPath: d + "/scanout.ppm"))

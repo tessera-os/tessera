@@ -18,17 +18,6 @@ func emptyMember() -> BootMember {
     validArchive: false, found: false, offset: 0, stored: 0, size: 0, compression: 0, digestAt: 0)
 }
 
-// Only called with the entire fixed-width record already in bounds.
-func little<S: ByteSource>(_ src: S, at: UInt64, bytes: UInt64) -> UInt64 {
-  var value: UInt64 = 0
-  var i: UInt64 = 0
-  while i < bytes {
-    value = value | (UInt64(src.byteAt(at + i)) << (8 * i))
-    i += 1
-  }
-  return value
-}
-
 func pathLength<S: ByteSource>(_ src: S, pos: inout UInt64) -> UInt64 {
   var n: UInt64 = 0
   var shift: UInt64 = 0

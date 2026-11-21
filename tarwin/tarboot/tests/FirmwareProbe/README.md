@@ -43,7 +43,14 @@ entropy quality of any physical source.
 The probe snapshots ACPI 2.0 and FDT directory entries before exit. After exit
 it checks the RSDP and XSDT lengths and checksums, and walks the supplied FDT
 to its final token. Reads are bounded by the final firmware descriptors. These
-checks do not establish ACPI 6.4 platform conformance or interpret child SDTs.
+checks do not establish ACPI 6.4 platform conformance.
+
+`TARBOOT_TEST_SMP_TABLES=1 bash run.sh` configures four QEMU vCPUs. After
+exit the boot CPU enumerates four distinct, enabled hardware IDs from the
+checksummed ACPI MADT or (on a system without ACPI) the /cpus subtree. A
+supplied but invalid ACPI directory is never replaced with a DT fallback.
+This discovers CPUs; it does not start them, test their security features,
+configure interrupt routing, or demonstrate SMP scheduling.
 
 The RNG-enabled run builds an Appendix A.1 block in its own EFI reservation,
 followed by the serialized memory map. Only the exact boot-set and boot-info

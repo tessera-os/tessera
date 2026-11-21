@@ -51,6 +51,11 @@ func qemuFirmwareMemoryBanks() throws {
     let bytes = try HostBytes(Array(Data(contentsOf: path)))
     #expect(stageMemoryBanks(bytes, sink: &sink))
     #expect(sink.memory == [base..<(base + (16 << 30))])
+    var ids = [FirmwareProcessor](repeating: .empty, count: 4)
+    let enumerated = ids.withUnsafeMutableBufferPointer {
+      treeProcessors(bytes, family: isa == "aarch64" ? .arm64 : .rv64, into: $0)
+    }
+    #expect(enumerated == 4 && Set(ids.map(\.hardwareID)) == Set([0, 1, 2, 3]))
   }
   for (child, valid) in [
     ("carve@40010000 {reg=<0x40010000 0x10000>; no-map;};", true),
@@ -78,6 +83,39 @@ func qemuFirmwareMemoryBanks() throws {
       #expect(sink.memory == [0x4000_0000..<0x4010_0000])
       #expect(sink.reserved == [0x4001_0000..<0x4002_0000, 0x4000_0100..<0x4000_0110])
     }
+  }
+}
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["QEMU_TREES"] == "1"))
+func treeCPUsRejectAmbiguousIDsAndIncompleteRecords() throws {
+  let dir = try temporaryDirectory()
+  defer { try? FileManager.default.removeItem(at: dir) }
+  let source = dir.appendingPathComponent("cpu.dts")
+  let blob = dir.appendingPathComponent("cpu.dtb")
+  for (node, valid) in [
+    ("cpu@1 { device_type=\"cpu\"; reg=<1 0>; status=\"disabled\"; };", true),
+    ("cpu@1 { device_type=\"cpu\"; reg=<0 7>; };", false),
+    ("cpu@1 { device_type=\"cpu\"; reg=<1>; };", false),
+    ("cpu@1 { reg=<0 1>; };", false),
+    ("cpu@1 { device_type=\"cpu\"; reg=<0 1>; status=\"okay\",\"disabled\"; };", false),
+    ("rogue@1 { device_type=\"cpu\"; reg=<0 1>; };", false),
+  ] {
+    let dts = """
+      /dts-v1/;
+      / { cpus { #address-cells=<2>; #size-cells=<0>;
+        cpu-map { core0 { reg=<0 9>; }; };
+        cpu@7 { reg=<0 7>; device_type="cpu"; intc { reg=<0 99>; }; };
+        \(node) }; };
+      """
+    try Data(dts.utf8).write(to: source)
+    let p = command(["dtc", "-q", "-I", "dts", "-O", "dtb", "-o", blob.path, source.path])
+    try p.run()
+    p.waitUntilExit()
+    try #require(p.terminationStatus == 0)
+    let tree = HostBytes(Array(try Data(contentsOf: blob)))
+    var ids = [FirmwareProcessor](repeating: .empty, count: 4)
+    let count = ids.withUnsafeMutableBufferPointer { treeProcessors(tree, family: .rv64, into: $0) }
+    if valid { #expect(count == 1 && ids[0].hardwareID == 7) } else { #expect(count == nil) }
   }
 }
 
