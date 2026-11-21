@@ -13,7 +13,7 @@ public func run(_ args: [String]) -> Int32 {
   var ids = Set<String>()
   for line in inventory.components(separatedBy: .newlines)
   where !line.isEmpty && !line.hasPrefix("#") {
-    guard let ref = reference(line), ids.insert(ref.serial).inserted else {
+    guard let ref = reference(line), ids.insert(ref.serial.lowercased()).inserted else {
       print("invalid or duplicate physical reference")
       return 2
     }
@@ -37,10 +37,23 @@ public func run(_ args: [String]) -> Int32 {
       return 2
     }
   }
+  guard let id = archiveID(root, refs, create: args.count == 3) else {
+    print("TRAIN BLOCKED: collection manifest missing or inventory changed")
+    return 1
+  }
+  var failed = Set<String>()
+  if args.count == 3 {
+    for ref in refs where !collect(args[2], root, ref, id) { failed.insert(ref.serial) }
+    guard archiveID(root, refs, create: false) == id else {
+      print("TRAIN BLOCKED: collection manifest changed during capture")
+      return 1
+    }
+  }
   for ref in refs {
     print("reference \(ref.serial) (\(ref.arch))")
-    if (args.count == 3 && !collect(args[2], root, ref)) || !completedCollection(root, ref) {
+    if failed.contains(ref.serial) || !completedCollection(root, ref, id) {
       report("lab collection: " + ref.serial, .missing)
+      continue
     }
     for key in deviceCases(ref) {
       let value = evidence(root, ref, key, "tarwin", 1)

@@ -16,11 +16,21 @@ func safeID(_ id: String) -> Bool {
 func reference(_ line: String) -> Reference? {
   let f = line.components(separatedBy: "\t")
   guard f.count == 8, f[0] == "physical", ["aarch64", "x64", "rv64"].contains(f[1]),
-    f[2...4].allSatisfy(safeID), f[5...7].allSatisfy({ $0 == "yes" || $0 == "no" })
+    f[2...4].allSatisfy(safeID), f[2].lowercased() != "collection.tsv",
+    ![".plan.tsv", ".complete.tsv"].contains(where: { f[2].lowercased().hasSuffix($0) }),
+    f[5...7].allSatisfy({ $0 == "yes" || $0 == "no" })
   else { return nil }
   return Reference(
     arch: f[1], serial: f[2], tarwin: f[3], linux: f[4], battery: f[5] == "yes",
     nested: f[6] == "yes", confidential: f[7] == "yes")
+}
+
+func captureExists(_ file: URL) -> Bool {
+  guard file.resolvingSymlinksInPath().standardizedFileURL.path == file.path,
+    let info = try? file.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
+    info.isRegularFile == true, let size = info.fileSize, size > 0
+  else { return false }
+  return file.pathExtension == "log" || size <= 2048
 }
 
 func evidence(_ root: String, _ ref: Reference, _ key: String, _ system: String, _ trial: Int)
@@ -30,12 +40,7 @@ func evidence(_ root: String, _ ref: Reference, _ key: String, _ system: String,
   let stem = dir.appendingPathComponent(ref.serial).appendingPathComponent(key)
     .appendingPathComponent("\(system)-\(trial)")
   for ext in ["log", "tsv"] {
-    let file = stem.appendingPathExtension(ext)
-    guard file.resolvingSymlinksInPath().standardizedFileURL.path == file.path,
-      let info = try? file.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
-      info.isRegularFile == true, let size = info.fileSize, size > 0,
-      ext == "log" || size <= 2048
-    else { return nil }
+    guard captureExists(stem.appendingPathExtension(ext)) else { return nil }
   }
   guard let line = try? String(contentsOf: stem.appendingPathExtension("tsv"), encoding: .utf8)
   else { return nil }

@@ -8,17 +8,50 @@ import Testing
   try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
   defer { try? FileManager.default.removeItem(at: root) }
   let ref = try #require(reference("physical\tx64\tboard\tt1\tl1\tno\tyes\tno"))
-  #expect(!collect("/usr/bin/false", root.path, ref))
-  #expect(!completedCollection(root.path, ref))
-  #expect(collect("/usr/bin/true", root.path, ref))
-  #expect(completedCollection(root.path, ref))
+  let id = try #require(archiveID(root.path, [ref], create: true))
+  #expect(!collect("/usr/bin/true", root.path, ref, id))
+  for sample in samples(ref) {
+    let url = root.appendingPathComponent(ref.serial).appendingPathComponent(sample.stem)
+    try FileManager.default.createDirectory(
+      at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    for ext in ["log", "tsv"] {
+      try Data("placeholder: not a passing measurement".utf8).write(
+        to: url.appendingPathExtension(ext))
+    }
+  }
+  #expect(!collect("/usr/bin/false", root.path, ref, id))
+  #expect(!completedCollection(root.path, ref, id))
+  try #require(collect("/usr/bin/true", root.path, ref, id))
+  #expect(completedCollection(root.path, ref, id))
+  #expect(!completedCollection(root.path, ref, UUID()))
+  let sample = root.appendingPathComponent("board/hv.guest-linux/tarwin-1")
+  for ext in ["tsv", "log"] {
+    let url = sample.appendingPathExtension(ext)
+    let original = try Data(contentsOf: url)
+    try Data(repeating: 120, count: original.count).write(to: url)
+    #expect(!completedCollection(root.path, ref, id))
+    try original.write(to: url)
+  }
   let changed = try #require(reference("physical\tx64\tboard\tt1\tl1\tno\tno\tno"))
-  #expect(!completedCollection(root.path, changed))
+  #expect(!completedCollection(root.path, changed, id))
   let url = root.appendingPathComponent("board.complete.tsv")
   let alt = root.appendingPathComponent("copy")
   try FileManager.default.moveItem(at: url, to: alt)
   try FileManager.default.createSymbolicLink(at: url, withDestinationURL: alt)
-  #expect(!completedCollection(root.path, ref))
+  #expect(!completedCollection(root.path, ref, id))
+}
+
+@Test func inventoryIsBoundAcrossAllDevicesIndependentOfRowOrder() throws {
+  let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+  try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+  defer { try? FileManager.default.removeItem(at: root) }
+  let refs = try ["aarch64", "rv64", "x64", "x64"].enumerated().map { n, arch in
+    try #require(reference("physical\t\(arch)\tboard\(n)\tt1\tl1\tno\tno\tno"))
+  }
+  let id = try #require(archiveID(root.path, refs, create: true))
+  #expect(archiveID(root.path, refs.reversed(), create: false) == id)
+  #expect(archiveID(root.path, Array(refs.dropLast()), create: false) == nil)
+  #expect(archiveID(root.path, refs, create: true) == nil)
 }
 
 @Test func allTenTrialsAndFasterFilesystemAreRequired() throws {

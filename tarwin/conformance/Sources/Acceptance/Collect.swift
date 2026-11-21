@@ -7,22 +7,23 @@ func deviceCases(_ ref: Reference) -> [String] {
   return required
 }
 
-func trials(_ key: String, _ system: String) -> String {
-  var s = ""
-  for i in 1...10 { s += "\(key)\t\(system)\t\(i)\n" }
-  return s
+struct Sample {
+  let key, system: String
+  let trial: Int
+  var stem: String { "\(key)/\(system)-\(trial)" }
+  var row: String { "\(key)\t\(system)\t\(trial)\n" }
 }
 
 // A controller may batch reboots, but may not reuse another trial's samples.
-func measurementPlan(_ ref: Reference) -> String {
-  var plan = ""
-  for key in deviceCases(ref) { plan += "\(key)\ttarwin\t1\n" }
+func samples(_ ref: Reference) -> [Sample] {
+  var plan = deviceCases(ref).map { Sample(key: $0, system: "tarwin", trial: 1) }
   for b in budgets(ref.battery) {
-    plan += trials(b.name, "tarwin")
-    if b.baseline == "best-fs" {
-      plan += trials(b.name, "linux-ext4") + trials(b.name, "linux-btrfs")
-    } else if b.baseline != "absolute" {
-      plan += trials(b.name, b.baseline)
+    let comparators =
+      b.baseline == "best-fs"
+      ? ["linux-ext4", "linux-btrfs"]
+      : b.baseline == "absolute" ? [] : [b.baseline]
+    for system in ["tarwin"] + comparators {
+      plan += (1...10).map { Sample(key: b.name, system: system, trial: $0) }
     }
   }
   return plan
@@ -35,36 +36,38 @@ private func receiptURL(_ root: String, _ ref: Reference) -> URL {
     .appendingPathComponent(ref.serial + ".complete.tsv")
 }
 
-func receipt(_ ref: Reference) -> Data {
-  let header = [
-    "26.11.1", "physical", ref.arch, ref.serial, ref.tarwin, ref.linux,
-    ref.battery ? "yes" : "no", ref.nested ? "yes" : "no", ref.confidential ? "yes" : "no",
-  ]
-  return Data((header.joined(separator: "\t") + "\n" + measurementPlan(ref)).utf8)
+private func receipt(_ root: String, _ ref: Reference, _ run: UUID) -> Data? {
+  let plan = samples(ref)
+  guard let hashes = captureHashes(root, ref, plan) else { return nil }
+  var data = Data(("v2\t26.11.1\t" + run.uuidString + "\n" + ref.row + "\n").utf8)
+  data.append(hashes)
+  return data
 }
 
-func completedCollection(_ root: String, _ ref: Reference) -> Bool {
+func completedCollection(_ root: String, _ ref: Reference, _ run: UUID) -> Bool {
   let url = receiptURL(root, ref)
-  let expected = receipt(ref)
   guard url.resolvingSymlinksInPath().standardizedFileURL.path == url.path,
     let info = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
-    info.isRegularFile == true, info.fileSize == expected.count
+    info.isRegularFile == true, let size = info.fileSize, size <= 1 << 20,
+    let expected = receipt(root, ref, run), size == expected.count
   else { return false }
   return (try? Data(contentsOf: url)) == expected
 }
 
-func collect(_ program: String, _ root: String, _ ref: Reference) -> Bool {
+func collect(_ program: String, _ root: String, _ ref: Reference, _ run: UUID) -> Bool {
   let plan = URL(fileURLWithPath: root).appendingPathComponent(ref.serial + ".plan.tsv")
   do {
-    try measurementPlan(ref).write(to: plan, atomically: true, encoding: .utf8)
+    try samples(ref).map(\.row).joined().write(to: plan, atomically: true, encoding: .utf8)
     let child = Process()
     child.executableURL = URL(fileURLWithPath: program)
     child.arguments = [ref.arch, ref.serial, ref.tarwin, ref.linux, root, plan.path]
     child.standardInput = FileHandle.nullDevice
     try child.run()
     child.waitUntilExit()
-    guard child.terminationReason == .exit && child.terminationStatus == 0 else { return false }
-    try receipt(ref).write(to: receiptURL(root, ref), options: .atomic)
+    guard child.terminationReason == .exit && child.terminationStatus == 0,
+      let sealed = receipt(root, ref, run)
+    else { return false }
+    try sealed.write(to: receiptURL(root, ref), options: .atomic)
     return true
   } catch { return false }
 }
