@@ -4,6 +4,7 @@ import TarwinABI
 import TarwinIPCChannels
 import TarwinObject
 import TarwinObjectCalls
+import TarwinSched
 import TarwinSync
 import TarwinSyncObjects
 import TarwinSyscall
@@ -135,6 +136,7 @@ private func jobQuota(_ arena: inout Arena, _ limit: UInt64) -> Bool {
 
 private func exercise(_ bytes: UnsafeMutableRawBufferPointer, _ challenge: UInt64) -> Bool {
   var arena = Arena(remaining: bytes)
+  guard intervalDemand(&arena, challenge) else { return false }
   guard jobQuota(&arena, challenge >> 1) else { return false }
   let cells = arena.take(HandleCell.self, count: 4)
   let receiverCells = arena.take(HandleCell.self, count: 4)
@@ -230,6 +232,37 @@ private func exercise(_ bytes: UnsafeMutableRawBufferPointer, _ challenge: UInt6
         return epoch.finishGracePeriod(ticket)
       }
     }
+}
+
+private func intervalDemand(_ arena: inout Arena, _ id: UInt64) -> Bool {
+  let members = arena.take(UInt64.self, count: 1)
+  members.initialize(repeating: 0)
+  defer { members.deinitialize() }
+  guard var group = WorkInterval(owner: id, referenceCapacity: 100, members: members),
+    group.join(id, by: id), let first = group.begin(by: id, start: 0, deadline: 100),
+    group.charge(id, epoch: first, from: 0, to: 50, capacity: 100),
+    group.complete(by: id, epoch: first, now: 50),
+    group.begin(by: id, start: 100, deadline: 200) != nil,
+    !group.complete(by: id, epoch: first, now: 150)
+  else { return false }
+  func point(_ capacity: UInt32, _ cost: UInt32) -> OperatingPoint {
+    .init(
+      offer: .init(
+        online: true, features: 1, capacity: capacity, energy: cost, load: 0,
+        efficiency: true, idle: true, thermalHeadroom: true, runningSiblingJob: 0,
+        isolatedSiblings: true),
+      hz: UInt64(capacity), ceilingHz: 100)
+  }
+  var choices: InlineArray<2, OperatingPoint> = [point(50, 1), point(100, 2)]
+  return withUnsafeBytes(of: &choices) { bytes in
+    let points = bytes.bindMemory(to: OperatingPoint.self)
+    return selectOperatingPoint(
+      points, required: 1, job: id, qos: SchedClass.interactive,
+      demand: group.demand(id, now: 100), haveEfficiency: true) == 0
+      && selectOperatingPoint(
+        points, required: 1, job: id, qos: SchedClass.interactive,
+        demand: group.demand(id, now: 151), haveEfficiency: true) == 1
+  }
 }
 
 private typealias Output = @convention(c) (UnsafeRawPointer, UnsafePointer<UInt16>) -> UInt
