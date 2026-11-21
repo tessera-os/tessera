@@ -9,7 +9,7 @@ public struct EpochDomain: ~Copyable, Sendable {
   private let odd = Atomic<UInt64>(0)
   public init() {}
 
-  public borrowing func withRead<R>(_ body: () -> R) -> R {
+  public borrowing func withRead<R: ~Copyable>(_ body: () -> R) -> R {
     while true {
       let epoch = state.load(ordering: .sequentiallyConsistent) >> 1
       if epoch & 1 == 0 {
