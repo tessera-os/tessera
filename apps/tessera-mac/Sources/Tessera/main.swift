@@ -23,7 +23,7 @@ final class App: NSObject, NSApplicationDelegate, TesseraHost, NSWindowDelegate 
                 disk = URL(fileURLWithPath: CommandLine.arguments[index + 1]).appendingPathComponent("system.trfsdisk")
             }
             if let backup = try DiskImage.prepareForBoot(at: disk) { console("Legacy disk backed up: \(backup.path)") }
-            config = KernelConfig(diskPath: disk.path, systemImagePath: try SystemImage.locate().path,
+            config = KernelConfig(diskPath: disk.path,
                 panicRecordPath: disk.deletingLastPathComponent().appendingPathComponent("panic.txt").path,
                 taskExecutablePath: Bundle.main.bundleURL.appendingPathComponent("Contents/XPCServices/com.tessera.tarwind.xpc/Contents/MacOS/tarwin-task").path)
             config.stubKernel = CommandLine.arguments.contains("--stub-kernel")
@@ -74,7 +74,11 @@ final class App: NSObject, NSApplicationDelegate, TesseraHost, NSWindowDelegate 
         if line.hasPrefix("Kernel boot failed:") { self.bootFailed = true }
         self.views.values.forEach { $0.console.stringValue = self.consoleLines.joined(separator: "\n") }
     } }
-    func panic(_ record: Data) { console("PANIC: " + String(decoding: record, as: UTF8.self)) }
+    func panic(_ record: Data) {
+        let message = "PANIC: " + String(decoding: record, as: UTF8.self)
+        if headless && exitReady { print(message); fflush(stdout); exit(1) }
+        console(message)
+    }
     func outputChanged(_ data: Data) { DispatchQueue.main.async {
         guard let output = try? JSONDecoder().decode(DisplayOutput.self, from: data), output.id >= 0 else { return }
         if self.headless {

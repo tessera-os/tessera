@@ -1,5 +1,6 @@
 import Foundation
 import IOSurface
+import TarwinArchHosted
 
 public struct DisplayOutput: Codable, Equatable {
     public var id: Int, width: Int, height: Int
@@ -9,12 +10,12 @@ public struct DisplayOutput: Codable, Equatable {
     }
 }
 public struct KernelConfig: Codable, Equatable {
-    public var diskPath, systemImagePath, panicRecordPath, taskExecutablePath: String
+    public var diskPath, panicRecordPath, taskExecutablePath: String
     public var outputs: [DisplayOutput]
     public var stubKernel = false
-    public init(diskPath: String, systemImagePath: String, panicRecordPath: String,
+    public init(diskPath: String, panicRecordPath: String,
                 taskExecutablePath: String = "", outputs: [DisplayOutput] = [DisplayOutput()]) {
-        self.diskPath = diskPath; self.systemImagePath = systemImagePath
+        self.diskPath = diskPath
         self.panicRecordPath = panicRecordPath; self.taskExecutablePath = taskExecutablePath; self.outputs = outputs
     }
 }
@@ -57,8 +58,10 @@ public protocol HostedKernel: AnyObject {
     func shutdown()
 }
 public enum KernelFactory {
-    public static func make(devices: HostDevices, stubKernel: Bool = false) -> HostedKernel {
-        stubKernel ? StubKernel(devices: devices) : TarwindKernelAdapter(devices: devices)
+    public static func make(devices: HostDevices, stubKernel: Bool = false,
+                            registry: HostDeviceRegistry = HostDeviceRegistry(), systemImage: SystemImage? = nil) -> HostedKernel {
+        stubKernel ? StubKernel(devices: devices) :
+            TarwindKernelAdapter(devices: devices, registry: registry, systemImage: systemImage)
     }
 }
 @objc public protocol TarwindControl {

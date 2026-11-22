@@ -33,7 +33,7 @@ final class HostTests: XCTestCase {
     }
     func testConfigCoding() throws {
         for outputs in [[DisplayOutput()], []] {
-            let config = KernelConfig(diskPath: "disk", systemImagePath: "image", panicRecordPath: "panic", taskExecutablePath: "task", outputs: outputs)
+            let config = KernelConfig(diskPath: "disk", panicRecordPath: "panic", taskExecutablePath: "task", outputs: outputs)
             XCTAssertEqual(try JSONDecoder().decode(KernelConfig.self, from: JSONEncoder().encode(config)), config)
         }
         XCTAssertThrowsError(try JSONDecoder().decode(KernelConfig.self, from: Data()))
@@ -42,7 +42,7 @@ final class HostTests: XCTestCase {
         let disk = try temporary().appendingPathComponent("disk")
         let host = FakeHost(); let devices = HostDevices(display: host); let kernel = StubKernel(devices: devices)
         host.expectation = expectation(description: "ready")
-        kernel.start(config: KernelConfig(diskPath: disk.path, systemImagePath: "", panicRecordPath: ""), host: host)
+        kernel.start(config: KernelConfig(diskPath: disk.path, panicRecordPath: ""), host: host)
         waitForExpectations(timeout: 8); kernel.shutdown()
         XCTAssertEqual(host.stages, ["firmware", "tarwind", "tessera.init", "services", "MosaicDisplay", "desktop"])
         XCTAssertGreaterThan(host.frames, 0); XCTAssertTrue(host.panics.isEmpty)
@@ -52,7 +52,7 @@ final class HostTests: XCTestCase {
         try contents.write(to: disk)
         let host = FakeHost(); host.expectation = expectation(description: "stub ready without disk IO")
         let kernel = StubKernel(devices: HostDevices(display: host))
-        kernel.start(config: KernelConfig(diskPath: disk.path, systemImagePath: "", panicRecordPath: "", outputs: []), host: host)
+        kernel.start(config: KernelConfig(diskPath: disk.path, panicRecordPath: "", outputs: []), host: host)
         waitForExpectations(timeout: 8); kernel.shutdown()
         XCTAssertTrue(host.panics.isEmpty); XCTAssertEqual(try Data(contentsOf: disk), contents)
     }

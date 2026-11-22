@@ -38,6 +38,7 @@ final class Service: NSObject, NSXPCListenerDelegate, TarwindControl, KernelHost
             do {
                 let config = try JSONDecoder().decode(KernelConfig.self, from: data)
                 self.shutdownKernel(); self.config = config
+                let systemImage = try config.stubKernel ? nil : SystemImage.load()
                 self.deviceDrivers = try HostedServiceDevices(registry: self.registry) { [weak self] data in
                     self?.remote?.deviceFrame(["tw.frame": data])
                 }
@@ -66,7 +67,9 @@ final class Service: NSObject, NSXPCListenerDelegate, TarwindControl, KernelHost
                 }
                 self.inputTimer = timer; timer.resume()
                 panicFD = Darwin.open(config.panicRecordPath, O_WRONLY | O_CREAT | O_TRUNC, 0o600)
-                self.state = "booting"; self.kernel = KernelFactory.make(devices: self.devices, stubKernel: config.stubKernel)
+                self.state = "booting"
+                self.kernel = KernelFactory.make(devices: self.devices, stubKernel: config.stubKernel,
+                                                 registry: self.registry, systemImage: systemImage)
                 self.kernel?.start(config: config, host: self)
             } catch { self.panic(record: Array("Invalid config: \(error)".utf8)) }
         }

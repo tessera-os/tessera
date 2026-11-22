@@ -17,6 +17,7 @@ services, drivers, tools and apps.
 | `init/` | Init |
 | `bootstrap/` | The service broker every named service checks in with |
 | `libtessera/` | LibTessera, the services library apps link against |
+| `apps/tessera-mac/` | Tessera.app, the tarwind XPC service, and the hosted TRFS system image packer and boot tests |
 | `recovery/` | Recovery: install Tessera, Disk Utility, Startup Disk and Terminal |
 | `installer/` | Installs a system onto a volume |
 | `devroot/` | Installs a component's build over a running development machine |

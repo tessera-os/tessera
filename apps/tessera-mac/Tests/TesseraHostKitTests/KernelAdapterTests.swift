@@ -8,7 +8,7 @@ final class KernelAdapterTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let disk = directory.appendingPathComponent("disk")
-        return KernelConfig(diskPath: disk.path, systemImagePath: "", panicRecordPath: "", outputs: outputs)
+        return KernelConfig(diskPath: disk.path, panicRecordPath: "", outputs: outputs)
     }
     func testRealBootAndDisplay() throws {
         let host = AdapterHost()
@@ -44,6 +44,28 @@ final class KernelAdapterTests: XCTestCase {
         XCTAssertTrue(host.lines.contains { $0.hasPrefix("Kernel boot failed:") })
         XCTAssertEqual(host.stages.last, "desktop"); XCTAssertGreaterThan(host.frames, 0)
         XCTAssertTrue(host.panics.isEmpty)
+    }
+
+    func testMissingPinnedImageDoesNotFallBackOrReportReady() throws {
+        let host = AdapterHost()
+        let config = try configuration()
+        let missing = URL(fileURLWithPath: config.diskPath).appendingPathExtension("missing")
+        let kernel = TarwindKernelAdapter(devices: HostDevices(display: host),
+            systemImage: SystemImage(url: missing, root: [UInt8](repeating: 0, count: 32)))
+        let ready = expectation(description: "must not signal ready")
+        ready.isInverted = true; host.readyExpectation = ready
+        kernel.start(config: config, host: host)
+        waitForExpectations(timeout: 0.1)
+        XCTAssertEqual(host.panics.count, 1)
+        XCTAssertEqual(host.frames, 0)
+        XCTAssertFalse(host.lines.contains("TRFS system volume verified"))
+    }
+
+    func testRootMetadataDecodesExactly32Bytes() {
+        XCTAssertEqual(SystemImage.decodeRoot(String(repeating: "a0", count: 32)), Array(repeating: 160, count: 32))
+        XCTAssertNil(SystemImage.decodeRoot(String(repeating: "a0", count: 31)))
+        XCTAssertNil(SystemImage.decodeRoot(String(repeating: "+1", count: 32)))
+        XCTAssertNil(SystemImage.decodeRoot(String(repeating: "é", count: 32)))
     }
 }
 

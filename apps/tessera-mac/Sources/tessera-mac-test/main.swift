@@ -5,6 +5,10 @@ import Darwin
 do {
     guard CommandLine.arguments.count == 2 else { throw DiskError.io("Usage: tessera-mac-test Tessera.app") }
     let bundle = URL(fileURLWithPath: CommandLine.arguments[1])
+    guard let service = Bundle(url: bundle.appendingPathComponent("Contents/XPCServices/com.tessera.tarwind.xpc")) else {
+        throw DiskError.io("Tessera.app has no tarwind service")
+    }
+    let expectsSystemVolume = try SystemImage.load(from: service) != nil
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
@@ -23,6 +27,9 @@ do {
     print(text, terminator: "")
     guard process.terminationStatus == 0, text.contains("TESSERA READY"), text.contains("H5 composition received"), text.contains("TASK CHECKED IN") else {
         throw DiskError.io("Boot or frame check failed (exit \(process.terminationStatus))")
+    }
+    if expectsSystemVolume && !text.contains("TRFS system volume verified") {
+        throw DiskError.io("Tarwind did not verify the bundled system volume")
     }
     let stages = ["time", "objects", "syscalls", "storage", "network", "scheduler", "ready"]
     guard text.contains("Kernel: TarwindKernel"), !text.contains("Kernel boot failed:"),
