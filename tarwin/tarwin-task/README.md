@@ -41,9 +41,12 @@ version (u32) followed by the Mach return status (i32; zero means success).
 Only a successful `snapshot` has a complex reply: one port descriptor carries
 the copy-on-write memory-entry send right. Pass `reply.memoryEntry` to
 `map(copy: true)` with offset zero, then deallocate the owned send right.
-Snapshot ranges must be nonempty page-aligned readable guest mappings and
-cannot include the gate page. Suspend guest writers before snapshotting
-multiple ranges when they must describe the same point in time.
+Snapshot ranges must be nonempty page-aligned guest mappings with maximum
+protection allowing read and write, and cannot include the gate page. Current
+protection may be more restrictive, including `PROT_NONE`. The task can
+snapshot through a temporary COW alias without changing the original mapping's
+protection. Suspend guest writers before snapshotting multiple ranges when
+they must describe the same point in time.
 A successful `threadIdentity` appends the kernel's `THREAD_IDENTIFIER_INFO`
 thread ID (u64); failures have only the status payload. Pass the logical
 Tarwin thread ID to `SpawnedTask.threadIdentity(id:)` after creating the

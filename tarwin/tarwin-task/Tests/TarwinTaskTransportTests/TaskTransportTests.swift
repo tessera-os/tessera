@@ -240,6 +240,58 @@ import Testing
   try waitForReport(3, value: 0x1234)
 }
 
+@Test func snapshotCapturesProtectedPagesWithoutChangingParentAccess() throws {
+  let executable = try builtExecutable("tarwin-task")
+  let parent = try TaskSpawner.spawn(executable: executable)
+  defer { terminateAndReap(parent) }
+  let child = try TaskSpawner.spawn(executable: executable)
+  defer { terminateAndReap(child) }
+
+  let base = TaskWindow.base
+  let page = TaskWindow.pageSize
+  let length = 2 * page
+  let rw = VM_PROT_READ | VM_PROT_WRITE
+  var backing: UInt64 = 0
+  try #require(mach_vm_allocate(mach_task_self_, &backing, length, VM_FLAGS_ANYWHERE) == KERN_SUCCESS)
+  defer { _ = mach_vm_deallocate(mach_task_self_, backing, length) }
+  var size = length
+  var original: mach_port_t = 0
+  try #require(mach_make_memory_entry_64(mach_task_self_, &size, backing, rw, &original, 0) == KERN_SUCCESS)
+  defer { TaskMachMessage.releaseSend(original) }
+  let map = TaskCommand.map(TaskMapping(
+    address: base, length: length, offset: 0, protection: UInt32(rw), copy: true))
+  try #require(try parent.command(map, memoryEntry: original).get().status == KERN_SUCCESS)
+
+  let acrossBoundary: [UInt8] = [1, 2, 3, 4]
+  let address = base + page - 2
+  try acrossBoundary.withUnsafeBytes { try parent.writeMemory(address: address, data: $0).get() }
+  try #require(try parent.command(.protect(address: base + page, length: page,
+    protection: UInt32(VM_PROT_NONE))).get().status == KERN_SUCCESS)
+
+  func readPair(_ task: SpawnedTask, _ address: UInt64) throws -> [UInt8] {
+    var bytes = [UInt8](repeating: 0, count: 2)
+    try bytes.withUnsafeMutableBytes { try task.readMemory(address: address, into: $0).get() }
+    return bytes
+  }
+  #expect(throws: TaskTransportError.self) { try readPair(parent, base + page) }
+  let snapshot = try parent.command(.snapshot(address: base, size: length)).get()
+  try #require(snapshot.status == KERN_SUCCESS)
+  let saved = try #require(snapshot.memoryEntry)
+  defer { TaskMachMessage.releaseSend(saved) }
+  #expect(throws: TaskTransportError.self) { try readPair(parent, base + page) }
+  #expect(throws: TaskTransportError.self) {
+    try acrossBoundary.withUnsafeBytes { try parent.writeMemory(address: base + page, data: $0).get() }
+  }
+  #expect(try readPair(parent, address) == [1, 2])
+  try #require(try child.command(map, memoryEntry: saved).get().status == KERN_SUCCESS)
+  #expect(try readPair(child, address) == [1, 2])
+  #expect(try readPair(child, base + page) == [3, 4])
+
+  let reserved = try parent.command(.snapshot(address: base + length, size: page)).get()
+  #expect(reserved.status != KERN_SUCCESS)
+  #expect(reserved.memoryEntry == nil)
+}
+
 @Test func queriesDistinctStableKernelIdentitiesBeforeResumingThreads() throws {
   let task = try TaskSpawner.spawn(executable: builtExecutable("tarwin-task"))
   defer { terminateAndReap(task) }

@@ -11,6 +11,24 @@ struct TaskRuntime {
     guard containsGuestPages(address: address, length: size) else {
       return TaskCommandReply(status: KERN_INVALID_ARGUMENT)
     }
+    let direct = snapshotEntry(address: address, size: size)
+    guard direct.status == KERN_PROTECTION_FAILURE else { return direct }
+
+    var alias: UInt64 = 0
+    var current: vm_prot_t = VM_PROT_NONE
+    var maximum: vm_prot_t = VM_PROT_NONE
+    let remapped = mach_vm_remap(mach_task_self_, &alias, size, 0, VM_FLAGS_ANYWHERE,
+      mach_task_self_, address, 1, &current, &maximum, VM_INHERIT_NONE)
+    guard remapped == KERN_SUCCESS else { return TaskCommandReply(status: remapped) }
+    defer { _ = mach_vm_deallocate(mach_task_self_, alias, size) }
+    let access = VM_PROT_READ | VM_PROT_WRITE
+    guard maximum & access == access else { return direct }
+    let protected = mach_vm_protect(mach_task_self_, alias, size, 0, access)
+    guard protected == KERN_SUCCESS else { return TaskCommandReply(status: protected) }
+    return snapshotEntry(address: alias, size: size)
+  }
+
+  private static func snapshotEntry(address: UInt64, size: UInt64) -> TaskCommandReply {
     var entry: mach_port_t = 0
     var actualSize = size
     let status = mach_make_memory_entry_64(mach_task_self_, &actualSize, address,
