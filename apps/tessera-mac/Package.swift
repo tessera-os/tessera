@@ -4,6 +4,7 @@ let package = Package(name: "TesseraMac", platforms: [.macOS(.v26)], products: [
     .library(name: "TesseraHostKit", targets: ["TesseraHostKit"]),
     .executable(name: "Tessera", targets: ["Tessera"]),
     .executable(name: "tarwind", targets: ["tarwind"]),
+    .executable(name: "tessera-pack-system", targets: ["tessera-pack-system"]),
     .executable(name: "tessera-mac-test", targets: ["tessera-mac-test"])
 ], dependencies: [
     .package(path: "../../tessera/build/tarwin-hosted"),
@@ -16,8 +17,20 @@ let package = Package(name: "TesseraMac", platforms: [.macOS(.v26)], products: [
     .package(path: "../../tarwin/drivers/metal-gpu"),
     .package(path: "../../tarwin/drivers/mac-display"),
     .package(path: "../../tarwin/tarwin-gpu"),
+    .package(path: "../../tarwin/tarwin-block/hosted/tarwin-block-hosted"),
+    .package(path: "../../tarwin/trfs"),
+    .package(path: "../../tarwin/trfs/hosted/trfs-hosted"),
     .package(path: "../../tarwin/tarwin-arch-hosted")
 ], targets: [
+    .target(name: "HostedSystemImage", dependencies: [
+        .product(name: "TarwinBlockHosted", package: "tarwin-block-hosted"),
+        .product(name: "TRFS", package: "trfs"),
+        .product(name: "TRFSHosted", package: "trfs-hosted")
+    ]),
+    .executableTarget(name: "tessera-pack-system", dependencies: ["HostedSystemImage"]),
+    .testTarget(name: "HostedSystemImageTests", dependencies: ["HostedSystemImage",
+        .product(name: "TRFSHosted", package: "trfs-hosted")
+    ]),
     .target(name: "TesseraHostKit", dependencies: [
         .product(name: "TarwindKernel", package: "tarwin-hosted"),
         .product(name: "TarwinTaskTransport", package: "tarwin-task"),
